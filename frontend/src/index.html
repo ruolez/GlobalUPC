@@ -1,0 +1,910 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Global UPC - Barcode Management</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="container">
+      <!-- Sidebar Navigation -->
+      <aside class="sidebar">
+        <div class="logo">
+          <svg
+            width="32"
+            height="32"
+            viewBox="0 0 32 32"
+            fill="none"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <rect x="2" y="8" width="2" height="16" fill="currentColor" />
+            <rect x="6" y="8" width="1" height="16" fill="currentColor" />
+            <rect x="9" y="8" width="3" height="16" fill="currentColor" />
+            <rect x="14" y="8" width="1" height="16" fill="currentColor" />
+            <rect x="17" y="8" width="2" height="16" fill="currentColor" />
+            <rect x="21" y="8" width="1" height="16" fill="currentColor" />
+            <rect x="24" y="8" width="2" height="16" fill="currentColor" />
+            <rect x="28" y="8" width="2" height="16" fill="currentColor" />
+          </svg>
+          <h1>Global UPC</h1>
+        </div>
+        <nav class="nav">
+          <a href="#" class="nav-item active" data-page="dashboard">
+            <span>Dashboard</span>
+          </a>
+          <a href="#" class="nav-item" data-page="update-upc">
+            <span>Update UPC</span>
+          </a>
+          <a href="#" class="nav-item" data-page="settings">
+            <span>Settings</span>
+          </a>
+        </nav>
+      </aside>
+
+      <!-- Main Content -->
+      <main class="main-content">
+        <!-- Dashboard Page -->
+        <div id="dashboard-page" class="page">
+          <header class="page-header">
+            <h2>Dashboard</h2>
+            <p class="subtitle">
+              Monitor and manage your UPC barcodes across all stores
+            </p>
+          </header>
+          <div class="dashboard-content">
+            <div class="stats-grid">
+              <div class="stat-card">
+                <div class="stat-icon">
+                  <svg
+                    width="24"
+                    height="24"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    xmlns="http://www.w3.org/2000/svg"
+                  >
+                    <path
+                      d="M20 7L12 3L4 7M20 7L12 11M20 7V17L12 21M12 11L4 7M12 11V21M4 7V17L12 21"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                  </svg>
+                </div>
+                <div class="stat-info">
+                  <p class="stat-label">Total Stores</p>
+                  <p class="stat-value" id="total-stores">0</p>
+                </div>
+              </div>
+              <div class="stat-card">
+                <div class="stat-icon">
+                  <svg
+                    width="24"
+                    height="24"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    xmlns="http://www.w3.org/2000/svg"
+                  >
+                    <rect
+                      x="3"
+                      y="6"
+                      width="2"
+                      height="12"
+                      stroke="currentColor"
+                      stroke-width="2"
+                    />
+                    <rect
+                      x="7"
+                      y="6"
+                      width="1"
+                      height="12"
+                      stroke="currentColor"
+                      stroke-width="2"
+                    />
+                    <rect
+                      x="10"
+                      y="6"
+                      width="2"
+                      height="12"
+                      stroke="currentColor"
+                      stroke-width="2"
+                    />
+                    <rect
+                      x="14"
+                      y="6"
+                      width="1"
+                      height="12"
+                      stroke="currentColor"
+                      stroke-width="2"
+                    />
+                    <rect
+                      x="17"
+                      y="6"
+                      width="2"
+                      height="12"
+                      stroke="currentColor"
+                      stroke-width="2"
+                    />
+                    <rect
+                      x="21"
+                      y="6"
+                      width="1"
+                      height="12"
+                      stroke="currentColor"
+                      stroke-width="2"
+                    />
+                  </svg>
+                </div>
+                <div class="stat-info">
+                  <p class="stat-label">Active Connections</p>
+                  <p class="stat-value" id="active-stores">0</p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Tools Section -->
+            <section style="margin-top: 2rem">
+              <h3
+                style="
+                  margin: 0 0 1rem 0;
+                  font-size: 1.125rem;
+                  color: var(--text-primary);
+                "
+              >
+                Available Tools
+              </h3>
+              <div
+                style="
+                  display: grid;
+                  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+                  gap: 1rem;
+                "
+              >
+                <a href="#" class="tool-card" data-page="update-upc">
+                  <div class="tool-icon">
+                    <svg
+                      width="32"
+                      height="32"
+                      viewBox="0 0 32 32"
+                      fill="none"
+                      xmlns="http://www.w3.org/2000/svg"
+                    >
+                      <rect
+                        x="4"
+                        y="10"
+                        width="3"
+                        height="12"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      />
+                      <rect
+                        x="9"
+                        y="10"
+                        width="2"
+                        height="12"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      />
+                      <rect
+                        x="14"
+                        y="10"
+                        width="3"
+                        height="12"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      />
+                      <rect
+                        x="20"
+                        y="10"
+                        width="2"
+                        height="12"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      />
+                      <rect
+                        x="25"
+                        y="10"
+                        width="3"
+                        height="12"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      />
+                    </svg>
+                  </div>
+                  <div class="tool-info">
+                    <h4>Update UPC</h4>
+                    <p>
+                      Search and update UPC barcodes across all connected stores
+                    </p>
+                  </div>
+                </a>
+              </div>
+            </section>
+          </div>
+        </div>
+
+        <!-- Settings Page -->
+        <div id="settings-page" class="page" style="display: none">
+          <header class="page-header">
+            <h2>Settings</h2>
+            <p class="subtitle">
+              Configure your store connections and application settings
+            </p>
+          </header>
+
+          <!-- Stores Section -->
+          <section class="settings-section">
+            <div class="section-header">
+              <h3>Store Connections</h3>
+              <div class="button-group">
+                <button class="btn btn-primary" id="add-mssql-btn">
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    xmlns="http://www.w3.org/2000/svg"
+                  >
+                    <path
+                      d="M8 3V13M3 8H13"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                    />
+                  </svg>
+                  Add MSSQL Database
+                </button>
+                <button class="btn btn-primary" id="add-shopify-btn">
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    xmlns="http://www.w3.org/2000/svg"
+                  >
+                    <path
+                      d="M8 3V13M3 8H13"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                    />
+                  </svg>
+                  Add Shopify Store
+                </button>
+                <button class="btn btn-secondary" id="export-config-btn">
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    xmlns="http://www.w3.org/2000/svg"
+                  >
+                    <path
+                      d="M8 2V10M8 10L5 7M8 10L11 7"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                    <path
+                      d="M2 12V13C2 13.5523 2.44772 14 3 14H13C13.5523 14 14 13.5523 14 13V12"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                    />
+                  </svg>
+                  Export
+                </button>
+                <button class="btn btn-secondary" id="import-config-btn">
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    xmlns="http://www.w3.org/2000/svg"
+                  >
+                    <path
+                      d="M8 10V2M8 2L5 5M8 2L11 5"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                    <path
+                      d="M2 12V13C2 13.5523 2.44772 14 3 14H13C13.5523 14 14 13.5523 14 13V12"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                    />
+                  </svg>
+                  Import
+                </button>
+              </div>
+            </div>
+            <div id="stores-list" class="stores-list"></div>
+            <!-- Hidden file input for import -->
+            <input
+              type="file"
+              id="import-config-file"
+              accept=".json"
+              style="display: none"
+            />
+          </section>
+
+          <!-- Theme Selector Section -->
+          <section class="settings-section">
+            <div class="section-header">
+              <h3>Color Theme</h3>
+            </div>
+            <div class="theme-selector">
+              <div class="theme-option" data-theme-name="current">
+                <div class="theme-preview">
+                  <div class="theme-colors">
+                    <span style="background: #0a0a0f"></span>
+                    <span style="background: #121218"></span>
+                    <span style="background: #1a1a24"></span>
+                    <span style="background: #6366f1"></span>
+                  </div>
+                </div>
+                <div class="theme-info">
+                  <div class="theme-name">Current (Purple Accent)</div>
+                  <div class="theme-description">
+                    Original rainbow gradient theme
+                  </div>
+                </div>
+              </div>
+
+              <div class="theme-option" data-theme-name="monochrome">
+                <div class="theme-preview">
+                  <div class="theme-colors">
+                    <span style="background: #0d0d0d"></span>
+                    <span style="background: #171717"></span>
+                    <span style="background: #1f1f1f"></span>
+                    <span style="background: #e5e5e5"></span>
+                  </div>
+                </div>
+                <div class="theme-info">
+                  <div class="theme-name">Monochrome Slate</div>
+                  <div class="theme-description">
+                    Pure grayscale, corporate feel
+                  </div>
+                </div>
+              </div>
+
+              <div class="theme-option" data-theme-name="charcoal">
+                <div class="theme-preview">
+                  <div class="theme-colors">
+                    <span style="background: #0f0e0e"></span>
+                    <span style="background: #1a1918"></span>
+                    <span style="background: #242321"></span>
+                    <span style="background: #d4d2cf"></span>
+                  </div>
+                </div>
+                <div class="theme-info">
+                  <div class="theme-name">Charcoal Gray</div>
+                  <div class="theme-description">
+                    Warm undertones, sophisticated
+                  </div>
+                </div>
+              </div>
+
+              <div class="theme-option" data-theme-name="steel">
+                <div class="theme-preview">
+                  <div class="theme-colors">
+                    <span style="background: #0e0f11"></span>
+                    <span style="background: #16181b"></span>
+                    <span style="background: #1e2125"></span>
+                    <span style="background: #cbd5e0"></span>
+                  </div>
+                </div>
+                <div class="theme-info">
+                  <div class="theme-name">Steel Gray</div>
+                  <div class="theme-description">
+                    Cool blue undertones, technical
+                  </div>
+                </div>
+              </div>
+
+              <div class="theme-option" data-theme-name="minimal">
+                <div class="theme-preview">
+                  <div class="theme-colors">
+                    <span style="background: #121214"></span>
+                    <span style="background: #1a1a1d"></span>
+                    <span style="background: #222226"></span>
+                    <span style="background: #c8c8cc"></span>
+                  </div>
+                </div>
+                <div class="theme-info">
+                  <div class="theme-name">Minimal Contrast</div>
+                  <div class="theme-description">
+                    Low contrast, easy on eyes
+                  </div>
+                </div>
+              </div>
+
+              <div class="theme-option" data-theme-name="graphite">
+                <div class="theme-preview">
+                  <div class="theme-colors">
+                    <span style="background: #000000"></span>
+                    <span style="background: #0a0a0a"></span>
+                    <span style="background: #141414"></span>
+                    <span style="background: #f5f5f5"></span>
+                  </div>
+                </div>
+                <div class="theme-info">
+                  <div class="theme-name">Dark Graphite</div>
+                  <div class="theme-description">
+                    True black, maximum contrast
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- App Settings Section -->
+          <section class="settings-section">
+            <div class="section-header">
+              <h3>Application Settings</h3>
+            </div>
+            <div id="app-settings-list" class="settings-list"></div>
+          </section>
+        </div>
+
+        <!-- Update UPC Page -->
+        <div id="update-upc-page" class="page" style="display: none">
+          <header class="page-header">
+            <h2>Update UPC</h2>
+            <p class="subtitle">
+              Search and update UPC barcodes across all connected stores
+            </p>
+          </header>
+
+          <div class="settings-section">
+            <!-- Search Section with Update Input -->
+            <div class="form-group">
+              <label for="upc-search-input">Enter UPC to Search</label>
+              <div style="display: flex; gap: 0.75rem; align-items: stretch">
+                <input
+                  type="text"
+                  id="upc-search-input"
+                  placeholder="Enter UPC/barcode to search"
+                  style="width: 240px"
+                />
+                <div id="new-upc-container" style="display: none; width: 240px">
+                  <input
+                    type="text"
+                    id="new-upc-input"
+                    placeholder="Enter new UPC/barcode"
+                    style="width: 100%; height: 100%"
+                  />
+                </div>
+                <button
+                  type="button"
+                  class="btn btn-primary"
+                  id="search-upc-btn"
+                >
+                  Search
+                </button>
+                <button
+                  type="button"
+                  class="btn btn-primary"
+                  id="update-all-btn"
+                  disabled
+                  style="display: none"
+                >
+                  Update All
+                </button>
+              </div>
+            </div>
+
+            <!-- Loading State with Progress -->
+            <div
+              id="upc-search-loading"
+              class="test-status"
+              style="display: none; margin-top: 1.5rem"
+            >
+              <div class="loading">Searching across all stores...</div>
+              <div
+                id="search-progress"
+                style="
+                  margin-top: 1rem;
+                  padding: 1rem;
+                  background: var(--bg-tertiary);
+                  border-radius: var(--radius-md);
+                  display: none;
+                  max-height: 200px;
+                  overflow-y: auto;
+                "
+              >
+                <div
+                  id="progress-items"
+                  style="display: flex; flex-direction: column; gap: 0.5rem"
+                ></div>
+              </div>
+            </div>
+
+            <!-- Empty State -->
+            <div
+              id="upc-search-empty"
+              style="
+                display: none;
+                text-align: center;
+                padding: 3rem 1rem;
+                color: var(--text-tertiary);
+                margin-top: 1.5rem;
+              "
+            >
+              <svg
+                width="48"
+                height="48"
+                viewBox="0 0 48 48"
+                fill="none"
+                xmlns="http://www.w3.org/2000/svg"
+                style="margin: 0 auto 1rem"
+              >
+                <rect
+                  x="6"
+                  y="14"
+                  width="4"
+                  height="20"
+                  stroke="currentColor"
+                  stroke-width="2"
+                />
+                <rect
+                  x="13"
+                  y="14"
+                  width="2"
+                  height="20"
+                  stroke="currentColor"
+                  stroke-width="2"
+                />
+                <rect
+                  x="19"
+                  y="14"
+                  width="4"
+                  height="20"
+                  stroke="currentColor"
+                  stroke-width="2"
+                />
+                <rect
+                  x="27"
+                  y="14"
+                  width="2"
+                  height="20"
+                  stroke="currentColor"
+                  stroke-width="2"
+                />
+                <rect
+                  x="33"
+                  y="14"
+                  width="4"
+                  height="20"
+                  stroke="currentColor"
+                  stroke-width="2"
+                />
+                <rect
+                  x="41"
+                  y="14"
+                  width="2"
+                  height="20"
+                  stroke="currentColor"
+                  stroke-width="2"
+                />
+              </svg>
+              <p style="margin: 0; font-size: 0.875rem">
+                No products found with this UPC
+              </p>
+              <p style="margin: 0.5rem 0 0; font-size: 0.75rem">
+                Try searching for a different barcode
+              </p>
+            </div>
+
+            <!-- Results Section -->
+            <div
+              id="upc-search-results"
+              style="display: none; margin-top: 1.5rem"
+            >
+              <div style="margin-bottom: 1rem">
+                <p
+                  style="
+                    margin: 0;
+                    font-size: 0.875rem;
+                    color: var(--text-secondary);
+                  "
+                >
+                  <strong id="upc-results-count">0</strong> products found
+                  across <strong id="upc-stores-count">0</strong> stores
+                </p>
+              </div>
+              <div style="overflow-x: auto">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th style="width: 18%">Store Name</th>
+                      <th>Product Title</th>
+                      <th style="width: 25%">Variant</th>
+                    </tr>
+                  </thead>
+                  <tbody id="upc-results-table-body">
+                    <!-- Results will be populated here by JavaScript -->
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- Update Progress Section -->
+            <div
+              id="upc-update-section"
+              style="
+                display: none;
+                margin-top: 2rem;
+                padding-top: 2rem;
+                border-top: 1px solid var(--border-color);
+              "
+            >
+              <!-- Update Progress -->
+              <div
+                id="upc-update-loading"
+                class="test-status"
+                style="display: none; margin-top: 1.5rem"
+              >
+                <div class="loading">Updating UPC across all stores...</div>
+                <div
+                  id="update-progress"
+                  style="
+                    margin-top: 1rem;
+                    padding: 1rem;
+                    background: var(--bg-tertiary);
+                    border-radius: var(--radius-md);
+                    display: none;
+                    max-height: 200px;
+                    overflow-y: auto;
+                  "
+                >
+                  <div
+                    id="update-progress-items"
+                    style="display: flex; flex-direction: column; gap: 0.5rem"
+                  ></div>
+                </div>
+              </div>
+
+              <!-- Update Results -->
+              <div
+                id="upc-update-results"
+                style="display: none; margin-top: 1.5rem"
+              >
+                <div style="margin-bottom: 1rem">
+                  <p
+                    style="
+                      margin: 0;
+                      font-size: 0.875rem;
+                      color: var(--text-secondary);
+                    "
+                  >
+                    Update Summary:
+                    <strong id="upc-update-count">0</strong> items updated
+                  </p>
+                </div>
+                <div style="overflow-x: auto">
+                  <table class="data-table">
+                    <thead>
+                      <tr>
+                        <th>Store Name</th>
+                        <th>Items Updated</th>
+                        <th>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody id="upc-update-results-table-body">
+                      <!-- Update results will be populated here by JavaScript -->
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <!-- MSSQL Store Modal -->
+    <div id="mssql-modal" class="modal">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3>Add MSSQL Database</h3>
+          <button class="modal-close" onclick="closeModal('mssql-modal')">
+            &times;
+          </button>
+        </div>
+        <form id="mssql-form" class="modal-form">
+          <div class="form-group">
+            <label for="mssql-name">Store Name</label>
+            <input
+              type="text"
+              id="mssql-name"
+              name="name"
+              required
+              placeholder="My Store Location"
+            />
+          </div>
+          <div class="form-group">
+            <label for="mssql-host">Host</label>
+            <input
+              type="text"
+              id="mssql-host"
+              name="host"
+              required
+              placeholder="localhost or IP address"
+            />
+          </div>
+          <div class="form-group">
+            <label for="mssql-port">Port</label>
+            <input
+              type="number"
+              id="mssql-port"
+              name="port"
+              value="1433"
+              required
+            />
+          </div>
+          <div class="form-group">
+            <label for="mssql-database">Database Name</label>
+            <input
+              type="text"
+              id="mssql-database"
+              name="database_name"
+              required
+              placeholder="database_name"
+            />
+          </div>
+          <div class="form-group">
+            <label for="mssql-username">Username</label>
+            <input
+              type="text"
+              id="mssql-username"
+              name="username"
+              required
+              placeholder="database_user"
+            />
+          </div>
+          <div class="form-group">
+            <label for="mssql-password">Password</label>
+            <input
+              type="password"
+              id="mssql-password"
+              name="password"
+              required
+              placeholder="••••••••"
+            />
+          </div>
+          <div id="mssql-test-status" class="test-status"></div>
+          <div class="modal-footer">
+            <button
+              type="button"
+              class="btn btn-secondary"
+              onclick="closeModal('mssql-modal')"
+            >
+              Cancel
+            </button>
+            <button type="button" class="btn btn-secondary" id="test-mssql-btn">
+              Test Connection
+            </button>
+            <button type="submit" class="btn btn-primary">Add Database</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Shopify Store Modal -->
+    <div id="shopify-modal" class="modal">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3>Add Shopify Store</h3>
+          <button class="modal-close" onclick="closeModal('shopify-modal')">
+            &times;
+          </button>
+        </div>
+        <form id="shopify-form" class="modal-form">
+          <div class="form-group">
+            <label for="shopify-name">Store Name</label>
+            <input
+              type="text"
+              id="shopify-name"
+              name="name"
+              required
+              placeholder="My Shopify Store"
+            />
+          </div>
+          <div class="form-group">
+            <label for="shopify-domain">Shop Domain</label>
+            <input
+              type="text"
+              id="shopify-domain"
+              name="shop_domain"
+              required
+              placeholder="mystore.myshopify.com"
+            />
+          </div>
+          <div class="form-group">
+            <label for="shopify-api-key">Admin API Key</label>
+            <input
+              type="password"
+              id="shopify-api-key"
+              name="admin_api_key"
+              required
+              placeholder="shpat_..."
+            />
+          </div>
+          <div class="form-group">
+            <label for="shopify-version">API Version</label>
+            <input
+              type="text"
+              id="shopify-version"
+              name="api_version"
+              value="2025-01"
+              required
+            />
+            <small
+              style="
+                color: var(--text-tertiary);
+                font-size: 0.75rem;
+                margin-top: 0.25rem;
+                display: block;
+              "
+              >Latest stable version. Shopify releases new versions
+              quarterly.</small
+            >
+          </div>
+          <div class="form-group">
+            <label
+              style="
+                display: flex;
+                align-items: center;
+                cursor: pointer;
+                user-select: none;
+              "
+            >
+              <input
+                type="checkbox"
+                id="shopify-update-sku"
+                name="update_sku_with_barcode"
+                style="margin-right: 0.5rem"
+              />
+              <span>Update SKU to match barcode when updating UPCs</span>
+            </label>
+            <small
+              style="
+                color: var(--text-tertiary);
+                font-size: 0.75rem;
+                margin-top: 0.25rem;
+                display: block;
+              "
+              >When enabled, the product variant SKU will be set to the same
+              value as the barcode during UPC updates.</small
+            >
+          </div>
+          <div id="shopify-test-status" class="test-status"></div>
+          <div class="modal-footer">
+            <button
+              type="button"
+              class="btn btn-secondary"
+              onclick="closeModal('shopify-modal')"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              class="btn btn-secondary"
+              id="test-shopify-btn"
+            >
+              Test Connection
+            </button>
+            <button type="submit" class="btn btn-primary">Add Store</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
