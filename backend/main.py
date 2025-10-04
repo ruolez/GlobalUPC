@@ -16,9 +16,16 @@ from schemas import (
     UPCSearchRequest, UPCSearchResponse, ProductVariantMatch,
     UPCUpdateRequest, UPCUpdateResult,
     ConfigExportResponse, ConfigImportRequest, ConfigImportResponse,
-    StoreImportResult, StoreExport
+    StoreImportResult, StoreExport,
+    OrphanedUPCAuditRequest, OrphanedUPCRecord, OrphanedUPCAuditResponse,
+    ReconciliationRequest, ReconciliationMatch, ReconciliationResponse,
+    ReconciliationUpdateRequest, ReconciliationUpdateResult, ReconciliationUpdateResponse
 )
-from mssql_helper import test_mssql_connection, search_upc_across_mssql_stores, search_products_by_upc, update_upc_across_mssql_stores
+from mssql_helper import (
+    test_mssql_connection, search_upc_across_mssql_stores, search_products_by_upc,
+    update_upc_across_mssql_stores, audit_orphaned_upcs,
+    find_matches_by_product_id, find_matches_by_description, update_orphaned_upcs
+)
 from shopify_helper import test_shopify_connection, search_barcode_across_shopify_stores, search_products_by_barcode, update_barcodes_across_shopify_stores
 
 app = FastAPI(title="Global UPC API", version="1.0.0")
@@ -505,6 +512,145 @@ async def update_upc_stream(request: UPCUpdateRequest, db: Session = Depends(get
         }
     )
 
+# SQL UPC Audit endpoint
+@app.post("/api/analysis/orphaned-upcs/stream")
+async def audit_orphaned_upcs_stream(request: OrphanedUPCAuditRequest, db: Session = Depends(get_db)):
+    """
+    Audit MSSQL store for orphaned UPCs (UPCs in detail tables but not in Items_tbl).
+    Returns Server-Sent Events stream with real-time progress.
+    """
+    async def generate_audit_events() -> AsyncGenerator[str, None]:
+        store_id = request.store_id
+
+        # Get store from database
+        store = db.query(Store).filter(Store.id == store_id).first()
+        if not store:
+            yield f"event: error\ndata: {json.dumps({'message': 'Store not found'})}\n\n"
+            return
+
+        # Validate store is MSSQL type
+        if store.store_type != StoreType.mssql or not store.mssql_connection:
+            yield f"event: error\ndata: {json.dumps({'message': 'Store is not an MSSQL database'})}\n\n"
+            return
+
+        # Get connection details
+        conn = store.mssql_connection
+        store_name = store.name
+
+        print(f"[AUDIT] Starting audit for store: {store_name}")
+
+        # Send start event
+        yield f"event: progress\ndata: {json.dumps({'status': 'starting', 'store_name': store_name})}\n\n"
+
+        # Create a queue for progress updates from the thread
+        import queue
+        progress_queue = queue.Queue()
+
+        # Define progress callback that puts events in queue
+        def progress_callback(data: dict):
+            progress_queue.put(data)
+
+        # Start audit in background task
+        import asyncio
+        from concurrent.futures import ThreadPoolExecutor
+
+        loop = asyncio.get_event_loop()
+        executor = ThreadPoolExecutor(max_workers=1)
+
+        # Run audit in executor
+        audit_future = loop.run_in_executor(
+            executor,
+            lambda: audit_orphaned_upcs_sync_wrapper(
+                conn.host,
+                conn.port,
+                conn.database_name,
+                conn.username,
+                conn.password,
+                progress_callback
+            )
+        )
+
+        # Poll queue for progress updates while audit runs
+        # Track last event time for heartbeat
+        import time
+        last_event_time = time.time()
+        HEARTBEAT_INTERVAL = 15  # Send ping every 15 seconds
+
+        while not audit_future.done():
+            try:
+                # Check for progress updates (non-blocking)
+                progress_data = progress_queue.get_nowait()
+
+                print(f"[AUDIT] Progress: {progress_data}")
+
+                # Send progress event
+                yield f"event: progress\ndata: {json.dumps(progress_data)}\n\n"
+
+                # Update last event time
+                last_event_time = time.time()
+
+            except queue.Empty:
+                # No progress update, check if we need to send heartbeat
+                current_time = time.time()
+                if current_time - last_event_time >= HEARTBEAT_INTERVAL:
+                    # Send heartbeat ping to keep connection alive
+                    yield ":ping\n\n"
+                    last_event_time = current_time
+
+                # Wait a bit before checking again
+                await asyncio.sleep(0.1)
+
+        # Get final result
+        success, error, orphaned_records, tables_checked = await audit_future
+
+        # Drain any remaining progress events
+        while not progress_queue.empty():
+            try:
+                progress_data = progress_queue.get_nowait()
+                yield f"event: progress\ndata: {json.dumps(progress_data)}\n\n"
+            except queue.Empty:
+                break
+
+        print(f"[AUDIT] Completed audit for {store_name}: {len(orphaned_records)} orphaned UPCs found")
+
+        if not success:
+            yield f"event: error\ndata: {json.dumps({'message': error or 'Audit failed'})}\n\n"
+            return
+
+        # Send complete event with results
+        result_data = {
+            'store_id': store_id,
+            'store_name': store_name,
+            'orphaned_records': orphaned_records,
+            'total_orphaned': len(orphaned_records),
+            'tables_checked': tables_checked
+        }
+
+        yield f"event: complete\ndata: {json.dumps(result_data)}\n\n"
+
+    return StreamingResponse(
+        generate_audit_events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        }
+    )
+
+# Helper wrapper for audit function (for executor)
+def audit_orphaned_upcs_sync_wrapper(host, port, database, username, password, progress_callback):
+    """Wrapper to call the sync audit function."""
+    from mssql_helper import _audit_orphaned_upcs_sync
+    return _audit_orphaned_upcs_sync(
+        host=host,
+        port=port,
+        database=database,
+        username=username,
+        password=password,
+        progress_callback=progress_callback,
+        tds_version="7.4"
+    )
+
 # Store endpoints
 @app.get("/api/stores", response_model=List[StoreResponse])
 def get_stores(db: Session = Depends(get_db)):
@@ -831,6 +977,465 @@ def import_configuration(config: ConfigImportRequest, db: Session = Depends(get_
         failed=failed_count,
         results=results
     )
+
+# SQL UPC Reconciliation endpoints
+@app.post("/api/analysis/reconcile-upcs", response_model=ReconciliationResponse)
+async def reconcile_orphaned_upcs(request: ReconciliationRequest, db: Session = Depends(get_db)):
+    """
+    Find matching UPCs in Items_tbl for orphaned records by ProductID or ProductDescription.
+    """
+    store_id = request.store_id
+    match_type = request.match_type
+    orphaned_records = request.orphaned_records
+
+    # Get store from database
+    store = db.query(Store).filter(Store.id == store_id).first()
+    if not store:
+        raise HTTPException(status_code=404, detail="Store not found")
+
+    # Validate store is MSSQL type
+    if store.store_type != StoreType.mssql or not store.mssql_connection:
+        raise HTTPException(status_code=400, detail="Store is not an MSSQL database")
+
+    # Get connection details
+    conn = store.mssql_connection
+
+    # Convert Pydantic models to dicts for helper function
+    records_dict = [record.model_dump() for record in orphaned_records]
+
+    # Call appropriate matching function
+    if match_type == "product_id":
+        success, error, matches = await find_matches_by_product_id(
+            host=conn.host,
+            port=conn.port,
+            database=conn.database_name,
+            username=conn.username,
+            password=conn.password,
+            orphaned_records=records_dict
+        )
+    else:  # product_description
+        success, error, matches = await find_matches_by_description(
+            host=conn.host,
+            port=conn.port,
+            database=conn.database_name,
+            username=conn.username,
+            password=conn.password,
+            orphaned_records=records_dict
+        )
+
+    if not success:
+        raise HTTPException(status_code=500, detail=error or "Reconciliation failed")
+
+    # Calculate totals
+    total_matched = sum(1 for m in matches if m["match_found"])
+
+    return ReconciliationResponse(
+        matches=matches,
+        total_checked=len(matches),
+        total_matched=total_matched
+    )
+
+@app.post("/api/analysis/reconcile-upcs/update", response_model=ReconciliationUpdateResponse)
+async def update_reconciled_upcs(request: ReconciliationUpdateRequest, db: Session = Depends(get_db)):
+    """
+    Update orphaned UPCs with matched values from Items_tbl.
+    """
+    store_id = request.store_id
+    updates = request.updates
+
+    # Get store from database
+    store = db.query(Store).filter(Store.id == store_id).first()
+    if not store:
+        raise HTTPException(status_code=404, detail="Store not found")
+
+    # Validate store is MSSQL type
+    if store.store_type != StoreType.mssql or not store.mssql_connection:
+        raise HTTPException(status_code=400, detail="Store is not an MSSQL database")
+
+    # Get connection details
+    conn = store.mssql_connection
+
+    # Convert Pydantic models to dicts for helper function
+    updates_dict = [update.model_dump() for update in updates]
+
+    # Call update function
+    success, error, results = await update_orphaned_upcs(
+        host=conn.host,
+        port=conn.port,
+        database=conn.database_name,
+        username=conn.username,
+        password=conn.password,
+        updates=updates_dict
+    )
+
+    if not success:
+        raise HTTPException(status_code=500, detail=error or "Update failed")
+
+    # Calculate totals
+    total_updated = sum(1 for r in results if r["success"])
+    total_failed = sum(1 for r in results if not r["success"])
+
+    return ReconciliationUpdateResponse(
+        results=results,
+        total_updated=total_updated,
+        total_failed=total_failed
+    )
+
+# SSE Streaming version of reconciliation find matches
+@app.post("/api/analysis/reconcile-upcs/stream")
+async def reconcile_orphaned_upcs_stream(request: ReconciliationRequest, db: Session = Depends(get_db)):
+    """
+    Find matching UPCs in Items_tbl for orphaned records with SSE streaming progress.
+    Streams progress events for each record checked.
+    """
+    store_id = request.store_id
+    match_type = request.match_type
+    orphaned_records = request.orphaned_records
+
+    # Get store from database
+    store = db.query(Store).filter(Store.id == store_id).first()
+    if not store:
+        raise HTTPException(status_code=404, detail="Store not found")
+
+    # Validate store is MSSQL type
+    if store.store_type != StoreType.mssql or not store.mssql_connection:
+        raise HTTPException(status_code=400, detail="Store is not an MSSQL database")
+
+    # Get connection details
+    conn = store.mssql_connection
+    store_name = store.name
+
+    # Convert Pydantic models to dicts for helper function
+    records_dict = [record.model_dump() for record in orphaned_records]
+
+    async def generate_reconciliation_events():
+        """Generator for SSE events during reconciliation"""
+        try:
+            import queue
+            progress_queue = queue.Queue()
+
+            def progress_callback(data: dict):
+                progress_queue.put(data)
+
+            # Start reconciliation in background task
+            import asyncio
+            from concurrent.futures import ThreadPoolExecutor
+
+            loop = asyncio.get_event_loop()
+            executor = ThreadPoolExecutor(max_workers=1)
+
+            # Run reconciliation in executor
+            reconcile_future = loop.run_in_executor(
+                executor,
+                lambda: reconcile_with_progress_wrapper(
+                    conn.host,
+                    conn.port,
+                    conn.database_name,
+                    conn.username,
+                    conn.password,
+                    records_dict,
+                    match_type,
+                    progress_callback
+                )
+            )
+
+            # Poll queue for progress updates
+            import time
+            last_event_time = time.time()
+            HEARTBEAT_INTERVAL = 15
+
+            while not reconcile_future.done():
+                try:
+                    # Check for progress updates (non-blocking)
+                    progress_data = progress_queue.get_nowait()
+
+                    # Send progress event
+                    yield f"event: progress\ndata: {json.dumps(progress_data)}\n\n"
+
+                    # Update last event time
+                    last_event_time = time.time()
+
+                except queue.Empty:
+                    # No progress update, check if we need to send heartbeat
+                    current_time = time.time()
+                    if current_time - last_event_time >= HEARTBEAT_INTERVAL:
+                        yield ":ping\n\n"
+                        last_event_time = current_time
+
+                    # Wait a bit before checking again
+                    await asyncio.sleep(0.1)
+
+            # Get final result
+            success, error, matches = await reconcile_future
+
+            # Drain any remaining progress events
+            while not progress_queue.empty():
+                try:
+                    progress_data = progress_queue.get_nowait()
+                    yield f"event: progress\ndata: {json.dumps(progress_data)}\n\n"
+                except queue.Empty:
+                    break
+
+            if not success:
+                yield f"event: error\ndata: {json.dumps({'message': error or 'Reconciliation failed'})}\n\n"
+                return
+
+            # Calculate totals
+            total_matched = sum(1 for m in matches if m["match_found"])
+
+            # Send complete event with results
+            result_data = {
+                'matches': matches,
+                'total_checked': len(matches),
+                'total_matched': total_matched
+            }
+
+            yield f"event: complete\ndata: {json.dumps(result_data)}\n\n"
+
+        except GeneratorExit:
+            # Client disconnected - clean shutdown
+            print("[RECONCILIATION] Client disconnected, stopping reconciliation operation")
+            return
+        except Exception as e:
+            print(f"[RECONCILIATION] Error in streaming: {e}")
+            yield f"event: error\ndata: {json.dumps({'message': str(e)})}\n\n"
+
+    return StreamingResponse(
+        generate_reconciliation_events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        }
+    )
+
+# Helper wrapper for reconciliation with progress
+def reconcile_with_progress_wrapper(host, port, database, username, password, orphaned_records, match_type, progress_callback):
+    """Wrapper to call the sync reconciliation function with progress."""
+    from mssql_helper import find_matches_by_product_id_sync, find_matches_by_description_sync
+
+    # Call matching function with progress callback
+    if match_type == "product_id":
+        success, error, matches = find_matches_by_product_id_sync(
+            host=host,
+            port=port,
+            database=database,
+            username=username,
+            password=password,
+            orphaned_records=orphaned_records,
+            tds_version="7.4",
+            progress_callback=progress_callback
+        )
+    else:  # product_description
+        success, error, matches = find_matches_by_description_sync(
+            host=host,
+            port=port,
+            database=database,
+            username=username,
+            password=password,
+            orphaned_records=orphaned_records,
+            tds_version="7.4",
+            progress_callback=progress_callback
+        )
+
+    return success, error, matches
+
+# SSE Streaming version of reconciliation update
+@app.post("/api/analysis/reconcile-upcs/update/stream")
+async def update_reconciled_upcs_stream(request: ReconciliationUpdateRequest, db: Session = Depends(get_db)):
+    """
+    Update orphaned UPCs with matched values from Items_tbl with SSE streaming progress.
+    Processes updates in batches and streams progress.
+    """
+    store_id = request.store_id
+    updates = request.updates
+
+    # Get store from database
+    store = db.query(Store).filter(Store.id == store_id).first()
+    if not store:
+        raise HTTPException(status_code=404, detail="Store not found")
+
+    # Validate store is MSSQL type
+    if store.store_type != StoreType.mssql or not store.mssql_connection:
+        raise HTTPException(status_code=400, detail="Store is not an MSSQL database")
+
+    # Get connection details
+    conn = store.mssql_connection
+    store_name = store.name
+
+    # Convert Pydantic models to dicts for helper function
+    updates_dict = [update.model_dump() for update in updates]
+
+    async def generate_update_events():
+        """Generator for SSE events during batch updates"""
+        try:
+            import queue
+            progress_queue = queue.Queue()
+
+            def progress_callback(data: dict):
+                progress_queue.put(data)
+
+            # Start update in background task
+            import asyncio
+            from concurrent.futures import ThreadPoolExecutor
+
+            loop = asyncio.get_event_loop()
+            executor = ThreadPoolExecutor(max_workers=1)
+
+            # Run update in executor
+            update_future = loop.run_in_executor(
+                executor,
+                lambda: update_with_batching_wrapper(
+                    conn.host,
+                    conn.port,
+                    conn.database_name,
+                    conn.username,
+                    conn.password,
+                    updates_dict,
+                    progress_callback
+                )
+            )
+
+            # Poll queue for progress updates
+            import time
+            last_event_time = time.time()
+            HEARTBEAT_INTERVAL = 15
+
+            while not update_future.done():
+                try:
+                    # Check for progress updates (non-blocking)
+                    progress_data = progress_queue.get_nowait()
+
+                    # Send progress event
+                    yield f"event: progress\ndata: {json.dumps(progress_data)}\n\n"
+
+                    # Update last event time
+                    last_event_time = time.time()
+
+                except queue.Empty:
+                    # No progress update, check if we need to send heartbeat
+                    current_time = time.time()
+                    if current_time - last_event_time >= HEARTBEAT_INTERVAL:
+                        yield ":ping\n\n"
+                        last_event_time = current_time
+
+                    # Wait a bit before checking again
+                    await asyncio.sleep(0.1)
+
+            # Get final result
+            success, error, results = await update_future
+
+            # Drain any remaining progress events
+            while not progress_queue.empty():
+                try:
+                    progress_data = progress_queue.get_nowait()
+                    yield f"event: progress\ndata: {json.dumps(progress_data)}\n\n"
+                except queue.Empty:
+                    break
+
+            if not success:
+                yield f"event: error\ndata: {json.dumps({'message': error or 'Update failed'})}\n\n"
+                return
+
+            # Calculate totals
+            total_updated = sum(1 for r in results if r["success"])
+            total_failed = sum(1 for r in results if not r["success"])
+
+            # Send complete event with results
+            result_data = {
+                'results': results,
+                'total_updated': total_updated,
+                'total_failed': total_failed
+            }
+
+            yield f"event: complete\ndata: {json.dumps(result_data)}\n\n"
+
+        except GeneratorExit:
+            # Client disconnected - clean shutdown
+            print("[RECONCILIATION UPDATE] Client disconnected, stopping update operation")
+            return
+        except Exception as e:
+            print(f"[RECONCILIATION UPDATE] Error in streaming: {e}")
+            yield f"event: error\ndata: {json.dumps({'message': str(e)})}\n\n"
+
+    return StreamingResponse(
+        generate_update_events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        }
+    )
+
+# Helper wrapper for batch updates with progress
+def update_with_batching_wrapper(host, port, database, username, password, updates, progress_callback):
+    """Wrapper to call the sync update function with batch processing and progress."""
+    from mssql_helper import update_orphaned_upcs_sync
+
+    BATCH_SIZE = 20
+    total_updates = len(updates)
+    total_batches = (total_updates + BATCH_SIZE - 1) // BATCH_SIZE  # Ceiling division
+
+    all_results = []
+    total_updated = 0
+    total_failed = 0
+
+    # Process in batches
+    for batch_num in range(total_batches):
+        start_idx = batch_num * BATCH_SIZE
+        end_idx = min(start_idx + BATCH_SIZE, total_updates)
+        batch = updates[start_idx:end_idx]
+
+        # Send batch start event
+        progress_callback({
+            "status": "updating_batch",
+            "batch_number": batch_num + 1,
+            "total_batches": total_batches,
+            "batch_size": len(batch)
+        })
+
+        # Execute batch update
+        success, error, batch_results = update_orphaned_upcs_sync(
+            host=host,
+            port=port,
+            database=database,
+            username=username,
+            password=password,
+            updates=batch,
+            tds_version="7.4"
+        )
+
+        if not success:
+            # If batch fails, mark all as failed
+            for update in batch:
+                all_results.append({
+                    "table_name": update["table_name"],
+                    "primary_key": update["primary_key"],
+                    "success": False,
+                    "updated_upc": None,
+                    "error": error or "Batch update failed"
+                })
+                total_failed += len(batch)
+        else:
+            # Add batch results
+            all_results.extend(batch_results)
+            batch_updated = sum(1 for r in batch_results if r["success"])
+            batch_failed = sum(1 for r in batch_results if not r["success"])
+            total_updated += batch_updated
+            total_failed += batch_failed
+
+        # Send batch complete event
+        progress_callback({
+            "status": "batch_complete",
+            "batch_number": batch_num + 1,
+            "total_batches": total_batches,
+            "batch_updated": batch_updated if success else 0,
+            "batch_failed": batch_failed if success else len(batch),
+            "total_updated": total_updated,
+            "total_failed": total_failed
+        })
+
+    return True, None, all_results
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

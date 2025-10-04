@@ -165,6 +165,9 @@ All tables have auto-updating `created_at` and `updated_at` timestamps via Postg
 - `GET /api/config/export` - Export all store configurations as JSON
 - `POST /api/config/import` - Import store configurations from JSON
 
+**SQL UPC Audit (MSSQL Only)**
+- `POST /api/analysis/orphaned-upcs/stream` - Audit MSSQL store for orphaned UPCs (SSE streaming)
+
 ## FreeTDS Configuration (MSSQL)
 
 This application uses **FreeTDS** for MSSQL connectivity to support legacy SQL Server versions.
@@ -489,3 +492,97 @@ This prevents search loops caused by rapid button clicks or held Enter key.
 
 ### Theme System
 Six dark mode themes available, all using CSS custom properties. Theme selection persists to `localStorage`. Themes range from purple accent (default) to pure grayscale to true black high-contrast.
+
+## SQL UPC Audit Feature
+
+### Overview
+The SQL UPC Audit tool validates data integrity across MSSQL databases by checking if UPCs in detail tables exist in the master Items_tbl. This is MSSQL-specific and does not apply to Shopify stores.
+
+### How It Works
+1. User selects an MSSQL store to audit
+2. System checks all detail tables (excluding Items_tbl) for UPCs
+3. For each UPC found, verifies it exists in Items_tbl
+4. Reports any "orphaned" UPCs (UPCs in detail tables but not in Items_tbl)
+5. Shows real-time progress via SSE streaming
+
+### Detail Tables Checked
+- QuotationsDetails_tbl
+- PurchaseOrdersDetails_tbl
+- InvoicesDetails_tbl
+- CreditMemosDetails_tbl
+- PurchasesReturnsDetails_tbl
+- QuotationDetails
+
+**Note**: Items_tbl is NOT checked (it's the master reference table)
+
+### Chunked Processing
+The audit uses chunked processing to handle large tables (200K+ records) without timeout:
+- **Chunk Size**: 5,000 records per chunk (configurable via `CHUNK_SIZE` in `mssql_helper.py`)
+- **Query Strategy**: Uses CTE with ROW_NUMBER() and LEFT JOIN to check 5,000 records at a time
+- **Progress Updates**: Sends SSE events after each chunk showing:
+  - Chunk number (e.g., "Chunk 10/50")
+  - Records checked (e.g., "50,000/246,194 records")
+  - Orphans found in this chunk and total orphans
+- **Heartbeat**: Sends `:ping\n\n` every 15 seconds to keep SSE connection alive
+
+### Implementation Details
+
+**Backend** (`mssql_helper.py`):
+```python
+# True chunked query using CTE
+WITH numbered_records AS (
+    SELECT pk, description, ProductUPC, ROW_NUMBER() OVER (ORDER BY pk) as row_num
+    FROM QuotationsDetails_tbl
+    WHERE ProductUPC IS NOT NULL
+)
+SELECT n.pk, n.description, n.ProductUPC
+FROM numbered_records n
+LEFT JOIN Items_tbl i ON n.ProductUPC = i.ProductUPC
+WHERE n.row_num > ? AND n.row_num <= ?
+AND i.ProductUPC IS NULL  -- Only orphans
+```
+
+**SSE Heartbeat** (`main.py`):
+- Tracks time since last event
+- Sends heartbeat ping every 15 seconds during processing
+- Prevents `ERR_INCOMPLETE_CHUNKED_ENCODING` timeout error
+
+**Frontend** (`app.js`):
+- Handles `chunk_progress` events to show real-time updates
+- Displays: "QuotationsDetails_tbl: Chunk 10/50 (20%) - 50,000/246,194 records - 42 orphans found"
+- Color coding: orange for in-progress, green for complete (no orphans), red for orphans found
+
+### Orphaned Records Tracking
+All orphaned records are stored with complete metadata:
+- `table_name`: Source table (e.g., "InvoicesDetails_tbl")
+- `primary_key`: Record's LineID or ProductID
+- `upc`: The orphaned UPC value
+- `description`: Product description from the record
+
+This enables future operations like:
+- Bulk fixing orphaned UPCs
+- Deleting orphaned records
+- Exporting audit results
+- Cross-referencing with other systems
+
+### Performance Characteristics
+- **Small tables** (< 5,000 records): Single chunk, completes in seconds
+- **Medium tables** (5,000-50,000 records): 1-10 chunks, shows progress every few seconds
+- **Large tables** (50,000-500,000 records): 10-100 chunks, continuous progress updates
+- **Very large tables** (500,000+ records): 100+ chunks, each chunk processes in 1-3 seconds
+
+### Common Issues
+**Timeout Errors**: If audit times out despite chunking:
+- Reduce `CHUNK_SIZE` in `mssql_helper.py` (try 2,500 or 1,000)
+- Check database performance (indexes on ProductUPC field recommended)
+- Verify network connectivity between containers
+
+**No Progress Updates**: If frontend doesn't show chunk progress:
+- Hard refresh browser (`Cmd+Shift+R`) to clear JavaScript cache
+- Check browser console for SSE connection errors
+- Verify backend logs show chunk progress events being sent
+
+**Empty Results**: If no orphans found but expected some:
+- Verify Items_tbl exists in the database
+- Check ProductUPC field names match across tables
+- Review backend logs for `table_skipped` events (table doesn't exist)

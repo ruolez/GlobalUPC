@@ -46,6 +46,8 @@ function navigateTo(page) {
     loadDashboard();
   } else if (page === "settings") {
     loadSettings();
+  } else if (page === "sql-audit") {
+    loadSQLAuditPage();
   }
 }
 
@@ -1160,6 +1162,870 @@ document
       importConfiguration(file);
       // Reset file input
       e.target.value = "";
+    }
+  });
+
+// SQL UPC Audit Functions
+async function loadSQLAuditPage() {
+  const select = document.getElementById("audit-store-select");
+  const runBtn = document.getElementById("run-audit-btn");
+
+  // Reset UI
+  select.innerHTML = '<option value="">-- Select a store --</option>';
+  runBtn.disabled = true;
+  document.getElementById("audit-loading").style.display = "none";
+  document.getElementById("audit-empty").style.display = "none";
+  document.getElementById("audit-results").style.display = "none";
+
+  // Load MSSQL stores
+  try {
+    const stores = await apiRequest("/stores");
+    const mssqlStores = stores.filter(
+      (s) => s.store_type === "mssql" && s.is_active,
+    );
+
+    if (mssqlStores.length === 0) {
+      select.innerHTML =
+        '<option value="">No active SQL stores configured</option>';
+      return;
+    }
+
+    // Populate dropdown
+    mssqlStores.forEach((store) => {
+      const option = document.createElement("option");
+      option.value = store.id;
+      option.textContent = store.name;
+      select.appendChild(option);
+    });
+  } catch (error) {
+    console.error("Error loading stores:", error);
+  }
+}
+
+// Store selection change handler
+document
+  .getElementById("audit-store-select")
+  ?.addEventListener("change", (e) => {
+    const runBtn = document.getElementById("run-audit-btn");
+    runBtn.disabled = !e.target.value;
+  });
+
+// Run audit button handler
+document
+  .getElementById("run-audit-btn")
+  ?.addEventListener("click", async () => {
+    const select = document.getElementById("audit-store-select");
+    const storeId = parseInt(select.value);
+
+    if (!storeId) {
+      alert("Please select a store to audit");
+      return;
+    }
+
+    await runAudit(storeId);
+  });
+
+async function runAudit(storeId) {
+  const loadingEl = document.getElementById("audit-loading");
+  const progressContainer = document.getElementById("audit-progress");
+  const progressItems = document.getElementById("audit-progress-items");
+  const emptyEl = document.getElementById("audit-empty");
+  const resultsEl = document.getElementById("audit-results");
+  const runBtn = document.getElementById("run-audit-btn");
+
+  // Show loading state
+  loadingEl.style.display = "block";
+  progressContainer.style.display = "block";
+  emptyEl.style.display = "none";
+  resultsEl.style.display = "none";
+  progressItems.innerHTML = "";
+  runBtn.disabled = true;
+
+  try {
+    // Use fetch with streaming for POST + SSE
+    const response = await fetch(`${API_BASE}/analysis/orphaned-upcs/stream`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ store_id: storeId }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n\n");
+      buffer = lines.pop(); // Keep incomplete message in buffer
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+
+        const eventMatch = line.match(/event: (\w+)\ndata: (.+)/s);
+        if (!eventMatch) continue;
+
+        const [, eventType, dataStr] = eventMatch;
+        const data = JSON.parse(dataStr);
+
+        if (eventType === "progress") {
+          if (data.status === "starting") {
+            const item = document.createElement("div");
+            item.style.cssText =
+              "font-size: 0.875rem; color: var(--accent-primary);";
+            item.textContent = `Starting audit for ${data.store_name}...`;
+            progressItems.appendChild(item);
+          } else if (data.status === "checking_table") {
+            const item = document.createElement("div");
+            item.style.cssText =
+              "font-size: 0.875rem; color: var(--text-secondary);";
+            item.textContent = `🔍 Checking ${data.table_name}...`;
+            item.dataset.tableName = data.table_name; // Store table name for updates
+            progressItems.appendChild(item);
+            progressContainer.scrollTop = progressContainer.scrollHeight;
+          } else if (data.status === "chunk_progress") {
+            // Find the progress item for this table
+            const tableItems = Array.from(progressItems.children).filter(
+              (el) => el.dataset.tableName === data.table_name,
+            );
+            const lastItem = tableItems[tableItems.length - 1];
+
+            if (lastItem) {
+              // Calculate percentage
+              const percentage = Math.round(
+                (data.records_checked / data.total_records) * 100,
+              );
+
+              // Build progress message
+              let message = `🔍 ${data.table_name}: Chunk ${data.chunk}/${data.total_chunks} (${percentage}%)`;
+              message += ` - ${data.records_checked}/${data.total_records} records`;
+
+              if (data.total_orphans > 0) {
+                message += ` - ${data.total_orphans} orphan${data.total_orphans !== 1 ? "s" : ""} found`;
+                lastItem.style.color = "orange";
+              } else {
+                lastItem.style.color = "var(--text-secondary)";
+              }
+
+              lastItem.textContent = message;
+              progressContainer.scrollTop = progressContainer.scrollHeight;
+            }
+          } else if (data.status === "table_complete") {
+            // Find all items for this table and update the last one
+            const tableItems = Array.from(progressItems.children).filter(
+              (el) => el.dataset.tableName === data.table_name,
+            );
+            const lastItem = tableItems[tableItems.length - 1];
+
+            if (lastItem) {
+              if (data.orphaned_count > 0) {
+                lastItem.style.color = "var(--error)";
+                lastItem.textContent = `✗ ${data.table_name} - ${data.orphaned_count} orphaned UPC${data.orphaned_count !== 1 ? "s" : ""}`;
+              } else {
+                lastItem.style.color = "var(--success)";
+                lastItem.textContent = `✓ ${data.table_name} - OK`;
+              }
+            }
+          } else if (data.status === "table_skipped") {
+            const item = document.createElement("div");
+            item.style.cssText =
+              "font-size: 0.875rem; color: var(--text-tertiary);";
+            item.textContent = `○ ${data.table_name} - not found (skipped)`;
+            progressItems.appendChild(item);
+            progressContainer.scrollTop = progressContainer.scrollHeight;
+          }
+        } else if (eventType === "complete") {
+          loadingEl.style.display = "none";
+          progressContainer.style.display = "none";
+
+          if (data.total_orphaned === 0) {
+            emptyEl.style.display = "block";
+          } else {
+            displayAuditResults(data);
+          }
+
+          // Re-enable button
+          runBtn.disabled = false;
+        } else if (eventType === "error") {
+          loadingEl.style.display = "none";
+          progressContainer.style.display = "none";
+          alert(`Error: ${data.message}`);
+          runBtn.disabled = false;
+        }
+      }
+    }
+  } catch (error) {
+    loadingEl.style.display = "none";
+    progressContainer.style.display = "none";
+    alert(`Error: ${error.message}`);
+    runBtn.disabled = false;
+  }
+}
+
+// Global state for audit results
+let currentAuditResults = {
+  store_id: null,
+  orphaned_records: [],
+};
+
+function displayAuditResults(data) {
+  const resultsEl = document.getElementById("audit-results");
+  const tableBody = document.getElementById("audit-results-table-body");
+  const orphanedCountEl = document.getElementById("audit-orphaned-count");
+  const tablesCountEl = document.getElementById("audit-tables-count");
+  const reconciliationActions = document.getElementById(
+    "reconciliation-actions",
+  );
+
+  // Store audit results globally for reconciliation
+  currentAuditResults = {
+    store_id: data.store_id,
+    orphaned_records: data.orphaned_records,
+  };
+
+  // Update counts
+  orphanedCountEl.textContent = data.total_orphaned;
+  tablesCountEl.textContent = data.tables_checked;
+
+  // Clear table
+  tableBody.innerHTML = "";
+
+  // Helper function to format table names
+  const formatTableName = (tableName) => {
+    const tableMap = {
+      QuotationsDetails_tbl: "Quotation Details",
+      PurchaseOrdersDetails_tbl: "Purchase Order Details",
+      InvoicesDetails_tbl: "Invoice Details",
+      CreditMemosDetails_tbl: "Credit Memo Details",
+      PurchasesReturnsDetails_tbl: "Purchase Return Details",
+      QuotationDetails: "Quotation Details",
+    };
+    return tableMap[tableName] || tableName;
+  };
+
+  // Populate table with orphaned records
+  data.orphaned_records.forEach((record, index) => {
+    const row = document.createElement("tr");
+
+    // Checkbox
+    const checkboxTd = document.createElement("td");
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.className = "orphan-checkbox";
+    checkbox.dataset.index = index;
+    checkbox.dataset.tableName = record.table_name;
+    checkbox.dataset.primaryKey = record.primary_key;
+    checkbox.dataset.upc = record.upc;
+    checkbox.dataset.productId = record.product_id || "";
+    checkbox.dataset.description = record.description || "";
+    checkboxTd.appendChild(checkbox);
+    row.appendChild(checkboxTd);
+
+    // Row Number
+    const rowNumTd = document.createElement("td");
+    rowNumTd.textContent = index + 1;
+    rowNumTd.style.color = "var(--text-tertiary)";
+    rowNumTd.style.fontWeight = "500";
+    row.appendChild(rowNumTd);
+
+    // Table Name
+    const tableTd = document.createElement("td");
+    tableTd.textContent = formatTableName(record.table_name);
+    tableTd.style.color = "var(--accent-primary)";
+    row.appendChild(tableTd);
+
+    // Primary Key
+    const pkTd = document.createElement("td");
+    pkTd.textContent = record.primary_key;
+    pkTd.style.fontFamily = "monospace";
+    row.appendChild(pkTd);
+
+    // UPC
+    const upcTd = document.createElement("td");
+    upcTd.textContent = record.upc;
+    upcTd.style.fontFamily = "monospace";
+    upcTd.style.fontWeight = "bold";
+    upcTd.style.color = "var(--error)";
+    row.appendChild(upcTd);
+
+    // Description
+    const descTd = document.createElement("td");
+    descTd.textContent = record.description || "Unknown";
+    descTd.style.color = record.description
+      ? "inherit"
+      : "var(--text-tertiary)";
+    row.appendChild(descTd);
+
+    tableBody.appendChild(row);
+  });
+
+  // Show results and reconciliation actions
+  resultsEl.style.display = "block";
+  reconciliationActions.style.display = "flex";
+
+  // Reset checkboxes and buttons
+  document.getElementById("select-all-orphans").checked = false;
+  updateReconciliationButtons();
+}
+
+// Reconciliation Functions
+function updateReconciliationButtons() {
+  const checkboxes = document.querySelectorAll(".orphan-checkbox:checked");
+  const count = checkboxes.length;
+  const selectionCount = document.getElementById("selection-count");
+  const reconcileByIdBtn = document.getElementById(
+    "reconcile-by-product-id-btn",
+  );
+  const reconcileByDescBtn = document.getElementById(
+    "reconcile-by-description-btn",
+  );
+
+  selectionCount.textContent = `${count} selected`;
+  reconcileByIdBtn.disabled = count === 0;
+  reconcileByDescBtn.disabled = count === 0;
+}
+
+// Select All checkbox handler
+document
+  .getElementById("select-all-orphans")
+  ?.addEventListener("change", (e) => {
+    const checkboxes = document.querySelectorAll(".orphan-checkbox");
+    checkboxes.forEach((cb) => {
+      cb.checked = e.target.checked;
+    });
+    updateReconciliationButtons();
+  });
+
+// Individual checkbox change handler (using event delegation)
+document
+  .getElementById("audit-results-table-body")
+  ?.addEventListener("change", (e) => {
+    if (e.target.classList.contains("orphan-checkbox")) {
+      updateReconciliationButtons();
+
+      // Update "select all" checkbox state
+      const allCheckboxes = document.querySelectorAll(".orphan-checkbox");
+      const checkedCheckboxes = document.querySelectorAll(
+        ".orphan-checkbox:checked",
+      );
+      const selectAllCheckbox = document.getElementById("select-all-orphans");
+
+      if (selectAllCheckbox) {
+        selectAllCheckbox.checked =
+          allCheckboxes.length > 0 &&
+          allCheckboxes.length === checkedCheckboxes.length;
+      }
+    }
+  });
+
+// Global AbortController for cancelling reconciliation operations
+let reconciliationAbortController = null;
+
+// Get selected orphaned records
+function getSelectedOrphanedRecords() {
+  const checkboxes = document.querySelectorAll(".orphan-checkbox:checked");
+  const records = [];
+
+  checkboxes.forEach((cb) => {
+    records.push({
+      table_name: cb.dataset.tableName,
+      primary_key: parseInt(cb.dataset.primaryKey),
+      upc: cb.dataset.upc,
+      product_id: cb.dataset.productId ? parseInt(cb.dataset.productId) : null,
+      description: cb.dataset.description || null,
+    });
+  });
+
+  return records;
+}
+
+// Reconcile by ProductID button handler
+document
+  .getElementById("reconcile-by-product-id-btn")
+  ?.addEventListener("click", async () => {
+    const selectedRecords = getSelectedOrphanedRecords();
+    if (selectedRecords.length === 0) {
+      alert("Please select at least one record to reconcile");
+      return;
+    }
+
+    await reconcileOrphanedUPCs("product_id", selectedRecords);
+  });
+
+// Reconcile by Description button handler
+document
+  .getElementById("reconcile-by-description-btn")
+  ?.addEventListener("click", async () => {
+    const selectedRecords = getSelectedOrphanedRecords();
+    if (selectedRecords.length === 0) {
+      alert("Please select at least one record to reconcile");
+      return;
+    }
+
+    await reconcileOrphanedUPCs("product_description", selectedRecords);
+  });
+
+async function reconcileOrphanedUPCs(matchType, orphanedRecords) {
+  const modal = document.getElementById("reconciliation-modal");
+  const modalTitle = document.getElementById("reconciliation-modal-title");
+  const loadingEl = document.getElementById("reconciliation-loading");
+  const progressContainer = document.getElementById("reconciliation-progress");
+  const progressText = document.getElementById("reconciliation-progress-text");
+  const resultsEl = document.getElementById("reconciliation-results");
+  const cancelBtn = document.getElementById("cancel-reconciliation-btn");
+  const updateBtn = document.getElementById("update-matched-upcs-btn");
+
+  // Create new AbortController for this operation
+  reconciliationAbortController = new AbortController();
+
+  // Open modal and show loading
+  openModal("reconciliation-modal");
+  modalTitle.textContent =
+    matchType === "product_id"
+      ? "Reconciliation by ProductID"
+      : "Reconciliation by Description";
+  loadingEl.style.display = "block";
+  progressContainer.style.display = "block";
+  resultsEl.style.display = "none";
+  progressText.textContent = "Starting reconciliation...";
+
+  // Show cancel button, hide update button
+  cancelBtn.style.display = "inline-block";
+  updateBtn.style.display = "none";
+
+  try {
+    // Use SSE streaming endpoint with abort signal
+    const response = await fetch(`${API_BASE}/analysis/reconcile-upcs/stream`, {
+      method: "POST",
+      signal: reconciliationAbortController.signal,
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        store_id: currentAuditResults.store_id,
+        match_type: matchType,
+        orphaned_records: orphanedRecords,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n\n");
+      buffer = lines.pop(); // Keep incomplete message in buffer
+
+      for (const line of lines) {
+        if (!line.trim() || line.startsWith(":")) continue; // Skip heartbeats
+
+        const eventMatch = line.match(/event: (\w+)\ndata: (.+)/s);
+        if (!eventMatch) continue;
+
+        const [, eventType, dataStr] = eventMatch;
+        const data = JSON.parse(dataStr);
+
+        if (eventType === "progress") {
+          if (data.status === "checked") {
+            // Update progress text
+            const matchedText = data.matched ? "(✓ matched)" : "(not matched)";
+            progressText.textContent = `Checking records: ${data.current}/${data.total} ${matchedText}`;
+          }
+        } else if (eventType === "complete") {
+          loadingEl.style.display = "none";
+          progressContainer.style.display = "none";
+          cancelBtn.style.display = "none";
+          displayReconciliationResults(data);
+        } else if (eventType === "error") {
+          loadingEl.style.display = "none";
+          progressContainer.style.display = "none";
+          cancelBtn.style.display = "none";
+          alert(`Error: ${data.message}`);
+          closeModal("reconciliation-modal");
+        }
+      }
+    }
+  } catch (error) {
+    if (error.name === "AbortError") {
+      // Operation was cancelled by user
+      progressText.textContent = "Operation cancelled by user";
+      progressText.style.color = "var(--warning)";
+      setTimeout(() => {
+        loadingEl.style.display = "none";
+        progressContainer.style.display = "none";
+        cancelBtn.style.display = "none";
+        progressText.style.color = "";
+      }, 2000);
+    } else {
+      loadingEl.style.display = "none";
+      progressContainer.style.display = "none";
+      cancelBtn.style.display = "none";
+      alert(`Error: ${error.message}`);
+      closeModal("reconciliation-modal");
+    }
+  } finally {
+    // Cleanup
+    reconciliationAbortController = null;
+  }
+}
+
+function displayReconciliationResults(data) {
+  const loadingEl = document.getElementById("reconciliation-loading");
+  const resultsEl = document.getElementById("reconciliation-results");
+  const tableBody = document.getElementById(
+    "reconciliation-results-table-body",
+  );
+  const matchedCountEl = document.getElementById(
+    "reconciliation-matched-count",
+  );
+  const unmatchedCountEl = document.getElementById(
+    "reconciliation-unmatched-count",
+  );
+  const updateBtn = document.getElementById("update-matched-upcs-btn");
+
+  // Hide loading, show results
+  loadingEl.style.display = "none";
+  resultsEl.style.display = "block";
+
+  // Show update button
+  updateBtn.style.display = "inline-block";
+
+  // Update counts
+  matchedCountEl.textContent = data.total_matched;
+  unmatchedCountEl.textContent = data.total_checked - data.total_matched;
+
+  // Clear table
+  tableBody.innerHTML = "";
+
+  // Helper function to format table names
+  const formatTableName = (tableName) => {
+    const tableMap = {
+      QuotationsDetails_tbl: "Quotation Details",
+      PurchaseOrdersDetails_tbl: "Purchase Order Details",
+      InvoicesDetails_tbl: "Invoice Details",
+      CreditMemosDetails_tbl: "Credit Memo Details",
+      PurchasesReturnsDetails_tbl: "Purchase Return Details",
+      QuotationDetails: "Quotation Details",
+    };
+    return tableMap[tableName] || tableName;
+  };
+
+  // Populate table with reconciliation matches
+  data.matches.forEach((match) => {
+    const row = document.createElement("tr");
+
+    // Checkbox (only for matched records)
+    const checkboxTd = document.createElement("td");
+    if (match.match_found) {
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.className = "match-checkbox";
+      checkbox.checked = true; // Pre-select matched records
+      checkbox.dataset.tableName = match.table_name;
+      checkbox.dataset.primaryKey = match.primary_key;
+      checkbox.dataset.orphanedUpc = match.orphaned_upc;
+      checkbox.dataset.itemsTblUpc = match.items_tbl_upc;
+      checkbox.dataset.matchFieldValue = match.match_field_value;
+      checkboxTd.appendChild(checkbox);
+    }
+    row.appendChild(checkboxTd);
+
+    // Table Name
+    const tableTd = document.createElement("td");
+    tableTd.textContent = formatTableName(match.table_name);
+    tableTd.style.color = "var(--accent-primary)";
+    row.appendChild(tableTd);
+
+    // Primary Key
+    const pkTd = document.createElement("td");
+    pkTd.textContent = match.primary_key;
+    pkTd.style.fontFamily = "monospace";
+    row.appendChild(pkTd);
+
+    // Orphaned UPC
+    const orphanedUpcTd = document.createElement("td");
+    orphanedUpcTd.textContent = match.orphaned_upc;
+    orphanedUpcTd.style.fontFamily = "monospace";
+    orphanedUpcTd.style.color = "var(--error)";
+    row.appendChild(orphanedUpcTd);
+
+    // Matched UPC
+    const matchedUpcTd = document.createElement("td");
+    if (match.match_found) {
+      matchedUpcTd.textContent = match.items_tbl_upc;
+      matchedUpcTd.style.fontFamily = "monospace";
+      matchedUpcTd.style.color = "var(--success)";
+      matchedUpcTd.style.fontWeight = "bold";
+    } else {
+      matchedUpcTd.textContent = "-";
+      matchedUpcTd.style.color = "var(--text-tertiary)";
+    }
+    row.appendChild(matchedUpcTd);
+
+    // Status
+    const statusTd = document.createElement("td");
+    if (match.match_found) {
+      statusTd.innerHTML = '<span style="color: var(--success);">✓ Found</span>';
+    } else {
+      statusTd.innerHTML =
+        '<span style="color: var(--text-tertiary);">✗ Not Found</span>';
+    }
+    row.appendChild(statusTd);
+
+    // Match Field Value
+    const matchFieldTd = document.createElement("td");
+    matchFieldTd.textContent = match.match_field_value;
+    matchFieldTd.style.fontSize = "0.875rem";
+    matchFieldTd.style.color = "var(--text-secondary)";
+    row.appendChild(matchFieldTd);
+
+    tableBody.appendChild(row);
+  });
+
+  // Update "Update Selected Matches" button state
+  updateMatchesUpdateButton();
+}
+
+// Select All matches checkbox handler
+document
+  .getElementById("select-all-matches")
+  ?.addEventListener("change", (e) => {
+    const checkboxes = document.querySelectorAll(".match-checkbox");
+    checkboxes.forEach((cb) => {
+      cb.checked = e.target.checked;
+    });
+    updateMatchesUpdateButton();
+  });
+
+// Individual match checkbox change handler (using event delegation)
+document
+  .getElementById("reconciliation-results-table-body")
+  ?.addEventListener("change", (e) => {
+    if (e.target.classList.contains("match-checkbox")) {
+      updateMatchesUpdateButton();
+
+      // Update "select all" checkbox state
+      const allCheckboxes = document.querySelectorAll(".match-checkbox");
+      const checkedCheckboxes = document.querySelectorAll(
+        ".match-checkbox:checked",
+      );
+      const selectAllCheckbox = document.getElementById("select-all-matches");
+
+      if (selectAllCheckbox) {
+        selectAllCheckbox.checked =
+          allCheckboxes.length > 0 &&
+          allCheckboxes.length === checkedCheckboxes.length;
+      }
+    }
+  });
+
+function updateMatchesUpdateButton() {
+  const checkboxes = document.querySelectorAll(".match-checkbox:checked");
+  const updateBtn = document.getElementById("update-matched-upcs-btn");
+  updateBtn.disabled = checkboxes.length === 0;
+}
+
+// Update matched UPCs button handler
+document
+  .getElementById("update-matched-upcs-btn")
+  ?.addEventListener("click", async () => {
+    const checkboxes = document.querySelectorAll(".match-checkbox:checked");
+    if (checkboxes.length === 0) {
+      alert("Please select at least one match to update");
+      return;
+    }
+
+    const updates = [];
+    checkboxes.forEach((cb) => {
+      updates.push({
+        table_name: cb.dataset.tableName,
+        primary_key: parseInt(cb.dataset.primaryKey),
+        orphaned_upc: cb.dataset.orphanedUpc,
+        match_found: true,
+        items_tbl_upc: cb.dataset.itemsTblUpc,
+        match_field_value: cb.dataset.matchFieldValue,
+      });
+    });
+
+    // Confirm update
+    const message = `Update ${updates.length} orphaned UPC${updates.length !== 1 ? "s" : ""} with matched values from Items_tbl?`;
+    if (!confirm(message)) {
+      return;
+    }
+
+    await updateReconciledUPCs(updates);
+  });
+
+async function updateReconciledUPCs(updates) {
+  const updateBtn = document.getElementById("update-matched-upcs-btn");
+  const loadingEl = document.getElementById("reconciliation-loading");
+  const progressContainer = document.getElementById("reconciliation-progress");
+  const progressText = document.getElementById("reconciliation-progress-text");
+  const resultsEl = document.getElementById("reconciliation-results");
+  const cancelBtn = document.getElementById("cancel-reconciliation-btn");
+
+  // Create new AbortController for this operation
+  reconciliationAbortController = new AbortController();
+
+  updateBtn.disabled = true;
+  updateBtn.textContent = "Updating...";
+
+  // Show progress UI and cancel button
+  loadingEl.style.display = "block";
+  progressContainer.style.display = "block";
+  resultsEl.style.display = "none";
+  progressText.textContent = "Starting batch updates...";
+  cancelBtn.style.display = "inline-block";
+  updateBtn.style.display = "none";
+
+  try {
+    // Use SSE streaming endpoint with abort signal
+    const response = await fetch(
+      `${API_BASE}/analysis/reconcile-upcs/update/stream`,
+      {
+        method: "POST",
+        signal: reconciliationAbortController.signal,
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          store_id: currentAuditResults.store_id,
+          updates: updates,
+        }),
+      },
+    );
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let finalData = null;
+
+    while (true) {
+      const { done, value } = await reader.read();
+
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n\n");
+      buffer = lines.pop(); // Keep incomplete message in buffer
+
+      for (const line of lines) {
+        if (!line.trim() || line.startsWith(":")) continue; // Skip heartbeats
+
+        const eventMatch = line.match(/event: (\w+)\ndata: (.+)/s);
+        if (!eventMatch) continue;
+
+        const [, eventType, dataStr] = eventMatch;
+        const data = JSON.parse(dataStr);
+
+        if (eventType === "progress") {
+          if (data.status === "updating_batch") {
+            progressText.textContent = `Processing batch ${data.batch_number}/${data.total_batches}...`;
+          } else if (data.status === "batch_complete") {
+            const successColor =
+              data.batch_updated > 0 ? "var(--success)" : "var(--error)";
+            progressText.innerHTML = `Batch ${data.batch_number}/${data.total_batches}: <span style="color: ${successColor};">${data.batch_updated} updated</span>, ${data.batch_failed} failed (Total: ${data.total_updated} updated, ${data.total_failed} failed)`;
+          }
+        } else if (eventType === "complete") {
+          finalData = data;
+          loadingEl.style.display = "none";
+          progressContainer.style.display = "none";
+          cancelBtn.style.display = "none";
+        } else if (eventType === "error") {
+          loadingEl.style.display = "none";
+          progressContainer.style.display = "none";
+          cancelBtn.style.display = "none";
+          alert(`Error: ${data.message}`);
+          updateBtn.disabled = false;
+          updateBtn.textContent = "Update Selected Matches";
+          updateBtn.style.display = "inline-block";
+          return;
+        }
+      }
+    }
+
+    // Show results if we have final data
+    if (finalData) {
+      let message = `Update Summary:\n\n`;
+      message += `Total Updated: ${finalData.total_updated}\n`;
+      message += `Total Failed: ${finalData.total_failed}\n`;
+
+      if (finalData.total_failed > 0) {
+        message += `\nFailed Updates:\n`;
+        finalData.results
+          .filter((r) => !r.success)
+          .forEach((r) => {
+            message += `• Table: ${r.table_name}, ID: ${r.primary_key} - ${r.error}\n`;
+          });
+      }
+
+      alert(message);
+
+      // Close modal
+      closeModal("reconciliation-modal");
+
+      // Re-run audit to refresh results
+      const select = document.getElementById("audit-store-select");
+      const storeId = parseInt(select.value);
+      if (storeId) {
+        await runAudit(storeId);
+      }
+    }
+  } catch (error) {
+    if (error.name === "AbortError") {
+      // Operation was cancelled by user
+      progressText.textContent = "Operation cancelled by user";
+      progressText.style.color = "var(--warning)";
+      setTimeout(() => {
+        loadingEl.style.display = "none";
+        progressContainer.style.display = "none";
+        cancelBtn.style.display = "none";
+        updateBtn.style.display = "inline-block";
+        progressText.style.color = "";
+      }, 2000);
+    } else {
+      loadingEl.style.display = "none";
+      progressContainer.style.display = "none";
+      cancelBtn.style.display = "none";
+      updateBtn.style.display = "inline-block";
+      resultsEl.style.display = "block";
+      alert(`Error: ${error.message}`);
+    }
+  } finally {
+    updateBtn.disabled = false;
+    updateBtn.textContent = "Update Selected Matches";
+    reconciliationAbortController = null;
+  }
+}
+
+// Cancel reconciliation operation button handler
+document
+  .getElementById("cancel-reconciliation-btn")
+  ?.addEventListener("click", () => {
+    if (reconciliationAbortController) {
+      reconciliationAbortController.abort();
     }
   });
 

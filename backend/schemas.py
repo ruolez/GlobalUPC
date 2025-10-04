@@ -152,3 +152,56 @@ class ConfigImportResponse(BaseModel):
     skipped: int
     failed: int
     results: list[StoreImportResult]
+
+# SQL UPC Audit Schemas
+class OrphanedUPCAuditRequest(BaseModel):
+    store_id: int
+
+class OrphanedUPCRecord(BaseModel):
+    table_name: str
+    primary_key: int
+    upc: str
+    product_id: Optional[int] = None  # ProductID from the detail table
+    description: Optional[str] = None
+
+class OrphanedUPCAuditResponse(BaseModel):
+    store_id: int
+    store_name: str
+    orphaned_records: list[OrphanedUPCRecord]
+    total_orphaned: int
+    tables_checked: int
+
+# SQL UPC Reconciliation Schemas
+class ReconciliationRequest(BaseModel):
+    store_id: int
+    match_type: Literal["product_id", "product_description"]
+    orphaned_records: List[OrphanedUPCRecord]
+
+class ReconciliationMatch(BaseModel):
+    table_name: str
+    primary_key: int
+    orphaned_upc: str
+    match_found: bool
+    items_tbl_upc: Optional[str] = None
+    match_field_value: str  # The ProductID or ProductDescription used for matching
+
+class ReconciliationResponse(BaseModel):
+    matches: List[ReconciliationMatch]
+    total_checked: int
+    total_matched: int
+
+class ReconciliationUpdateRequest(BaseModel):
+    store_id: int
+    updates: List[ReconciliationMatch]  # Only matched records to update
+
+class ReconciliationUpdateResult(BaseModel):
+    table_name: str
+    primary_key: int
+    success: bool
+    updated_upc: Optional[str] = None
+    error: Optional[str] = None
+
+class ReconciliationUpdateResponse(BaseModel):
+    results: List[ReconciliationUpdateResult]
+    total_updated: int
+    total_failed: int

@@ -36,6 +36,9 @@
           <a href="#" class="nav-item" data-page="update-upc">
             <span>Update UPC</span>
           </a>
+          <a href="#" class="nav-item" data-page="sql-audit">
+            <span>Orphan UPCs</span>
+          </a>
           <a href="#" class="nav-item" data-page="settings">
             <span>Settings</span>
           </a>
@@ -217,6 +220,37 @@
                     <p>
                       Search and update UPC barcodes across all connected stores
                     </p>
+                  </div>
+                </a>
+                <a href="#" class="tool-card" data-page="sql-audit">
+                  <div class="tool-icon">
+                    <svg
+                      width="32"
+                      height="32"
+                      viewBox="0 0 32 32"
+                      fill="none"
+                      xmlns="http://www.w3.org/2000/svg"
+                    >
+                      <path
+                        d="M16 4L4 8V14C4 21 9 27 16 28C23 27 28 21 28 14V8L16 4Z"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        fill="none"
+                      />
+                      <path
+                        d="M12 16L15 19L21 13"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      />
+                    </svg>
+                  </div>
+                  <div class="tool-info">
+                    <h4>Orphan UPCs</h4>
+                    <p>Validate UPC data integrity across SQL databases</p>
                   </div>
                 </a>
               </div>
@@ -440,14 +474,6 @@
                 </div>
               </div>
             </div>
-          </section>
-
-          <!-- App Settings Section -->
-          <section class="settings-section">
-            <div class="section-header">
-              <h3>Application Settings</h3>
-            </div>
-            <div id="app-settings-list" class="settings-list"></div>
           </section>
         </div>
 
@@ -704,6 +730,166 @@
             </div>
           </div>
         </div>
+
+        <!-- Orphan UPCs Page -->
+        <div id="sql-audit-page" class="page" style="display: none">
+          <header class="page-header">
+            <h2>Orphan UPCs</h2>
+            <p class="subtitle">
+              Validate UPC data integrity by checking for orphaned UPCs in SQL
+              databases
+            </p>
+          </header>
+
+          <div class="settings-section">
+            <!-- Store Selection -->
+            <div class="form-group">
+              <label for="audit-store-select">Select SQL Store to Audit</label>
+              <div style="display: flex; gap: 0.75rem; align-items: stretch">
+                <select id="audit-store-select" style="width: 300px">
+                  <option value="">-- Select a store --</option>
+                </select>
+                <button
+                  type="button"
+                  class="btn btn-primary"
+                  id="run-audit-btn"
+                  disabled
+                >
+                  Run Audit
+                </button>
+              </div>
+              <small
+                style="
+                  color: var(--text-tertiary);
+                  font-size: 0.75rem;
+                  margin-top: 0.5rem;
+                  display: block;
+                "
+              >
+                This audit will check all detail tables for UPCs that don't
+                exist in the Items_tbl master catalog.
+              </small>
+            </div>
+
+            <!-- Loading State with Progress -->
+            <div
+              id="audit-loading"
+              class="test-status"
+              style="display: none; margin-top: 1.5rem"
+            >
+              <div class="loading">Running audit...</div>
+              <div
+                id="audit-progress"
+                style="
+                  margin-top: 1rem;
+                  padding: 1rem;
+                  background: var(--bg-tertiary);
+                  border-radius: var(--radius-md);
+                  display: none;
+                  max-height: 200px;
+                  overflow-y: auto;
+                "
+              >
+                <div
+                  id="audit-progress-items"
+                  style="display: flex; flex-direction: column; gap: 0.5rem"
+                ></div>
+              </div>
+            </div>
+
+            <!-- Empty State -->
+            <div
+              id="audit-empty"
+              style="
+                display: none;
+                text-align: center;
+                padding: 3rem 1rem;
+                color: var(--text-tertiary);
+                margin-top: 1.5rem;
+              "
+            >
+              <svg
+                width="48"
+                height="48"
+                viewBox="0 0 48 48"
+                fill="none"
+                xmlns="http://www.w3.org/2000/svg"
+                style="margin: 0 auto 1rem"
+              >
+                <path
+                  d="M24 6L6 12V21C6 31.5 13.5 40.5 24 42C34.5 40.5 42 31.5 42 21V12L24 6Z"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  fill="none"
+                />
+                <path
+                  d="M18 24L22 28.5L32 19.5"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+              <p style="margin: 0; font-size: 0.875rem; color: var(--success)">
+                ✓ No orphaned UPCs found!
+              </p>
+              <p style="margin: 0.5rem 0 0; font-size: 0.75rem">
+                All UPCs in detail tables are properly referenced in the Items
+                catalog.
+              </p>
+            </div>
+
+            <!-- Results Section -->
+            <div id="audit-results" style="display: none; margin-top: 1.5rem">
+              <div style="margin-bottom: 1rem">
+                <p
+                  style="
+                    margin: 0;
+                    font-size: 0.875rem;
+                    color: var(--text-secondary);
+                  "
+                >
+                  <strong id="audit-orphaned-count">0</strong> orphaned UPCs
+                  found across <strong id="audit-tables-count">0</strong> tables
+                </p>
+              </div>
+              <div style="overflow-x: auto">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th style="width: 3%">
+                        <input type="checkbox" id="select-all-orphans" />
+                      </th>
+                      <th style="width: 5%">#</th>
+                      <th style="width: 25%">Table Name</th>
+                      <th style="width: 15%">Record ID</th>
+                      <th style="width: 20%">Orphaned UPC</th>
+                      <th>Product Description</th>
+                    </tr>
+                  </thead>
+                  <tbody id="audit-results-table-body">
+                    <!-- Results will be populated here by JavaScript -->
+                  </tbody>
+                </table>
+              </div>
+
+              <!-- Reconciliation Actions -->
+              <div id="reconciliation-actions" style="display: none; margin-top: 1rem; display: flex; gap: 0.75rem;">
+                <button type="button" class="btn btn-primary" id="reconcile-by-product-id-btn" disabled>
+                  Find Matches by ProductID
+                </button>
+                <button type="button" class="btn btn-primary" id="reconcile-by-description-btn" disabled>
+                  Find Matches by Description
+                </button>
+                <span id="selection-count" style="margin-left: auto; align-self: center; color: var(--text-secondary); font-size: 0.875rem;">
+                  0 selected
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
       </main>
     </div>
 
@@ -902,6 +1088,83 @@
             <button type="submit" class="btn btn-primary">Add Store</button>
           </div>
         </form>
+      </div>
+    </div>
+
+    <!-- Reconciliation Modal -->
+    <div id="reconciliation-modal" class="modal">
+      <div class="modal-content" style="max-width: 1200px; width: 95%;">
+        <div class="modal-header">
+          <h3 id="reconciliation-modal-title">Reconciliation Results</h3>
+          <button class="modal-close" onclick="closeModal('reconciliation-modal')">
+            &times;
+          </button>
+        </div>
+        <div class="modal-body" style="padding: 1.5rem;">
+          <!-- Loading State with Progress -->
+          <div id="reconciliation-loading" style="display: none; text-align: center; padding: 2rem;">
+            <div class="loading">Finding matches...</div>
+            <div
+              id="reconciliation-progress"
+              style="
+                margin-top: 1rem;
+                padding: 1rem;
+                background: var(--bg-tertiary);
+                border-radius: var(--radius-md);
+                display: none;
+                max-height: 200px;
+                overflow-y: auto;
+                text-align: left;
+              "
+            >
+              <div
+                id="reconciliation-progress-text"
+                style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 0.5rem;"
+              ></div>
+            </div>
+          </div>
+
+          <!-- Results -->
+          <div id="reconciliation-results" style="display: none;">
+            <div style="margin-bottom: 1rem;">
+              <p style="margin: 0; font-size: 0.875rem; color: var(--text-secondary);">
+                <strong id="reconciliation-matched-count">0</strong> matched,
+                <strong id="reconciliation-unmatched-count">0</strong> not matched
+              </p>
+            </div>
+            <div style="overflow-x: auto; max-height: 400px;">
+              <table class="data-table" style="white-space: nowrap;">
+                <thead>
+                  <tr>
+                    <th style="width: 3%">
+                      <input type="checkbox" id="select-all-matches" />
+                    </th>
+                    <th style="width: 18%">Table Name</th>
+                    <th style="width: 10%">Record ID</th>
+                    <th style="width: 18%">Orphaned UPC</th>
+                    <th style="width: 18%">Matched UPC</th>
+                    <th style="width: 10%">Status</th>
+                    <th style="width: 23%">Match Field</th>
+                  </tr>
+                </thead>
+                <tbody id="reconciliation-results-table-body">
+                  <!-- Results will be populated here by JavaScript -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" onclick="closeModal('reconciliation-modal')">
+            Cancel
+          </button>
+          <button type="button" class="btn btn-danger" id="cancel-reconciliation-btn" style="display: none;">
+            Stop Operation
+          </button>
+          <button type="button" class="btn btn-primary" id="update-matched-upcs-btn" disabled>
+            Update Selected Matches
+          </button>
+        </div>
       </div>
     </div>
 
