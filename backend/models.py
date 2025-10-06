@@ -1,4 +1,5 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Enum
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Enum, Text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from database import Base
@@ -59,3 +60,31 @@ class Setting(Base):
     description = Column(String)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+class UPCUpdateHistory(Base):
+    __tablename__ = "upc_update_history"
+
+    id = Column(Integer, primary_key=True, index=True)
+    batch_id = Column(String(36), nullable=False, index=True)
+    store_id = Column(Integer, ForeignKey("stores.id", ondelete="CASCADE"), nullable=False, index=True)
+    store_name = Column(String(255), nullable=False)
+    store_type = Column(Enum(StoreType), nullable=False)
+    old_upc = Column(String(255), nullable=False, index=True)
+    new_upc = Column(String(255), nullable=False, index=True)
+
+    # Context fields
+    product_id = Column(String(255))
+    product_title = Column(Text)
+    variant_id = Column(String(255))
+    variant_title = Column(String(255))
+    table_name = Column(String(255))
+    primary_keys = Column(JSONB)
+
+    # Result fields
+    success = Column(Boolean, nullable=False)
+    items_updated_count = Column(Integer, default=0)
+    error_message = Column(Text)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    store = relationship("Store")

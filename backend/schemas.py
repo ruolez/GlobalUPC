@@ -205,3 +205,53 @@ class ReconciliationUpdateResponse(BaseModel):
     results: List[ReconciliationUpdateResult]
     total_updated: int
     total_failed: int
+
+# UPC Update History Schemas
+class UPCUpdateHistoryResponse(BaseModel):
+    id: int
+    batch_id: str
+    store_id: int
+    store_name: str
+    store_type: str
+    old_upc: str
+    new_upc: str
+    product_id: Optional[str] = None
+    product_title: Optional[str] = None
+    variant_id: Optional[str] = None
+    variant_title: Optional[str] = None
+    table_name: Optional[str] = None
+    primary_keys: Optional[List] = None
+    success: bool
+    items_updated_count: int
+    error_message: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+        use_enum_values = True
+
+class UPCUpdateHistoryBatch(BaseModel):
+    batch_id: str
+    old_upc: str
+    new_upc: str
+    created_at: datetime
+    total_stores: int
+    successful_stores: int
+    failed_stores: int
+    total_items_updated: int
+    updates: List[UPCUpdateHistoryResponse]
+
+class UPCUpdateHistoryListRequest(BaseModel):
+    store_id: Optional[int] = None
+    upc_search: Optional[str] = None  # Searches both old_upc and new_upc
+    success_filter: Optional[bool] = None  # None = all, True = success only, False = failed only
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
+    limit: int = 50
+    offset: int = 0
+
+class UPCUpdateHistoryListResponse(BaseModel):
+    batches: List[UPCUpdateHistoryBatch]
+    total: int
+    limit: int
+    offset: int

@@ -46,6 +46,8 @@ function navigateTo(page) {
     loadDashboard();
   } else if (page === "settings") {
     loadSettings();
+  } else if (page === "history") {
+    loadHistoryPage();
   } else if (page === "sql-audit") {
     loadSQLAuditPage();
   }
@@ -1783,7 +1785,8 @@ function displayReconciliationResults(data) {
     // Status
     const statusTd = document.createElement("td");
     if (match.match_found) {
-      statusTd.innerHTML = '<span style="color: var(--success);">✓ Found</span>';
+      statusTd.innerHTML =
+        '<span style="color: var(--success);">✓ Found</span>';
     } else {
       statusTd.innerHTML =
         '<span style="color: var(--text-tertiary);">✗ Not Found</span>';
@@ -2027,6 +2030,385 @@ document
     if (reconciliationAbortController) {
       reconciliationAbortController.abort();
     }
+  });
+
+// ============================================
+// History Page Functions
+// ============================================
+
+// Global state for history
+let historyState = {
+  currentPage: 0,
+  pageSize: 50,
+  totalRecords: 0,
+  filters: {
+    store_id: null,
+    upc_search: null,
+    success_filter: null,
+    start_date: null,
+    end_date: null,
+  },
+};
+
+async function loadHistoryPage() {
+  // Load stores for filter dropdown
+  const stores = await apiRequest("/stores");
+  const storeFilter = document.getElementById("history-store-filter");
+  storeFilter.innerHTML = '<option value="">All Stores</option>';
+  stores.forEach((store) => {
+    const option = document.createElement("option");
+    option.value = store.id;
+    option.textContent = `${store.name} (${store.store_type})`;
+    storeFilter.appendChild(option);
+  });
+
+  // Reset state
+  historyState.currentPage = 0;
+  historyState.filters = {
+    store_id: null,
+    upc_search: null,
+    success_filter: null,
+    start_date: null,
+    end_date: null,
+  };
+
+  // Load history
+  await loadHistory();
+}
+
+async function loadHistory() {
+  const loadingEl = document.getElementById("history-loading");
+  const emptyEl = document.getElementById("history-empty");
+  const resultsEl = document.getElementById("history-results");
+
+  loadingEl.style.display = "block";
+  emptyEl.style.display = "none";
+  resultsEl.style.display = "none";
+
+  try {
+    // Build query parameters
+    const params = new URLSearchParams();
+    params.append("limit", historyState.pageSize);
+    params.append("offset", historyState.currentPage * historyState.pageSize);
+
+    if (historyState.filters.store_id) {
+      params.append("store_id", historyState.filters.store_id);
+    }
+    if (historyState.filters.upc_search) {
+      params.append("upc_search", historyState.filters.upc_search);
+    }
+    if (historyState.filters.success_filter !== null) {
+      params.append("success_filter", historyState.filters.success_filter);
+    }
+    if (historyState.filters.start_date) {
+      params.append("start_date", historyState.filters.start_date);
+    }
+    if (historyState.filters.end_date) {
+      params.append("end_date", historyState.filters.end_date);
+    }
+
+    const data = await apiRequest(`/history/updates?${params.toString()}`);
+    historyState.totalRecords = data.total;
+
+    loadingEl.style.display = "none";
+
+    if (data.batches.length === 0) {
+      emptyEl.style.display = "block";
+    } else {
+      resultsEl.style.display = "block";
+      displayHistoryResults(data.batches, data.total);
+    }
+  } catch (error) {
+    loadingEl.style.display = "none";
+    alert(`Error loading history: ${error.message}`);
+  }
+}
+
+function displayHistoryResults(batches, total) {
+  document.getElementById("history-total-count").textContent = total;
+
+  const tbody = document.getElementById("history-results-table-body");
+  tbody.innerHTML = "";
+
+  batches.forEach((batch, index) => {
+    const recordNumber =
+      historyState.currentPage * historyState.pageSize + index + 1;
+
+    // Create main batch row (collapsed by default)
+    const batchRow = document.createElement("tr");
+    batchRow.style.cursor = "pointer";
+    batchRow.style.backgroundColor = "var(--bg-secondary)";
+    batchRow.dataset.batchId = batch.batch_id;
+
+    // Row number with expand/collapse icon
+    const numCell = document.createElement("td");
+    numCell.style.color = "var(--text-tertiary)";
+    numCell.style.fontSize = "0.875rem";
+    const expandIcon = document.createElement("span");
+    expandIcon.textContent = "▶ ";
+    expandIcon.style.display = "inline-block";
+    expandIcon.style.transition = "transform 0.2s";
+    numCell.appendChild(expandIcon);
+    numCell.appendChild(document.createTextNode(recordNumber.toString()));
+    batchRow.appendChild(numCell);
+
+    // Timestamp
+    const timestampCell = document.createElement("td");
+    const date = new Date(batch.created_at);
+    timestampCell.textContent = date.toLocaleString("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    timestampCell.style.fontSize = "0.875rem";
+    batchRow.appendChild(timestampCell);
+
+    // Stores summary
+    const storesCell = document.createElement("td");
+    storesCell.textContent = `${batch.total_stores} store${batch.total_stores > 1 ? "s" : ""}`;
+    storesCell.style.fontWeight = "600";
+    batchRow.appendChild(storesCell);
+
+    // UPC Change
+    const upcCell = document.createElement("td");
+    upcCell.style.fontFamily = "monospace";
+    upcCell.style.fontSize = "0.875rem";
+    upcCell.innerHTML = `${batch.old_upc} <span style="color: var(--text-tertiary)">→</span> ${batch.new_upc}`;
+    batchRow.appendChild(upcCell);
+
+    // Total items updated
+    const countCell = document.createElement("td");
+    countCell.textContent = batch.total_items_updated;
+    countCell.style.fontWeight = "600";
+    countCell.style.color = "var(--success)";
+    batchRow.appendChild(countCell);
+
+    // Status summary
+    const statusCell = document.createElement("td");
+    if (batch.failed_stores === 0) {
+      statusCell.innerHTML = `<span style="color: var(--success)">✓ All Success</span>`;
+    } else if (batch.successful_stores === 0) {
+      statusCell.innerHTML = `<span style="color: var(--error)">✗ All Failed</span>`;
+    } else {
+      statusCell.innerHTML = `<span style="color: var(--warning)">${batch.successful_stores} success, ${batch.failed_stores} failed</span>`;
+    }
+    statusCell.style.fontSize = "0.875rem";
+    batchRow.appendChild(statusCell);
+
+    // Empty cell for details column
+    const emptyCell = document.createElement("td");
+    batchRow.appendChild(emptyCell);
+
+    // Click handler to expand/collapse
+    let isExpanded = false;
+    batchRow.addEventListener("click", () => {
+      isExpanded = !isExpanded;
+      expandIcon.style.transform = isExpanded ? "rotate(90deg)" : "rotate(0deg)";
+
+      // Toggle visibility of detail rows
+      const detailRows = tbody.querySelectorAll(
+        `[data-batch-detail="${batch.batch_id}"]`,
+      );
+      detailRows.forEach((row) => {
+        row.style.display = isExpanded ? "" : "none";
+      });
+    });
+
+    tbody.appendChild(batchRow);
+
+    // Create detail rows for each store update (hidden by default)
+    batch.updates.forEach((update) => {
+      const detailRow = document.createElement("tr");
+      detailRow.style.display = "none";
+      detailRow.style.backgroundColor = "var(--bg-tertiary)";
+      detailRow.dataset.batchDetail = batch.batch_id;
+
+      // Empty cell for indentation
+      const indentCell = document.createElement("td");
+      indentCell.textContent = "";
+      detailRow.appendChild(indentCell);
+
+      // Empty timestamp cell
+      const emptyTimestampCell = document.createElement("td");
+      detailRow.appendChild(emptyTimestampCell);
+
+      // Store name with badge
+      const storeCell = document.createElement("td");
+      const storeBadge = document.createElement("span");
+      storeBadge.textContent = update.store_type.toUpperCase();
+      storeBadge.style.display = "inline-block";
+      storeBadge.style.padding = "0.125rem 0.375rem";
+      storeBadge.style.fontSize = "0.625rem";
+      storeBadge.style.fontWeight = "600";
+      storeBadge.style.borderRadius = "0.25rem";
+      storeBadge.style.marginRight = "0.5rem";
+      storeBadge.style.backgroundColor =
+        update.store_type === "shopify"
+          ? "var(--accent-primary)"
+          : "var(--info)";
+      storeBadge.style.color = "var(--text-primary)";
+      storeCell.appendChild(storeBadge);
+      storeCell.appendChild(document.createTextNode(update.store_name));
+      detailRow.appendChild(storeCell);
+
+      // Product/Table info
+      const productCell = document.createElement("td");
+      productCell.style.fontSize = "0.875rem";
+      productCell.style.color = "var(--text-secondary)";
+      if (update.table_name) {
+        productCell.textContent = update.table_name;
+      } else if (update.product_title) {
+        productCell.textContent = update.product_title;
+      } else {
+        productCell.textContent = "-";
+      }
+      detailRow.appendChild(productCell);
+
+      // Items count
+      const itemsCell = document.createElement("td");
+      itemsCell.textContent = update.items_updated_count;
+      itemsCell.style.fontWeight = "600";
+      itemsCell.style.color = update.success
+        ? "var(--success)"
+        : "var(--error)";
+      detailRow.appendChild(itemsCell);
+
+      // Status
+      const detailStatusCell = document.createElement("td");
+      if (update.success) {
+        detailStatusCell.innerHTML =
+          '<span style="color: var(--success)">✓ Success</span>';
+      } else {
+        detailStatusCell.innerHTML = `<span style="color: var(--error)" title="${update.error_message || "Failed"}">✗ Failed</span>`;
+      }
+      detailStatusCell.style.fontSize = "0.875rem";
+      detailRow.appendChild(detailStatusCell);
+
+      // Details button
+      const detailsCell = document.createElement("td");
+      const detailsBtn = document.createElement("button");
+      detailsBtn.className = "btn btn-secondary";
+      detailsBtn.style.padding = "0.25rem 0.5rem";
+      detailsBtn.style.fontSize = "0.75rem";
+      detailsBtn.textContent = "View";
+      detailsBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        showHistoryDetails(update);
+      });
+      detailsCell.appendChild(detailsBtn);
+      detailRow.appendChild(detailsCell);
+
+      tbody.appendChild(detailRow);
+    });
+  });
+
+  // Update pagination
+  updateHistoryPagination(total);
+}
+
+function showHistoryDetails(item) {
+  const details = [];
+  if (item.product_id) details.push(`Product ID: ${item.product_id}`);
+  if (item.product_title) details.push(`Product: ${item.product_title}`);
+  if (item.variant_id) details.push(`Variant ID: ${item.variant_id}`);
+  if (item.variant_title) details.push(`Variant: ${item.variant_title}`);
+  if (item.table_name) details.push(`Table: ${item.table_name}`);
+  if (item.primary_keys && item.primary_keys.length > 0) {
+    details.push(`Record IDs: ${item.primary_keys.join(", ")}`);
+  }
+  if (item.error_message) details.push(`Error: ${item.error_message}`);
+
+  alert(details.join("\n") || "No additional details available");
+}
+
+function updateHistoryPagination(total) {
+  const totalPages = Math.ceil(total / historyState.pageSize);
+  const currentPage = historyState.currentPage + 1;
+
+  document.getElementById("history-page-info").textContent =
+    `Page ${currentPage} of ${totalPages}`;
+
+  const prevBtn = document.getElementById("history-prev-btn");
+  const nextBtn = document.getElementById("history-next-btn");
+
+  prevBtn.disabled = historyState.currentPage === 0;
+  nextBtn.disabled = currentPage >= totalPages;
+}
+
+// Event listeners for history page
+document
+  .getElementById("apply-history-filters-btn")
+  ?.addEventListener("click", async () => {
+    const storeId = document.getElementById("history-store-filter").value;
+    const upcSearch = document.getElementById("history-upc-filter").value;
+    const successFilter = document.getElementById(
+      "history-success-filter",
+    ).value;
+    const startDate = document.getElementById("history-start-date").value;
+    const endDate = document.getElementById("history-end-date").value;
+
+    historyState.filters = {
+      store_id: storeId || null,
+      upc_search: upcSearch || null,
+      success_filter: successFilter === "" ? null : successFilter === "true",
+      start_date: startDate ? `${startDate}T00:00:00` : null,
+      end_date: endDate ? `${endDate}T23:59:59` : null,
+    };
+    historyState.currentPage = 0;
+
+    await loadHistory();
+  });
+
+document
+  .getElementById("clear-history-filters-btn")
+  ?.addEventListener("click", async () => {
+    document.getElementById("history-store-filter").value = "";
+    document.getElementById("history-upc-filter").value = "";
+    document.getElementById("history-success-filter").value = "";
+    document.getElementById("history-start-date").value = "";
+    document.getElementById("history-end-date").value = "";
+
+    historyState.filters = {
+      store_id: null,
+      upc_search: null,
+      success_filter: null,
+      start_date: null,
+      end_date: null,
+    };
+    historyState.currentPage = 0;
+
+    await loadHistory();
+  });
+
+document
+  .getElementById("history-prev-btn")
+  ?.addEventListener("click", async () => {
+    if (historyState.currentPage > 0) {
+      historyState.currentPage--;
+      await loadHistory();
+    }
+  });
+
+document
+  .getElementById("history-next-btn")
+  ?.addEventListener("click", async () => {
+    const totalPages = Math.ceil(
+      historyState.totalRecords / historyState.pageSize,
+    );
+    if (historyState.currentPage < totalPages - 1) {
+      historyState.currentPage++;
+      await loadHistory();
+    }
+  });
+
+document
+  .getElementById("history-page-size")
+  ?.addEventListener("change", async (e) => {
+    historyState.pageSize = parseInt(e.target.value, 10);
+    historyState.currentPage = 0;
+    await loadHistory();
   });
 
 // Initialize

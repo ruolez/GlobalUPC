@@ -78,6 +78,39 @@ CREATE TRIGGER update_shopify_connections_updated_at BEFORE UPDATE ON shopify_co
 CREATE TRIGGER update_settings_updated_at BEFORE UPDATE ON settings
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+-- UPC update history tracking
+CREATE TABLE upc_update_history (
+    id SERIAL PRIMARY KEY,
+    batch_id VARCHAR(36) NOT NULL,
+    store_id INTEGER NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
+    store_name VARCHAR(255) NOT NULL,
+    store_type store_type NOT NULL,
+    old_upc VARCHAR(255) NOT NULL,
+    new_upc VARCHAR(255) NOT NULL,
+
+    -- Context fields (nullable for flexibility)
+    product_id VARCHAR(255),
+    product_title TEXT,
+    variant_id VARCHAR(255),
+    variant_title VARCHAR(255),
+    table_name VARCHAR(255),
+    primary_keys JSONB,
+
+    -- Result fields
+    success BOOLEAN NOT NULL,
+    items_updated_count INTEGER DEFAULT 0,
+    error_message TEXT,
+
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Indexes for history queries
+CREATE INDEX idx_history_batch_id ON upc_update_history(batch_id);
+CREATE INDEX idx_history_store_id ON upc_update_history(store_id);
+CREATE INDEX idx_history_created_at ON upc_update_history(created_at DESC);
+CREATE INDEX idx_history_old_upc ON upc_update_history(old_upc);
+CREATE INDEX idx_history_new_upc ON upc_update_history(new_upc);
+
 -- Insert default settings
 INSERT INTO settings (key, value, description) VALUES
     ('app_name', 'Global UPC', 'Application name'),

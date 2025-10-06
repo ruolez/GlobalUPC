@@ -39,6 +39,9 @@
           <a href="#" class="nav-item" data-page="sql-audit">
             <span>Orphan UPCs</span>
           </a>
+          <a href="#" class="nav-item" data-page="history">
+            <span>History</span>
+          </a>
           <a href="#" class="nav-item" data-page="settings">
             <span>Settings</span>
           </a>
@@ -364,6 +367,14 @@
               accept=".json"
               style="display: none"
             />
+          </section>
+
+          <!-- Application Settings Section -->
+          <section class="settings-section">
+            <div class="section-header">
+              <h3>Application Settings</h3>
+            </div>
+            <div id="app-settings-list" class="settings-list"></div>
           </section>
 
           <!-- Theme Selector Section -->
@@ -731,6 +742,220 @@
           </div>
         </div>
 
+        <!-- History Page -->
+        <div id="history-page" class="page" style="display: none">
+          <header class="page-header">
+            <h2>Update History</h2>
+            <p class="subtitle">
+              View all UPC barcode update operations across all stores
+            </p>
+          </header>
+
+          <div class="settings-section">
+            <!-- Filters Section -->
+            <div class="history-filters" style="margin-bottom: 1.5rem">
+              <div
+                style="
+                  display: grid;
+                  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                  gap: 1rem;
+                  margin-bottom: 1rem;
+                "
+              >
+                <div class="form-group" style="margin: 0">
+                  <label for="history-store-filter">Store</label>
+                  <select id="history-store-filter" style="width: 100%">
+                    <option value="">All Stores</option>
+                  </select>
+                </div>
+                <div class="form-group" style="margin: 0">
+                  <label for="history-upc-filter">UPC Search</label>
+                  <input
+                    type="text"
+                    id="history-upc-filter"
+                    placeholder="Search UPC..."
+                    style="width: 100%"
+                  />
+                </div>
+                <div class="form-group" style="margin: 0">
+                  <label for="history-success-filter">Status</label>
+                  <select id="history-success-filter" style="width: 100%">
+                    <option value="">All</option>
+                    <option value="true">Success Only</option>
+                    <option value="false">Failed Only</option>
+                  </select>
+                </div>
+                <div class="form-group" style="margin: 0">
+                  <label for="history-start-date">Start Date</label>
+                  <input
+                    type="date"
+                    id="history-start-date"
+                    style="width: 100%"
+                  />
+                </div>
+                <div class="form-group" style="margin: 0">
+                  <label for="history-end-date">End Date</label>
+                  <input
+                    type="date"
+                    id="history-end-date"
+                    style="width: 100%"
+                  />
+                </div>
+              </div>
+              <div style="display: flex; gap: 0.75rem">
+                <button
+                  type="button"
+                  class="btn btn-primary"
+                  id="apply-history-filters-btn"
+                >
+                  Apply Filters
+                </button>
+                <button
+                  type="button"
+                  class="btn btn-secondary"
+                  id="clear-history-filters-btn"
+                >
+                  Clear Filters
+                </button>
+              </div>
+            </div>
+
+            <!-- Loading State -->
+            <div
+              id="history-loading"
+              class="test-status"
+              style="display: none; margin-top: 1.5rem"
+            >
+              <div class="loading">Loading history...</div>
+            </div>
+
+            <!-- Empty State -->
+            <div
+              id="history-empty"
+              style="
+                display: none;
+                text-align: center;
+                padding: 3rem 1rem;
+                color: var(--text-tertiary);
+                margin-top: 1.5rem;
+              "
+            >
+              <svg
+                width="48"
+                height="48"
+                viewBox="0 0 48 48"
+                fill="none"
+                xmlns="http://www.w3.org/2000/svg"
+                style="margin: 0 auto 1rem"
+              >
+                <path
+                  d="M24 4L4 12V20C4 30 11 39 24 40C37 39 44 30 44 20V12L24 4Z"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  fill="none"
+                />
+              </svg>
+              <p style="margin: 0; font-size: 0.875rem">
+                No history records found
+              </p>
+              <p style="margin: 0.5rem 0 0; font-size: 0.75rem">
+                Update history will appear here after you perform UPC updates
+              </p>
+            </div>
+
+            <!-- Results Section -->
+            <div id="history-results" style="display: none; margin-top: 1.5rem">
+              <div
+                style="
+                  margin-bottom: 1rem;
+                  display: flex;
+                  justify-content: space-between;
+                  align-items: center;
+                "
+              >
+                <p
+                  style="
+                    margin: 0;
+                    font-size: 0.875rem;
+                    color: var(--text-secondary);
+                  "
+                >
+                  <strong id="history-total-count">0</strong> records found
+                </p>
+                <div style="display: flex; gap: 0.5rem; align-items: center">
+                  <label
+                    for="history-page-size"
+                    style="font-size: 0.875rem; color: var(--text-secondary)"
+                    >Show:</label
+                  >
+                  <select
+                    id="history-page-size"
+                    style="padding: 0.25rem 0.5rem"
+                  >
+                    <option value="10">10</option>
+                    <option value="25">25</option>
+                    <option value="50" selected>50</option>
+                    <option value="100">100</option>
+                  </select>
+                </div>
+              </div>
+              <div style="overflow-x: auto">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th style="width: 5%">#</th>
+                      <th style="width: 15%">Timestamp</th>
+                      <th style="width: 18%">Store</th>
+                      <th style="width: 25%">UPC Change</th>
+                      <th style="width: 10%">Items</th>
+                      <th style="width: 12%">Status</th>
+                      <th style="width: 15%">Details</th>
+                    </tr>
+                  </thead>
+                  <tbody id="history-results-table-body">
+                    <!-- Results will be populated here by JavaScript -->
+                  </tbody>
+                </table>
+              </div>
+
+              <!-- Pagination Controls -->
+              <div
+                style="
+                  margin-top: 1rem;
+                  display: flex;
+                  justify-content: space-between;
+                  align-items: center;
+                "
+              >
+                <button
+                  type="button"
+                  class="btn btn-secondary"
+                  id="history-prev-btn"
+                  disabled
+                >
+                  Previous
+                </button>
+                <span
+                  id="history-page-info"
+                  style="font-size: 0.875rem; color: var(--text-secondary)"
+                >
+                  Page 1
+                </span>
+                <button
+                  type="button"
+                  class="btn btn-secondary"
+                  id="history-next-btn"
+                  disabled
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- Orphan UPCs Page -->
         <div id="sql-audit-page" class="page" style="display: none">
           <header class="page-header">
@@ -876,14 +1101,40 @@
               </div>
 
               <!-- Reconciliation Actions -->
-              <div id="reconciliation-actions" style="display: none; margin-top: 1rem; display: flex; gap: 0.75rem;">
-                <button type="button" class="btn btn-primary" id="reconcile-by-product-id-btn" disabled>
+              <div
+                id="reconciliation-actions"
+                style="
+                  display: none;
+                  margin-top: 1rem;
+                  display: flex;
+                  gap: 0.75rem;
+                "
+              >
+                <button
+                  type="button"
+                  class="btn btn-primary"
+                  id="reconcile-by-product-id-btn"
+                  disabled
+                >
                   Find Matches by ProductID
                 </button>
-                <button type="button" class="btn btn-primary" id="reconcile-by-description-btn" disabled>
+                <button
+                  type="button"
+                  class="btn btn-primary"
+                  id="reconcile-by-description-btn"
+                  disabled
+                >
                   Find Matches by Description
                 </button>
-                <span id="selection-count" style="margin-left: auto; align-self: center; color: var(--text-secondary); font-size: 0.875rem;">
+                <span
+                  id="selection-count"
+                  style="
+                    margin-left: auto;
+                    align-self: center;
+                    color: var(--text-secondary);
+                    font-size: 0.875rem;
+                  "
+                >
                   0 selected
                 </span>
               </div>
@@ -1093,16 +1344,22 @@
 
     <!-- Reconciliation Modal -->
     <div id="reconciliation-modal" class="modal">
-      <div class="modal-content" style="max-width: 1200px; width: 95%;">
+      <div class="modal-content" style="max-width: 1200px; width: 95%">
         <div class="modal-header">
           <h3 id="reconciliation-modal-title">Reconciliation Results</h3>
-          <button class="modal-close" onclick="closeModal('reconciliation-modal')">
+          <button
+            class="modal-close"
+            onclick="closeModal('reconciliation-modal')"
+          >
             &times;
           </button>
         </div>
-        <div class="modal-body" style="padding: 1.5rem;">
+        <div class="modal-body" style="padding: 1.5rem">
           <!-- Loading State with Progress -->
-          <div id="reconciliation-loading" style="display: none; text-align: center; padding: 2rem;">
+          <div
+            id="reconciliation-loading"
+            style="display: none; text-align: center; padding: 2rem"
+          >
             <div class="loading">Finding matches...</div>
             <div
               id="reconciliation-progress"
@@ -1119,21 +1376,32 @@
             >
               <div
                 id="reconciliation-progress-text"
-                style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 0.5rem;"
+                style="
+                  font-size: 0.875rem;
+                  color: var(--text-secondary);
+                  margin-bottom: 0.5rem;
+                "
               ></div>
             </div>
           </div>
 
           <!-- Results -->
-          <div id="reconciliation-results" style="display: none;">
-            <div style="margin-bottom: 1rem;">
-              <p style="margin: 0; font-size: 0.875rem; color: var(--text-secondary);">
+          <div id="reconciliation-results" style="display: none">
+            <div style="margin-bottom: 1rem">
+              <p
+                style="
+                  margin: 0;
+                  font-size: 0.875rem;
+                  color: var(--text-secondary);
+                "
+              >
                 <strong id="reconciliation-matched-count">0</strong> matched,
-                <strong id="reconciliation-unmatched-count">0</strong> not matched
+                <strong id="reconciliation-unmatched-count">0</strong> not
+                matched
               </p>
             </div>
-            <div style="overflow-x: auto; max-height: 400px;">
-              <table class="data-table" style="white-space: nowrap;">
+            <div style="overflow-x: auto; max-height: 400px">
+              <table class="data-table" style="white-space: nowrap">
                 <thead>
                   <tr>
                     <th style="width: 3%">
@@ -1155,13 +1423,27 @@
           </div>
         </div>
         <div class="modal-footer">
-          <button type="button" class="btn btn-secondary" onclick="closeModal('reconciliation-modal')">
+          <button
+            type="button"
+            class="btn btn-secondary"
+            onclick="closeModal('reconciliation-modal')"
+          >
             Cancel
           </button>
-          <button type="button" class="btn btn-danger" id="cancel-reconciliation-btn" style="display: none;">
+          <button
+            type="button"
+            class="btn btn-danger"
+            id="cancel-reconciliation-btn"
+            style="display: none"
+          >
             Stop Operation
           </button>
-          <button type="button" class="btn btn-primary" id="update-matched-upcs-btn" disabled>
+          <button
+            type="button"
+            class="btn btn-primary"
+            id="update-matched-upcs-btn"
+            disabled
+          >
             Update Selected Matches
           </button>
         </div>

@@ -2,14 +2,16 @@ from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from typing import List, Union, AsyncGenerator
+from typing import List, Union, AsyncGenerator, Optional
 from pydantic import BaseModel
+from datetime import datetime
 import uvicorn
 import asyncio
 import json
+import uuid
 
 from database import get_db, engine
-from models import Store, MSSQLConnection, ShopifyConnection, Setting, StoreType
+from models import Store, MSSQLConnection, ShopifyConnection, Setting, StoreType, UPCUpdateHistory
 from schemas import (
     MSSQLStoreCreate, ShopifyStoreCreate, StoreResponse,
     SettingCreate, SettingUpdate, SettingResponse,
@@ -19,7 +21,8 @@ from schemas import (
     StoreImportResult, StoreExport,
     OrphanedUPCAuditRequest, OrphanedUPCRecord, OrphanedUPCAuditResponse,
     ReconciliationRequest, ReconciliationMatch, ReconciliationResponse,
-    ReconciliationUpdateRequest, ReconciliationUpdateResult, ReconciliationUpdateResponse
+    ReconciliationUpdateRequest, ReconciliationUpdateResult, ReconciliationUpdateResponse,
+    UPCUpdateHistoryResponse, UPCUpdateHistoryListRequest, UPCUpdateHistoryListResponse
 )
 from mssql_helper import (
     test_mssql_connection, search_upc_across_mssql_stores, search_products_by_upc,
@@ -325,6 +328,9 @@ async def update_upc_stream(request: UPCUpdateRequest, db: Session = Depends(get
             yield f"event: error\ndata: {json.dumps({'message': 'No matches provided for update'})}\n\n"
             return
 
+        # Generate batch ID for this update operation
+        batch_id = str(uuid.uuid4())
+
         # Group matches by store and type
         from collections import defaultdict
 
@@ -467,6 +473,29 @@ async def update_upc_stream(request: UPCUpdateRequest, db: Session = Depends(get
 
                     yield f"event: progress\ndata: {json.dumps({'status': 'updated_store', 'store_name': result['store_name'], 'updated': result['updated_count'], 'success': result['success']})}\n\n"
 
+                    # Log to history
+                    # Find first product from this store for context
+                    store_matches = [m for m in matches if m.store_id == result["store_id"]]
+                    first_match = store_matches[0] if store_matches else None
+
+                    history_entry = UPCUpdateHistory(
+                        batch_id=batch_id,
+                        store_id=result["store_id"],
+                        store_name=result["store_name"],
+                        store_type=StoreType.shopify,
+                        old_upc=old_upc,
+                        new_upc=new_upc,
+                        product_id=first_match.product_id if first_match else None,
+                        product_title=first_match.product_title if first_match else None,
+                        variant_id=first_match.variant_id if first_match else None,
+                        variant_title=first_match.variant_title if first_match else None,
+                        success=result["success"],
+                        items_updated_count=result["updated_count"],
+                        error_message=result.get("error")
+                    )
+                    db.add(history_entry)
+                    db.commit()
+
         # Update MSSQL stores
         if mssql_store_updates:
             yield f"event: progress\ndata: {json.dumps({'status': 'updating', 'store_type': 'mssql', 'count': len(mssql_store_updates)})}\n\n"
@@ -499,6 +528,29 @@ async def update_upc_stream(request: UPCUpdateRequest, db: Session = Depends(get
                     total_updated += result["updated_count"]
 
                     yield f"event: progress\ndata: {json.dumps({'status': 'updated_store', 'store_name': result['store_name'], 'updated': result['updated_count'], 'success': result['success']})}\n\n"
+
+                    # Log to history
+                    # Find first match from this store for context
+                    store_matches = [m for m in matches if m.store_id == result["store_id"]]
+                    first_match = store_matches[0] if store_matches else None
+
+                    history_entry = UPCUpdateHistory(
+                        batch_id=batch_id,
+                        store_id=result["store_id"],
+                        store_name=result["store_name"],
+                        store_type=StoreType.mssql,
+                        old_upc=old_upc,
+                        new_upc=new_upc,
+                        product_id=first_match.product_id if first_match else None,
+                        product_title=first_match.product_title if first_match else None,
+                        table_name=first_match.table_name if first_match else None,
+                        primary_keys=first_match.primary_keys if first_match else None,
+                        success=result["success"],
+                        items_updated_count=result["updated_count"],
+                        error_message=result.get("error")
+                    )
+                    db.add(history_entry)
+                    db.commit()
 
         # Send final results
         yield f"event: complete\ndata: {json.dumps({'old_upc': old_upc, 'new_upc': new_upc, 'results': all_results, 'total_updated': total_updated})}\n\n"
@@ -1436,6 +1488,109 @@ def update_with_batching_wrapper(host, port, database, username, password, updat
         })
 
     return True, None, all_results
+
+# UPC Update History Endpoints
+@app.get("/api/history/updates", response_model=UPCUpdateHistoryListResponse)
+def get_update_history(
+    store_id: Optional[int] = None,
+    upc_search: Optional[str] = None,
+    success_filter: Optional[bool] = None,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    limit: int = 50,
+    offset: int = 0,
+    db: Session = Depends(get_db)
+):
+    """
+    Get UPC update history grouped by batch with optional filters.
+    """
+    from sqlalchemy import func
+    from schemas import UPCUpdateHistoryBatch
+
+    query = db.query(UPCUpdateHistory)
+
+    # Apply filters
+    if store_id is not None:
+        query = query.filter(UPCUpdateHistory.store_id == store_id)
+
+    if upc_search:
+        query = query.filter(
+            (UPCUpdateHistory.old_upc.like(f"%{upc_search}%")) |
+            (UPCUpdateHistory.new_upc.like(f"%{upc_search}%"))
+        )
+
+    if success_filter is not None:
+        query = query.filter(UPCUpdateHistory.success == success_filter)
+
+    if start_date:
+        query = query.filter(UPCUpdateHistory.created_at >= start_date)
+
+    if end_date:
+        query = query.filter(UPCUpdateHistory.created_at <= end_date)
+
+    # Get unique batch_ids with pagination
+    batch_query = db.query(UPCUpdateHistory.batch_id, func.min(UPCUpdateHistory.created_at).label('created_at'))
+
+    # Apply same filters to batch query
+    if store_id is not None:
+        batch_query = batch_query.filter(UPCUpdateHistory.store_id == store_id)
+    if upc_search:
+        batch_query = batch_query.filter(
+            (UPCUpdateHistory.old_upc.like(f"%{upc_search}%")) |
+            (UPCUpdateHistory.new_upc.like(f"%{upc_search}%"))
+        )
+    if success_filter is not None:
+        batch_query = batch_query.filter(UPCUpdateHistory.success == success_filter)
+    if start_date:
+        batch_query = batch_query.filter(UPCUpdateHistory.created_at >= start_date)
+    if end_date:
+        batch_query = batch_query.filter(UPCUpdateHistory.created_at <= end_date)
+
+    batch_query = batch_query.group_by(UPCUpdateHistory.batch_id)
+    total = batch_query.count()
+
+    batch_ids = batch_query.order_by(func.min(UPCUpdateHistory.created_at).desc()).offset(offset).limit(limit).all()
+    batch_id_list = [b.batch_id for b in batch_ids]
+
+    # Get all updates for these batches
+    batches = []
+    for batch_id in batch_id_list:
+        updates = db.query(UPCUpdateHistory).filter(UPCUpdateHistory.batch_id == batch_id).all()
+
+        if updates:
+            first_update = updates[0]
+            successful = sum(1 for u in updates if u.success)
+            failed = len(updates) - successful
+            total_items = sum(u.items_updated_count for u in updates)
+
+            batches.append(UPCUpdateHistoryBatch(
+                batch_id=batch_id,
+                old_upc=first_update.old_upc,
+                new_upc=first_update.new_upc,
+                created_at=first_update.created_at,
+                total_stores=len(updates),
+                successful_stores=successful,
+                failed_stores=failed,
+                total_items_updated=total_items,
+                updates=updates
+            ))
+
+    return UPCUpdateHistoryListResponse(
+        batches=batches,
+        total=total,
+        limit=limit,
+        offset=offset
+    )
+
+@app.get("/api/history/updates/{history_id}", response_model=UPCUpdateHistoryResponse)
+def get_history_entry(history_id: int, db: Session = Depends(get_db)):
+    """
+    Get a specific UPC update history entry by ID.
+    """
+    entry = db.query(UPCUpdateHistory).filter(UPCUpdateHistory.id == history_id).first()
+    if not entry:
+        raise HTTPException(status_code=404, detail="History entry not found")
+    return entry
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
