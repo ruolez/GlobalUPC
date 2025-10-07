@@ -22,7 +22,8 @@ from schemas import (
     OrphanedUPCAuditRequest, OrphanedUPCRecord, OrphanedUPCAuditResponse,
     ReconciliationRequest, ReconciliationMatch, ReconciliationResponse,
     ReconciliationUpdateRequest, ReconciliationUpdateResult, ReconciliationUpdateResponse,
-    UPCUpdateHistoryResponse, UPCUpdateHistoryListRequest, UPCUpdateHistoryListResponse
+    UPCUpdateHistoryResponse, UPCUpdateHistoryListRequest, UPCUpdateHistoryListResponse,
+    CategoryResponse, SubCategoryResponse, StoreComparisonRequest, StoreComparisonResponse, MissingProductRecord
 )
 from mssql_helper import (
     test_mssql_connection, search_upc_across_mssql_stores, search_products_by_upc,
@@ -573,6 +574,8 @@ async def audit_orphaned_upcs_stream(request: OrphanedUPCAuditRequest, db: Sessi
     """
     async def generate_audit_events() -> AsyncGenerator[str, None]:
         store_id = request.store_id
+        date_from = request.date_from
+        date_to = request.date_to
 
         # Get store from database
         store = db.query(Store).filter(Store.id == store_id).first()
@@ -590,6 +593,8 @@ async def audit_orphaned_upcs_stream(request: OrphanedUPCAuditRequest, db: Sessi
         store_name = store.name
 
         print(f"[AUDIT] Starting audit for store: {store_name}")
+        if date_from or date_to:
+            print(f"[AUDIT] Date range: {date_from} to {date_to}")
 
         # Send start event
         yield f"event: progress\ndata: {json.dumps({'status': 'starting', 'store_name': store_name})}\n\n"
@@ -618,7 +623,9 @@ async def audit_orphaned_upcs_stream(request: OrphanedUPCAuditRequest, db: Sessi
                 conn.database_name,
                 conn.username,
                 conn.password,
-                progress_callback
+                progress_callback,
+                date_from,
+                date_to
             )
         )
 
@@ -690,7 +697,7 @@ async def audit_orphaned_upcs_stream(request: OrphanedUPCAuditRequest, db: Sessi
     )
 
 # Helper wrapper for audit function (for executor)
-def audit_orphaned_upcs_sync_wrapper(host, port, database, username, password, progress_callback):
+def audit_orphaned_upcs_sync_wrapper(host, port, database, username, password, progress_callback, date_from=None, date_to=None):
     """Wrapper to call the sync audit function."""
     from mssql_helper import _audit_orphaned_upcs_sync
     return _audit_orphaned_upcs_sync(
@@ -700,7 +707,9 @@ def audit_orphaned_upcs_sync_wrapper(host, port, database, username, password, p
         username=username,
         password=password,
         progress_callback=progress_callback,
-        tds_version="7.4"
+        tds_version="7.4",
+        date_from=date_from,
+        date_to=date_to
     )
 
 # Store endpoints
@@ -1591,6 +1600,224 @@ def get_history_entry(history_id: int, db: Session = Depends(get_db)):
     if not entry:
         raise HTTPException(status_code=404, detail="History entry not found")
     return entry
+
+# Store Comparison Endpoints
+@app.get("/api/stores/mssql/{store_id}/categories", response_model=List[CategoryResponse])
+async def get_store_categories(store_id: int, db: Session = Depends(get_db)):
+    """
+    Get all categories from a specific MSSQL store.
+    """
+    from mssql_helper import get_categories
+
+    # Get store from database
+    store = db.query(Store).filter(Store.id == store_id).first()
+    if not store:
+        raise HTTPException(status_code=404, detail="Store not found")
+
+    # Validate store is MSSQL type
+    if store.store_type != StoreType.mssql or not store.mssql_connection:
+        raise HTTPException(status_code=400, detail="Store is not an MSSQL database")
+
+    # Get connection details
+    conn = store.mssql_connection
+
+    # Fetch categories
+    success, error, categories = await get_categories(
+        host=conn.host,
+        port=conn.port,
+        database=conn.database_name,
+        username=conn.username,
+        password=conn.password
+    )
+
+    if not success:
+        raise HTTPException(status_code=500, detail=error or "Failed to fetch categories")
+
+    return categories
+
+@app.get("/api/stores/mssql/{store_id}/subcategories", response_model=List[SubCategoryResponse])
+async def get_store_subcategories(
+    store_id: int,
+    category_id: Optional[int] = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Get subcategories from a specific MSSQL store, optionally filtered by category.
+    """
+    from mssql_helper import get_subcategories
+
+    # Get store from database
+    store = db.query(Store).filter(Store.id == store_id).first()
+    if not store:
+        raise HTTPException(status_code=404, detail="Store not found")
+
+    # Validate store is MSSQL type
+    if store.store_type != StoreType.mssql or not store.mssql_connection:
+        raise HTTPException(status_code=400, detail="Store is not an MSSQL database")
+
+    # Get connection details
+    conn = store.mssql_connection
+
+    # Fetch subcategories
+    success, error, subcategories = await get_subcategories(
+        host=conn.host,
+        port=conn.port,
+        database=conn.database_name,
+        username=conn.username,
+        password=conn.password,
+        category_id=category_id
+    )
+
+    if not success:
+        raise HTTPException(status_code=500, detail=error or "Failed to fetch subcategories")
+
+    return subcategories
+
+@app.post("/api/comparison/stores/stream")
+async def compare_stores_stream(request: StoreComparisonRequest, db: Session = Depends(get_db)):
+    """
+    Compare Items_tbl between two MSSQL stores with SSE streaming progress.
+    Finds products in primary store that don't exist in comparison store.
+    """
+    primary_store_id = request.primary_store_id
+    comparison_store_id = request.comparison_store_id
+    filters = request.filters
+
+    # Get both stores from database
+    primary_store = db.query(Store).filter(Store.id == primary_store_id).first()
+    comparison_store = db.query(Store).filter(Store.id == comparison_store_id).first()
+
+    if not primary_store:
+        raise HTTPException(status_code=404, detail="Primary store not found")
+    if not comparison_store:
+        raise HTTPException(status_code=404, detail="Comparison store not found")
+
+    # Validate both stores are MSSQL type
+    if primary_store.store_type != StoreType.mssql or not primary_store.mssql_connection:
+        raise HTTPException(status_code=400, detail="Primary store is not an MSSQL database")
+    if comparison_store.store_type != StoreType.mssql or not comparison_store.mssql_connection:
+        raise HTTPException(status_code=400, detail="Comparison store is not an MSSQL database")
+
+    # Get connection details
+    primary_conn = primary_store.mssql_connection
+    comparison_conn = comparison_store.mssql_connection
+
+    async def generate_comparison_events():
+        """Generator for SSE events during store comparison"""
+        try:
+            import queue
+            progress_queue = queue.Queue()
+
+            def progress_callback(data: dict):
+                progress_queue.put(data)
+
+            # Start comparison in background task
+            import asyncio
+            from concurrent.futures import ThreadPoolExecutor
+            from mssql_helper import compare_stores_sync
+
+            loop = asyncio.get_event_loop()
+            executor = ThreadPoolExecutor(max_workers=1)
+
+            # Run comparison in executor
+            comparison_future = loop.run_in_executor(
+                executor,
+                lambda: compare_stores_sync(
+                    primary_host=primary_conn.host,
+                    primary_port=primary_conn.port,
+                    primary_database=primary_conn.database_name,
+                    primary_username=primary_conn.username,
+                    primary_password=primary_conn.password,
+                    comparison_host=comparison_conn.host,
+                    comparison_port=comparison_conn.port,
+                    comparison_database=comparison_conn.database_name,
+                    comparison_username=comparison_conn.username,
+                    comparison_password=comparison_conn.password,
+                    category_ids=filters.category_ids,
+                    subcategory_ids=filters.subcategory_ids,
+                    include_discontinued=filters.include_discontinued,
+                    progress_callback=progress_callback,
+                    tds_version="7.4"
+                )
+            )
+
+            # Poll queue for progress updates
+            import time
+            last_event_time = time.time()
+            HEARTBEAT_INTERVAL = 15
+
+            while not comparison_future.done():
+                try:
+                    # Check for progress updates (non-blocking)
+                    progress_data = progress_queue.get_nowait()
+
+                    # Send progress event
+                    yield f"event: progress\ndata: {json.dumps(progress_data)}\n\n"
+
+                    # Update last event time
+                    last_event_time = time.time()
+
+                except queue.Empty:
+                    # No progress update, check if we need to send heartbeat
+                    current_time = time.time()
+                    if current_time - last_event_time >= HEARTBEAT_INTERVAL:
+                        yield ":ping\n\n"
+                        last_event_time = current_time
+
+                    # Wait a bit before checking again
+                    await asyncio.sleep(0.1)
+
+            # Get final result
+            success, error, missing_products, total_checked = await comparison_future
+
+            # Drain any remaining progress events
+            while not progress_queue.empty():
+                try:
+                    progress_data = progress_queue.get_nowait()
+                    yield f"event: progress\ndata: {json.dumps(progress_data)}\n\n"
+                except queue.Empty:
+                    break
+
+            if not success:
+                yield f"event: error\ndata: {json.dumps({'message': error or 'Comparison failed'})}\n\n"
+                return
+
+            # Calculate category statistics
+            category_stats = {}
+            for product in missing_products:
+                category = product["category_name"]
+                category_stats[category] = category_stats.get(category, 0) + 1
+
+            # Send complete event with results
+            result_data = {
+                'primary_store_id': primary_store_id,
+                'primary_store_name': primary_store.name,
+                'comparison_store_id': comparison_store_id,
+                'comparison_store_name': comparison_store.name,
+                'missing_products': missing_products,
+                'total_checked': total_checked,
+                'total_missing': len(missing_products),
+                'category_stats': category_stats
+            }
+
+            yield f"event: complete\ndata: {json.dumps(result_data)}\n\n"
+
+        except GeneratorExit:
+            # Client disconnected - clean shutdown
+            print("[COMPARISON] Client disconnected, stopping comparison operation")
+            return
+        except Exception as e:
+            print(f"[COMPARISON] Error in streaming: {e}")
+            yield f"event: error\ndata: {json.dumps({'message': str(e)})}\n\n"
+
+    return StreamingResponse(
+        generate_comparison_events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        }
+    )
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

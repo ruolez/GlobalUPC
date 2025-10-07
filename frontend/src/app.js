@@ -50,6 +50,8 @@ function navigateTo(page) {
     loadHistoryPage();
   } else if (page === "sql-audit") {
     loadSQLAuditPage();
+  } else if (page === "store-comparison") {
+    loadMSSQLStoresForComparison();
   }
 }
 
@@ -1168,6 +1170,20 @@ document
   });
 
 // SQL UPC Audit Functions
+
+// Helper function to format table names
+function formatTableName(tableName) {
+  const tableMap = {
+    QuotationsDetails_tbl: "Quotation Details",
+    PurchaseOrdersDetails_tbl: "Purchase Order Details",
+    InvoicesDetails_tbl: "Invoice Details",
+    CreditMemosDetails_tbl: "Credit Memo Details",
+    PurchasesReturnsDetails_tbl: "Purchase Return Details",
+    QuotationDetails: "Quotation Details",
+  };
+  return tableMap[tableName] || tableName;
+}
+
 async function loadSQLAuditPage() {
   const select = document.getElementById("audit-store-select");
   const runBtn = document.getElementById("run-audit-btn");
@@ -1227,6 +1243,13 @@ document
     await runAudit(storeId);
   });
 
+// Table filter dropdown handler
+document
+  .getElementById("audit-table-filter")
+  ?.addEventListener("change", (e) => {
+    filterAuditResults(e.target.value);
+  });
+
 async function runAudit(storeId) {
   const loadingEl = document.getElementById("audit-loading");
   const progressContainer = document.getElementById("audit-progress");
@@ -1234,6 +1257,12 @@ async function runAudit(storeId) {
   const emptyEl = document.getElementById("audit-empty");
   const resultsEl = document.getElementById("audit-results");
   const runBtn = document.getElementById("run-audit-btn");
+
+  // Capture date filter values
+  const dateFromInput = document.getElementById("audit-date-from");
+  const dateToInput = document.getElementById("audit-date-to");
+  const dateFrom = dateFromInput.value || null;
+  const dateTo = dateToInput.value || null;
 
   // Show loading state
   loadingEl.style.display = "block";
@@ -1244,13 +1273,18 @@ async function runAudit(storeId) {
   runBtn.disabled = true;
 
   try {
+    // Build request body with optional date filters
+    const requestBody = { store_id: storeId };
+    if (dateFrom) requestBody.date_from = dateFrom;
+    if (dateTo) requestBody.date_to = dateTo;
+
     // Use fetch with streaming for POST + SSE
     const response = await fetch(`${API_BASE}/analysis/orphaned-upcs/stream`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ store_id: storeId }),
+      body: JSON.stringify(requestBody),
     });
 
     if (!response.ok) {
@@ -1398,25 +1432,71 @@ function displayAuditResults(data) {
   orphanedCountEl.textContent = data.total_orphaned;
   tablesCountEl.textContent = data.tables_checked;
 
+  // Calculate table statistics
+  const tableStats = {};
+  data.orphaned_records.forEach((record) => {
+    const tableName = record.table_name;
+    tableStats[tableName] = (tableStats[tableName] || 0) + 1;
+  });
+
+  // Render statistics badges
+  const statisticsContainer = document.getElementById("audit-statistics");
+  statisticsContainer.innerHTML = "";
+  statisticsContainer.style.display = "flex";
+
+  Object.keys(tableStats)
+    .sort((a, b) => tableStats[b] - tableStats[a]) // Sort by count descending
+    .forEach((tableName) => {
+      const badge = document.createElement("div");
+      badge.className = "audit-stat-badge";
+      badge.dataset.tableName = tableName;
+
+      const nameSpan = document.createElement("span");
+      nameSpan.className = "badge-table-name";
+      nameSpan.textContent = formatTableName(tableName);
+
+      const countSpan = document.createElement("span");
+      countSpan.className = "badge-count";
+      countSpan.textContent = tableStats[tableName];
+
+      badge.appendChild(nameSpan);
+      badge.appendChild(document.createTextNode(": "));
+      badge.appendChild(countSpan);
+
+      // Click handler to filter by this table
+      badge.addEventListener("click", () => {
+        const filterDropdown = document.getElementById("audit-table-filter");
+        filterDropdown.value = tableName;
+        filterAuditResults(tableName);
+      });
+
+      statisticsContainer.appendChild(badge);
+    });
+
+  // Populate filter dropdown
+  const filterDropdown = document.getElementById("audit-table-filter");
+  filterDropdown.innerHTML = '<option value="">All Tables</option>';
+
+  Object.keys(tableStats)
+    .sort()
+    .forEach((tableName) => {
+      const option = document.createElement("option");
+      option.value = tableName;
+      option.textContent = `${formatTableName(tableName)} (${tableStats[tableName]})`;
+      filterDropdown.appendChild(option);
+    });
+
+  // Reset filter to "All Tables"
+  filterDropdown.value = "";
+
   // Clear table
   tableBody.innerHTML = "";
-
-  // Helper function to format table names
-  const formatTableName = (tableName) => {
-    const tableMap = {
-      QuotationsDetails_tbl: "Quotation Details",
-      PurchaseOrdersDetails_tbl: "Purchase Order Details",
-      InvoicesDetails_tbl: "Invoice Details",
-      CreditMemosDetails_tbl: "Credit Memo Details",
-      PurchasesReturnsDetails_tbl: "Purchase Return Details",
-      QuotationDetails: "Quotation Details",
-    };
-    return tableMap[tableName] || tableName;
-  };
 
   // Populate table with orphaned records
   data.orphaned_records.forEach((record, index) => {
     const row = document.createElement("tr");
+    row.dataset.tableName = record.table_name; // Store table name for filtering
+    row.dataset.rowIndex = index; // Store original index for row numbering
 
     // Checkbox
     const checkboxTd = document.createElement("td");
@@ -1479,10 +1559,70 @@ function displayAuditResults(data) {
   updateReconciliationButtons();
 }
 
+// Filter audit results by table name
+function filterAuditResults(filterTableName) {
+  const tableBody = document.getElementById("audit-results-table-body");
+  const rows = tableBody.querySelectorAll("tr");
+  const orphanedCountEl = document.getElementById("audit-orphaned-count");
+  const filterTextEl = document.getElementById("audit-filter-text");
+  const tablesCountEl = document.getElementById("audit-tables-count");
+
+  let visibleCount = 0;
+  let visibleRowNumber = 1;
+
+  rows.forEach((row) => {
+    const rowTableName = row.dataset.tableName;
+
+    if (!filterTableName || rowTableName === filterTableName) {
+      // Show row
+      row.style.display = "";
+      visibleCount++;
+
+      // Update row number
+      const rowNumTd = row.querySelector("td:nth-child(2)");
+      if (rowNumTd) {
+        rowNumTd.textContent = visibleRowNumber;
+        visibleRowNumber++;
+      }
+    } else {
+      // Hide row
+      row.style.display = "none";
+    }
+  });
+
+  // Update summary text
+  const totalOrphaned = currentAuditResults.orphaned_records.length;
+
+  if (!filterTableName) {
+    // No filter - show all
+    orphanedCountEl.textContent = totalOrphaned;
+    filterTextEl.textContent = " orphaned UPCs found across";
+    tablesCountEl.style.display = "inline";
+  } else {
+    // Filtered - show count and filter status
+    orphanedCountEl.textContent = visibleCount;
+    filterTextEl.textContent = ` of ${totalOrphaned} orphaned UPCs (filtered by ${formatTableName(filterTableName)})`;
+    tablesCountEl.style.display = "none";
+  }
+
+  // Reset "select all" checkbox
+  document.getElementById("select-all-orphans").checked = false;
+  updateReconciliationButtons();
+}
+
 // Reconciliation Functions
 function updateReconciliationButtons() {
   const checkboxes = document.querySelectorAll(".orphan-checkbox:checked");
-  const count = checkboxes.length;
+  let visibleCount = 0;
+
+  // Count only visible checked checkboxes
+  checkboxes.forEach((cb) => {
+    const row = cb.closest("tr");
+    if (row && row.style.display !== "none") {
+      visibleCount++;
+    }
+  });
+
   const selectionCount = document.getElementById("selection-count");
   const reconcileByIdBtn = document.getElementById(
     "reconcile-by-product-id-btn",
@@ -1491,9 +1631,9 @@ function updateReconciliationButtons() {
     "reconcile-by-description-btn",
   );
 
-  selectionCount.textContent = `${count} selected`;
-  reconcileByIdBtn.disabled = count === 0;
-  reconcileByDescBtn.disabled = count === 0;
+  selectionCount.textContent = `${visibleCount} selected`;
+  reconcileByIdBtn.disabled = visibleCount === 0;
+  reconcileByDescBtn.disabled = visibleCount === 0;
 }
 
 // Select All checkbox handler
@@ -1502,7 +1642,11 @@ document
   ?.addEventListener("change", (e) => {
     const checkboxes = document.querySelectorAll(".orphan-checkbox");
     checkboxes.forEach((cb) => {
-      cb.checked = e.target.checked;
+      const row = cb.closest("tr");
+      // Only check/uncheck if the row is visible
+      if (row && row.style.display !== "none") {
+        cb.checked = e.target.checked;
+      }
     });
     updateReconciliationButtons();
   });
@@ -1514,11 +1658,15 @@ document
     if (e.target.classList.contains("orphan-checkbox")) {
       updateReconciliationButtons();
 
-      // Update "select all" checkbox state
-      const allCheckboxes = document.querySelectorAll(".orphan-checkbox");
-      const checkedCheckboxes = document.querySelectorAll(
-        ".orphan-checkbox:checked",
-      );
+      // Update "select all" checkbox state based on VISIBLE checkboxes only
+      const allCheckboxes = Array.from(
+        document.querySelectorAll(".orphan-checkbox"),
+      ).filter((cb) => {
+        const row = cb.closest("tr");
+        return row && row.style.display !== "none";
+      });
+
+      const checkedCheckboxes = allCheckboxes.filter((cb) => cb.checked);
       const selectAllCheckbox = document.getElementById("select-all-orphans");
 
       if (selectAllCheckbox) {
@@ -1538,13 +1686,21 @@ function getSelectedOrphanedRecords() {
   const records = [];
 
   checkboxes.forEach((cb) => {
-    records.push({
-      table_name: cb.dataset.tableName,
-      primary_key: parseInt(cb.dataset.primaryKey),
-      upc: cb.dataset.upc,
-      product_id: cb.dataset.productId ? parseInt(cb.dataset.productId) : null,
-      description: cb.dataset.description || null,
-    });
+    // Get the parent row
+    const row = cb.closest("tr");
+
+    // Only include if the row is visible (not filtered out)
+    if (row && row.style.display !== "none") {
+      records.push({
+        table_name: cb.dataset.tableName,
+        primary_key: parseInt(cb.dataset.primaryKey),
+        upc: cb.dataset.upc,
+        product_id: cb.dataset.productId
+          ? parseInt(cb.dataset.productId)
+          : null,
+        description: cb.dataset.description || null,
+      });
+    }
   });
 
   return records;
@@ -2205,7 +2361,9 @@ function displayHistoryResults(batches, total) {
     let isExpanded = false;
     batchRow.addEventListener("click", () => {
       isExpanded = !isExpanded;
-      expandIcon.style.transform = isExpanded ? "rotate(90deg)" : "rotate(0deg)";
+      expandIcon.style.transform = isExpanded
+        ? "rotate(90deg)"
+        : "rotate(0deg)";
 
       // Toggle visibility of detail rows
       const detailRows = tbody.querySelectorAll(
@@ -2410,6 +2568,493 @@ document
     historyState.currentPage = 0;
     await loadHistory();
   });
+
+// ==========================================
+// Store Comparison Functions
+// ==========================================
+
+let comparisonState = {
+  primaryStoreId: null,
+  comparisonStoreId: null,
+  categories: [],
+  subcategories: [],
+  results: null,
+};
+
+async function loadMSSQLStoresForComparison() {
+  try {
+    const response = await fetch(`${API_BASE}/stores`);
+    const stores = await response.json();
+
+    // Filter for MSSQL stores only
+    const mssqlStores = stores.filter((s) => s.store_type === "mssql");
+
+    const primarySelect = document.getElementById("comparison-primary-store");
+    const comparisonSelect = document.getElementById(
+      "comparison-comparison-store",
+    );
+
+    // Populate both dropdowns
+    [primarySelect, comparisonSelect].forEach((select) => {
+      select.innerHTML = '<option value="">Select store...</option>';
+      mssqlStores.forEach((store) => {
+        const option = document.createElement("option");
+        option.value = store.id;
+        option.textContent = store.name;
+        select.appendChild(option);
+      });
+    });
+  } catch (error) {
+    console.error("Error loading MSSQL stores:", error);
+  }
+}
+
+async function loadCategoriesForStore(storeId) {
+  try {
+    const response = await fetch(
+      `${API_BASE}/stores/mssql/${storeId}/categories`,
+    );
+    const categories = await response.json();
+
+    comparisonState.categories = categories;
+
+    const categoriesSelect = document.getElementById("comparison-categories");
+    categoriesSelect.innerHTML = "";
+
+    if (categories.length === 0) {
+      categoriesSelect.innerHTML =
+        '<option value="">No categories found</option>';
+      categoriesSelect.disabled = true;
+    } else {
+      categoriesSelect.disabled = false;
+      categories.forEach((cat) => {
+        const option = document.createElement("option");
+        option.value = cat.category_id;
+        option.textContent = cat.category_name;
+        categoriesSelect.appendChild(option);
+      });
+    }
+
+    // Reset subcategories when categories change
+    const subcategoriesSelect = document.getElementById(
+      "comparison-subcategories",
+    );
+    subcategoriesSelect.innerHTML =
+      '<option value="">Select categories first...</option>';
+    subcategoriesSelect.disabled = true;
+  } catch (error) {
+    console.error("Error loading categories:", error);
+  }
+}
+
+async function loadSubcategoriesForStore(storeId, categoryIds) {
+  try {
+    // If no categories selected, load all subcategories
+    const params = categoryIds.length > 0 ? `?category_id=${categoryIds[0]}` : "";
+    const response = await fetch(
+      `${API_BASE}/stores/mssql/${storeId}/subcategories${params}`,
+    );
+    let subcategories = await response.json();
+
+    // If multiple categories selected, fetch for all and merge
+    if (categoryIds.length > 1) {
+      for (let i = 1; i < categoryIds.length; i++) {
+        const resp = await fetch(
+          `${API_BASE}/stores/mssql/${storeId}/subcategories?category_id=${categoryIds[i]}`,
+        );
+        const moreSubs = await resp.json();
+        subcategories = [...subcategories, ...moreSubs];
+      }
+    }
+
+    comparisonState.subcategories = subcategories;
+
+    const subcategoriesSelect = document.getElementById(
+      "comparison-subcategories",
+    );
+    subcategoriesSelect.innerHTML = "";
+
+    if (subcategories.length === 0) {
+      subcategoriesSelect.innerHTML =
+        '<option value="">No subcategories found</option>';
+      subcategoriesSelect.disabled = true;
+    } else {
+      subcategoriesSelect.disabled = false;
+      subcategories.forEach((subcat) => {
+        const option = document.createElement("option");
+        option.value = subcat.subcategory_id;
+        option.textContent = subcat.subcategory_name;
+        subcategoriesSelect.appendChild(option);
+      });
+    }
+  } catch (error) {
+    console.error("Error loading subcategories:", error);
+  }
+}
+
+async function runStoreComparison() {
+  const primaryStoreId = parseInt(
+    document.getElementById("comparison-primary-store").value,
+  );
+  const comparisonStoreId = parseInt(
+    document.getElementById("comparison-comparison-store").value,
+  );
+
+  if (!primaryStoreId || !comparisonStoreId) {
+    alert("Please select both stores");
+    return;
+  }
+
+  // Get selected filters
+  const categoriesSelect = document.getElementById("comparison-categories");
+  const selectedCategories = Array.from(categoriesSelect.selectedOptions).map(
+    (opt) => parseInt(opt.value),
+  );
+
+  const subcategoriesSelect = document.getElementById(
+    "comparison-subcategories",
+  );
+  const selectedSubcategories = Array.from(
+    subcategoriesSelect.selectedOptions,
+  ).map((opt) => parseInt(opt.value));
+
+  const includeDiscontinued = document.getElementById(
+    "comparison-include-discontinued",
+  ).checked;
+
+  // Show loading state
+  const loadingEl = document.getElementById("comparison-loading");
+  const progressContainer = document.getElementById(
+    "comparison-progress-container",
+  );
+  const progressItems = document.getElementById("comparison-progress-items");
+  const emptyEl = document.getElementById("comparison-empty");
+  const resultsEl = document.getElementById("comparison-results");
+  const runBtn = document.getElementById("run-comparison-btn");
+
+  loadingEl.style.display = "flex";
+  progressContainer.style.display = "block";
+  progressItems.innerHTML = "";
+  emptyEl.style.display = "none";
+  resultsEl.style.display = "none";
+  runBtn.disabled = true;
+
+  // Build request payload
+  const requestBody = {
+    primary_store_id: primaryStoreId,
+    comparison_store_id: comparisonStoreId,
+    filters: {
+      category_ids: selectedCategories.length > 0 ? selectedCategories : null,
+      subcategory_ids:
+        selectedSubcategories.length > 0 ? selectedSubcategories : null,
+      include_discontinued: includeDiscontinued,
+    },
+  };
+
+  try {
+    const response = await fetch(`${API_BASE}/comparison/stores/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(requestBody),
+    });
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n\n");
+      buffer = lines.pop(); // Keep incomplete message in buffer
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+
+        const eventMatch = line.match(/event: (\w+)\ndata: (.+)/s);
+        if (!eventMatch) {
+          console.log("[COMPARISON] Could not parse SSE line:", line);
+          continue;
+        }
+
+        const [, eventType, dataStr] = eventMatch;
+        console.log("[COMPARISON] Received event type:", eventType);
+        const data = JSON.parse(dataStr);
+
+        if (eventType === "progress") {
+          console.log("[COMPARISON] Progress event:", data);
+          if (data.status === "starting") {
+            const item = document.createElement("div");
+            item.style.cssText =
+              "font-size: 0.875rem; color: var(--accent-primary);";
+            item.textContent = `Starting comparison... (${data.total_products} products to check)`;
+            progressItems.appendChild(item);
+          } else if (data.status === "chunk_progress") {
+            // Find or create progress item
+            let progressItem = progressItems.querySelector(
+              "[data-progress='main']",
+            );
+            if (!progressItem) {
+              progressItem = document.createElement("div");
+              progressItem.dataset.progress = "main";
+              progressItem.style.cssText =
+                "font-size: 0.875rem; color: var(--text-secondary);";
+              progressItems.appendChild(progressItem);
+            }
+
+            const percentage = Math.round(
+              (data.products_checked / data.total_products) * 100,
+            );
+
+            let message = `🔍 Chunk ${data.chunk}/${data.total_chunks} (${percentage}%)`;
+            message += ` - ${data.products_checked}/${data.total_products} products`;
+
+            if (data.total_missing > 0) {
+              message += ` - ${data.total_missing} missing`;
+              progressItem.style.color = "orange";
+            } else {
+              progressItem.style.color = "var(--text-secondary)";
+            }
+
+            progressItem.textContent = message;
+            progressContainer.scrollTop = progressContainer.scrollHeight;
+          }
+        } else if (eventType === "complete") {
+          console.log("[COMPARISON] Complete event:", data);
+          loadingEl.style.display = "none";
+          progressContainer.style.display = "none";
+
+          if (data.total_missing === 0) {
+            emptyEl.style.display = "block";
+          } else {
+            comparisonState.results = data;
+            displayComparisonResults(data);
+          }
+
+          runBtn.disabled = false;
+        } else if (eventType === "error") {
+          console.log("[COMPARISON] Error event:", data);
+          loadingEl.style.display = "none";
+          progressContainer.style.display = "none";
+          alert(`Error: ${data.message}`);
+          runBtn.disabled = false;
+        }
+      }
+    }
+  } catch (error) {
+    loadingEl.style.display = "none";
+    progressContainer.style.display = "none";
+    alert(`Error: ${error.message}`);
+    runBtn.disabled = false;
+  }
+}
+
+function displayComparisonResults(data) {
+  const resultsEl = document.getElementById("comparison-results");
+  const tableBody = document.getElementById("comparison-results-table-body");
+  const missingCountEl = document.getElementById("comparison-missing-count");
+  const checkedCountEl = document.getElementById("comparison-checked-count");
+  const statisticsEl = document.getElementById("comparison-statistics");
+  const categoryFilterEl = document.getElementById(
+    "comparison-category-filter",
+  );
+
+  // Update counts
+  missingCountEl.textContent = data.total_missing;
+  checkedCountEl.textContent = data.total_checked;
+
+  // Display category statistics
+  const categoryStats = data.category_stats || {};
+  const sortedCategories = Object.entries(categoryStats).sort(
+    (a, b) => b[1] - a[1],
+  );
+
+  if (sortedCategories.length > 0) {
+    statisticsEl.style.display = "flex";
+    statisticsEl.innerHTML = "";
+
+    sortedCategories.forEach(([category, count]) => {
+      const badge = document.createElement("span");
+      badge.className = "category-badge";
+      badge.style.cssText =
+        "padding: 0.25rem 0.75rem; background: var(--bg-tertiary); border-radius: var(--radius-sm); font-size: 0.75rem; cursor: pointer; transition: background 0.2s;";
+      badge.innerHTML = `<strong style="color: var(--accent-primary);">${category}:</strong> <span style="color: var(--text-secondary);">${count}</span>`;
+      badge.addEventListener("click", () => {
+        categoryFilterEl.value = category;
+        filterComparisonResults(category);
+      });
+      badge.addEventListener("mouseenter", () => {
+        badge.style.background = "var(--bg-secondary)";
+      });
+      badge.addEventListener("mouseleave", () => {
+        badge.style.background = "var(--bg-tertiary)";
+      });
+      statisticsEl.appendChild(badge);
+    });
+  }
+
+  // Populate category filter dropdown
+  categoryFilterEl.innerHTML = '<option value="">All Categories</option>';
+  sortedCategories.forEach(([category, count]) => {
+    const option = document.createElement("option");
+    option.value = category;
+    option.textContent = `${category} (${count})`;
+    categoryFilterEl.appendChild(option);
+  });
+
+  // Display results table
+  tableBody.innerHTML = "";
+  data.missing_products.forEach((product, index) => {
+    const row = document.createElement("tr");
+    row.dataset.category = product.category_name;
+
+    const statusText = product.discontinued ? "Discontinued" : "Active";
+    const statusColor = product.discontinued
+      ? "var(--warning)"
+      : "var(--success)";
+
+    row.innerHTML = `
+      <td style="color: var(--text-tertiary);">${index + 1}</td>
+      <td>${product.product_id}</td>
+      <td><code>${product.product_upc}</code></td>
+      <td>${product.product_description}</td>
+      <td style="color: var(--accent-primary);">${product.category_name}</td>
+      <td style="color: var(--text-secondary);">${product.subcategory_name}</td>
+      <td style="color: ${statusColor};">${statusText}</td>
+    `;
+    tableBody.appendChild(row);
+  });
+
+  resultsEl.style.display = "block";
+}
+
+function filterComparisonResults(category) {
+  const tableBody = document.getElementById("comparison-results-table-body");
+  const rows = Array.from(tableBody.getElementsByTagName("tr"));
+
+  rows.forEach((row, index) => {
+    if (!category || row.dataset.category === category) {
+      row.style.display = "";
+      // Renumber visible rows
+      const numberCell = row.querySelector("td:first-child");
+      const visibleIndex =
+        rows
+          .slice(0, index)
+          .filter((r) => r.style.display !== "none").length + 1;
+      numberCell.textContent = visibleIndex;
+    } else {
+      row.style.display = "none";
+    }
+  });
+}
+
+function exportComparisonToCSV() {
+  if (!comparisonState.results) return;
+
+  const data = comparisonState.results;
+  const rows = [
+    [
+      "Product ID",
+      "UPC",
+      "Description",
+      "Category",
+      "Subcategory",
+      "Status",
+    ],
+  ];
+
+  data.missing_products.forEach((product) => {
+    rows.push([
+      product.product_id,
+      product.product_upc,
+      product.product_description,
+      product.category_name,
+      product.subcategory_name,
+      product.discontinued ? "Discontinued" : "Active",
+    ]);
+  });
+
+  const csvContent = rows.map((row) => row.join(",")).join("\n");
+  const blob = new Blob([csvContent], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `store-comparison-${data.primary_store_name}-vs-${data.comparison_store_name}-${new Date().toISOString().split("T")[0]}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// Event Listeners for Store Comparison
+document
+  .getElementById("comparison-primary-store")
+  ?.addEventListener("change", async (e) => {
+    const storeId = parseInt(e.target.value);
+    comparisonState.primaryStoreId = storeId;
+
+    if (storeId) {
+      await loadCategoriesForStore(storeId);
+    }
+
+    // Enable run button if both stores selected
+    const comparisonStoreId = parseInt(
+      document.getElementById("comparison-comparison-store").value,
+    );
+    document.getElementById("run-comparison-btn").disabled = !(
+      storeId && comparisonStoreId
+    );
+  });
+
+document
+  .getElementById("comparison-comparison-store")
+  ?.addEventListener("change", (e) => {
+    const storeId = parseInt(e.target.value);
+    comparisonState.comparisonStoreId = storeId;
+
+    // Enable run button if both stores selected
+    const primaryStoreId = parseInt(
+      document.getElementById("comparison-primary-store").value,
+    );
+    document.getElementById("run-comparison-btn").disabled = !(
+      primaryStoreId && storeId
+    );
+  });
+
+document
+  .getElementById("comparison-categories")
+  ?.addEventListener("change", async (e) => {
+    const selectedOptions = Array.from(e.target.selectedOptions);
+    const categoryIds = selectedOptions.map((opt) => parseInt(opt.value));
+
+    if (categoryIds.length > 0 && comparisonState.primaryStoreId) {
+      await loadSubcategoriesForStore(
+        comparisonState.primaryStoreId,
+        categoryIds,
+      );
+    } else {
+      const subcategoriesSelect = document.getElementById(
+        "comparison-subcategories",
+      );
+      subcategoriesSelect.innerHTML =
+        '<option value="">Select categories first...</option>';
+      subcategoriesSelect.disabled = true;
+    }
+  });
+
+document
+  .getElementById("run-comparison-btn")
+  ?.addEventListener("click", runStoreComparison);
+
+document
+  .getElementById("comparison-category-filter")
+  ?.addEventListener("change", (e) => {
+    filterComparisonResults(e.target.value);
+  });
+
+document
+  .getElementById("export-comparison-btn")
+  ?.addEventListener("click", exportComparisonToCSV);
 
 // Initialize
 document.addEventListener("DOMContentLoaded", () => {

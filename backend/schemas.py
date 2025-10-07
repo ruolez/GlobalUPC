@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field
-from typing import Optional, Literal, List
-from datetime import datetime
+from typing import Optional, Literal, List, Dict
+from datetime import datetime, date
 
 # Store Schemas
 class StoreBase(BaseModel):
@@ -156,6 +156,8 @@ class ConfigImportResponse(BaseModel):
 # SQL UPC Audit Schemas
 class OrphanedUPCAuditRequest(BaseModel):
     store_id: int
+    date_from: Optional[date] = None
+    date_to: Optional[date] = None
 
 class OrphanedUPCRecord(BaseModel):
     table_name: str
@@ -255,3 +257,41 @@ class UPCUpdateHistoryListResponse(BaseModel):
     total: int
     limit: int
     offset: int
+
+# Store Comparison Schemas
+class CategoryResponse(BaseModel):
+    category_id: int
+    category_name: str
+
+class SubCategoryResponse(BaseModel):
+    subcategory_id: int
+    subcategory_name: str
+    category_id: int
+
+class StoreComparisonFilters(BaseModel):
+    category_ids: Optional[List[int]] = None
+    subcategory_ids: Optional[List[int]] = None
+    include_discontinued: bool = False
+
+class StoreComparisonRequest(BaseModel):
+    primary_store_id: int
+    comparison_store_id: int
+    filters: StoreComparisonFilters = StoreComparisonFilters()
+
+class MissingProductRecord(BaseModel):
+    product_id: int
+    product_upc: str
+    product_description: str
+    category_name: str
+    subcategory_name: str
+    discontinued: bool
+
+class StoreComparisonResponse(BaseModel):
+    primary_store_id: int
+    primary_store_name: str
+    comparison_store_id: int
+    comparison_store_name: str
+    missing_products: List[MissingProductRecord]
+    total_checked: int
+    total_missing: int
+    category_stats: Dict[str, int]  # category_name -> count

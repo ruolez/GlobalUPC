@@ -973,3 +973,39 @@ body {
     transform: scale(1.1);
   }
 }
+
+/* Audit Statistics Badges */
+.audit-stat-badge {
+  display: inline-block;
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--radius-sm);
+  background-color: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: var(--transition);
+  user-select: none;
+}
+
+.audit-stat-badge:hover {
+  background-color: var(--bg-secondary);
+  border-color: var(--accent-primary);
+  transform: translateY(-1px);
+}
+
+.audit-stat-badge:active {
+  transform: translateY(0);
+}
+
+.audit-stat-badge .badge-table-name {
+  font-weight: 500;
+  margin-right: 0.25rem;
+  color: var(--accent-primary);
+}
+
+.audit-stat-badge .badge-count {
+  font-weight: 700;
+  color: var(--accent-secondary);
+}

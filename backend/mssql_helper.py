@@ -2,9 +2,46 @@ import pyodbc
 from typing import Optional, List, Dict, Any
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from datetime import date
 
 # Chunk size for processing large tables (prevents timeout)
 CHUNK_SIZE = 5000
+
+# Mapping of detail tables to their header tables for date filtering
+# Each entry contains: header_table, join_key, and date_field
+# If header_table is None, the date field exists directly in the detail table
+DETAIL_TABLE_MAPPING = {
+    "QuotationsDetails_tbl": {
+        "header_table": "Quotations_tbl",
+        "join_key": "QuotationID",
+        "date_field": "QuotationDate"
+    },
+    "PurchaseOrdersDetails_tbl": {
+        "header_table": "PurchaseOrders_tbl",
+        "join_key": "PoID",
+        "date_field": "PoDate"
+    },
+    "InvoicesDetails_tbl": {
+        "header_table": "Invoices_tbl",
+        "join_key": "InvoiceID",
+        "date_field": "InvoiceDate"
+    },
+    "CreditMemosDetails_tbl": {
+        "header_table": "CreditMemos_tbl",
+        "join_key": "CmemoID",
+        "date_field": "CmemoDate"
+    },
+    "PurchasesReturnsDetails_tbl": {
+        "header_table": "PurchasesReturns_tbl",
+        "join_key": "ReturnID",
+        "date_field": "ReturnDate"
+    },
+    "QuotationDetails": {
+        "header_table": None,  # Special case: date is directly in detail table
+        "join_key": None,
+        "date_field": "DateCreate"
+    }
+}
 
 def get_mssql_connection_string(
     host: str,
@@ -497,13 +534,16 @@ def _audit_orphaned_upcs_sync(
     username: str,
     password: str,
     progress_callback: Optional[callable] = None,
-    tds_version: str = "7.4"
+    tds_version: str = "7.4",
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None
 ) -> tuple[bool, Optional[str], List[Dict[str, Any]], int]:
     """
     Synchronous audit of orphaned UPCs in MSSQL database using chunked processing.
 
     Checks all detail tables for UPCs that don't exist in Items_tbl.
     Processes tables in chunks to prevent timeout on large datasets.
+    Optionally filters records by date range using header table dates.
 
     Args:
         host: Server hostname or IP
@@ -513,6 +553,8 @@ def _audit_orphaned_upcs_sync(
         password: SQL Server password
         progress_callback: Optional callback function for progress updates
         tds_version: TDS protocol version
+        date_from: Optional start date for filtering (inclusive)
+        date_to: Optional end date for filtering (inclusive)
 
     Returns:
         Tuple of (success: bool, error_message: Optional[str], orphaned_records: List[Dict], tables_checked: int)
@@ -576,14 +618,65 @@ def _audit_orphaned_upcs_sync(
                             "table_name": table["name"]
                         })
 
+                    # Build query components based on date filtering requirements
+                    table_name = table["name"]
+                    table_mapping = DETAIL_TABLE_MAPPING.get(table_name)
+
+                    # Determine if we need to join with header table for date filtering
+                    needs_header_join = (
+                        date_from is not None or date_to is not None
+                    ) and table_mapping is not None
+
+                    # Build FROM clause and WHERE clause for date filtering
+                    if needs_header_join and table_mapping["header_table"] is not None:
+                        # Join with header table for date filtering
+                        header_table = table_mapping["header_table"]
+                        join_key = table_mapping["join_key"]
+                        date_field = table_mapping["date_field"]
+                        from_clause = f"{table_name} d INNER JOIN {header_table} h ON d.{join_key} = h.{join_key}"
+                        date_where_parts = []
+                        query_params = []
+
+                        if date_from is not None:
+                            date_where_parts.append(f"h.{date_field} >= ?")
+                            query_params.append(date_from)
+                        if date_to is not None:
+                            date_where_parts.append(f"h.{date_field} <= ?")
+                            query_params.append(date_to)
+
+                        date_where_clause = " AND " + " AND ".join(date_where_parts) if date_where_parts else ""
+                        table_prefix = "d."
+                    elif needs_header_join and table_mapping["header_table"] is None:
+                        # Special case: QuotationDetails has date directly in detail table
+                        date_field = table_mapping["date_field"]
+                        from_clause = table_name
+                        date_where_parts = []
+                        query_params = []
+
+                        if date_from is not None:
+                            date_where_parts.append(f"{date_field} >= ?")
+                            query_params.append(date_from)
+                        if date_to is not None:
+                            date_where_parts.append(f"{date_field} <= ?")
+                            query_params.append(date_to)
+
+                        date_where_clause = " AND " + " AND ".join(date_where_parts) if date_where_parts else ""
+                        table_prefix = ""
+                    else:
+                        # No date filtering
+                        from_clause = table_name
+                        date_where_clause = ""
+                        query_params = []
+                        table_prefix = ""
+
                     # Step 1: Get total record count
                     count_query = f"""
                         SELECT COUNT(*) as total_records
-                        FROM {table['name']}
-                        WHERE ProductUPC IS NOT NULL AND ProductUPC != ''
+                        FROM {from_clause}
+                        WHERE {table_prefix}ProductUPC IS NOT NULL AND {table_prefix}ProductUPC != ''{date_where_clause}
                     """
 
-                    cursor.execute(count_query)
+                    cursor.execute(count_query, query_params)
                     count_result = cursor.fetchone()
                     total_records = count_result[0] if count_result else 0
 
@@ -624,15 +717,15 @@ def _audit_orphaned_upcs_sync(
                         chunk_query = f"""
                             WITH numbered_records AS (
                                 SELECT
-                                    {table['pk']},
-                                    ProductID,
-                                    {table['description_field']},
-                                    ProductUPC,
-                                    ROW_NUMBER() OVER (ORDER BY {table['pk']}) as row_num
-                                FROM {table['name']}
-                                WHERE ProductUPC IS NOT NULL AND ProductUPC != ''
+                                    {table_prefix}{table['pk']} as pk,
+                                    {table_prefix}ProductID,
+                                    {table_prefix}{table['description_field']} as description,
+                                    {table_prefix}ProductUPC,
+                                    ROW_NUMBER() OVER (ORDER BY {table_prefix}{table['pk']}) as row_num
+                                FROM {from_clause}
+                                WHERE {table_prefix}ProductUPC IS NOT NULL AND {table_prefix}ProductUPC != ''{date_where_clause}
                             )
-                            SELECT n.{table['pk']}, n.ProductID, n.{table['description_field']}, n.ProductUPC
+                            SELECT n.pk, n.ProductID, n.description, n.ProductUPC
                             FROM numbered_records n
                             LEFT JOIN Items_tbl i ON n.ProductUPC = i.ProductUPC
                             WHERE n.row_num > ? AND n.row_num <= ?
@@ -642,7 +735,9 @@ def _audit_orphaned_upcs_sync(
                         start_row = offset
                         end_row = offset + limit
 
-                        cursor.execute(chunk_query, (start_row, end_row))
+                        # Combine chunk query parameters: date params + row range params
+                        chunk_params = query_params + [start_row, end_row]
+                        cursor.execute(chunk_query, chunk_params)
                         chunk_rows = cursor.fetchall()
 
                         chunk_orphans = len(chunk_rows)
@@ -714,7 +809,9 @@ async def audit_orphaned_upcs(
     username: str,
     password: str,
     progress_callback: Optional[callable] = None,
-    tds_version: str = "7.4"
+    tds_version: str = "7.4",
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None
 ) -> tuple[bool, Optional[str], List[Dict[str, Any]], int]:
     """
     Async wrapper for orphaned UPC audit.
@@ -727,6 +824,8 @@ async def audit_orphaned_upcs(
         password: SQL Server password
         progress_callback: Optional callback for progress updates
         tds_version: TDS protocol version
+        date_from: Optional start date for filtering (inclusive)
+        date_to: Optional end date for filtering (inclusive)
 
     Returns:
         Tuple of (success: bool, error_message: Optional[str], orphaned_records: List[Dict], tables_checked: int)
@@ -742,7 +841,9 @@ async def audit_orphaned_upcs(
             username,
             password,
             progress_callback,
-            tds_version
+            tds_version,
+            date_from,
+            date_to
         )
 
 def find_matches_by_product_id_sync(
@@ -1175,5 +1276,497 @@ async def update_orphaned_upcs(
             username,
             password,
             updates,
+            tds_version
+        )
+
+def get_categories_sync(
+    host: str,
+    port: int,
+    database: str,
+    username: str,
+    password: str,
+    tds_version: str = "7.4"
+) -> tuple[bool, Optional[str], List[Dict[str, Any]]]:
+    """
+    Fetch all categories from Categories_tbl.
+
+    Args:
+        host: Server hostname or IP
+        port: Server port
+        database: Database name
+        username: SQL Server username
+        password: SQL Server password
+        tds_version: TDS protocol version
+
+    Returns:
+        Tuple of (success: bool, error_message: Optional[str], categories: List[Dict])
+    """
+    try:
+        conn_string = get_mssql_connection_string(
+            host=host,
+            port=port,
+            database=database,
+            username=username,
+            password=password,
+            tds_version=tds_version
+        )
+
+        categories = []
+
+        with pyodbc.connect(conn_string, timeout=30) as conn:
+            cursor = conn.cursor()
+
+            try:
+                query = """
+                    SELECT CategoryID, CategoryName
+                    FROM Categories_tbl
+                    ORDER BY CategoryName
+                """
+
+                cursor.execute(query)
+                rows = cursor.fetchall()
+
+                for row in rows:
+                    categories.append({
+                        "category_id": row[0],
+                        "category_name": row[1]
+                    })
+
+            except pyodbc.Error:
+                # Table doesn't exist in this database
+                pass
+
+            cursor.close()
+
+        return True, None, categories
+
+    except pyodbc.Error as e:
+        error_msg = str(e)
+        return False, error_msg, []
+    except Exception as e:
+        return False, f"Unexpected error: {str(e)}", []
+
+def get_subcategories_sync(
+    host: str,
+    port: int,
+    database: str,
+    username: str,
+    password: str,
+    category_id: Optional[int] = None,
+    tds_version: str = "7.4"
+) -> tuple[bool, Optional[str], List[Dict[str, Any]]]:
+    """
+    Fetch subcategories from SubCategories_tbl, optionally filtered by CategoryID.
+
+    Args:
+        host: Server hostname or IP
+        port: Server port
+        database: Database name
+        username: SQL Server username
+        password: SQL Server password
+        category_id: Optional CategoryID to filter subcategories
+        tds_version: TDS protocol version
+
+    Returns:
+        Tuple of (success: bool, error_message: Optional[str], subcategories: List[Dict])
+    """
+    try:
+        conn_string = get_mssql_connection_string(
+            host=host,
+            port=port,
+            database=database,
+            username=username,
+            password=password,
+            tds_version=tds_version
+        )
+
+        subcategories = []
+
+        with pyodbc.connect(conn_string, timeout=30) as conn:
+            cursor = conn.cursor()
+
+            try:
+                if category_id is not None:
+                    query = """
+                        SELECT SubCateID, SubCateName, CategoryID
+                        FROM SubCategories_tbl
+                        WHERE CategoryID = ?
+                        ORDER BY SubCateName
+                    """
+                    cursor.execute(query, (category_id,))
+                else:
+                    query = """
+                        SELECT SubCateID, SubCateName, CategoryID
+                        FROM SubCategories_tbl
+                        ORDER BY SubCateName
+                    """
+                    cursor.execute(query)
+
+                rows = cursor.fetchall()
+
+                for row in rows:
+                    subcategories.append({
+                        "subcategory_id": row[0],
+                        "subcategory_name": row[1],
+                        "category_id": row[2]
+                    })
+
+            except pyodbc.Error:
+                # Table doesn't exist in this database
+                pass
+
+            cursor.close()
+
+        return True, None, subcategories
+
+    except pyodbc.Error as e:
+        error_msg = str(e)
+        return False, error_msg, []
+    except Exception as e:
+        return False, f"Unexpected error: {str(e)}", []
+
+async def get_categories(
+    host: str,
+    port: int,
+    database: str,
+    username: str,
+    password: str,
+    tds_version: str = "7.4"
+) -> tuple[bool, Optional[str], List[Dict[str, Any]]]:
+    """Async wrapper for get_categories_sync."""
+    loop = asyncio.get_event_loop()
+    with ThreadPoolExecutor() as executor:
+        return await loop.run_in_executor(
+            executor,
+            get_categories_sync,
+            host,
+            port,
+            database,
+            username,
+            password,
+            tds_version
+        )
+
+async def get_subcategories(
+    host: str,
+    port: int,
+    database: str,
+    username: str,
+    password: str,
+    category_id: Optional[int] = None,
+    tds_version: str = "7.4"
+) -> tuple[bool, Optional[str], List[Dict[str, Any]]]:
+    """Async wrapper for get_subcategories_sync."""
+    loop = asyncio.get_event_loop()
+    with ThreadPoolExecutor() as executor:
+        return await loop.run_in_executor(
+            executor,
+            get_subcategories_sync,
+            host,
+            port,
+            database,
+            username,
+            password,
+            category_id,
+            tds_version
+        )
+
+def compare_stores_sync(
+    primary_host: str,
+    primary_port: int,
+    primary_database: str,
+    primary_username: str,
+    primary_password: str,
+    comparison_host: str,
+    comparison_port: int,
+    comparison_database: str,
+    comparison_username: str,
+    comparison_password: str,
+    category_ids: Optional[List[int]] = None,
+    subcategory_ids: Optional[List[int]] = None,
+    include_discontinued: bool = False,
+    progress_callback: Optional[callable] = None,
+    tds_version: str = "7.4"
+) -> tuple[bool, Optional[str], List[Dict[str, Any]], int]:
+    """
+    Compare Items_tbl between two MSSQL stores using chunked processing.
+
+    Finds products in primary store that don't exist in comparison store (by ProductUPC).
+    Supports filtering by categories, subcategories, and discontinued status.
+
+    Args:
+        primary_host: Primary store hostname
+        primary_port: Primary store port
+        primary_database: Primary store database name
+        primary_username: Primary store username
+        primary_password: Primary store password
+        comparison_host: Comparison store hostname
+        comparison_port: Comparison store port
+        comparison_database: Comparison store database name
+        comparison_username: Comparison store username
+        comparison_password: Comparison store password
+        category_ids: Optional list of CategoryID to filter (OR condition)
+        subcategory_ids: Optional list of SubCateID to filter (OR condition)
+        include_discontinued: If False, only active products (Discontinued=0). If True, include both active and discontinued.
+        progress_callback: Optional callback for progress updates
+        tds_version: TDS protocol version
+
+    Returns:
+        Tuple of (success: bool, error_message: Optional[str], missing_products: List[Dict], total_checked: int)
+    """
+    try:
+        # Connect to primary store
+        primary_conn_string = get_mssql_connection_string(
+            host=primary_host,
+            port=primary_port,
+            database=primary_database,
+            username=primary_username,
+            password=primary_password,
+            tds_version=tds_version
+        )
+
+        # Connect to comparison store
+        comparison_conn_string = get_mssql_connection_string(
+            host=comparison_host,
+            port=comparison_port,
+            database=comparison_database,
+            username=comparison_username,
+            password=comparison_password,
+            tds_version=tds_version
+        )
+
+        missing_products = []
+        total_checked = 0
+
+        with pyodbc.connect(primary_conn_string, timeout=60) as primary_conn, \
+             pyodbc.connect(comparison_conn_string, timeout=60) as comparison_conn:
+
+            primary_cursor = primary_conn.cursor()
+            comparison_cursor = comparison_conn.cursor()
+
+            # Build WHERE clause for filters
+            where_clauses = ["i.ProductUPC IS NOT NULL", "i.ProductUPC != ''"]
+            query_params = []
+
+            # Category filter (OR condition)
+            if category_ids and len(category_ids) > 0:
+                placeholders = ",".join(["?"] * len(category_ids))
+                where_clauses.append(f"i.CateID IN ({placeholders})")
+                query_params.extend(category_ids)
+
+            # Subcategory filter (OR condition)
+            if subcategory_ids and len(subcategory_ids) > 0:
+                placeholders = ",".join(["?"] * len(subcategory_ids))
+                where_clauses.append(f"i.SubCateID IN ({placeholders})")
+                query_params.extend(subcategory_ids)
+
+            # Discontinued filter
+            # If include_discontinued is False: only show active products (Discontinued=0 or NULL)
+            # If include_discontinued is True: show both active and discontinued (no filter)
+            if not include_discontinued:
+                where_clauses.append("(i.Discontinued = 0 OR i.Discontinued IS NULL)")
+
+            where_clause = " AND ".join(where_clauses)
+
+            # Step 1: Get total count of products to check
+            count_query = f"""
+                SELECT COUNT(*) as total_products
+                FROM Items_tbl i
+                WHERE {where_clause}
+            """
+
+            primary_cursor.execute(count_query, query_params)
+            count_result = primary_cursor.fetchone()
+            total_products = count_result[0] if count_result else 0
+
+            if total_products == 0:
+                primary_cursor.close()
+                comparison_cursor.close()
+                return True, None, [], 0
+
+            # Step 2: Calculate chunks
+            total_chunks = max(1, (total_products + CHUNK_SIZE - 1) // CHUNK_SIZE)
+
+            print(f"[COMPARISON DEBUG] Total products to check: {total_products}, chunks: {total_chunks}")
+
+            # Notify start
+            if progress_callback:
+                progress_callback({
+                    "status": "starting",
+                    "total_products": total_products,
+                    "total_chunks": total_chunks
+                })
+
+            # Step 3: Process products in chunks
+            for chunk_num in range(total_chunks):
+                offset = chunk_num * CHUNK_SIZE
+                limit = CHUNK_SIZE
+
+                # Chunked query with category and subcategory names
+                chunk_query = f"""
+                    WITH numbered_products AS (
+                        SELECT
+                            i.ProductID,
+                            i.ProductUPC,
+                            i.ProductDescription,
+                            i.Discontinued,
+                            c.CategoryName,
+                            s.SubCateName,
+                            ROW_NUMBER() OVER (ORDER BY i.ProductID) as row_num
+                        FROM Items_tbl i
+                        LEFT JOIN Categories_tbl c ON i.CateID = c.CategoryID
+                        LEFT JOIN SubCategories_tbl s ON i.SubCateID = s.SubCateID
+                        WHERE {where_clause}
+                    )
+                    SELECT ProductID, ProductUPC, ProductDescription, Discontinued, CategoryName, SubCateName
+                    FROM numbered_products
+                    WHERE row_num > ? AND row_num <= ?
+                """
+
+                start_row = offset
+                end_row = offset + limit
+
+                chunk_params = query_params + [start_row, end_row]
+
+                print(f"[COMPARISON DEBUG] Chunk {chunk_num + 1}/{total_chunks}")
+                print(f"[COMPARISON DEBUG] chunk_params length: {len(chunk_params)}, values: {chunk_params}")
+                print(f"[COMPARISON DEBUG] query_params length: {len(query_params)}, values: {query_params}")
+
+                try:
+                    primary_cursor.execute(chunk_query, chunk_params)
+                    chunk_products = primary_cursor.fetchall()
+                    print(f"[COMPARISON DEBUG] Fetched {len(chunk_products)} products from primary store")
+                except Exception as e:
+                    print(f"[COMPARISON DEBUG] Error executing chunk query: {e}")
+                    print(f"[COMPARISON DEBUG] Query: {chunk_query}")
+                    raise
+
+                chunk_missing = 0
+
+                # If no products in this chunk, skip
+                if not chunk_products:
+                    continue
+
+                # Collect all UPCs from this chunk, filtering out None and empty strings
+                chunk_upcs = []
+                for product in chunk_products:
+                    upc = product[1]  # product[1] is ProductUPC
+                    if upc and str(upc).strip():  # Skip None and empty/whitespace-only UPCs
+                        chunk_upcs.append(str(upc).strip())
+
+                total_checked += len(chunk_products)
+
+                # If no valid UPCs in this chunk, skip comparison query
+                if not chunk_upcs:
+                    print(f"[COMPARISON DEBUG] No valid UPCs in chunk {chunk_num + 1}, skipping comparison")
+                    continue
+
+                # SQL Server has a limit of 2100 parameters per query
+                # Batch the UPC comparison into smaller sub-chunks to avoid hitting the limit
+                MAX_PARAMS_PER_QUERY = 2000  # Safe limit below SQL Server's 2100 max
+                existing_upcs = set()
+
+                print(f"[COMPARISON DEBUG] Comparing {len(chunk_upcs)} UPCs against comparison store")
+                print(f"[COMPARISON DEBUG] First 5 UPCs: {chunk_upcs[:5]}")
+
+                # Process UPCs in batches
+                for batch_start in range(0, len(chunk_upcs), MAX_PARAMS_PER_QUERY):
+                    batch_end = min(batch_start + MAX_PARAMS_PER_QUERY, len(chunk_upcs))
+                    upc_batch = chunk_upcs[batch_start:batch_end]
+
+                    placeholders = ','.join(['?'] * len(upc_batch))
+                    comparison_query = f"SELECT ProductUPC FROM Items_tbl WHERE ProductUPC IN ({placeholders})"
+
+                    try:
+                        comparison_cursor.execute(comparison_query, upc_batch)
+                        batch_results = {row[0].strip() if row[0] else '' for row in comparison_cursor.fetchall()}
+                        existing_upcs.update(batch_results)
+                        print(f"[COMPARISON DEBUG] Batch {batch_start}-{batch_end}: Found {len(batch_results)} matches")
+                    except Exception as e:
+                        print(f"[COMPARISON DEBUG] Error executing comparison query batch: {e}")
+                        print(f"[COMPARISON DEBUG] Batch params count: {len(upc_batch)}")
+                        raise
+
+                print(f"[COMPARISON DEBUG] Total matching UPCs found: {len(existing_upcs)}")
+
+                # Find missing products (products in primary but not in comparison)
+                for product in chunk_products:
+                    product_id, product_upc, product_description, discontinued, category_name, subcategory_name = product
+
+                    # Normalize UPC for comparison (strip whitespace)
+                    normalized_upc = str(product_upc).strip() if product_upc else ''
+
+                    if normalized_upc and normalized_upc not in existing_upcs:
+                        # Product is missing in comparison store
+                        chunk_missing += 1
+                        missing_products.append({
+                            "product_id": product_id,
+                            "product_upc": normalized_upc,
+                            "product_description": product_description if product_description else "Unknown",
+                            "category_name": category_name if category_name else "Uncategorized",
+                            "subcategory_name": subcategory_name if subcategory_name else "None",
+                            "discontinued": bool(discontinued) if discontinued else False
+                        })
+
+                # Send chunk progress
+                if progress_callback:
+                    progress_callback({
+                        "status": "chunk_progress",
+                        "chunk": chunk_num + 1,
+                        "total_chunks": total_chunks,
+                        "products_checked": total_checked,
+                        "total_products": total_products,
+                        "missing_in_chunk": chunk_missing,
+                        "total_missing": len(missing_products)
+                    })
+
+            primary_cursor.close()
+            comparison_cursor.close()
+
+        return True, None, missing_products, total_checked
+
+    except pyodbc.Error as e:
+        error_msg = str(e)
+        return False, error_msg, [], 0
+    except Exception as e:
+        return False, f"Unexpected error: {str(e)}", [], 0
+
+async def compare_stores(
+    primary_host: str,
+    primary_port: int,
+    primary_database: str,
+    primary_username: str,
+    primary_password: str,
+    comparison_host: str,
+    comparison_port: int,
+    comparison_database: str,
+    comparison_username: str,
+    comparison_password: str,
+    category_ids: Optional[List[int]] = None,
+    subcategory_ids: Optional[List[int]] = None,
+    include_discontinued: bool = False,
+    progress_callback: Optional[callable] = None,
+    tds_version: str = "7.4"
+) -> tuple[bool, Optional[str], List[Dict[str, Any]], int]:
+    """Async wrapper for compare_stores_sync."""
+    loop = asyncio.get_event_loop()
+    with ThreadPoolExecutor() as executor:
+        return await loop.run_in_executor(
+            executor,
+            compare_stores_sync,
+            primary_host,
+            primary_port,
+            primary_database,
+            primary_username,
+            primary_password,
+            comparison_host,
+            comparison_port,
+            comparison_database,
+            comparison_username,
+            comparison_password,
+            category_ids,
+            subcategory_ids,
+            include_discontinued,
+            progress_callback,
             tds_version
         )

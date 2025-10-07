@@ -331,6 +331,21 @@
 	[UnitCost] [money] NULL,
 	[ExtendedCost] [money] NULL
 
+[dbo].[Categories_tbl](
+	[CategoryID] [int] IDENTITY(1,1) NOT NULL,
+	[CategoryNo] [int] NULL,
+	[CategoryName] [nvarchar](50) NULL,
+	[UseAsAcctType] [bit] NOT NULL,
+
+
+[dbo].[SubCategories_tbl](
+	[SubCateID] [int] IDENTITY(1,1) NOT NULL,
+	[SubCateName] [nvarchar](50) NULL,
+	[CategoryID] [int] NULL,
+	[dep_key] [bit] NULL,
+	[color_code] [varchar](25) NULL,
+	[key_Postion] [int] NULL,
+
 
 
 ***DB_ADMIN TABLE

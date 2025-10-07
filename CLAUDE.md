@@ -168,6 +168,11 @@ All tables have auto-updating `created_at` and `updated_at` timestamps via Postg
 **SQL UPC Audit (MSSQL Only)**
 - `POST /api/analysis/orphaned-upcs/stream` - Audit MSSQL store for orphaned UPCs (SSE streaming)
 
+**Items Check (Store Comparison)**
+- `GET /api/stores/mssql/{store_id}/categories` - Get categories for MSSQL store
+- `GET /api/stores/mssql/{store_id}/subcategories` - Get subcategories for MSSQL store (optional category_id filter)
+- `POST /api/comparison/stores/stream` - Compare Items_tbl between two MSSQL stores (SSE streaming)
+
 ## FreeTDS Configuration (MSSQL)
 
 This application uses **FreeTDS** for MSSQL connectivity to support legacy SQL Server versions.
@@ -427,6 +432,224 @@ Configuration exports are JSON files with the following structure:
   - Shopify stores with duplicate `shop_domain` are automatically skipped
 - **Filename Format**: Exports are saved as `globalupc-config-YYYY-MM-DD-HHMMSS.json`
 
+## Items Check (Store Comparison) Feature
+
+### Overview
+The Items Check tool compares `Items_tbl` between two MSSQL databases to identify products that exist in one store but not another. This is useful for:
+- Verifying inventory consistency across multiple locations
+- Identifying missing products when setting up new stores
+- Auditing product catalogs between production and test databases
+- Finding gaps in product distribution
+
+### How It Works
+1. User selects a **primary store** (the store being checked)
+2. User selects a **comparison store** (the reference store to compare against)
+3. System compares all products in primary store's `Items_tbl` against comparison store
+4. Returns products that exist in primary but are missing from comparison store
+5. Supports filtering by categories, subcategories, and discontinued status
+
+### API Endpoints
+
+**Category and Subcategory Retrieval**:
+```python
+GET /api/stores/mssql/{store_id}/categories
+# Returns: List[CategoryResponse]
+# Example: [{"category_id": 11, "category_name": "TOBACCO"}]
+
+GET /api/stores/mssql/{store_id}/subcategories?category_id={id}
+# Optional category_id filter
+# Returns: List[SubCategoryResponse]
+# Example: [{"subcategory_id": 101, "subcategory_name": "Cigarettes", "category_id": 11}]
+```
+
+**Comparison Endpoint** (SSE Streaming):
+```python
+POST /api/comparison/stores/stream
+Request Body:
+{
+    "primary_store_id": 1,
+    "comparison_store_id": 2,
+    "filters": {
+        "category_ids": [11, 13],  # Optional: filter by categories
+        "subcategory_ids": [101],   # Optional: filter by subcategories
+        "include_discontinued": false  # Default: false (active products only)
+    }
+}
+
+Response Events:
+- "starting": Initial event with total products and chunks
+- "chunk_progress": Progress updates during processing
+- "complete": Final results with missing products
+- "error": Error information if comparison fails
+```
+
+### Implementation Details
+
+**Chunked Processing** (`mssql_helper.py`):
+- Processes products in chunks of 5,000 (configurable via `CHUNK_SIZE`)
+- Uses `ROW_NUMBER()` window function for efficient pagination
+- Joins with `Categories_tbl` and `SubCategories_tbl` for filter support
+
+**SQL Server Parameter Limit**:
+SQL Server has a **maximum of 2,100 parameters per query**. The comparison function handles this by:
+1. Collecting up to 5,000 UPCs per chunk from primary store
+2. Batching comparison queries into sub-batches of 2,000 UPCs max
+3. Combining results from multiple batches into a single set
+
+**Example**: For a chunk of 5,000 products:
+- Batch 1: Check UPCs 1-2,000 against comparison store
+- Batch 2: Check UPCs 2,001-4,000 against comparison store
+- Batch 3: Check UPCs 4,001-5,000 against comparison store
+- Merge all results into `existing_upcs` set
+
+**Code Location** (`mssql_helper.py` lines 1670-1696):
+```python
+# SQL Server has a limit of 2100 parameters per query
+MAX_PARAMS_PER_QUERY = 2000  # Safe limit below SQL Server's 2100 max
+
+for batch_start in range(0, len(chunk_upcs), MAX_PARAMS_PER_QUERY):
+    batch_end = min(batch_start + MAX_PARAMS_PER_QUERY, len(chunk_upcs))
+    upc_batch = chunk_upcs[batch_start:batch_end]
+
+    placeholders = ','.join(['?'] * len(upc_batch))
+    comparison_query = f"SELECT ProductUPC FROM Items_tbl WHERE ProductUPC IN ({placeholders})"
+
+    comparison_cursor.execute(comparison_query, upc_batch)
+    batch_results = {row[0].strip() if row[0] else '' for row in comparison_cursor.fetchall()}
+    existing_upcs.update(batch_results)
+```
+
+### Filter Behavior
+
+**Categories and Subcategories**:
+- Multiple categories can be selected (OR condition)
+- Multiple subcategories can be selected (OR condition)
+- Subcategories dropdown auto-populates based on selected categories
+- If no filters selected, all products are included
+
+**Discontinued Filter**:
+The `Items_tbl.Discontinued` field indicates product status:
+- `0` or `NULL` = Active product
+- `1` = Discontinued product
+
+**Checkbox behavior**:
+- **Unchecked** (default): Only active products (`Discontinued = 0 OR NULL`)
+- **Checked**: Both active AND discontinued products (no filter applied)
+
+**Implementation** (`mssql_helper.py` lines 1563-1567):
+```python
+# If include_discontinued is False: only show active products
+# If include_discontinued is True: show both active and discontinued
+if not include_discontinued:
+    where_clauses.append("(i.Discontinued = 0 OR i.Discontinued IS NULL)")
+```
+
+### Performance Characteristics
+
+**Query Optimization**:
+- **Old approach** (before fix): One SQL query per product → 18,750 queries for 18,750 products → 15-30 minutes
+- **New approach** (optimized): 2-3 queries per 5,000-product chunk → ~10 queries total for 18,750 products → 5-10 seconds
+
+**Expected Performance**:
+- **Small comparisons** (< 5,000 products): Single chunk, completes in 1-2 seconds
+- **Medium comparisons** (5,000-20,000 products): 1-4 chunks, completes in 3-8 seconds
+- **Large comparisons** (20,000-100,000 products): 4-20 chunks, completes in 15-45 seconds
+
+**Factors Affecting Performance**:
+- Network latency between backend and MSSQL servers
+- Database indexes on `ProductUPC` field (critical for performance)
+- Number of products after filtering
+- Server load on MSSQL instances
+
+### Frontend Features
+
+**Store Selection**:
+- Dropdowns auto-populate with only MSSQL stores
+- Primary and comparison stores must be different
+- Category/subcategory filters load from primary store only
+
+**Progress Indicators**:
+- Real-time progress updates during comparison
+- Chunk-level progress (e.g., "Chunk 2/4 (50%)")
+- Product count updates (e.g., "10,000/18,750 products checked")
+- Missing product count tracked in real-time
+
+**Results Display**:
+- Table with columns: #, Product ID, UPC, Description, Category, Subcategory, Status
+- Category statistics badges (clickable to filter results)
+- Category filter dropdown to focus on specific categories
+- Export to CSV functionality
+- Empty state when no missing products found
+
+**CSV Export** (`app.js` function `exportComparisonToCSV`):
+- Filename format: `comparison-{primary_store_name}-vs-{comparison_store_name}-YYYY-MM-DD.csv`
+- Includes all result columns
+- Automatically downloads to browser
+
+### Schemas
+
+**Request Schema** (`schemas.py` lines 271-279):
+```python
+class StoreComparisonFilters(BaseModel):
+    category_ids: Optional[List[int]] = None
+    subcategory_ids: Optional[List[int]] = None
+    include_discontinued: bool = False
+
+class StoreComparisonRequest(BaseModel):
+    primary_store_id: int
+    comparison_store_id: int
+    filters: StoreComparisonFilters = StoreComparisonFilters()
+```
+
+**Response Schema** (`schemas.py` lines 282-298):
+```python
+class MissingProductRecord(BaseModel):
+    product_id: int
+    product_upc: str
+    product_description: str
+    category_name: str
+    subcategory_name: str
+    discontinued: bool
+
+class StoreComparisonResponse(BaseModel):
+    primary_store_id: int
+    primary_store_name: str
+    comparison_store_id: int
+    comparison_store_name: str
+    missing_products: List[MissingProductRecord]
+    total_checked: int
+    total_missing: int
+    category_stats: Dict[str, int]  # category_name -> count
+```
+
+### Common Issues
+
+**Timeout Errors During Comparison**:
+- Likely caused by slow database queries or network latency
+- Check database has indexes on `ProductUPC` in `Items_tbl`
+- Reduce `CHUNK_SIZE` in `mssql_helper.py` (default: 5000)
+- Verify network connectivity between backend and MSSQL servers
+
+**SQL Parameter Error** (`Invalid descriptor index (0)`):
+- This was the original bug caused by exceeding 2,100 parameter limit
+- Should be fixed by batching logic (2,000 params per query)
+- If still occurring, reduce `MAX_PARAMS_PER_QUERY` constant
+
+**Frontend Not Starting After Restart**:
+- Nginx may fail to resolve "backend" hostname if backend isn't ready
+- Solution: `docker-compose restart frontend` after backend is healthy
+- Check logs: `docker-compose logs frontend --tail 50`
+
+**Empty Results When Products Should Be Missing**:
+- Verify both stores have `Items_tbl` with `ProductUPC` field
+- Check if filters are too restrictive (try with no filters)
+- Verify UPC values don't have leading/trailing whitespace (handled by normalization)
+
+**Categories Not Loading**:
+- Ensure `Categories_tbl` exists in MSSQL database
+- Check store connection is active and credentials are correct
+- Review backend logs for SQL errors
+
 ## Troubleshooting
 
 ### Backend won't start
@@ -571,6 +794,126 @@ This enables future operations like:
 - **Large tables** (50,000-500,000 records): 10-100 chunks, continuous progress updates
 - **Very large tables** (500,000+ records): 100+ chunks, each chunk processes in 1-3 seconds
 
+### Date-Range Filtering
+
+The audit feature supports optional date-range filtering to audit only records within a specific time period.
+
+**Implementation** (`backend/mssql_helper.py`, `backend/schemas.py`, `backend/main.py`):
+- Accepts optional `date_from` and `date_to` parameters (Python `date` type)
+- Uses `DETAIL_TABLE_MAPPING` constant to map detail tables to their header tables
+- Dynamically constructs SQL queries with INNER JOINs to header tables for date filtering
+- Special handling for `QuotationDetails` table (has `DateCreate` directly in detail table)
+
+**Header Table Mappings** (`mssql_helper.py:12-43`):
+```python
+DETAIL_TABLE_MAPPING = {
+    "QuotationsDetails_tbl": {
+        "header_table": "Quotations_tbl",
+        "join_key": "QuotationID",
+        "date_field": "QuotationDate"
+    },
+    "PurchaseOrdersDetails_tbl": {
+        "header_table": "PurchaseOrders_tbl",
+        "join_key": "PoID",
+        "date_field": "PoDate"
+    },
+    # ... additional mappings
+}
+```
+
+**Query Example** (with date filtering):
+```sql
+-- Joins detail table with header table and filters by date
+WITH numbered_records AS (
+    SELECT d.LineID, d.ProductDescription, d.ProductUPC, ROW_NUMBER() OVER (ORDER BY d.LineID)
+    FROM QuotationsDetails_tbl d
+    INNER JOIN Quotations_tbl h ON d.QuotationID = h.QuotationID
+    WHERE d.ProductUPC IS NOT NULL
+    AND h.QuotationDate >= ? AND h.QuotationDate <= ?
+)
+SELECT n.LineID, n.ProductDescription, n.ProductUPC
+FROM numbered_records n
+LEFT JOIN Items_tbl i ON n.ProductUPC = i.ProductUPC
+WHERE n.row_num > ? AND n.row_num <= ?
+AND i.ProductUPC IS NULL
+```
+
+**Frontend** (`frontend/src/index.html`, `frontend/src/app.js`):
+- Two optional date inputs: "From Date" and "To Date"
+- Dates sent as ISO format strings (`YYYY-MM-DD`)
+- Leave empty to audit all records (backward compatible)
+
+**Use Cases**:
+- Audit only recent transactions (e.g., last month)
+- Focus on specific date range for data migration validation
+- Reduce audit scope for faster results on large databases
+
+### Table Statistics and Filtering
+
+Audit results display per-table statistics and support filtering by table for focused analysis.
+
+**Statistics Badges** (`frontend/src/index.html:1110-1121`, `frontend/src/app.js:1433-1464`):
+- Visual breakdown showing orphaned UPC count per table
+- Badges sorted by count (highest first)
+- Clickable to filter results by that table
+- Example: `[Quotation Details: 50] [Invoice Details: 30] [Purchase Orders: 12]`
+
+**Table Filter Dropdown** (`frontend/src/index.html:1123-1132`, `frontend/src/app.js:1467-1480`):
+- Dropdown with "All Tables" + individual table options
+- Shows count in parentheses for each table
+- Automatically populated from audit results
+
+**Dynamic Summary Text** (`frontend/src/index.html:1104-1108`, `frontend/src/app.js:1560-1609`):
+- **No filter**: "42 orphaned UPCs found across 3 tables"
+- **With filter**: "15 of 42 orphaned UPCs (filtered by Quotation Details)"
+
+**Filtering Logic** (`frontend/src/app.js:1560-1609`):
+- Hides non-matching rows using `row.style.display = "none"`
+- Renumbers visible rows sequentially (1, 2, 3...)
+- Updates selection count and button states
+
+**CSS Styling** (`frontend/src/styles.css:977-1012`):
+- Badge styles with hover effects and transitions
+- Color-coded table names and counts
+- Responsive layout with flexbox
+
+### Reconciliation with Filtered Results
+
+The "Find Matches by ProductID" and "Find Matches by Description" buttons respect table filtering and only process visible selected records.
+
+**Implementation** (`frontend/src/app.js`):
+
+1. **`getSelectedOrphanedRecords()` function** (lines 1683-1705):
+   - Only returns checked records from visible rows
+   - Filters out hidden rows using `row.style.display !== "none"`
+
+2. **"Select All" checkbox handler** (lines 1637-1650):
+   - Only checks/unchecks checkboxes in visible rows
+   - Hidden rows remain unaffected by "Select All"
+
+3. **`updateReconciliationButtons()` function** (lines 1612-1635):
+   - Counts only visible checked records
+   - Updates button state based on visible selection count
+
+4. **Individual checkbox handler** (lines 1652-1676):
+   - Updates "Select All" state based on visible checkboxes only
+   - Filters out hidden rows when determining if all visible rows are checked
+
+**Pattern Used**:
+```javascript
+const row = cb.closest("tr");
+if (row && row.style.display !== "none") {
+  // Only process visible rows
+}
+```
+
+**User Experience**:
+- Filter to specific table (e.g., "Invoice Details" with 30 records)
+- Click "Select All" → Only visible 30 records get checked
+- Status shows "30 selected" (accurate count)
+- Click "Find Matches by ProductID" → System processes exactly 30 visible records
+- Hidden records from other tables are not included in reconciliation
+
 ### Common Issues
 **Timeout Errors**: If audit times out despite chunking:
 - Reduce `CHUNK_SIZE` in `mssql_helper.py` (try 2,500 or 1,000)
@@ -586,3 +929,8 @@ This enables future operations like:
 - Verify Items_tbl exists in the database
 - Check ProductUPC field names match across tables
 - Review backend logs for `table_skipped` events (table doesn't exist)
+
+**Date Filtering Not Working**: If date-range filtering returns unexpected results:
+- Verify header table names and date fields in `DETAIL_TABLE_MAPPING` match your database schema
+- Check backend logs for SQL errors indicating incorrect table/field names
+- Test with no dates first to confirm tables are accessible
