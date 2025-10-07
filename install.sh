@@ -344,7 +344,7 @@ prompt_for_ip() {
 
     echo "Enter the IP address or hostname where this server will be accessible."
     echo "This will be used for:"
-    echo "  • Frontend URL: http://{IP}:8080"
+    echo "  • Frontend URL: http://{IP} (port 80)"
     echo "  • Backend API: http://{IP}:8001"
     echo ""
 
@@ -386,8 +386,8 @@ POSTGRES_DB=globalupc
 # Backend Configuration
 BACKEND_PORT=8001
 
-# Frontend Configuration
-FRONTEND_PORT=8080
+# Frontend Configuration (Port 80 for production)
+FRONTEND_PORT=80
 
 # Database Port (mapped from container)
 DB_PORT=5433
@@ -590,7 +590,7 @@ show_access_info() {
     print_header "Installation Complete!"
 
     echo -e "${GREEN}${BOLD}Services Running:${NC}"
-    echo -e "  ${CYAN}•${NC} Frontend:  ${BOLD}http://${SERVER_IP}:8080${NC}"
+    echo -e "  ${CYAN}•${NC} Frontend:  ${BOLD}http://${SERVER_IP}${NC}"
     echo -e "  ${CYAN}•${NC} Backend:   ${BOLD}http://${SERVER_IP}:8001${NC}"
     echo -e "  ${CYAN}•${NC} Database:  ${BOLD}localhost:5433${NC}"
     echo ""
