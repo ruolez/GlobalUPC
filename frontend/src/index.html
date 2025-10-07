@@ -269,7 +269,7 @@
           <header class="page-header">
             <h2>Settings</h2>
             <p class="subtitle">
-              Configure your store connections and application settings
+              Configure your store connections and preferences
             </p>
           </header>
 
@@ -372,12 +372,33 @@
             />
           </section>
 
-          <!-- Application Settings Section -->
+          <!-- User Preferences Section -->
           <section class="settings-section">
             <div class="section-header">
-              <h3>Application Settings</h3>
+              <h3>User Preferences</h3>
             </div>
-            <div id="app-settings-list" class="settings-list"></div>
+            <div class="form-group">
+              <label for="default-landing-page">Default Landing Page</label>
+              <select id="default-landing-page" style="max-width: 300px">
+                <option value="dashboard">Dashboard</option>
+                <option value="update-upc">Update UPC</option>
+                <option value="sql-audit">Orphan UPCs</option>
+                <option value="store-comparison">Items Check</option>
+                <option value="history">History</option>
+                <option value="settings">Settings</option>
+              </select>
+              <small
+                style="
+                  color: var(--text-tertiary);
+                  font-size: 0.75rem;
+                  margin-top: 0.5rem;
+                  display: block;
+                "
+              >
+                Choose which page loads when you visit the application. This
+                setting is saved locally on your device.
+              </small>
+            </div>
           </section>
 
           <!-- Theme Selector Section -->
@@ -1220,7 +1241,8 @@
           <header class="page-header">
             <h2>Items Check</h2>
             <p class="subtitle">
-              Compare Items_tbl between two MSSQL stores to find missing products
+              Compare Items_tbl between two MSSQL stores to find missing
+              products
             </p>
           </header>
 
@@ -1366,7 +1388,10 @@
           </div>
 
           <!-- Results Section -->
-          <div id="comparison-results" style="display: none; margin-top: 1.5rem">
+          <div
+            id="comparison-results"
+            style="display: none; margin-top: 1.5rem"
+          >
             <div class="card">
               <div class="card-header">
                 <h3>Missing Products</h3>
@@ -1381,7 +1406,8 @@
                   "
                 >
                   <strong id="comparison-missing-count">0</strong> products
-                  missing out of <strong id="comparison-checked-count">0</strong>
+                  missing out of
+                  <strong id="comparison-checked-count">0</strong>
                   total products checked
                 </p>
               </div>
@@ -1401,10 +1427,15 @@
 
               <!-- Category Filter Dropdown -->
               <div class="form-group" style="margin-bottom: 1rem">
-                <label for="comparison-category-filter" style="font-size: 0.875rem"
+                <label
+                  for="comparison-category-filter"
+                  style="font-size: 0.875rem"
                   >Filter by Category</label
                 >
-                <select id="comparison-category-filter" style="max-width: 300px">
+                <select
+                  id="comparison-category-filter"
+                  style="max-width: 300px"
+                >
                   <option value="">All Categories</option>
                   <!-- Options populated by JavaScript -->
                 </select>

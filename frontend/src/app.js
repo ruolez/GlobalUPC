@@ -41,6 +41,14 @@ function navigateTo(page) {
     targetPage.style.display = "block";
   }
 
+  // Autofocus on UPC search input when navigating to update-upc page
+  if (page === "update-upc") {
+    setTimeout(() => {
+      const searchInput = document.getElementById("upc-search-input");
+      if (searchInput) searchInput.focus();
+    }, 100);
+  }
+
   // Load page data
   if (page === "dashboard") {
     loadDashboard();
@@ -95,7 +103,13 @@ async function loadDashboard() {
 // Settings Functions
 async function loadSettings() {
   await loadStores();
-  await loadAppSettings();
+
+  // Set dropdown value to saved preference
+  const savedLandingPage = getDefaultLandingPage();
+  const dropdown = document.getElementById("default-landing-page");
+  if (dropdown) {
+    dropdown.value = savedLandingPage;
+  }
 }
 
 async function loadStores() {
@@ -120,10 +134,25 @@ async function loadStores() {
     return;
   }
 
-  storesList.innerHTML = stores.map((store) => createStoreCard(store)).join("");
+  storesList.innerHTML = stores
+    .map((store, index) => createStoreCard(store, index + 1))
+    .join("");
 
   // Attach event listeners
   stores.forEach((store) => {
+    // Collapse/expand functionality
+    const storeCard = document.querySelector(
+      `.store-card[data-store-id="${store.id}"]`,
+    );
+    const header = storeCard?.querySelector(".store-card-header");
+    header?.addEventListener("click", (e) => {
+      // Don't toggle if clicking on action buttons
+      if (e.target.closest(".store-actions")) return;
+      storeCard.classList.toggle("collapsed");
+      storeCard.classList.toggle("expanded");
+    });
+
+    // Toggle/delete button listeners
     document
       .getElementById(`toggle-${store.id}`)
       ?.addEventListener("click", () => toggleStore(store.id));
@@ -133,16 +162,20 @@ async function loadStores() {
   });
 }
 
-function createStoreCard(store) {
+function createStoreCard(store, index) {
   const connection = store.mssql_connection || store.shopify_connection;
   const isMssql = store.store_type === "mssql";
 
   return `
-        <div class="store-card">
+        <div class="store-card collapsed" data-store-id="${store.id}">
             <div class="store-card-header">
                 <div class="store-info">
-                    <h4>${store.name}</h4>
-                    <span class="store-type-badge ${store.store_type}">${store.store_type.toUpperCase()}</span>
+                    <div class="store-header-clickable">
+                        <span class="row-number">${index}.</span>
+                        <span class="expand-icon">▶</span>
+                        <h4>${store.name}</h4>
+                        <span class="store-type-badge ${store.store_type}">${store.store_type.toUpperCase()}</span>
+                    </div>
                 </div>
                 <div class="store-actions">
                     <button class="btn btn-small btn-secondary" id="toggle-${store.id}">
@@ -206,31 +239,6 @@ async function deleteStore(storeId) {
   await apiRequest(`/stores/${storeId}`, { method: "DELETE" });
   await loadStores();
   await loadDashboard();
-}
-
-async function loadAppSettings() {
-  const settings = await apiRequest("/settings");
-  const settingsList = document.getElementById("app-settings-list");
-
-  if (settings.length === 0) {
-    settingsList.innerHTML =
-      '<div class="empty-state"><p>No settings configured.</p></div>';
-    return;
-  }
-
-  settingsList.innerHTML = settings
-    .map(
-      (setting) => `
-        <div class="setting-item">
-            <div class="setting-info">
-                <div class="setting-key">${setting.key}</div>
-                ${setting.description ? `<div class="setting-description">${setting.description}</div>` : ""}
-            </div>
-            <div class="setting-value">${setting.value || "-"}</div>
-        </div>
-    `,
-    )
-    .join("");
 }
 
 // Modal Functions
@@ -445,6 +453,22 @@ document.addEventListener("click", (e) => {
     setTheme(themeName);
   }
 });
+
+// Default Landing Page Preference
+function setDefaultLandingPage(pageName) {
+  localStorage.setItem("defaultLandingPage", pageName);
+}
+
+function getDefaultLandingPage() {
+  return localStorage.getItem("defaultLandingPage") || "dashboard";
+}
+
+// Landing page dropdown change handler
+document
+  .getElementById("default-landing-page")
+  ?.addEventListener("change", (e) => {
+    setDefaultLandingPage(e.target.value);
+  });
 
 // Update UPC Functions
 document
@@ -762,6 +786,12 @@ function displayUPCResults(data) {
 
   // Hide update progress section initially
   if (updateSection) updateSection.style.display = "none";
+
+  // Autofocus on new UPC input after search completes
+  setTimeout(() => {
+    const newUpcInput = document.getElementById("new-upc-input");
+    if (newUpcInput) newUpcInput.focus();
+  }, 100);
 }
 
 // Expand/collapse store rows click handler
@@ -2650,7 +2680,8 @@ async function loadCategoriesForStore(storeId) {
 async function loadSubcategoriesForStore(storeId, categoryIds) {
   try {
     // If no categories selected, load all subcategories
-    const params = categoryIds.length > 0 ? `?category_id=${categoryIds[0]}` : "";
+    const params =
+      categoryIds.length > 0 ? `?category_id=${categoryIds[0]}` : "";
     const response = await fetch(
       `${API_BASE}/stores/mssql/${storeId}/subcategories${params}`,
     );
@@ -2940,9 +2971,8 @@ function filterComparisonResults(category) {
       // Renumber visible rows
       const numberCell = row.querySelector("td:first-child");
       const visibleIndex =
-        rows
-          .slice(0, index)
-          .filter((r) => r.style.display !== "none").length + 1;
+        rows.slice(0, index).filter((r) => r.style.display !== "none").length +
+        1;
       numberCell.textContent = visibleIndex;
     } else {
       row.style.display = "none";
@@ -2955,14 +2985,7 @@ function exportComparisonToCSV() {
 
   const data = comparisonState.results;
   const rows = [
-    [
-      "Product ID",
-      "UPC",
-      "Description",
-      "Category",
-      "Subcategory",
-      "Status",
-    ],
+    ["Product ID", "UPC", "Description", "Category", "Subcategory", "Status"],
   ];
 
   data.missing_products.forEach((product) => {
@@ -3058,8 +3081,9 @@ document
 
 // Initialize
 document.addEventListener("DOMContentLoaded", () => {
-  // Load dashboard by default
-  loadDashboard();
+  // Load saved landing page (or dashboard by default)
+  const defaultPage = getDefaultLandingPage();
+  navigateTo(defaultPage);
 
   // Load saved theme
   const savedTheme = localStorage.getItem("selectedTheme") || "current";

@@ -467,11 +467,54 @@ body {
   border-color: var(--border-focus);
 }
 
+/* Collapsible store cards */
 .store-card-header {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
   margin-bottom: 1rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.store-header-clickable {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.store-card .expand-icon {
+  display: inline-block;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  transition: transform 0.2s ease;
+  width: 12px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.store-card.expanded .expand-icon {
+  transform: rotate(90deg);
+}
+
+/* Hide details when collapsed */
+.store-card.collapsed .store-details,
+.store-card.collapsed .store-status {
+  display: none;
+}
+
+/* Show details when expanded */
+.store-card.expanded .store-details {
+  display: grid;
+}
+
+.store-card.expanded .store-status {
+  display: flex;
+}
+
+/* Remove bottom margin from header when collapsed */
+.store-card.collapsed .store-card-header {
+  margin-bottom: 0;
 }
 
 .store-info h4 {
@@ -506,6 +549,8 @@ body {
 .store-actions {
   display: flex;
   gap: 0.5rem;
+  position: relative;
+  z-index: 1;
 }
 
 .store-details {

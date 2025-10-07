@@ -169,20 +169,29 @@ async def search_upc_stream(request: UPCSearchRequest, db: Session = Depends(get
 
         all_matches = []
 
-        # Search Shopify stores
+        # Search Shopify stores in parallel
         if shopify_stores:
             yield f"event: progress\ndata: {json.dumps({'status': 'searching', 'store_type': 'shopify', 'count': len(shopify_stores)})}\n\n"
 
-            for store in shopify_stores:
-                yield f"event: progress\ndata: {json.dumps({'status': 'searching_store', 'store_name': store['name'], 'store_type': 'shopify'})}\n\n"
-
-                # Search single store
+            # Create search tasks for all Shopify stores
+            async def search_shopify_store(store):
+                """Search single Shopify store and return store info + results."""
                 success, error, variants = await search_products_by_barcode(
                     shop_domain=store["shop_domain"],
                     admin_api_key=store["admin_api_key"],
                     barcode=upc,
                     api_version=store.get("api_version", "2025-01")
                 )
+                return store, success, error, variants
+
+            # Start all store searches in parallel
+            tasks = [asyncio.create_task(search_shopify_store(store)) for store in shopify_stores]
+
+            # Process results as each store completes
+            for completed_task in asyncio.as_completed(tasks):
+                store, success, error, variants = await completed_task
+
+                yield f"event: progress\ndata: {json.dumps({'status': 'searching_store', 'store_name': store['name'], 'store_type': 'shopify'})}\n\n"
 
                 if success and variants:
                     for variant in variants:
@@ -201,16 +210,14 @@ async def search_upc_stream(request: UPCSearchRequest, db: Session = Depends(get
 
                 yield f"event: progress\ndata: {json.dumps({'status': 'completed_store', 'store_name': store['name'], 'found': len(variants) if success else 0})}\n\n"
 
-        # Search MSSQL stores
+        # Search MSSQL stores in parallel
         if mssql_stores:
             print(f"[SEARCH] Starting MSSQL search for {len(mssql_stores)} stores")
             yield f"event: progress\ndata: {json.dumps({'status': 'searching', 'store_type': 'mssql', 'count': len(mssql_stores)})}\n\n"
 
-            for idx, store in enumerate(mssql_stores):
-                print(f"[SEARCH] MSSQL store {idx + 1}/{len(mssql_stores)}: {store['name']}")
-                yield f"event: progress\ndata: {json.dumps({'status': 'searching_store', 'store_name': store['name'], 'store_type': 'mssql'})}\n\n"
-
-                # Search single store across all tables
+            # Create search tasks for all MSSQL stores
+            async def search_mssql_store(store):
+                """Search single MSSQL store and return store info + results."""
                 success, error, table_results = await search_products_by_upc(
                     host=store["host"],
                     port=store["port"],
@@ -219,6 +226,21 @@ async def search_upc_stream(request: UPCSearchRequest, db: Session = Depends(get
                     password=store["password"],
                     upc=upc
                 )
+                return store, success, error, table_results
+
+            # Start all store searches in parallel
+            tasks = [asyncio.create_task(search_mssql_store(store)) for store in mssql_stores]
+
+            # Track completed stores for logging
+            completed_count = 0
+
+            # Process results as each store completes
+            for completed_task in asyncio.as_completed(tasks):
+                store, success, error, table_results = await completed_task
+                completed_count += 1
+
+                print(f"[SEARCH] MSSQL store {completed_count}/{len(mssql_stores)}: {store['name']}")
+                yield f"event: progress\ndata: {json.dumps({'status': 'searching_store', 'store_name': store['name'], 'store_type': 'mssql'})}\n\n"
 
                 if success and table_results:
                     for table_result in table_results:
