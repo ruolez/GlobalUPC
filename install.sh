@@ -560,8 +560,9 @@ wait_for_health() {
     cd "${INSTALL_DIR}"
 
     while [[ $attempt -lt $max_attempts ]]; do
-        local healthy=$(docker compose -f docker-compose.prod.yml ps --format json | jq -r '.[] | select(.Health == "healthy") | .Name' | wc -l)
-        local total=$(docker compose -f docker-compose.prod.yml ps --format json | jq -r '.[].Name' | wc -l)
+        # Docker Compose v2 returns newline-delimited JSON, so we use jq -s to slurp into array
+        local healthy=$(docker compose -f docker-compose.prod.yml ps --format json 2>/dev/null | jq -s -r 'map(select(.Health == "healthy")) | length')
+        local total=$(docker compose -f docker-compose.prod.yml ps --format json 2>/dev/null | jq -s -r 'length')
 
         if [[ $healthy -eq $total ]] && [[ $total -gt 0 ]]; then
             print_success "All services are healthy"
