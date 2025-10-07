@@ -505,24 +505,27 @@ start_containers() {
 stop_containers() {
     print_info "Stopping containers..."
 
-    if [[ -d "${INSTALL_DIR}" ]]; then
+    if [[ -f "${COMPOSE_FILE}" ]]; then
         cd "${INSTALL_DIR}"
-        docker compose -f docker-compose.prod.yml stop
+        docker compose -f docker-compose.prod.yml stop 2>/dev/null || true
         print_success "Containers stopped"
         log "Docker containers stopped"
     else
-        print_warning "Installation directory not found, stopping containers by name..."
+        print_warning "Compose file not found, stopping containers by name..."
         docker stop ${CONTAINER_BACKEND} ${CONTAINER_FRONTEND} ${CONTAINER_DB} 2>/dev/null || true
+        print_success "Containers stopped (if they existed)"
+        log "Docker containers stopped by name"
     fi
 }
 
 remove_containers() {
     print_info "Removing containers..."
 
-    if [[ -d "${INSTALL_DIR}" ]] && [[ -f "${COMPOSE_FILE}" ]]; then
+    if [[ -f "${COMPOSE_FILE}" ]]; then
         cd "${INSTALL_DIR}"
-        docker compose -f docker-compose.prod.yml down
+        docker compose -f docker-compose.prod.yml down 2>/dev/null || true
     else
+        print_warning "Compose file not found, removing containers by name..."
         docker rm -f ${CONTAINER_BACKEND} ${CONTAINER_FRONTEND} ${CONTAINER_DB} 2>/dev/null || true
     fi
 
