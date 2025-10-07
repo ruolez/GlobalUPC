@@ -16,9 +16,11 @@ This is a Docker-based multi-container application with three services:
 - **frontend** (Nginx/Vanilla JS): Single-page application with dark mode theme system
 
 ### Port Mappings
-- **8080**: Frontend (Nginx)
+- **80**: Frontend (Nginx) - Standard HTTP port for production
 - **8001**: Backend API (FastAPI/Uvicorn)
 - **5433**: PostgreSQL database (mapped from container port 5432)
+
+**Note**: Development mode may use port 8080 for frontend to avoid requiring root privileges.
 
 ### Container Names
 - `globalupc_frontend`
@@ -41,6 +43,16 @@ Used for production deployments via `install.sh`:
 - **Restart Policy**: `unless-stopped` for automatic recovery
 - **Environment Variables**: Configured via `.env` file
 - **Network Configuration**: CORS origins based on `SERVER_IP`
+- **Healthchecks**: All services have health checks (db, backend, frontend)
+- **Docker Compose v2**: Compatible with latest Docker Compose (no version field required)
+
+**Healthcheck Configuration**:
+- **Database**: `pg_isready` command checks PostgreSQL availability
+- **Backend**: `curl` check against `/api/health` endpoint (requires curl in container)
+- **Frontend**: `curl` check against `/index.html` (requires curl in container)
+- **Dependencies**: Frontend waits for backend health, backend waits for database health
+- **Start Period**: Backend has 20s grace period, frontend has 10s grace period
+- **Intervals**: All services checked every 10 seconds with 5-second timeout
 
 ## Installation Script
 
@@ -55,6 +67,9 @@ The `install.sh` script provides automated installation, update, and removal man
 - **Data Preservation**: Updates preserve database volumes
 - **Interactive Menu**: Fresh install, update, remove, reinstall options
 - **Safety Features**: Confirmation prompts, logging to `/opt/globalupc/install.log`
+- **Docker Compose v2 Compatible**: Properly handles NDJSON output format and modern compose syntax
+- **Healthcheck Monitoring**: Waits for all services to report healthy before completing installation
+- **Graceful Error Handling**: Handles missing compose files and partial installations
 
 ### Installation Location
 Production installations are deployed to `/opt/globalupc` with the following structure:
@@ -107,13 +122,13 @@ POSTGRES_USER=globalupc
 POSTGRES_PASSWORD=globalupc
 POSTGRES_DB=globalupc
 BACKEND_PORT=8001
-FRONTEND_PORT=8080
+FRONTEND_PORT=80               # Port 80 for production (standard HTTP)
 DB_PORT=5433
 ```
 
 **Environment Variables Used:**
 - `SERVER_IP`: Server's network address, used for CORS origins and frontend API URLs
-- `FRONTEND_PORT`: Frontend service port (default: 8080)
+- `FRONTEND_PORT`: Frontend service port (default: 80 for production, 8080 for development)
 - `BACKEND_PORT`: Backend service port (default: 8001)
 - `DB_PORT`: PostgreSQL mapped port (default: 5433)
 - `POSTGRES_*`: Database credentials
@@ -450,9 +465,17 @@ Content-Type: application/json
 
 ### Files
 - **index.html**: Single-page application markup with modals
+  - Includes custom barcode SVG favicon (black, inline data URI)
 - **app.js**: Application logic, API calls, theme switching
 - **styles.css**: Dark mode theme system with 6 theme variations
 - **nginx.conf**: Nginx configuration with no-cache headers
+
+### Favicon
+Custom black barcode SVG icon embedded as inline data URI in `index.html`:
+- Uses same barcode design as sidebar logo for brand consistency
+- Black color (#000000) for professional, neutral appearance
+- SVG format for crisp rendering at all sizes
+- Inline data URI avoids additional HTTP request
 
 ### Theme System
 CSS custom properties (`--bg-primary`, `--accent-primary`, etc.) with 6 pre-configured themes:
@@ -552,13 +575,41 @@ store_name = match["store_name"]
 
 ### UPC Search and Update Flow
 1. **Search Phase**: Frontend calls `/api/upc/search/stream` with UPC
-2. Backend searches all active stores (Shopify and MSSQL) in parallel
+2. Backend searches all active stores (Shopify and MSSQL) **in parallel**
 3. Results stream back via SSE with progress events
 4. Frontend displays results in a table
 5. **Update Phase**: User enters new UPC and clicks "Update All"
 6. Frontend calls `/api/upc/update/stream` with old UPC, new UPC, and matches
 7. Backend groups updates by store and executes updates
 8. Progress streams back via SSE showing per-store results
+
+### UPC Search Performance Optimization
+
+**Parallel Store Processing** (`main.py` lines 172-268):
+The streaming UPC search endpoint processes all stores simultaneously using `asyncio.as_completed()` for optimal performance while maintaining real-time progress updates.
+
+**Implementation**:
+```python
+# Create tasks for all stores
+tasks = [asyncio.create_task(search_store(store)) for store in stores]
+
+# Process results as each store completes (maintains SSE streaming)
+for completed_task in asyncio.as_completed(tasks):
+    store, success, error, results = await completed_task
+    yield f"event: progress\ndata: {json.dumps({...})}\n\n"
+```
+
+**Performance Improvement**:
+- **Before**: Sequential processing → 10 stores × 3 seconds = 30 seconds
+- **After**: Parallel processing → max(store times) = 3-5 seconds
+- **Result**: ~6-10x faster for typical multi-store configurations
+
+**Key Features**:
+- All Shopify stores searched simultaneously
+- All MSSQL stores searched simultaneously
+- Progress events stream as stores complete (not sequential order)
+- Error handling preserved (failed stores don't break entire search)
+- All existing SSE event types maintained for frontend compatibility
 
 ### Shopify SKU Update Feature
 When `update_sku_with_barcode` is enabled for a Shopify store:
@@ -904,10 +955,11 @@ sudo ./install.sh
 - Ensure Git is installed: `git --version`
 
 **Health checks timeout:**
-- Check if ports 8080, 8001, 5433 are available
+- Check if ports 80, 8001, 5433 are available (port 80 requires root/sudo)
 - Verify no firewall blocking container communication
 - Check container logs: `docker compose -f docker-compose.prod.yml logs`
-- Increase `max_attempts` in `wait_for_health()` function
+- Verify healthcheck dependencies are installed (curl in backend/frontend containers)
+- Increase `max_attempts` in `wait_for_health()` function if needed
 
 **Frontend cannot connect to backend:**
 - Verify `SERVER_IP` in `/opt/globalupc/.env` is correct
@@ -937,8 +989,8 @@ sudo apt-get install -y jq
 - Check firewall rules: `sudo ufw status`
 - Allow ports if needed:
   ```bash
-  sudo ufw allow 8080/tcp
-  sudo ufw allow 8001/tcp
+  sudo ufw allow 80/tcp    # Frontend (HTTP)
+  sudo ufw allow 8001/tcp  # Backend API
   ```
 
 ## Frontend UI Features
