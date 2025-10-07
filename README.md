@@ -21,11 +21,52 @@ Docker-based multi-container application:
 ## Quick Start
 
 ### Prerequisites
-- Docker and Docker Compose
+- Ubuntu 24.04 LTS (recommended) or compatible Linux distribution
+- Root/sudo access
+- Internet connection
 - For MSSQL connections: Access to SQL Server databases
 - For Shopify connections: Shopify Admin API access tokens
 
 ### Installation
+
+#### Automated Installation (Recommended)
+
+The automated installation script handles all dependencies, configuration, and deployment:
+
+1. Download and run the installation script:
+```bash
+wget https://raw.githubusercontent.com/ruolez/GlobalUPC/main/install.sh
+sudo chmod +x install.sh
+sudo ./install.sh
+```
+
+2. Select **Option 1: Fresh Install** from the menu
+
+3. The script will:
+   - Check and install Docker, Docker Compose, and Git if needed
+   - Prompt for your server's IP address or hostname
+   - Clone the repository to `/opt/globalupc`
+   - Configure the application for your network
+   - Build and start all containers
+   - Display access URLs and commands
+
+4. Access the application:
+   - Frontend: `http://{YOUR_IP}:8080`
+   - Backend API: `http://{YOUR_IP}:8001`
+   - API Documentation: `http://{YOUR_IP}:8001/docs`
+
+#### Installation Menu Options
+
+The `install.sh` script provides several options:
+
+- **Fresh Install**: New installation with full setup
+- **Update from GitHub**: Pull latest code and rebuild (keeps database data)
+- **Remove Installation Only**: Cleanup with optional data preservation
+- **Remove and Reinstall**: Complete fresh start
+
+#### Manual Installation (Development)
+
+For development environments with manual control:
 
 1. Clone the repository:
 ```bash
@@ -33,15 +74,69 @@ git clone https://github.com/ruolez/GlobalUPC.git
 cd GlobalUPC
 ```
 
-2. Start the application:
+2. Copy environment template:
+```bash
+cp .env.template .env
+```
+
+3. Edit `.env` and set your `SERVER_IP`
+
+4. Start the application:
 ```bash
 docker-compose up -d
 ```
 
-3. Access the application:
+5. Access the application:
 - Frontend: http://localhost:8080
 - Backend API: http://localhost:8001
 - API Documentation: http://localhost:8001/docs
+
+### Updating the Application
+
+To update to the latest version while preserving your data:
+
+```bash
+cd /opt/globalupc
+sudo ./install.sh
+```
+
+Select **Option 2: Update from GitHub**. This will:
+- Pull the latest code from GitHub
+- Rebuild containers with new code
+- Keep all database data (stores, configurations, history)
+- Preserve your network configuration
+
+### Managing the Installation
+
+**View Service Status:**
+```bash
+cd /opt/globalupc
+docker compose -f docker-compose.prod.yml ps
+```
+
+**View Logs:**
+```bash
+cd /opt/globalupc
+docker compose -f docker-compose.prod.yml logs -f
+```
+
+**Restart Services:**
+```bash
+cd /opt/globalupc
+docker compose -f docker-compose.prod.yml restart
+```
+
+**Stop Services:**
+```bash
+cd /opt/globalupc
+docker compose -f docker-compose.prod.yml stop
+```
+
+**Start Services:**
+```bash
+cd /opt/globalupc
+docker compose -f docker-compose.prod.yml up -d
+```
 
 ### Configuration
 

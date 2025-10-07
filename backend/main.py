@@ -9,6 +9,7 @@ import uvicorn
 import asyncio
 import json
 import uuid
+import os
 
 from database import get_db, engine
 from models import Store, MSSQLConnection, ShopifyConnection, Setting, StoreType, UPCUpdateHistory
@@ -34,10 +35,24 @@ from shopify_helper import test_shopify_connection, search_barcode_across_shopif
 
 app = FastAPI(title="Global UPC API", version="1.0.0")
 
+# Read SERVER_IP from environment variable
+SERVER_IP = os.getenv("SERVER_IP", "localhost")
+FRONTEND_PORT = os.getenv("FRONTEND_PORT", "8080")
+
+# Build CORS origins list
+cors_origins = [
+    f"http://{SERVER_IP}:{FRONTEND_PORT}",
+    f"http://localhost:{FRONTEND_PORT}",
+    "http://localhost:8080",  # Fallback for development
+]
+
+# Remove duplicates while preserving order
+cors_origins = list(dict.fromkeys(cors_origins))
+
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
