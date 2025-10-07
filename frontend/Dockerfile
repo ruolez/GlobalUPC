@@ -1,5 +1,8 @@
 FROM nginx:alpine
 
+# Install curl for healthcheck
+RUN apk add --no-cache curl
+
 # Remove default nginx config
 RUN rm /etc/nginx/nginx.conf
 
