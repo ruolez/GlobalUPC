@@ -441,6 +441,10 @@ clone_repository() {
         fi
     fi
 
+    # Ensure parent directory exists and cd to it before cloning
+    mkdir -p "$(dirname "${INSTALL_DIR}")"
+    cd "$(dirname "${INSTALL_DIR}")" || error_exit "Cannot access installation parent directory"
+
     git clone -b "${GITHUB_BRANCH}" "${REPO_URL}" "${INSTALL_DIR}"
 
     if [[ $? -eq 0 ]]; then
