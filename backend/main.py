@@ -611,25 +611,60 @@ async def audit_orphaned_upcs_stream(request: OrphanedUPCAuditRequest, db: Sessi
     """
     async def generate_audit_events() -> AsyncGenerator[str, None]:
         store_id = request.store_id
+        target_store_id = request.target_store_id
         date_from = request.date_from
         date_to = request.date_to
 
-        # Get store from database
+        # Get source store from database
         store = db.query(Store).filter(Store.id == store_id).first()
         if not store:
             yield f"event: error\ndata: {json.dumps({'message': 'Store not found'})}\n\n"
             return
 
-        # Validate store is MSSQL type
+        # Validate source store is MSSQL type
         if store.store_type != StoreType.mssql or not store.mssql_connection:
             yield f"event: error\ndata: {json.dumps({'message': 'Store is not an MSSQL database'})}\n\n"
             return
 
-        # Get connection details
+        # Get source connection details
         conn = store.mssql_connection
         store_name = store.name
 
-        print(f"[AUDIT] Starting audit for store: {store_name}")
+        # Handle cross-database comparison if target_store_id is provided
+        target_host = None
+        target_port = None
+        target_database = None
+        target_username = None
+        target_password = None
+        target_store_name = None
+
+        if target_store_id is not None:
+            # Get target store from database
+            target_store = db.query(Store).filter(Store.id == target_store_id).first()
+            if not target_store:
+                yield f"event: error\ndata: {json.dumps({'message': 'Target store not found'})}\n\n"
+                return
+
+            # Validate target store is MSSQL type
+            if target_store.store_type != StoreType.mssql or not target_store.mssql_connection:
+                yield f"event: error\ndata: {json.dumps({'message': 'Target store is not an MSSQL database'})}\n\n"
+                return
+
+            # Get target connection details
+            target_conn = target_store.mssql_connection
+            target_store_name = target_store.name
+            target_host = target_conn.host
+            target_port = target_conn.port
+            target_database = target_conn.database_name
+            target_username = target_conn.username
+            target_password = target_conn.password
+
+            print(f"[AUDIT] Starting cross-database audit")
+            print(f"[AUDIT] Source: {store_name}")
+            print(f"[AUDIT] Target: {target_store_name}")
+        else:
+            print(f"[AUDIT] Starting same-database audit for store: {store_name}")
+
         if date_from or date_to:
             print(f"[AUDIT] Date range: {date_from} to {date_to}")
 
@@ -662,7 +697,12 @@ async def audit_orphaned_upcs_stream(request: OrphanedUPCAuditRequest, db: Sessi
                 conn.password,
                 progress_callback,
                 date_from,
-                date_to
+                date_to,
+                target_host,
+                target_port,
+                target_database,
+                target_username,
+                target_password
             )
         )
 
@@ -734,8 +774,13 @@ async def audit_orphaned_upcs_stream(request: OrphanedUPCAuditRequest, db: Sessi
     )
 
 # Helper wrapper for audit function (for executor)
-def audit_orphaned_upcs_sync_wrapper(host, port, database, username, password, progress_callback, date_from=None, date_to=None):
-    """Wrapper to call the sync audit function."""
+def audit_orphaned_upcs_sync_wrapper(
+    host, port, database, username, password, progress_callback,
+    date_from=None, date_to=None,
+    target_host=None, target_port=None, target_database=None,
+    target_username=None, target_password=None
+):
+    """Wrapper to call the sync audit function with optional cross-database comparison."""
     from mssql_helper import _audit_orphaned_upcs_sync
     return _audit_orphaned_upcs_sync(
         host=host,
@@ -746,7 +791,12 @@ def audit_orphaned_upcs_sync_wrapper(host, port, database, username, password, p
         progress_callback=progress_callback,
         tds_version="7.4",
         date_from=date_from,
-        date_to=date_to
+        date_to=date_to,
+        target_host=target_host,
+        target_port=target_port,
+        target_database=target_database,
+        target_username=target_username,
+        target_password=target_password
     )
 
 # Store endpoints

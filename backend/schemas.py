@@ -156,6 +156,7 @@ class ConfigImportResponse(BaseModel):
 # SQL UPC Audit Schemas
 class OrphanedUPCAuditRequest(BaseModel):
     store_id: int
+    target_store_id: Optional[int] = None  # Optional: compare against different database's Items_tbl
     date_from: Optional[date] = None
     date_to: Optional[date] = None
 
