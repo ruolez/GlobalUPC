@@ -104,6 +104,104 @@ def validate_shop_domain(shop_domain: str) -> str:
 
     return shop_domain
 
+async def check_barcode_exists(
+    shop_domain: str,
+    admin_api_key: str,
+    barcode: str,
+    api_version: str = "2025-01"
+) -> tuple[bool, Optional[str], List[Dict[str, Any]]]:
+    """
+    Check if a barcode exists in Shopify store using GraphQL Admin API.
+
+    Args:
+        shop_domain: Shop domain (e.g., mystore.myshopify.com)
+        admin_api_key: Shopify Admin API access token
+        barcode: UPC/barcode to check
+        api_version: API version (e.g., 2025-01)
+
+    Returns:
+        Tuple of (success: bool, error_message: Optional[str], variants: List[Dict])
+    """
+    try:
+        # Normalize shop domain
+        shop_domain = validate_shop_domain(shop_domain)
+
+        # Build GraphQL query
+        query = """
+        query checkBarcodeExists($barcode: String!) {
+          productVariants(first: 10, query: $barcode) {
+            edges {
+              node {
+                id
+                barcode
+                sku
+                title
+                displayName
+                product {
+                  id
+                  title
+                }
+              }
+            }
+          }
+        }
+        """
+
+        variables = {
+            "barcode": f"barcode:{barcode}"
+        }
+
+        url = f"https://{shop_domain}/admin/api/{api_version}/graphql.json"
+        headers = {
+            "X-Shopify-Access-Token": admin_api_key,
+            "Content-Type": "application/json"
+        }
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url,
+                json={"query": query, "variables": variables},
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=30)
+            ) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    return False, f"HTTP {response.status}: {error_text}", []
+
+                data = await response.json()
+
+                # Check for GraphQL errors
+                if "errors" in data:
+                    errors = data["errors"]
+                    error_msg = "; ".join([e.get("message", str(e)) for e in errors])
+                    return False, f"GraphQL errors: {error_msg}", []
+
+                # Extract variants
+                variants = []
+                edges = data.get("data", {}).get("productVariants", {}).get("edges", [])
+
+                for edge in edges:
+                    node = edge.get("node", {})
+                    product = node.get("product", {})
+
+                    variant_data = {
+                        "variant_id": node.get("id"),
+                        "product_id": product.get("id"),
+                        "product_title": product.get("title"),
+                        "variant_title": node.get("title") or "Default",
+                        "display_name": node.get("displayName"),
+                        "barcode": node.get("barcode"),
+                        "sku": node.get("sku")
+                    }
+                    variants.append(variant_data)
+
+                return True, None, variants
+
+    except aiohttp.ClientError as e:
+        return False, f"Network error: {str(e)}", []
+    except Exception as e:
+        return False, f"Unexpected error: {str(e)}", []
+
 async def search_products_by_barcode(
     shop_domain: str,
     admin_api_key: str,

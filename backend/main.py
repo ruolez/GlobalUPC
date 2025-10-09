@@ -18,6 +18,7 @@ from schemas import (
     SettingCreate, SettingUpdate, SettingResponse,
     UPCSearchRequest, UPCSearchResponse, ProductVariantMatch,
     UPCUpdateRequest, UPCUpdateResult,
+    UPCValidationRequest, UPCValidationResponse,
     ConfigExportResponse, ConfigImportRequest, ConfigImportResponse,
     StoreImportResult, StoreExport,
     OrphanedUPCAuditRequest, OrphanedUPCRecord, OrphanedUPCAuditResponse,
@@ -29,9 +30,10 @@ from schemas import (
 from mssql_helper import (
     test_mssql_connection, search_upc_across_mssql_stores, search_products_by_upc,
     update_upc_across_mssql_stores, audit_orphaned_upcs,
-    find_matches_by_product_id, find_matches_by_description, update_orphaned_upcs
+    find_matches_by_product_id, find_matches_by_description, update_orphaned_upcs,
+    check_upc_exists
 )
-from shopify_helper import test_shopify_connection, search_barcode_across_shopify_stores, search_products_by_barcode, update_barcodes_across_shopify_stores
+from shopify_helper import test_shopify_connection, search_barcode_across_shopify_stores, search_products_by_barcode, update_barcodes_across_shopify_stores, check_barcode_exists
 
 app = FastAPI(title="Global UPC API", version="1.0.0")
 
@@ -278,6 +280,109 @@ async def search_upc_stream(request: UPCSearchRequest, db: Session = Depends(get
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
         }
+    )
+
+@app.post("/api/upc/validate", response_model=UPCValidationResponse)
+async def validate_upc(request: UPCValidationRequest, db: Session = Depends(get_db)):
+    """
+    Validate if a UPC already exists in any active store (MSSQL or Shopify).
+    Used before UPC updates to prevent duplicates.
+    """
+    upc = request.upc.strip()
+
+    if not upc:
+        raise HTTPException(status_code=400, detail="UPC is required")
+
+    # Get all active stores
+    active_stores = db.query(Store).filter(Store.is_active == True).all()
+
+    if not active_stores:
+        return UPCValidationResponse(
+            exists=False,
+            matches=[],
+            total_matches=0
+        )
+
+    # Separate stores by type
+    shopify_stores = []
+    mssql_stores = []
+
+    for store in active_stores:
+        if store.store_type == StoreType.shopify and store.shopify_connection:
+            shopify_stores.append({
+                "id": store.id,
+                "name": store.name,
+                "shop_domain": store.shopify_connection.shop_domain,
+                "admin_api_key": store.shopify_connection.admin_api_key,
+                "api_version": store.shopify_connection.api_version
+            })
+        elif store.store_type == StoreType.mssql and store.mssql_connection:
+            mssql_stores.append({
+                "id": store.id,
+                "name": store.name,
+                "host": store.mssql_connection.host,
+                "port": store.mssql_connection.port,
+                "database_name": store.mssql_connection.database_name,
+                "username": store.mssql_connection.username,
+                "password": store.mssql_connection.password
+            })
+
+    all_matches = []
+
+    # Check Shopify stores
+    if shopify_stores:
+        for shop_store in shopify_stores:
+            success, error, variants = await check_barcode_exists(
+                shop_domain=shop_store["shop_domain"],
+                admin_api_key=shop_store["admin_api_key"],
+                barcode=upc,
+                api_version=shop_store.get("api_version", "2025-01")
+            )
+
+            if success and variants:
+                for variant in variants:
+                    all_matches.append(ProductVariantMatch(
+                        store_id=shop_store["id"],
+                        store_name=shop_store["name"],
+                        store_type="shopify",
+                        product_id=variant["product_id"],
+                        product_title=variant["product_title"],
+                        variant_id=variant["variant_id"],
+                        variant_title=variant["variant_title"],
+                        current_barcode=variant["barcode"],
+                        sku=variant["sku"]
+                    ))
+
+    # Check MSSQL stores
+    if mssql_stores:
+        for mssql_store in mssql_stores:
+            success, error, results = await check_upc_exists(
+                host=mssql_store["host"],
+                port=mssql_store["port"],
+                database=mssql_store["database_name"],
+                username=mssql_store["username"],
+                password=mssql_store["password"],
+                upc=upc
+            )
+
+            if success and results:
+                for result in results:
+                    all_matches.append(ProductVariantMatch(
+                        store_id=mssql_store["id"],
+                        store_name=mssql_store["name"],
+                        store_type="mssql",
+                        product_id=result["product_id"],
+                        product_title=result["product_description"],
+                        variant_id=None,
+                        variant_title=None,
+                        current_barcode=result["upc"],
+                        sku=None
+                    ))
+
+    return UPCValidationResponse(
+        exists=len(all_matches) > 0,
+        matches=all_matches,
+        total_matches=len(all_matches)
     )
 
 @app.post("/api/upc/search", response_model=UPCSearchResponse)

@@ -128,6 +128,118 @@ def get_available_drivers() -> list[str]:
     """Get list of available ODBC drivers."""
     return pyodbc.drivers()
 
+def _check_upc_exists_sync(
+    host: str,
+    port: int,
+    database: str,
+    username: str,
+    password: str,
+    upc: str,
+    tds_version: str = "7.4"
+) -> tuple[bool, Optional[str], List[Dict[str, Any]]]:
+    """
+    Synchronous version of UPC existence check for thread pool execution.
+
+    Checks if a UPC exists in Items_tbl of an MSSQL database.
+
+    Args:
+        host: Server hostname or IP
+        port: Server port
+        database: Database name
+        username: SQL Server username
+        password: SQL Server password
+        upc: UPC/barcode to check
+        tds_version: TDS protocol version
+
+    Returns:
+        Tuple of (success: bool, error_message: Optional[str], results: List[Dict])
+    """
+    try:
+        conn_string = get_mssql_connection_string(
+            host=host,
+            port=port,
+            database=database,
+            username=username,
+            password=password,
+            tds_version=tds_version
+        )
+
+        results = []
+
+        with pyodbc.connect(conn_string, timeout=30) as conn:
+            cursor = conn.cursor()
+
+            try:
+                # Query Items_tbl for this UPC
+                query = """
+                    SELECT ProductID, ProductDescription, ProductUPC
+                    FROM Items_tbl
+                    WHERE ProductUPC = ?
+                """
+
+                cursor.execute(query, (upc,))
+                rows = cursor.fetchall()
+
+                for row in rows:
+                    results.append({
+                        "product_id": str(row[0]),
+                        "product_description": row[1] if row[1] else "Unknown Product",
+                        "upc": row[2]
+                    })
+
+            except pyodbc.Error:
+                # Table doesn't exist in this database, skip it
+                pass
+
+            cursor.close()
+
+        return True, None, results
+
+    except pyodbc.Error as e:
+        error_msg = str(e)
+        return False, error_msg, []
+    except Exception as e:
+        return False, f"Unexpected error: {str(e)}", []
+
+async def check_upc_exists(
+    host: str,
+    port: int,
+    database: str,
+    username: str,
+    password: str,
+    upc: str,
+    tds_version: str = "7.4"
+) -> tuple[bool, Optional[str], List[Dict[str, Any]]]:
+    """
+    Check if a UPC exists in Items_tbl of an MSSQL database.
+
+    Args:
+        host: Server hostname or IP
+        port: Server port
+        database: Database name
+        username: SQL Server username
+        password: SQL Server password
+        upc: UPC/barcode to check
+        tds_version: TDS protocol version
+
+    Returns:
+        Tuple of (success: bool, error_message: Optional[str], results: List[Dict])
+    """
+    # Run synchronous pyodbc code in thread pool to avoid blocking event loop
+    loop = asyncio.get_event_loop()
+    with ThreadPoolExecutor() as executor:
+        return await loop.run_in_executor(
+            executor,
+            _check_upc_exists_sync,
+            host,
+            port,
+            database,
+            username,
+            password,
+            upc,
+            tds_version
+        )
+
 def _search_products_by_upc_sync(
     host: str,
     port: int,

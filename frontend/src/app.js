@@ -843,16 +843,14 @@ document.getElementById("new-upc-input")?.addEventListener("keypress", (e) => {
   }
 });
 
-document.getElementById("update-all-btn")?.addEventListener("click", () => {
+document.getElementById("update-all-btn")?.addEventListener("click", async () => {
   const newUPC = document.getElementById("new-upc-input").value.trim();
+  const oldUPC = currentSearchResults.upc;
+  const updateBtn = document.getElementById("update-all-btn");
 
+  // Basic validation checks
   if (!newUPC) {
     alert("Please enter a new UPC");
-    return;
-  }
-
-  if (newUPC === currentSearchResults.upc) {
-    alert("New UPC must be different from the current UPC");
     return;
   }
 
@@ -861,10 +859,117 @@ document.getElementById("update-all-btn")?.addEventListener("click", () => {
     return;
   }
 
-  // Confirm before updating
-  const message = `Update ${currentSearchResults.total_found} item${currentSearchResults.total_found !== 1 ? "s" : ""} from UPC "${currentSearchResults.upc}" to "${newUPC}"?`;
-  if (confirm(message)) {
-    updateUPC(currentSearchResults.upc, newUPC, currentSearchResults.matches);
+  // Check if same UPC (hard block)
+  if (newUPC === oldUPC) {
+    document.getElementById("same-upc-value").textContent = oldUPC;
+    openModal("same-upc-modal");
+    return;
+  }
+
+  // Show validation loading indicator
+  const validationLoading = document.createElement("div");
+  validationLoading.id = "validation-loading";
+  validationLoading.style.marginTop = "1rem";
+  validationLoading.style.padding = "1rem";
+  validationLoading.style.background = "var(--bg-tertiary)";
+  validationLoading.style.borderRadius = "var(--radius-md)";
+  validationLoading.style.textAlign = "center";
+  validationLoading.style.color = "var(--info)";
+  validationLoading.style.fontSize = "0.875rem";
+  validationLoading.innerHTML = '<strong>⏳ Checking for duplicate barcodes...</strong>';
+
+  const searchResults = document.getElementById("upc-search-results");
+  searchResults.appendChild(validationLoading);
+
+  // Scroll into view to ensure visibility
+  validationLoading.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  console.log("Validation loading indicator displayed");
+
+  // Disable button during validation
+  updateBtn.disabled = true;
+
+  // Track start time to ensure minimum display duration
+  const startTime = Date.now();
+
+  // Validate new UPC doesn't already exist (hard block)
+  try {
+
+    const response = await fetch(`${API_BASE}/upc/validate`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ upc: newUPC }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    const validation = await response.json();
+
+    // Ensure loading indicator shows for at least 500ms so users can see it
+    const elapsedTime = Date.now() - startTime;
+    const minDisplayTime = 500;
+    if (elapsedTime < minDisplayTime) {
+      await new Promise(resolve => setTimeout(resolve, minDisplayTime - elapsedTime));
+    }
+
+    // Remove loading indicator
+    validationLoading.remove();
+    updateBtn.disabled = false;
+
+    if (validation.exists) {
+      // Show duplicate UPC modal with matching products
+      document.getElementById("duplicate-upc-value").textContent = newUPC;
+
+      const duplicateTableBody = document.getElementById("duplicate-upc-matches-table");
+      duplicateTableBody.innerHTML = "";
+
+      validation.matches.forEach((match) => {
+        const row = document.createElement("tr");
+
+        // Store Name
+        const storeTd = document.createElement("td");
+        storeTd.textContent = match.store_name;
+        storeTd.style.color = "var(--accent-primary)";
+        row.appendChild(storeTd);
+
+        // Product Title
+        const productTd = document.createElement("td");
+        productTd.textContent = match.product_title;
+        row.appendChild(productTd);
+
+        // Variant
+        const variantTd = document.createElement("td");
+        variantTd.textContent = match.variant_title || "N/A";
+        variantTd.style.color = "var(--text-tertiary)";
+        row.appendChild(variantTd);
+
+        duplicateTableBody.appendChild(row);
+      });
+
+      openModal("duplicate-upc-modal");
+      return;
+    }
+
+    // Validation passed - proceed with confirmation dialog
+    const message = `Update ${currentSearchResults.total_found} item${currentSearchResults.total_found !== 1 ? "s" : ""} from UPC "${oldUPC}" to "${newUPC}"?`;
+    if (confirm(message)) {
+      updateUPC(oldUPC, newUPC, currentSearchResults.matches);
+    }
+  } catch (error) {
+    // Ensure loading indicator shows for at least 500ms even on error
+    const elapsedTime = Date.now() - startTime;
+    const minDisplayTime = 500;
+    if (elapsedTime < minDisplayTime) {
+      await new Promise(resolve => setTimeout(resolve, minDisplayTime - elapsedTime));
+    }
+
+    // Remove loading indicator on error
+    validationLoading.remove();
+    updateBtn.disabled = false;
+    alert(`Validation error: ${error.message}`);
   }
 });
 
