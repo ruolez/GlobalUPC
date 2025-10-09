@@ -356,6 +356,7 @@ def _update_upc_in_table_sync(
     Synchronous version of UPC update for thread pool execution.
 
     Updates ProductUPC field in a specific table for given primary keys.
+    Processes updates in batches to avoid SQL Server's 2100 parameter limit.
 
     Args:
         host: Server hostname or IP
@@ -372,6 +373,9 @@ def _update_upc_in_table_sync(
     Returns:
         Tuple of (success: bool, error_message: Optional[str], updated_count: int)
     """
+    conn = None
+    cursor = None
+
     try:
         if not primary_keys:
             return True, None, 0
@@ -385,36 +389,71 @@ def _update_upc_in_table_sync(
             tds_version=tds_version
         )
 
-        with pyodbc.connect(conn_string, timeout=30) as conn:
-            cursor = conn.cursor()
+        # Open connection and explicitly disable autocommit
+        conn = pyodbc.connect(conn_string, timeout=30, autocommit=False)
+        cursor = conn.cursor()
 
-            # Build parameterized query
+        # SQL Server has a limit of 2100 parameters per query
+        # We need to batch updates: 1 param for new_upc + N params for primary keys
+        # Safe limit: 2000 primary keys per batch (2000 + 1 = 2001 total params < 2100)
+        MAX_PARAMS_PER_BATCH = 2000
+        total_updated = 0
+
+        # Process primary keys in batches
+        for batch_start in range(0, len(primary_keys), MAX_PARAMS_PER_BATCH):
+            batch_end = min(batch_start + MAX_PARAMS_PER_BATCH, len(primary_keys))
+            batch_keys = primary_keys[batch_start:batch_end]
+
+            # Build parameterized query for this batch
             # UPDATE table SET ProductUPC = ? WHERE pk IN (?, ?, ...)
-            placeholders = ', '.join(['?' for _ in primary_keys])
+            placeholders = ', '.join(['?' for _ in batch_keys])
             query = f"""
                 UPDATE {table_name}
                 SET ProductUPC = ?
                 WHERE {primary_key_field} IN ({placeholders})
             """
 
-            # Execute update with parameters (new_upc first, then primary keys)
-            params = [new_upc] + primary_keys
+            # Execute update with parameters (new_upc first, then batch primary keys)
+            params = [new_upc] + batch_keys
             cursor.execute(query, params)
 
-            # Get number of rows updated
-            updated_count = cursor.rowcount
+            # Accumulate row count
+            total_updated += cursor.rowcount
 
-            # Commit transaction
-            conn.commit()
-            cursor.close()
+        # Explicitly commit all batch transactions
+        conn.commit()
 
-            return True, None, updated_count
+        return True, None, total_updated
 
     except pyodbc.Error as e:
+        # Explicitly rollback on pyodbc errors
+        if conn:
+            try:
+                conn.rollback()
+            except:
+                pass  # Ignore rollback errors (connection might be in bad state)
         error_msg = str(e)
         return False, error_msg, 0
     except Exception as e:
+        # Explicitly rollback on any other errors
+        if conn:
+            try:
+                conn.rollback()
+            except:
+                pass  # Ignore rollback errors
         return False, f"Unexpected error: {str(e)}", 0
+    finally:
+        # Clean up resources
+        if cursor:
+            try:
+                cursor.close()
+            except:
+                pass
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
 
 async def update_upc_in_table(
     host: str,
