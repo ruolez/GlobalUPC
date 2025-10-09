@@ -1225,6 +1225,10 @@ async function loadSQLAuditPage() {
   document.getElementById("audit-empty").style.display = "none";
   document.getElementById("audit-results").style.display = "none";
 
+  // Reset cross-database UI
+  document.getElementById("audit-cross-db-checkbox").checked = false;
+  document.getElementById("audit-target-db-group").style.display = "none";
+
   // Load MSSQL stores
   try {
     const stores = await apiRequest("/stores");
@@ -1250,12 +1254,94 @@ async function loadSQLAuditPage() {
   }
 }
 
+async function loadTargetStoreDropdown(excludeStoreId) {
+  const select = document.getElementById("audit-target-store-select");
+
+  // Reset dropdown
+  select.innerHTML = '<option value="">-- Select target database --</option>';
+
+  try {
+    const stores = await apiRequest("/stores");
+    const mssqlStores = stores.filter(
+      (s) => s.store_type === "mssql" && s.is_active && s.id !== excludeStoreId,
+    );
+
+    if (mssqlStores.length === 0) {
+      select.innerHTML =
+        '<option value="">No other SQL stores available</option>';
+      return;
+    }
+
+    // Populate dropdown
+    mssqlStores.forEach((store) => {
+      const option = document.createElement("option");
+      option.value = store.id;
+      option.textContent = store.name;
+      select.appendChild(option);
+    });
+  } catch (error) {
+    console.error("Error loading target stores:", error);
+  }
+}
+
 // Store selection change handler
 document
   .getElementById("audit-store-select")
   ?.addEventListener("change", (e) => {
     const runBtn = document.getElementById("run-audit-btn");
-    runBtn.disabled = !e.target.value;
+    const crossDbCheckbox = document.getElementById("audit-cross-db-checkbox");
+    const targetStoreSelect = document.getElementById("audit-target-store-select");
+
+    // Enable run button if store is selected and (cross-db is unchecked OR target is selected)
+    const isValid = e.target.value && (!crossDbCheckbox.checked || targetStoreSelect.value);
+    runBtn.disabled = !isValid;
+
+    // Reload target dropdown to exclude selected source store
+    if (crossDbCheckbox.checked) {
+      loadTargetStoreDropdown(parseInt(e.target.value));
+    }
+  });
+
+// Cross-database checkbox handler
+document
+  .getElementById("audit-cross-db-checkbox")
+  ?.addEventListener("change", (e) => {
+    const targetDbGroup = document.getElementById("audit-target-db-group");
+    const storeSelect = document.getElementById("audit-store-select");
+    const runBtn = document.getElementById("run-audit-btn");
+
+    if (e.target.checked) {
+      // Show target dropdown
+      targetDbGroup.style.display = "block";
+
+      // Load target stores (excluding source store)
+      if (storeSelect.value) {
+        loadTargetStoreDropdown(parseInt(storeSelect.value));
+      }
+
+      // Disable run button until target is selected
+      runBtn.disabled = true;
+    } else {
+      // Hide target dropdown
+      targetDbGroup.style.display = "none";
+
+      // Re-enable run button if source store is selected
+      runBtn.disabled = !storeSelect.value;
+    }
+  });
+
+// Target store selection change handler
+document
+  .getElementById("audit-target-store-select")
+  ?.addEventListener("change", (e) => {
+    const runBtn = document.getElementById("run-audit-btn");
+    const storeSelect = document.getElementById("audit-store-select");
+    const crossDbCheckbox = document.getElementById("audit-cross-db-checkbox");
+
+    // Enable run button if both source and target are selected
+    if (crossDbCheckbox.checked) {
+      runBtn.disabled = !storeSelect.value || !e.target.value;
+    }
   });
 
 // Run audit button handler
@@ -1280,6 +1366,44 @@ document
     filterAuditResults(e.target.value);
   });
 
+// Date button handlers
+document
+  .getElementById("audit-date-last-month")
+  ?.addEventListener("click", () => {
+    const now = new Date();
+    const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const lastDayOfLastMonth = new Date(now.getFullYear(), now.getMonth(), 0);
+
+    document.getElementById("audit-date-from").value = formatDateForInput(lastMonth);
+    document.getElementById("audit-date-to").value = formatDateForInput(lastDayOfLastMonth);
+  });
+
+document
+  .getElementById("audit-date-this-month")
+  ?.addEventListener("click", () => {
+    const now = new Date();
+    const firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const lastDayOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+
+    document.getElementById("audit-date-from").value = formatDateForInput(firstDayOfMonth);
+    document.getElementById("audit-date-to").value = formatDateForInput(lastDayOfMonth);
+  });
+
+document
+  .getElementById("audit-date-clear")
+  ?.addEventListener("click", () => {
+    document.getElementById("audit-date-from").value = "";
+    document.getElementById("audit-date-to").value = "";
+  });
+
+// Helper function to format date as YYYY-MM-DD for HTML date inputs
+function formatDateForInput(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 async function runAudit(storeId) {
   const loadingEl = document.getElementById("audit-loading");
   const progressContainer = document.getElementById("audit-progress");
@@ -1294,6 +1418,13 @@ async function runAudit(storeId) {
   const dateFrom = dateFromInput.value || null;
   const dateTo = dateToInput.value || null;
 
+  // Capture cross-database options
+  const crossDbCheckbox = document.getElementById("audit-cross-db-checkbox");
+  const targetStoreSelect = document.getElementById("audit-target-store-select");
+  const targetStoreId = crossDbCheckbox.checked && targetStoreSelect.value
+    ? parseInt(targetStoreSelect.value)
+    : null;
+
   // Show loading state
   loadingEl.style.display = "block";
   progressContainer.style.display = "block";
@@ -1303,10 +1434,11 @@ async function runAudit(storeId) {
   runBtn.disabled = true;
 
   try {
-    // Build request body with optional date filters
+    // Build request body with optional date filters and target store
     const requestBody = { store_id: storeId };
     if (dateFrom) requestBody.date_from = dateFrom;
     if (dateTo) requestBody.date_to = dateTo;
+    if (targetStoreId) requestBody.target_store_id = targetStoreId;
 
     // Use fetch with streaming for POST + SSE
     const response = await fetch(`${API_BASE}/analysis/orphaned-upcs/stream`, {
@@ -1416,7 +1548,8 @@ async function runAudit(storeId) {
           if (data.total_orphaned === 0) {
             emptyEl.style.display = "block";
           } else {
-            displayAuditResults(data);
+            // Pass cross-database mode flag to display function
+            displayAuditResults(data, targetStoreId !== null);
           }
 
           // Re-enable button
@@ -1441,13 +1574,15 @@ async function runAudit(storeId) {
 let currentAuditResults = {
   store_id: null,
   orphaned_records: [],
+  isCrossDatabase: false,
 };
 
-function displayAuditResults(data) {
+function displayAuditResults(data, isCrossDatabase = false) {
   const resultsEl = document.getElementById("audit-results");
   const tableBody = document.getElementById("audit-results-table-body");
   const orphanedCountEl = document.getElementById("audit-orphaned-count");
   const tablesCountEl = document.getElementById("audit-tables-count");
+  const filterTextEl = document.getElementById("audit-filter-text");
   const reconciliationActions = document.getElementById(
     "reconciliation-actions",
   );
@@ -1456,11 +1591,19 @@ function displayAuditResults(data) {
   currentAuditResults = {
     store_id: data.store_id,
     orphaned_records: data.orphaned_records,
+    isCrossDatabase: isCrossDatabase,
   };
 
   // Update counts
   orphanedCountEl.textContent = data.total_orphaned;
   tablesCountEl.textContent = data.tables_checked;
+
+  // Update filter text based on mode
+  if (isCrossDatabase) {
+    filterTextEl.textContent = "UPCs found in source but missing in target database across";
+  } else {
+    filterTextEl.textContent = "orphaned UPCs found across";
+  }
 
   // Calculate table statistics
   const tableStats = {};
@@ -1580,13 +1723,19 @@ function displayAuditResults(data) {
     tableBody.appendChild(row);
   });
 
-  // Show results and reconciliation actions
+  // Show results
   resultsEl.style.display = "block";
-  reconciliationActions.style.display = "flex";
 
-  // Reset checkboxes and buttons
-  document.getElementById("select-all-orphans").checked = false;
-  updateReconciliationButtons();
+  // Show/hide reconciliation actions based on audit mode
+  // Reconciliation only works for same-database audits
+  if (isCrossDatabase) {
+    reconciliationActions.style.display = "none";
+  } else {
+    reconciliationActions.style.display = "flex";
+    // Reset checkboxes and buttons
+    document.getElementById("select-all-orphans").checked = false;
+    updateReconciliationButtons();
+  }
 }
 
 // Filter audit results by table name
@@ -1622,16 +1771,25 @@ function filterAuditResults(filterTableName) {
 
   // Update summary text
   const totalOrphaned = currentAuditResults.orphaned_records.length;
+  const isCrossDb = currentAuditResults.isCrossDatabase;
 
   if (!filterTableName) {
     // No filter - show all
     orphanedCountEl.textContent = totalOrphaned;
-    filterTextEl.textContent = " orphaned UPCs found across";
+    if (isCrossDb) {
+      filterTextEl.textContent = " UPCs found in source but missing in target database across";
+    } else {
+      filterTextEl.textContent = " orphaned UPCs found across";
+    }
     tablesCountEl.style.display = "inline";
   } else {
     // Filtered - show count and filter status
     orphanedCountEl.textContent = visibleCount;
-    filterTextEl.textContent = ` of ${totalOrphaned} orphaned UPCs (filtered by ${formatTableName(filterTableName)})`;
+    if (isCrossDb) {
+      filterTextEl.textContent = ` of ${totalOrphaned} UPCs found in source but missing in target database (filtered by ${formatTableName(filterTableName)})`;
+    } else {
+      filterTextEl.textContent = ` of ${totalOrphaned} orphaned UPCs (filtered by ${formatTableName(filterTableName)})`;
+    }
     tablesCountEl.style.display = "none";
   }
 
@@ -1761,6 +1919,11 @@ document
 
     await reconcileOrphanedUPCs("product_description", selectedRecords);
   });
+
+// Export audit results button handler
+document
+  .getElementById("export-audit-btn")
+  ?.addEventListener("click", exportAuditToCSV);
 
 async function reconcileOrphanedUPCs(matchType, orphanedRecords) {
   const modal = document.getElementById("reconciliation-modal");
@@ -3005,6 +3168,74 @@ function exportComparisonToCSV() {
   const a = document.createElement("a");
   a.href = url;
   a.download = `store-comparison-${data.primary_store_name}-vs-${data.comparison_store_name}-${new Date().toISOString().split("T")[0]}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function exportAuditToCSV() {
+  if (!currentAuditResults.orphaned_records || currentAuditResults.orphaned_records.length === 0) {
+    return;
+  }
+
+  // Create Excel XML format (SpreadsheetML) to preserve leading zeros
+  const header = `<?xml version="1.0"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
+ <Styles>
+  <Style ss:ID="header">
+   <Font ss:Bold="1"/>
+  </Style>
+  <Style ss:ID="text">
+   <NumberFormat ss:Format="@"/>
+  </Style>
+ </Styles>
+ <Worksheet ss:Name="Orphaned UPCs">
+  <Table>
+   <Row>
+    <Cell ss:StyleID="header"><Data ss:Type="String">Table Name</Data></Cell>
+    <Cell ss:StyleID="header"><Data ss:Type="String">Record ID</Data></Cell>
+    <Cell ss:StyleID="header"><Data ss:Type="String">Orphaned UPC</Data></Cell>
+    <Cell ss:StyleID="header"><Data ss:Type="String">Product Description</Data></Cell>
+   </Row>`;
+
+  const rows = currentAuditResults.orphaned_records.map((record) => {
+    const escapeXml = (str) => {
+      if (!str) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&apos;');
+    };
+
+    return `   <Row>
+    <Cell><Data ss:Type="String">${escapeXml(record.table_name)}</Data></Cell>
+    <Cell><Data ss:Type="Number">${record.primary_key}</Data></Cell>
+    <Cell ss:StyleID="text"><Data ss:Type="String">${escapeXml(record.upc)}</Data></Cell>
+    <Cell><Data ss:Type="String">${escapeXml(record.description || '')}</Data></Cell>
+   </Row>`;
+  }).join('\n');
+
+  const footer = `
+  </Table>
+ </Worksheet>
+</Workbook>`;
+
+  const excelContent = header + '\n' + rows + footer;
+  const blob = new Blob([excelContent], { type: "application/vnd.ms-excel" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+
+  // Get store name from the dropdown
+  const storeSelect = document.getElementById("audit-store-select");
+  const storeName = storeSelect.options[storeSelect.selectedIndex]?.text || "unknown";
+  const dateStr = new Date().toISOString().split("T")[0];
+  const mode = currentAuditResults.isCrossDatabase ? "cross-database" : "orphaned";
+
+  a.download = `${mode}-upcs-${storeName}-${dateStr}.xls`;
   a.click();
   URL.revokeObjectURL(url);
 }

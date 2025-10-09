@@ -527,6 +527,254 @@ async def update_upc_across_mssql_stores(
 
     return results
 
+def _process_tables_cross_db(
+    detail_tables: List[Dict[str, Any]],
+    source_cursor,
+    target_cursor,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    progress_callback: Optional[callable] = None
+) -> tuple[List[Dict[str, Any]], int]:
+    """
+    Process detail tables with cross-database comparison.
+
+    Queries detail tables from source database and checks UPCs against target database's Items_tbl.
+
+    Args:
+        detail_tables: List of table definitions with name, pk, description_field
+        source_cursor: Database cursor for source database
+        target_cursor: Database cursor for target database
+        date_from: Optional start date for filtering
+        date_to: Optional end date for filtering
+        progress_callback: Optional callback for progress updates
+
+    Returns:
+        Tuple of (orphaned_records: List[Dict], tables_checked: int)
+    """
+    orphaned_records = []
+    tables_checked = 0
+
+    for table in detail_tables:
+        try:
+            # Notify progress - starting table check
+            if progress_callback:
+                progress_callback({
+                    "status": "checking_table",
+                    "table_name": table["name"]
+                })
+
+            # Build query components based on date filtering requirements
+            table_name = table["name"]
+            table_mapping = DETAIL_TABLE_MAPPING.get(table_name)
+
+            # Determine if we need to join with header table for date filtering
+            needs_header_join = (
+                date_from is not None or date_to is not None
+            ) and table_mapping is not None
+
+            # Build FROM clause and WHERE clause for date filtering
+            if needs_header_join and table_mapping["header_table"] is not None:
+                # Join with header table for date filtering
+                header_table = table_mapping["header_table"]
+                join_key = table_mapping["join_key"]
+                date_field = table_mapping["date_field"]
+                from_clause = f"{table_name} d INNER JOIN {header_table} h ON d.{join_key} = h.{join_key}"
+                date_where_parts = []
+                query_params = []
+
+                if date_from is not None:
+                    date_where_parts.append(f"h.{date_field} >= ?")
+                    query_params.append(date_from)
+                if date_to is not None:
+                    date_where_parts.append(f"h.{date_field} <= ?")
+                    query_params.append(date_to)
+
+                date_where_clause = " AND " + " AND ".join(date_where_parts) if date_where_parts else ""
+                table_prefix = "d."
+            elif needs_header_join and table_mapping["header_table"] is None:
+                # Special case: QuotationDetails has date directly in detail table
+                date_field = table_mapping["date_field"]
+                from_clause = table_name
+                date_where_parts = []
+                query_params = []
+
+                if date_from is not None:
+                    date_where_parts.append(f"{date_field} >= ?")
+                    query_params.append(date_from)
+                if date_to is not None:
+                    date_where_parts.append(f"{date_field} <= ?")
+                    query_params.append(date_to)
+
+                date_where_clause = " AND " + " AND ".join(date_where_parts) if date_where_parts else ""
+                table_prefix = ""
+            else:
+                # No date filtering
+                from_clause = table_name
+                date_where_clause = ""
+                query_params = []
+                table_prefix = ""
+
+            # Step 1: Get total record count from source database
+            count_query = f"""
+                SELECT COUNT(*) as total_records
+                FROM {from_clause}
+                WHERE {table_prefix}ProductUPC IS NOT NULL AND {table_prefix}ProductUPC != ''{date_where_clause}
+            """
+
+            source_cursor.execute(count_query, query_params)
+            count_result = source_cursor.fetchone()
+            total_records = count_result[0] if count_result else 0
+
+            print(f"[CROSS-DB DEBUG] {table['name']}: total_records = {total_records}")
+
+            if total_records == 0:
+                # Table is empty or has no UPCs
+                tables_checked += 1
+                if progress_callback:
+                    progress_callback({
+                        "status": "table_complete",
+                        "table_name": table["name"],
+                        "orphaned_count": 0
+                    })
+                continue
+
+            # Step 2: Calculate chunks based on record count
+            total_chunks = max(1, (total_records + CHUNK_SIZE - 1) // CHUNK_SIZE)
+
+            print(f"[CROSS-DB DEBUG] {table['name']}: total_records={total_records}, total_chunks={total_chunks}, chunk_size={CHUNK_SIZE}")
+
+            # Track progress for this table
+            table_orphans = []
+            records_checked = 0
+
+            # Step 3: Process records in chunks
+            for chunk_num in range(total_chunks):
+                offset = chunk_num * CHUNK_SIZE
+                limit = CHUNK_SIZE
+
+                print(f"[CROSS-DB DEBUG] {table['name']}: Processing chunk {chunk_num + 1}/{total_chunks}, OFFSET {offset} LIMIT {limit}")
+
+                # Query source database for chunk of records (without JOIN to Items_tbl)
+                chunk_query = f"""
+                    WITH numbered_records AS (
+                        SELECT
+                            {table_prefix}{table['pk']} as pk,
+                            {table_prefix}ProductID,
+                            {table_prefix}{table['description_field']} as description,
+                            {table_prefix}ProductUPC,
+                            ROW_NUMBER() OVER (ORDER BY {table_prefix}{table['pk']}) as row_num
+                        FROM {from_clause}
+                        WHERE {table_prefix}ProductUPC IS NOT NULL AND {table_prefix}ProductUPC != ''{date_where_clause}
+                    )
+                    SELECT n.pk, n.ProductID, n.description, n.ProductUPC
+                    FROM numbered_records n
+                    WHERE n.row_num > ? AND n.row_num <= ?
+                """
+
+                start_row = offset
+                end_row = offset + limit
+
+                # Combine chunk query parameters: date params + row range params
+                chunk_params = query_params + [start_row, end_row]
+                source_cursor.execute(chunk_query, chunk_params)
+                chunk_rows = source_cursor.fetchall()
+
+                print(f"[CROSS-DB DEBUG] {table['name']}: Chunk {chunk_num + 1} fetched {len(chunk_rows)} records from source")
+
+                # Collect UPCs from this chunk
+                chunk_upcs = []
+                records_map = {}  # Map UPC -> record details for quick lookup
+
+                for row in chunk_rows:
+                    pk, product_id, description, upc = row[0], row[1], row[2], row[3]
+                    normalized_upc = str(upc).strip() if upc else ''
+
+                    if normalized_upc:
+                        chunk_upcs.append(normalized_upc)
+                        records_map[normalized_upc] = {
+                            "pk": pk,
+                            "product_id": product_id,
+                            "description": description
+                        }
+
+                # Step 4: Check which UPCs exist in target database's Items_tbl
+                # Use batched queries to avoid SQL Server parameter limit (2100)
+                MAX_PARAMS_PER_QUERY = 2000
+                existing_upcs = set()
+
+                if chunk_upcs:
+                    print(f"[CROSS-DB DEBUG] {table['name']}: Checking {len(chunk_upcs)} UPCs against target Items_tbl")
+
+                    for batch_start in range(0, len(chunk_upcs), MAX_PARAMS_PER_QUERY):
+                        batch_end = min(batch_start + MAX_PARAMS_PER_QUERY, len(chunk_upcs))
+                        upc_batch = chunk_upcs[batch_start:batch_end]
+
+                        placeholders = ','.join(['?'] * len(upc_batch))
+                        target_query = f"SELECT ProductUPC FROM Items_tbl WHERE ProductUPC IN ({placeholders})"
+
+                        target_cursor.execute(target_query, upc_batch)
+                        batch_results = {row[0].strip() if row[0] else '' for row in target_cursor.fetchall()}
+                        existing_upcs.update(batch_results)
+
+                    print(f"[CROSS-DB DEBUG] {table['name']}: Found {len(existing_upcs)} matching UPCs in target")
+
+                # Step 5: Identify orphaned UPCs (in source but not in target)
+                chunk_orphans = 0
+                for upc in chunk_upcs:
+                    if upc not in existing_upcs:
+                        # This UPC is orphaned (exists in source detail table but not in target Items_tbl)
+                        record_details = records_map[upc]
+
+                        orphan_record = {
+                            "table_name": table["name"],
+                            "primary_key": record_details["pk"],
+                            "upc": upc,
+                            "product_id": record_details["product_id"],
+                            "description": record_details["description"] if record_details["description"] else "Unknown"
+                        }
+                        table_orphans.append(orphan_record)
+                        orphaned_records.append(orphan_record)
+                        chunk_orphans += 1
+
+                print(f"[CROSS-DB DEBUG] {table['name']}: Chunk {chunk_num + 1} found {chunk_orphans} orphaned UPCs")
+
+                # Update progress
+                records_checked = min((chunk_num + 1) * CHUNK_SIZE, total_records)
+
+                # Send chunk progress event
+                if progress_callback:
+                    progress_callback({
+                        "status": "chunk_progress",
+                        "table_name": table["name"],
+                        "chunk": chunk_num + 1,
+                        "total_chunks": total_chunks,
+                        "records_checked": records_checked,
+                        "total_records": total_records,
+                        "orphans_in_chunk": chunk_orphans,
+                        "total_orphans": len(table_orphans)
+                    })
+
+            tables_checked += 1
+
+            # Notify table complete
+            if progress_callback:
+                progress_callback({
+                    "status": "table_complete",
+                    "table_name": table["name"],
+                    "orphaned_count": len(table_orphans)
+                })
+
+        except pyodbc.Error:
+            # Table doesn't exist in source database, skip it
+            if progress_callback:
+                progress_callback({
+                    "status": "table_skipped",
+                    "table_name": table["name"]
+                })
+            continue
+
+    return orphaned_records, tables_checked
+
 def _audit_orphaned_upcs_sync(
     host: str,
     port: int,
@@ -536,7 +784,12 @@ def _audit_orphaned_upcs_sync(
     progress_callback: Optional[callable] = None,
     tds_version: str = "7.4",
     date_from: Optional[date] = None,
-    date_to: Optional[date] = None
+    date_to: Optional[date] = None,
+    target_host: Optional[str] = None,
+    target_port: Optional[int] = None,
+    target_database: Optional[str] = None,
+    target_username: Optional[str] = None,
+    target_password: Optional[str] = None
 ) -> tuple[bool, Optional[str], List[Dict[str, Any]], int]:
     """
     Synchronous audit of orphaned UPCs in MSSQL database using chunked processing.
@@ -545,22 +798,34 @@ def _audit_orphaned_upcs_sync(
     Processes tables in chunks to prevent timeout on large datasets.
     Optionally filters records by date range using header table dates.
 
+    Supports cross-database comparison: when target connection parameters are provided,
+    UPCs from source database detail tables are checked against target database's Items_tbl.
+
     Args:
-        host: Server hostname or IP
-        port: Server port
-        database: Database name
-        username: SQL Server username
-        password: SQL Server password
+        host: Source server hostname or IP
+        port: Source server port
+        database: Source database name
+        username: Source SQL Server username
+        password: Source SQL Server password
         progress_callback: Optional callback function for progress updates
         tds_version: TDS protocol version
         date_from: Optional start date for filtering (inclusive)
         date_to: Optional end date for filtering (inclusive)
+        target_host: Optional target server hostname for cross-database comparison
+        target_port: Optional target server port
+        target_database: Optional target database name
+        target_username: Optional target SQL Server username
+        target_password: Optional target SQL Server password
 
     Returns:
         Tuple of (success: bool, error_message: Optional[str], orphaned_records: List[Dict], tables_checked: int)
     """
     try:
-        conn_string = get_mssql_connection_string(
+        # Determine if cross-database mode is enabled
+        is_cross_db = all([target_host, target_port, target_database, target_username, target_password])
+
+        # Build source connection string
+        source_conn_string = get_mssql_connection_string(
             host=host,
             port=port,
             database=database,
@@ -568,6 +833,18 @@ def _audit_orphaned_upcs_sync(
             password=password,
             tds_version=tds_version
         )
+
+        # Build target connection string if cross-database mode
+        target_conn_string = None
+        if is_cross_db:
+            target_conn_string = get_mssql_connection_string(
+                host=target_host,
+                port=target_port,
+                database=target_database,
+                username=target_username,
+                password=target_password,
+                tds_version=tds_version
+            )
 
         # Define detail tables to audit (exclude Items_tbl)
         detail_tables = [
@@ -606,191 +883,218 @@ def _audit_orphaned_upcs_sync(
         orphaned_records = []
         tables_checked = 0
 
-        with pyodbc.connect(conn_string, timeout=60) as conn:
-            cursor = conn.cursor()
+        # Open connections based on mode (single or dual)
+        if is_cross_db:
+            # Cross-database mode: open both source and target connections
+            # Exclude quotation-related tables for cross-database comparison
+            excluded_tables = {"QuotationDetails", "QuotationsDetails_tbl"}
+            cross_db_tables = [t for t in detail_tables if t["name"] not in excluded_tables]
 
-            for table in detail_tables:
-                try:
-                    # Notify progress - starting table check
-                    if progress_callback:
-                        progress_callback({
-                            "status": "checking_table",
-                            "table_name": table["name"]
-                        })
+            with pyodbc.connect(source_conn_string, timeout=60) as source_conn, \
+                 pyodbc.connect(target_conn_string, timeout=60) as target_conn:
 
-                    # Build query components based on date filtering requirements
-                    table_name = table["name"]
-                    table_mapping = DETAIL_TABLE_MAPPING.get(table_name)
+                source_cursor = source_conn.cursor()
+                target_cursor = target_conn.cursor()
 
-                    # Determine if we need to join with header table for date filtering
-                    needs_header_join = (
-                        date_from is not None or date_to is not None
-                    ) and table_mapping is not None
+                # Process tables with cross-database comparison
+                orphaned_records, tables_checked = _process_tables_cross_db(
+                    detail_tables=cross_db_tables,
+                    source_cursor=source_cursor,
+                    target_cursor=target_cursor,
+                    date_from=date_from,
+                    date_to=date_to,
+                    progress_callback=progress_callback
+                )
 
-                    # Build FROM clause and WHERE clause for date filtering
-                    if needs_header_join and table_mapping["header_table"] is not None:
-                        # Join with header table for date filtering
-                        header_table = table_mapping["header_table"]
-                        join_key = table_mapping["join_key"]
-                        date_field = table_mapping["date_field"]
-                        from_clause = f"{table_name} d INNER JOIN {header_table} h ON d.{join_key} = h.{join_key}"
-                        date_where_parts = []
-                        query_params = []
+                source_cursor.close()
+                target_cursor.close()
+        else:
+            # Same-database mode: open single connection (backward compatibility)
+            with pyodbc.connect(source_conn_string, timeout=60) as conn:
+                cursor = conn.cursor()
 
-                        if date_from is not None:
-                            date_where_parts.append(f"h.{date_field} >= ?")
-                            query_params.append(date_from)
-                        if date_to is not None:
-                            date_where_parts.append(f"h.{date_field} <= ?")
-                            query_params.append(date_to)
+                for table in detail_tables:
+                    try:
+                        # Notify progress - starting table check
+                        if progress_callback:
+                            progress_callback({
+                                "status": "checking_table",
+                                "table_name": table["name"]
+                            })
 
-                        date_where_clause = " AND " + " AND ".join(date_where_parts) if date_where_parts else ""
-                        table_prefix = "d."
-                    elif needs_header_join and table_mapping["header_table"] is None:
-                        # Special case: QuotationDetails has date directly in detail table
-                        date_field = table_mapping["date_field"]
-                        from_clause = table_name
-                        date_where_parts = []
-                        query_params = []
+                        # Build query components based on date filtering requirements
+                        table_name = table["name"]
+                        table_mapping = DETAIL_TABLE_MAPPING.get(table_name)
 
-                        if date_from is not None:
-                            date_where_parts.append(f"{date_field} >= ?")
-                            query_params.append(date_from)
-                        if date_to is not None:
-                            date_where_parts.append(f"{date_field} <= ?")
-                            query_params.append(date_to)
+                        # Determine if we need to join with header table for date filtering
+                        needs_header_join = (
+                            date_from is not None or date_to is not None
+                        ) and table_mapping is not None
 
-                        date_where_clause = " AND " + " AND ".join(date_where_parts) if date_where_parts else ""
-                        table_prefix = ""
-                    else:
-                        # No date filtering
-                        from_clause = table_name
-                        date_where_clause = ""
-                        query_params = []
-                        table_prefix = ""
+                        # Build FROM clause and WHERE clause for date filtering
+                        if needs_header_join and table_mapping["header_table"] is not None:
+                            # Join with header table for date filtering
+                            header_table = table_mapping["header_table"]
+                            join_key = table_mapping["join_key"]
+                            date_field = table_mapping["date_field"]
+                            from_clause = f"{table_name} d INNER JOIN {header_table} h ON d.{join_key} = h.{join_key}"
+                            date_where_parts = []
+                            query_params = []
 
-                    # Step 1: Get total record count
-                    count_query = f"""
-                        SELECT COUNT(*) as total_records
-                        FROM {from_clause}
-                        WHERE {table_prefix}ProductUPC IS NOT NULL AND {table_prefix}ProductUPC != ''{date_where_clause}
-                    """
+                            if date_from is not None:
+                                date_where_parts.append(f"h.{date_field} >= ?")
+                                query_params.append(date_from)
+                            if date_to is not None:
+                                date_where_parts.append(f"h.{date_field} <= ?")
+                                query_params.append(date_to)
 
-                    cursor.execute(count_query, query_params)
-                    count_result = cursor.fetchone()
-                    total_records = count_result[0] if count_result else 0
+                            date_where_clause = " AND " + " AND ".join(date_where_parts) if date_where_parts else ""
+                            table_prefix = "d."
+                        elif needs_header_join and table_mapping["header_table"] is None:
+                            # Special case: QuotationDetails has date directly in detail table
+                            date_field = table_mapping["date_field"]
+                            from_clause = table_name
+                            date_where_parts = []
+                            query_params = []
 
-                    print(f"[CHUNK DEBUG] {table['name']}: total_records = {total_records}")
+                            if date_from is not None:
+                                date_where_parts.append(f"{date_field} >= ?")
+                                query_params.append(date_from)
+                            if date_to is not None:
+                                date_where_parts.append(f"{date_field} <= ?")
+                                query_params.append(date_to)
 
-                    if total_records == 0:
-                        # Table is empty or has no UPCs
+                            date_where_clause = " AND " + " AND ".join(date_where_parts) if date_where_parts else ""
+                            table_prefix = ""
+                        else:
+                            # No date filtering
+                            from_clause = table_name
+                            date_where_clause = ""
+                            query_params = []
+                            table_prefix = ""
+
+                        # Step 1: Get total record count
+                        count_query = f"""
+                            SELECT COUNT(*) as total_records
+                            FROM {from_clause}
+                            WHERE {table_prefix}ProductUPC IS NOT NULL AND {table_prefix}ProductUPC != ''{date_where_clause}
+                        """
+
+                        cursor.execute(count_query, query_params)
+                        count_result = cursor.fetchone()
+                        total_records = count_result[0] if count_result else 0
+
+                        print(f"[CHUNK DEBUG] {table['name']}: total_records = {total_records}")
+
+                        if total_records == 0:
+                            # Table is empty or has no UPCs
+                            tables_checked += 1
+                            if progress_callback:
+                                progress_callback({
+                                    "status": "table_complete",
+                                    "table_name": table["name"],
+                                    "orphaned_count": 0
+                                })
+                            continue
+
+                        # Step 2: Calculate chunks based on RECORD COUNT (not PK range)
+                        # This guarantees consistent chunk sizes even with sparse primary keys
+                        total_chunks = max(1, (total_records + CHUNK_SIZE - 1) // CHUNK_SIZE)
+
+                        print(f"[CHUNK DEBUG] {table['name']}: total_records={total_records}, total_chunks={total_chunks}, chunk_size={CHUNK_SIZE}")
+
+                        # Track progress for this table
+                        table_orphans = []
+                        records_checked = 0
+
+                        # Step 3: Process records in TRUE chunks (actually checking 5000 records at a time)
+                        # This shows real progress and prevents timeout on large tables
+
+                        for chunk_num in range(total_chunks):
+                            offset = chunk_num * CHUNK_SIZE
+                            limit = CHUNK_SIZE
+
+                            print(f"[CHUNK DEBUG] {table['name']}: Processing chunk {chunk_num + 1}/{total_chunks}, OFFSET {offset} LIMIT {limit}")
+
+                            # True chunked processing: Check a batch of 5000 records for orphans
+                            # Uses CTE to number records, then LEFT JOIN to find orphans in that batch
+                            chunk_query = f"""
+                                WITH numbered_records AS (
+                                    SELECT
+                                        {table_prefix}{table['pk']} as pk,
+                                        {table_prefix}ProductID,
+                                        {table_prefix}{table['description_field']} as description,
+                                        {table_prefix}ProductUPC,
+                                        ROW_NUMBER() OVER (ORDER BY {table_prefix}{table['pk']}) as row_num
+                                    FROM {from_clause}
+                                    WHERE {table_prefix}ProductUPC IS NOT NULL AND {table_prefix}ProductUPC != ''{date_where_clause}
+                                )
+                                SELECT n.pk, n.ProductID, n.description, n.ProductUPC
+                                FROM numbered_records n
+                                LEFT JOIN Items_tbl i ON n.ProductUPC = i.ProductUPC
+                                WHERE n.row_num > ? AND n.row_num <= ?
+                                AND i.ProductUPC IS NULL
+                            """
+
+                            start_row = offset
+                            end_row = offset + limit
+
+                            # Combine chunk query parameters: date params + row range params
+                            chunk_params = query_params + [start_row, end_row]
+                            cursor.execute(chunk_query, chunk_params)
+                            chunk_rows = cursor.fetchall()
+
+                            chunk_orphans = len(chunk_rows)
+                            print(f"[CHUNK DEBUG] {table['name']}: Chunk {chunk_num + 1} found {chunk_orphans} orphaned UPCs")
+
+                            # Process orphaned records found in this chunk
+                            for row in chunk_rows:
+                                pk, product_id, description, upc = row[0], row[1], row[2], row[3]
+
+                                orphan_record = {
+                                    "table_name": table["name"],
+                                    "primary_key": pk,
+                                    "upc": upc,
+                                    "product_id": product_id,
+                                    "description": description if description else "Unknown"
+                                }
+                                table_orphans.append(orphan_record)
+                                orphaned_records.append(orphan_record)
+
+                            # Update progress
+                            records_checked = min((chunk_num + 1) * CHUNK_SIZE, total_records)
+
+                            # Send chunk progress event
+                            if progress_callback:
+                                progress_callback({
+                                    "status": "chunk_progress",
+                                    "table_name": table["name"],
+                                    "chunk": chunk_num + 1,
+                                    "total_chunks": total_chunks,
+                                    "records_checked": records_checked,
+                                    "total_records": total_records,
+                                    "orphans_in_chunk": chunk_orphans,
+                                    "total_orphans": len(table_orphans)
+                                })
+
                         tables_checked += 1
+
+                        # Notify table complete
                         if progress_callback:
                             progress_callback({
                                 "status": "table_complete",
                                 "table_name": table["name"],
-                                "orphaned_count": 0
+                                "orphaned_count": len(table_orphans)
                             })
-                        continue
 
-                    # Step 2: Calculate chunks based on RECORD COUNT (not PK range)
-                    # This guarantees consistent chunk sizes even with sparse primary keys
-                    total_chunks = max(1, (total_records + CHUNK_SIZE - 1) // CHUNK_SIZE)
-
-                    print(f"[CHUNK DEBUG] {table['name']}: total_records={total_records}, total_chunks={total_chunks}, chunk_size={CHUNK_SIZE}")
-
-                    # Track progress for this table
-                    table_orphans = []
-                    records_checked = 0
-
-                    # Step 3: Process records in TRUE chunks (actually checking 5000 records at a time)
-                    # This shows real progress and prevents timeout on large tables
-
-                    for chunk_num in range(total_chunks):
-                        offset = chunk_num * CHUNK_SIZE
-                        limit = CHUNK_SIZE
-
-                        print(f"[CHUNK DEBUG] {table['name']}: Processing chunk {chunk_num + 1}/{total_chunks}, OFFSET {offset} LIMIT {limit}")
-
-                        # True chunked processing: Check a batch of 5000 records for orphans
-                        # Uses CTE to number records, then LEFT JOIN to find orphans in that batch
-                        chunk_query = f"""
-                            WITH numbered_records AS (
-                                SELECT
-                                    {table_prefix}{table['pk']} as pk,
-                                    {table_prefix}ProductID,
-                                    {table_prefix}{table['description_field']} as description,
-                                    {table_prefix}ProductUPC,
-                                    ROW_NUMBER() OVER (ORDER BY {table_prefix}{table['pk']}) as row_num
-                                FROM {from_clause}
-                                WHERE {table_prefix}ProductUPC IS NOT NULL AND {table_prefix}ProductUPC != ''{date_where_clause}
-                            )
-                            SELECT n.pk, n.ProductID, n.description, n.ProductUPC
-                            FROM numbered_records n
-                            LEFT JOIN Items_tbl i ON n.ProductUPC = i.ProductUPC
-                            WHERE n.row_num > ? AND n.row_num <= ?
-                            AND i.ProductUPC IS NULL
-                        """
-
-                        start_row = offset
-                        end_row = offset + limit
-
-                        # Combine chunk query parameters: date params + row range params
-                        chunk_params = query_params + [start_row, end_row]
-                        cursor.execute(chunk_query, chunk_params)
-                        chunk_rows = cursor.fetchall()
-
-                        chunk_orphans = len(chunk_rows)
-                        print(f"[CHUNK DEBUG] {table['name']}: Chunk {chunk_num + 1} found {chunk_orphans} orphaned UPCs")
-
-                        # Process orphaned records found in this chunk
-                        for row in chunk_rows:
-                            pk, product_id, description, upc = row[0], row[1], row[2], row[3]
-
-                            orphan_record = {
-                                "table_name": table["name"],
-                                "primary_key": pk,
-                                "upc": upc,
-                                "product_id": product_id,
-                                "description": description if description else "Unknown"
-                            }
-                            table_orphans.append(orphan_record)
-                            orphaned_records.append(orphan_record)
-
-                        # Update progress
-                        records_checked = min((chunk_num + 1) * CHUNK_SIZE, total_records)
-
-                        # Send chunk progress event
+                    except pyodbc.Error:
+                        # Table doesn't exist, skip it
                         if progress_callback:
                             progress_callback({
-                                "status": "chunk_progress",
-                                "table_name": table["name"],
-                                "chunk": chunk_num + 1,
-                                "total_chunks": total_chunks,
-                                "records_checked": records_checked,
-                                "total_records": total_records,
-                                "orphans_in_chunk": chunk_orphans,
-                                "total_orphans": len(table_orphans)
+                                "status": "table_skipped",
+                                "table_name": table["name"]
                             })
-
-                    tables_checked += 1
-
-                    # Notify table complete
-                    if progress_callback:
-                        progress_callback({
-                            "status": "table_complete",
-                            "table_name": table["name"],
-                            "orphaned_count": len(table_orphans)
-                        })
-
-                except pyodbc.Error:
-                    # Table doesn't exist, skip it
-                    if progress_callback:
-                        progress_callback({
-                            "status": "table_skipped",
-                            "table_name": table["name"]
-                        })
-                    continue
+                        continue
 
             cursor.close()
 
@@ -811,21 +1115,34 @@ async def audit_orphaned_upcs(
     progress_callback: Optional[callable] = None,
     tds_version: str = "7.4",
     date_from: Optional[date] = None,
-    date_to: Optional[date] = None
+    date_to: Optional[date] = None,
+    target_host: Optional[str] = None,
+    target_port: Optional[int] = None,
+    target_database: Optional[str] = None,
+    target_username: Optional[str] = None,
+    target_password: Optional[str] = None
 ) -> tuple[bool, Optional[str], List[Dict[str, Any]], int]:
     """
     Async wrapper for orphaned UPC audit.
 
+    Supports cross-database comparison: when target connection parameters are provided,
+    UPCs from source database detail tables are checked against target database's Items_tbl.
+
     Args:
-        host: Server hostname or IP
-        port: Server port
-        database: Database name
-        username: SQL Server username
-        password: SQL Server password
+        host: Source server hostname or IP
+        port: Source server port
+        database: Source database name
+        username: Source SQL Server username
+        password: Source SQL Server password
         progress_callback: Optional callback for progress updates
         tds_version: TDS protocol version
         date_from: Optional start date for filtering (inclusive)
         date_to: Optional end date for filtering (inclusive)
+        target_host: Optional target server hostname for cross-database comparison
+        target_port: Optional target server port
+        target_database: Optional target database name
+        target_username: Optional target SQL Server username
+        target_password: Optional target SQL Server password
 
     Returns:
         Tuple of (success: bool, error_message: Optional[str], orphaned_records: List[Dict], tables_checked: int)
@@ -843,7 +1160,12 @@ async def audit_orphaned_upcs(
             progress_callback,
             tds_version,
             date_from,
-            date_to
+            date_to,
+            target_host,
+            target_port,
+            target_database,
+            target_username,
+            target_password
         )
 
 def find_matches_by_product_id_sync(
