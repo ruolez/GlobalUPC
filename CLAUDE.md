@@ -47,8 +47,7 @@ All tables have auto-updating `created_at` and `updated_at` timestamps.
 - `GET/POST/DELETE /api/stores/*` - Store management
 - `POST /api/test/{mssql|shopify}` - Connection testing
 - `POST /api/upc/search/stream` - UPC search (SSE)
-- `POST /api/upc/update/stream` - UPC update (SSE)
-- `POST /api/upc/validate` - Validate UPC for duplicates
+- `POST /api/upc/update/stream` - UPC update with per-store validation (SSE)
 - `GET /api/config/export` - Export configurations
 - `POST /api/config/import` - Import configurations
 - `POST /api/analysis/orphaned-upcs/stream` - Audit orphaned UPCs (SSE)
@@ -79,12 +78,12 @@ store_id = match.store_id
 store_id = match["store_id"]
 ```
 
-### UPC Validation
-Before updating UPCs:
-1. Check old UPC ≠ new UPC (client-side)
-2. Call `POST /api/upc/validate` to check for duplicates
-3. Hard block if duplicate found (show modal with existing products)
-4. Show loading indicator: "⏳ Checking for duplicate barcodes..." (min 500ms display)
+### UPC Updates
+Per-store validation during update process:
+1. Client checks old UPC ≠ new UPC
+2. Each store validates independently during update stream
+3. Stores with duplicate UPCs are skipped (not blocking)
+4. Results show success/skip status per store
 
 ### MSSQL Table Discovery
 Searches all configured tables across all MSSQL connections. Tables gracefully skipped if missing:
@@ -162,8 +161,8 @@ sudo ./install.sh
 ### UPC Search & Update
 1. Search UPC across all active stores (parallel)
 2. Enter new UPC value
-3. Validation checks for duplicates
-4. Bulk update with real-time progress
+3. Per-store updates with duplicate validation (skips duplicates)
+4. Real-time progress with success/skip status
 
 ### Orphan UPC Audit (MSSQL only)
 - Finds UPCs in detail tables not in Items_tbl
