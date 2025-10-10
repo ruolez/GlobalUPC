@@ -10,6 +10,9 @@ let currentSearchResults = {
 // Flag to prevent multiple simultaneous searches
 let isSearching = false;
 
+// Track current audit store ID for exclusion feature
+let currentAuditStoreId = null;
+
 // Navigation
 document.querySelectorAll(".nav-item").forEach((item) => {
   item.addEventListener("click", (e) => {
@@ -91,6 +94,64 @@ async function apiRequest(endpoint, options = {}) {
   }
 }
 
+// Toast notification function
+function showToast(message, type = "info") {
+  // Create toast container if it doesn't exist
+  let container = document.getElementById("toast-container");
+  if (!container) {
+    container = document.createElement("div");
+    container.id = "toast-container";
+    container.style.position = "fixed";
+    container.style.top = "1rem";
+    container.style.right = "1rem";
+    container.style.zIndex = "10000";
+    container.style.display = "flex";
+    container.style.flexDirection = "column";
+    container.style.gap = "0.5rem";
+    document.body.appendChild(container);
+  }
+
+  // Create toast element
+  const toast = document.createElement("div");
+  toast.style.padding = "0.75rem 1rem";
+  toast.style.borderRadius = "var(--radius-md)";
+  toast.style.boxShadow = "0 4px 12px rgba(0, 0, 0, 0.4)";
+  toast.style.minWidth = "300px";
+  toast.style.maxWidth = "500px";
+  toast.style.fontSize = "0.875rem";
+  toast.style.fontWeight = "500";
+  toast.style.animation = "slideIn 0.3s ease-out";
+  toast.style.transition = "opacity 0.3s";
+
+  // Set color based on type
+  if (type === "success") {
+    toast.style.background = "var(--success)";
+    toast.style.color = "#fff";
+  } else if (type === "error") {
+    toast.style.background = "var(--error)";
+    toast.style.color = "#fff";
+  } else {
+    toast.style.background = "var(--bg-secondary)";
+    toast.style.color = "var(--text-primary)";
+    toast.style.border = "1px solid var(--border-color)";
+  }
+
+  toast.textContent = message;
+  container.appendChild(toast);
+
+  // Auto-remove after 3 seconds
+  setTimeout(() => {
+    toast.style.opacity = "0";
+    setTimeout(() => {
+      container.removeChild(toast);
+      // Remove container if empty
+      if (container.children.length === 0) {
+        document.body.removeChild(container);
+      }
+    }, 300);
+  }, 3000);
+}
+
 // Dashboard Functions
 async function loadDashboard() {
   const stores = await apiRequest("/stores");
@@ -103,12 +164,156 @@ async function loadDashboard() {
 // Settings Functions
 async function loadSettings() {
   await loadStores();
+  await loadExclusions();
 
   // Set dropdown value to saved preference
   const savedLandingPage = getDefaultLandingPage();
   const dropdown = document.getElementById("default-landing-page");
   if (dropdown) {
     dropdown.value = savedLandingPage;
+  }
+}
+
+// UPC Exclusions Functions
+async function loadExclusions(storeId = null) {
+  const loadingEl = document.getElementById("exclusions-loading");
+  const emptyEl = document.getElementById("exclusions-empty");
+  const resultsEl = document.getElementById("exclusions-results");
+  const tableBody = document.getElementById("exclusions-table-body");
+  const countEl = document.getElementById("exclusions-count");
+  const storeFilter = document.getElementById("exclusions-store-filter");
+
+  // Show loading state
+  loadingEl.style.display = "block";
+  emptyEl.style.display = "none";
+  resultsEl.style.display = "none";
+
+  try {
+    // Populate store filter dropdown if not already done
+    if (storeFilter && storeFilter.options.length === 1) {
+      const stores = await apiRequest("/stores");
+      const mssqlStores = stores.filter(s => s.store_type === "mssql");
+      mssqlStores.forEach(store => {
+        const option = document.createElement("option");
+        option.value = store.id;
+        option.textContent = store.name;
+        storeFilter.appendChild(option);
+      });
+    }
+
+    // Fetch exclusions
+    const endpoint = storeId ? `/exclusions?store_id=${storeId}` : "/exclusions";
+    const data = await apiRequest(endpoint);
+
+    loadingEl.style.display = "none";
+
+    if (data.total === 0) {
+      emptyEl.style.display = "block";
+      return;
+    }
+
+    // Show results
+    resultsEl.style.display = "block";
+    countEl.textContent = data.total;
+
+    // Clear and populate table
+    tableBody.innerHTML = "";
+    data.exclusions.forEach(exclusion => {
+      const row = document.createElement("tr");
+
+      // Store Name
+      const storeTd = document.createElement("td");
+      storeTd.textContent = exclusion.store_name;
+      storeTd.style.fontWeight = "500";
+      row.appendChild(storeTd);
+
+      // UPC
+      const upcTd = document.createElement("td");
+      upcTd.textContent = exclusion.upc;
+      upcTd.style.fontFamily = "monospace";
+      upcTd.style.fontWeight = "bold";
+      upcTd.style.color = "var(--accent-primary)";
+      row.appendChild(upcTd);
+
+      // Excluded Date
+      const dateTd = document.createElement("td");
+      const date = new Date(exclusion.excluded_at);
+      dateTd.textContent = date.toLocaleDateString() + " " + date.toLocaleTimeString();
+      dateTd.style.color = "var(--text-secondary)";
+      dateTd.style.fontSize = "0.875rem";
+      row.appendChild(dateTd);
+
+      // Notes
+      const notesTd = document.createElement("td");
+      notesTd.textContent = exclusion.notes || "—";
+      notesTd.style.color = exclusion.notes ? "inherit" : "var(--text-tertiary)";
+      notesTd.style.fontSize = "0.875rem";
+      row.appendChild(notesTd);
+
+      // Actions
+      const actionsTd = document.createElement("td");
+      actionsTd.style.textAlign = "center";
+      const deleteBtn = document.createElement("button");
+      deleteBtn.className = "btn-icon";
+      deleteBtn.title = "Remove exclusion";
+      deleteBtn.innerHTML = "🗑️";
+      deleteBtn.style.cursor = "pointer";
+      deleteBtn.style.fontSize = "1rem";
+      deleteBtn.style.padding = "0.25rem 0.5rem";
+      deleteBtn.style.background = "transparent";
+      deleteBtn.style.border = "1px solid var(--border-color)";
+      deleteBtn.style.borderRadius = "var(--radius-sm)";
+      deleteBtn.style.transition = "all 0.2s";
+      deleteBtn.onclick = async () => {
+        if (!confirm(`Remove exclusion for UPC ${exclusion.upc}?\n\nThis UPC will appear in future audit results for ${exclusion.store_name}.`)) {
+          return;
+        }
+
+        try {
+          await apiRequest(`/exclusions/${exclusion.id}`, { method: "DELETE" });
+
+          // Fade out and remove row
+          row.style.transition = "opacity 0.3s";
+          row.style.opacity = "0";
+          setTimeout(() => {
+            row.remove();
+            // Update count
+            const remainingRows = tableBody.querySelectorAll("tr").length;
+            countEl.textContent = remainingRows;
+
+            // Show empty state if no more exclusions
+            if (remainingRows === 0) {
+              resultsEl.style.display = "none";
+              emptyEl.style.display = "block";
+            }
+          }, 300);
+
+          showToast(`✓ Exclusion removed successfully`, "success");
+        } catch (error) {
+          console.error("Error deleting exclusion:", error);
+          showToast(`✗ Failed to delete exclusion: ${error.message}`, "error");
+        }
+      };
+      deleteBtn.onmouseover = () => {
+        deleteBtn.style.background = "var(--error)";
+        deleteBtn.style.borderColor = "var(--error)";
+        deleteBtn.style.color = "#fff";
+      };
+      deleteBtn.onmouseout = () => {
+        deleteBtn.style.background = "transparent";
+        deleteBtn.style.borderColor = "var(--border-color)";
+        deleteBtn.style.color = "inherit";
+      };
+      actionsTd.appendChild(deleteBtn);
+      row.appendChild(actionsTd);
+
+      tableBody.appendChild(row);
+    });
+  } catch (error) {
+    console.error("Error loading exclusions:", error);
+    loadingEl.style.display = "none";
+    emptyEl.style.display = "block";
+    showToast(`✗ Failed to load exclusions: ${error.message}`, "error");
   }
 }
 
@@ -468,6 +673,14 @@ document
   .getElementById("default-landing-page")
   ?.addEventListener("change", (e) => {
     setDefaultLandingPage(e.target.value);
+  });
+
+// Exclusions store filter handler
+document
+  .getElementById("exclusions-store-filter")
+  ?.addEventListener("change", (e) => {
+    const storeId = e.target.value ? parseInt(e.target.value) : null;
+    loadExclusions(storeId);
   });
 
 // Update UPC Functions
@@ -1510,6 +1723,9 @@ function formatDateForInput(date) {
 }
 
 async function runAudit(storeId) {
+  // Store current audit store ID for exclusion feature
+  currentAuditStoreId = storeId;
+
   const loadingEl = document.getElementById("audit-loading");
   const progressContainer = document.getElementById("audit-progress");
   const progressItems = document.getElementById("audit-progress-items");
@@ -1824,6 +2040,78 @@ function displayAuditResults(data, isCrossDatabase = false) {
       ? "inherit"
       : "var(--text-tertiary)";
     row.appendChild(descTd);
+
+    // Actions
+    const actionsTd = document.createElement("td");
+    actionsTd.style.textAlign = "center";
+    const excludeBtn = document.createElement("button");
+    excludeBtn.className = "btn-icon";
+    excludeBtn.title = "Exclude this UPC from future audits";
+    excludeBtn.innerHTML = "🚫";
+    excludeBtn.style.cursor = "pointer";
+    excludeBtn.style.fontSize = "1.125rem";
+    excludeBtn.style.padding = "0.25rem 0.5rem";
+    excludeBtn.style.background = "transparent";
+    excludeBtn.style.border = "1px solid var(--border-color)";
+    excludeBtn.style.borderRadius = "var(--radius-sm)";
+    excludeBtn.style.transition = "all 0.2s";
+    excludeBtn.onclick = async () => {
+      if (!confirm(`Exclude UPC ${record.upc} from future audits?\n\nThis will hide this UPC from all future orphaned UPC audit results for this store.`)) {
+        return;
+      }
+
+      try {
+        const response = await fetch(`${API_BASE}/exclusions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            store_id: currentAuditStoreId,
+            upc: record.upc,
+            notes: `Excluded from ${record.table_name}`
+          })
+        });
+
+        if (!response.ok) {
+          const error = await response.json();
+          throw new Error(error.detail || "Failed to exclude UPC");
+        }
+
+        // Fade out and remove the row
+        row.style.transition = "opacity 0.3s";
+        row.style.opacity = "0";
+        setTimeout(() => {
+          row.remove();
+          // Update counts
+          const remainingRows = tableBody.querySelectorAll("tr").length;
+          const orphanedCountEl = document.getElementById("audit-orphaned-count");
+          if (orphanedCountEl) {
+            orphanedCountEl.textContent = remainingRows;
+          }
+          // Renumber visible rows
+          tableBody.querySelectorAll("tr").forEach((r, idx) => {
+            const rowNumCell = r.querySelector("td:nth-child(2)");
+            if (rowNumCell) {
+              rowNumCell.textContent = idx + 1;
+            }
+          });
+        }, 300);
+
+        showToast(`✓ UPC ${record.upc} excluded successfully`, "success");
+      } catch (error) {
+        console.error("Error excluding UPC:", error);
+        showToast(`✗ Failed to exclude UPC: ${error.message}`, "error");
+      }
+    };
+    excludeBtn.onmouseover = () => {
+      excludeBtn.style.background = "var(--bg-tertiary)";
+      excludeBtn.style.borderColor = "var(--accent-primary)";
+    };
+    excludeBtn.onmouseout = () => {
+      excludeBtn.style.background = "transparent";
+      excludeBtn.style.borderColor = "var(--border-color)";
+    };
+    actionsTd.appendChild(excludeBtn);
+    row.appendChild(actionsTd);
 
     tableBody.appendChild(row);
   });

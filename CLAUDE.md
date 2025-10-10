@@ -26,6 +26,8 @@ Docker-based multi-container application:
 **mssql_connections**: `store_id`, `host`, `port`, `database_name`, `username`, `password`
 **shopify_connections**: `store_id`, `shop_domain`, `admin_api_key`, `api_version`, `update_sku_with_barcode`
 **settings**: `key`, `value`, `description`
+**upc_update_history**: `batch_id`, `store_id`, `old_upc`, `new_upc`, `success`, `items_updated_count` - Tracks all UPC updates
+**upc_exclusions**: `store_id`, `upc`, `excluded_at`, `notes` - UPCs excluded from orphaned UPC audits (unique per store+UPC)
 
 All tables have auto-updating `created_at` and `updated_at` timestamps.
 
@@ -51,6 +53,9 @@ All tables have auto-updating `created_at` and `updated_at` timestamps.
 - `POST /api/config/import` - Import configurations
 - `POST /api/analysis/orphaned-upcs/stream` - Audit orphaned UPCs (SSE)
 - `POST /api/comparison/stores/stream` - Compare Items_tbl (SSE)
+- `POST /api/exclusions` - Add UPC exclusion
+- `GET /api/exclusions?store_id={id}` - List exclusions (optionally filtered by store)
+- `DELETE /api/exclusions/{id}` - Remove UPC exclusion
 
 ## Critical Implementation Notes
 
@@ -133,7 +138,7 @@ docker exec -it globalupc_db psql -U globalupc -d globalupc
 docker exec -it globalupc_backend bash
 ```
 
-**Volume Mounts**: Backend and frontend auto-reload on changes. Frontend requires browser refresh.
+**Volume Mounts**: Backend and frontend auto-reload on changes. Frontend requires browser hard refresh (Cmd+Shift+R).
 
 ## Production Deployment
 
@@ -166,6 +171,10 @@ sudo ./install.sh
 - Date-range filtering support
 - Table filtering and statistics
 - Reconciliation by ProductID or Description
+- **UPC Exclusions**: Permanently exclude specific UPCs from audit results
+  - Scoped per Store + UPC combination
+  - Managed via Settings page or inline exclude button (🚫) in audit results
+  - Server-side filtering ensures excluded UPCs never appear in results
 
 ### Items Check (Store Comparison)
 - Compare Items_tbl between two MSSQL stores
@@ -195,9 +204,9 @@ sudo ./install.sh
 
 **Shopify "Invalid API key"**: Check domain (must end `.myshopify.com`) and key validity
 
-**Frontend not updating**: Hard refresh (Cmd+Shift+R) or rebuild frontend container
+**Frontend not updating**: Browser cache issue - hard refresh (Cmd+Shift+R)
 
-**Database refused**: Check PostgreSQL health and port 5433 availability
+**Database connection refused**: Check PostgreSQL health and port 5433 availability
 
 **Timeout errors**: Reduce CHUNK_SIZE in `mssql_helper.py`, check network latency, verify indexes on ProductUPC
 

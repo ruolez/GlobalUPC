@@ -111,6 +111,20 @@ CREATE INDEX idx_history_created_at ON upc_update_history(created_at DESC);
 CREATE INDEX idx_history_old_upc ON upc_update_history(old_upc);
 CREATE INDEX idx_history_new_upc ON upc_update_history(new_upc);
 
+-- UPC exclusions for orphaned UPC audits
+CREATE TABLE upc_exclusions (
+    id SERIAL PRIMARY KEY,
+    store_id INTEGER NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
+    upc VARCHAR(255) NOT NULL,
+    excluded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    notes TEXT,
+    UNIQUE(store_id, upc)
+);
+
+-- Index for fast exclusion lookups during audits
+CREATE INDEX idx_exclusions_store_upc ON upc_exclusions(store_id, upc);
+CREATE INDEX idx_exclusions_store_id ON upc_exclusions(store_id);
+
 -- Insert default settings
 INSERT INTO settings (key, value, description) VALUES
     ('app_name', 'Global UPC', 'Application name'),

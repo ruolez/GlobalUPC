@@ -88,3 +88,14 @@ class UPCUpdateHistory(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
 
     store = relationship("Store")
+
+class UPCExclusion(Base):
+    __tablename__ = "upc_exclusions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    store_id = Column(Integer, ForeignKey("stores.id", ondelete="CASCADE"), nullable=False, index=True)
+    upc = Column(String(255), nullable=False)
+    excluded_at = Column(DateTime(timezone=True), server_default=func.now())
+    notes = Column(Text)
+
+    store = relationship("Store")

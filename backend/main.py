@@ -12,7 +12,7 @@ import uuid
 import os
 
 from database import get_db, engine
-from models import Store, MSSQLConnection, ShopifyConnection, Setting, StoreType, UPCUpdateHistory
+from models import Store, MSSQLConnection, ShopifyConnection, Setting, StoreType, UPCUpdateHistory, UPCExclusion
 from schemas import (
     MSSQLStoreCreate, ShopifyStoreCreate, StoreResponse,
     SettingCreate, SettingUpdate, SettingResponse,
@@ -25,7 +25,8 @@ from schemas import (
     ReconciliationRequest, ReconciliationMatch, ReconciliationResponse,
     ReconciliationUpdateRequest, ReconciliationUpdateResult, ReconciliationUpdateResponse,
     UPCUpdateHistoryResponse, UPCUpdateHistoryListRequest, UPCUpdateHistoryListResponse,
-    CategoryResponse, SubCategoryResponse, StoreComparisonRequest, StoreComparisonResponse, MissingProductRecord
+    CategoryResponse, SubCategoryResponse, StoreComparisonRequest, StoreComparisonResponse, MissingProductRecord,
+    UPCExclusionCreate, UPCExclusionResponse, UPCExclusionListResponse
 )
 from mssql_helper import (
     test_mssql_connection, search_upc_across_mssql_stores, search_products_by_upc,
@@ -857,6 +858,19 @@ async def audit_orphaned_upcs_stream(request: OrphanedUPCAuditRequest, db: Sessi
         if not success:
             yield f"event: error\ndata: {json.dumps({'message': error or 'Audit failed'})}\n\n"
             return
+
+        # Filter out excluded UPCs for this store
+        exclusions = db.query(UPCExclusion).filter(UPCExclusion.store_id == store_id).all()
+        excluded_upcs = {exclusion.upc for exclusion in exclusions}
+
+        if excluded_upcs:
+            original_count = len(orphaned_records)
+            orphaned_records = [
+                record for record in orphaned_records
+                if record["upc"] not in excluded_upcs
+            ]
+            filtered_count = original_count - len(orphaned_records)
+            print(f"[AUDIT] Filtered {filtered_count} excluded UPCs from results")
 
         # Send complete event with results
         result_data = {
@@ -2010,6 +2024,91 @@ async def compare_stores_stream(request: StoreComparisonRequest, db: Session = D
             "Connection": "keep-alive",
         }
     )
+
+# UPC Exclusion Endpoints
+@app.post("/api/exclusions", response_model=UPCExclusionResponse, status_code=201)
+def create_exclusion(exclusion_data: UPCExclusionCreate, db: Session = Depends(get_db)):
+    """
+    Add a UPC to the exclusion list for a specific store.
+    Excluded UPCs will not appear in future orphaned UPC audit results.
+    """
+    # Verify store exists
+    store = db.query(Store).filter(Store.id == exclusion_data.store_id).first()
+    if not store:
+        raise HTTPException(status_code=404, detail="Store not found")
+
+    # Check if exclusion already exists
+    existing = db.query(UPCExclusion).filter(
+        UPCExclusion.store_id == exclusion_data.store_id,
+        UPCExclusion.upc == exclusion_data.upc
+    ).first()
+
+    if existing:
+        raise HTTPException(status_code=400, detail="UPC is already excluded for this store")
+
+    # Create exclusion
+    exclusion = UPCExclusion(
+        store_id=exclusion_data.store_id,
+        upc=exclusion_data.upc,
+        notes=exclusion_data.notes
+    )
+    db.add(exclusion)
+    db.commit()
+    db.refresh(exclusion)
+
+    # Build response with store name
+    return UPCExclusionResponse(
+        id=exclusion.id,
+        store_id=exclusion.store_id,
+        store_name=store.name,
+        upc=exclusion.upc,
+        excluded_at=exclusion.excluded_at,
+        notes=exclusion.notes
+    )
+
+@app.get("/api/exclusions", response_model=UPCExclusionListResponse)
+def get_exclusions(store_id: Optional[int] = None, db: Session = Depends(get_db)):
+    """
+    Get all UPC exclusions, optionally filtered by store.
+    """
+    query = db.query(UPCExclusion)
+
+    if store_id is not None:
+        query = query.filter(UPCExclusion.store_id == store_id)
+
+    exclusions = query.order_by(UPCExclusion.excluded_at.desc()).all()
+
+    # Build response with store names
+    exclusion_responses = []
+    for exclusion in exclusions:
+        store = db.query(Store).filter(Store.id == exclusion.store_id).first()
+        exclusion_responses.append(UPCExclusionResponse(
+            id=exclusion.id,
+            store_id=exclusion.store_id,
+            store_name=store.name if store else "Unknown",
+            upc=exclusion.upc,
+            excluded_at=exclusion.excluded_at,
+            notes=exclusion.notes
+        ))
+
+    return UPCExclusionListResponse(
+        exclusions=exclusion_responses,
+        total=len(exclusion_responses)
+    )
+
+@app.delete("/api/exclusions/{exclusion_id}", status_code=204)
+def delete_exclusion(exclusion_id: int, db: Session = Depends(get_db)):
+    """
+    Remove a UPC from the exclusion list.
+    The UPC will appear in future orphaned UPC audit results again.
+    """
+    exclusion = db.query(UPCExclusion).filter(UPCExclusion.id == exclusion_id).first()
+    if not exclusion:
+        raise HTTPException(status_code=404, detail="Exclusion not found")
+
+    db.delete(exclusion)
+    db.commit()
+    return None
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

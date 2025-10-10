@@ -511,6 +511,83 @@
               </div>
             </div>
           </section>
+
+          <!-- UPC Exclusions Section -->
+          <section class="settings-section">
+            <div class="section-header">
+              <h3>UPC Exclusions</h3>
+            </div>
+            <p style="margin: 0 0 1rem; font-size: 0.875rem; color: var(--text-secondary)">
+              Manage UPCs excluded from orphaned UPC audits. Excluded UPCs will not appear in future audit results.
+            </p>
+
+            <!-- Filter by Store -->
+            <div class="form-group">
+              <label for="exclusions-store-filter">Filter by Store</label>
+              <select id="exclusions-store-filter" style="max-width: 300px">
+                <option value="">All Stores</option>
+              </select>
+            </div>
+
+            <!-- Loading State -->
+            <div
+              id="exclusions-loading"
+              class="test-status"
+              style="display: none; margin-top: 1rem"
+            >
+              <div class="loading">Loading exclusions...</div>
+            </div>
+
+            <!-- Empty State -->
+            <div
+              id="exclusions-empty"
+              style="
+                display: none;
+                text-align: center;
+                padding: 2rem 1rem;
+                color: var(--text-tertiary);
+                margin-top: 1rem;
+                background: var(--bg-secondary);
+                border-radius: var(--radius-md);
+              "
+            >
+              <p style="margin: 0; font-size: 0.875rem">No UPC exclusions found</p>
+              <p style="margin: 0.5rem 0 0; font-size: 0.75rem">
+                Excluded UPCs will appear here after you exclude them from audit results
+              </p>
+            </div>
+
+            <!-- Exclusions Table -->
+            <div id="exclusions-results" style="display: none; margin-top: 1rem">
+              <div style="margin-bottom: 1rem">
+                <p
+                  style="
+                    margin: 0;
+                    font-size: 0.875rem;
+                    color: var(--text-secondary);
+                  "
+                >
+                  <strong id="exclusions-count">0</strong> excluded UPCs
+                </p>
+              </div>
+              <div style="overflow-x: auto">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th style="width: 25%">Store Name</th>
+                      <th style="width: 20%">UPC</th>
+                      <th style="width: 20%">Excluded Date</th>
+                      <th style="width: 25%">Notes</th>
+                      <th style="width: 10%">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="exclusions-table-body">
+                    <!-- Exclusions will be populated here by JavaScript -->
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
         </div>
 
         <!-- Update UPC Page -->
@@ -1234,10 +1311,11 @@
                         <input type="checkbox" id="select-all-orphans" />
                       </th>
                       <th style="width: 5%">#</th>
-                      <th style="width: 25%">Table Name</th>
-                      <th style="width: 15%">Record ID</th>
-                      <th style="width: 20%">Orphaned UPC</th>
-                      <th>Product Description</th>
+                      <th style="width: 23%">Table Name</th>
+                      <th style="width: 12%">Record ID</th>
+                      <th style="width: 18%">Orphaned UPC</th>
+                      <th style="width: 30%">Product Description</th>
+                      <th style="width: 9%">Actions</th>
                     </tr>
                   </thead>
                   <tbody id="audit-results-table-body">

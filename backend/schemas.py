@@ -305,3 +305,24 @@ class UPCValidationResponse(BaseModel):
     exists: bool
     matches: List[ProductVariantMatch]
     total_matches: int
+
+# UPC Exclusion Schemas
+class UPCExclusionCreate(BaseModel):
+    store_id: int
+    upc: str
+    notes: Optional[str] = None
+
+class UPCExclusionResponse(BaseModel):
+    id: int
+    store_id: int
+    store_name: str
+    upc: str
+    excluded_at: datetime
+    notes: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+class UPCExclusionListResponse(BaseModel):
+    exclusions: List[UPCExclusionResponse]
+    total: int
