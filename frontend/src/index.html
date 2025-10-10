@@ -1923,51 +1923,6 @@
       </div>
     </div>
 
-    <!-- Duplicate UPC Error Modal -->
-    <div id="duplicate-upc-modal" class="modal">
-      <div class="modal-content" style="max-width: 800px">
-        <div class="modal-header">
-          <h3 style="color: var(--error)">⚠ Duplicate Barcode Detected</h3>
-          <button class="modal-close" onclick="closeModal('duplicate-upc-modal')">
-            &times;
-          </button>
-        </div>
-        <div class="modal-body" style="padding: 1.5rem">
-          <p style="margin: 0 0 1rem; font-size: 0.875rem; color: var(--text-secondary)">
-            The barcode you're trying to use already exists in the system. This update cannot proceed to prevent duplicate barcodes.
-          </p>
-          <div id="duplicate-upc-details" style="margin-top: 1rem">
-            <h4 style="margin: 0 0 0.75rem; font-size: 0.875rem; color: var(--text-primary)">
-              Existing Products with UPC: <strong id="duplicate-upc-value"></strong>
-            </h4>
-            <div style="overflow-x: auto; max-height: 300px">
-              <table class="data-table">
-                <thead>
-                  <tr>
-                    <th style="width: 25%">Store Name</th>
-                    <th style="width: 40%">Product Title</th>
-                    <th style="width: 35%">Variant</th>
-                  </tr>
-                </thead>
-                <tbody id="duplicate-upc-matches-table">
-                  <!-- Duplicate matches will be populated here -->
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-        <div class="modal-footer">
-          <button
-            type="button"
-            class="btn btn-primary"
-            onclick="closeModal('duplicate-upc-modal')"
-          >
-            Close
-          </button>
-        </div>
-      </div>
-    </div>
-
     <!-- Same UPC Error Modal -->
     <div id="same-upc-modal" class="modal">
       <div class="modal-content" style="max-width: 500px">

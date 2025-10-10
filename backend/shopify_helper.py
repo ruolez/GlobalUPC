@@ -140,6 +140,7 @@ async def check_barcode_exists(
                 product {
                   id
                   title
+                  status
                 }
               }
             }
@@ -176,7 +177,7 @@ async def check_barcode_exists(
                     error_msg = "; ".join([e.get("message", str(e)) for e in errors])
                     return False, f"GraphQL errors: {error_msg}", []
 
-                # Extract variants
+                # Extract variants and filter by ACTIVE status
                 variants = []
                 edges = data.get("data", {}).get("productVariants", {}).get("edges", [])
 
@@ -184,16 +185,18 @@ async def check_barcode_exists(
                     node = edge.get("node", {})
                     product = node.get("product", {})
 
-                    variant_data = {
-                        "variant_id": node.get("id"),
-                        "product_id": product.get("id"),
-                        "product_title": product.get("title"),
-                        "variant_title": node.get("title") or "Default",
-                        "display_name": node.get("displayName"),
-                        "barcode": node.get("barcode"),
-                        "sku": node.get("sku")
-                    }
-                    variants.append(variant_data)
+                    # Only include variants from ACTIVE products
+                    if product.get("status") == "ACTIVE":
+                        variant_data = {
+                            "variant_id": node.get("id"),
+                            "product_id": product.get("id"),
+                            "product_title": product.get("title"),
+                            "variant_title": node.get("title") or "Default",
+                            "display_name": node.get("displayName"),
+                            "barcode": node.get("barcode"),
+                            "sku": node.get("sku")
+                        }
+                        variants.append(variant_data)
 
                 return True, None, variants
 
@@ -238,6 +241,7 @@ async def search_products_by_barcode(
                 product {
                   id
                   title
+                  status
                 }
               }
             }
@@ -278,7 +282,7 @@ async def search_products_by_barcode(
                     error_msg = "; ".join([e.get("message", str(e)) for e in errors])
                     return False, f"GraphQL errors: {error_msg}", []
 
-                # Extract variants
+                # Extract variants and filter by ACTIVE status
                 variants = []
                 edges = data.get("data", {}).get("productVariants", {}).get("edges", [])
 
@@ -286,16 +290,18 @@ async def search_products_by_barcode(
                     node = edge.get("node", {})
                     product = node.get("product", {})
 
-                    variant_data = {
-                        "variant_id": node.get("id"),
-                        "product_id": product.get("id"),
-                        "product_title": product.get("title"),
-                        "variant_title": node.get("title") or "Default",
-                        "display_name": node.get("displayName"),
-                        "barcode": node.get("barcode"),
-                        "sku": node.get("sku")
-                    }
-                    variants.append(variant_data)
+                    # Only include variants from ACTIVE products
+                    if product.get("status") == "ACTIVE":
+                        variant_data = {
+                            "variant_id": node.get("id"),
+                            "product_id": product.get("id"),
+                            "product_title": product.get("title"),
+                            "variant_title": node.get("title") or "Default",
+                            "display_name": node.get("displayName"),
+                            "barcode": node.get("barcode"),
+                            "sku": node.get("sku")
+                        }
+                        variants.append(variant_data)
 
                 return True, None, variants
 

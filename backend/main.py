@@ -18,7 +18,6 @@ from schemas import (
     SettingCreate, SettingUpdate, SettingResponse,
     UPCSearchRequest, UPCSearchResponse, ProductVariantMatch,
     UPCUpdateRequest, UPCUpdateResult,
-    UPCValidationRequest, UPCValidationResponse,
     ConfigExportResponse, ConfigImportRequest, ConfigImportResponse,
     StoreImportResult, StoreExport,
     OrphanedUPCAuditRequest, OrphanedUPCRecord, OrphanedUPCAuditResponse,
@@ -283,109 +282,6 @@ async def search_upc_stream(request: UPCSearchRequest, db: Session = Depends(get
         }
     )
 
-@app.post("/api/upc/validate", response_model=UPCValidationResponse)
-async def validate_upc(request: UPCValidationRequest, db: Session = Depends(get_db)):
-    """
-    Validate if a UPC already exists in any active store (MSSQL or Shopify).
-    Used before UPC updates to prevent duplicates.
-    """
-    upc = request.upc.strip()
-
-    if not upc:
-        raise HTTPException(status_code=400, detail="UPC is required")
-
-    # Get all active stores
-    active_stores = db.query(Store).filter(Store.is_active == True).all()
-
-    if not active_stores:
-        return UPCValidationResponse(
-            exists=False,
-            matches=[],
-            total_matches=0
-        )
-
-    # Separate stores by type
-    shopify_stores = []
-    mssql_stores = []
-
-    for store in active_stores:
-        if store.store_type == StoreType.shopify and store.shopify_connection:
-            shopify_stores.append({
-                "id": store.id,
-                "name": store.name,
-                "shop_domain": store.shopify_connection.shop_domain,
-                "admin_api_key": store.shopify_connection.admin_api_key,
-                "api_version": store.shopify_connection.api_version
-            })
-        elif store.store_type == StoreType.mssql and store.mssql_connection:
-            mssql_stores.append({
-                "id": store.id,
-                "name": store.name,
-                "host": store.mssql_connection.host,
-                "port": store.mssql_connection.port,
-                "database_name": store.mssql_connection.database_name,
-                "username": store.mssql_connection.username,
-                "password": store.mssql_connection.password
-            })
-
-    all_matches = []
-
-    # Check Shopify stores
-    if shopify_stores:
-        for shop_store in shopify_stores:
-            success, error, variants = await check_barcode_exists(
-                shop_domain=shop_store["shop_domain"],
-                admin_api_key=shop_store["admin_api_key"],
-                barcode=upc,
-                api_version=shop_store.get("api_version", "2025-01")
-            )
-
-            if success and variants:
-                for variant in variants:
-                    all_matches.append(ProductVariantMatch(
-                        store_id=shop_store["id"],
-                        store_name=shop_store["name"],
-                        store_type="shopify",
-                        product_id=variant["product_id"],
-                        product_title=variant["product_title"],
-                        variant_id=variant["variant_id"],
-                        variant_title=variant["variant_title"],
-                        current_barcode=variant["barcode"],
-                        sku=variant["sku"]
-                    ))
-
-    # Check MSSQL stores
-    if mssql_stores:
-        for mssql_store in mssql_stores:
-            success, error, results = await check_upc_exists(
-                host=mssql_store["host"],
-                port=mssql_store["port"],
-                database=mssql_store["database_name"],
-                username=mssql_store["username"],
-                password=mssql_store["password"],
-                upc=upc
-            )
-
-            if success and results:
-                for result in results:
-                    all_matches.append(ProductVariantMatch(
-                        store_id=mssql_store["id"],
-                        store_name=mssql_store["name"],
-                        store_type="mssql",
-                        product_id=result["product_id"],
-                        product_title=result["product_description"],
-                        variant_id=None,
-                        variant_title=None,
-                        current_barcode=result["upc"],
-                        sku=None
-                    ))
-
-    return UPCValidationResponse(
-        exists=len(all_matches) > 0,
-        matches=all_matches,
-        total_matches=len(all_matches)
-    )
-
 @app.post("/api/upc/search", response_model=UPCSearchResponse)
 async def search_upc(request: UPCSearchRequest, db: Session = Depends(get_db)):
     """
@@ -606,12 +502,63 @@ async def update_upc_stream(request: UPCUpdateRequest, db: Session = Depends(get
 
             # Update stores
             for store_update in shopify_updates_list:
+                yield f"event: progress\ndata: {json.dumps({'status': 'validating_store', 'store_name': store_update['store_name'], 'store_type': 'shopify'})}\n\n"
+
+                # Check if new UPC already exists in this store (duplicate validation)
+                duplicate_check_success, duplicate_check_error, duplicate_variants = await check_barcode_exists(
+                    shop_domain=store_update["shop_domain"],
+                    admin_api_key=store_update["admin_api_key"],
+                    barcode=new_upc,
+                    api_version=store_update.get("api_version", "2025-01")
+                )
+
+                # If duplicate found, skip this store
+                if duplicate_check_success and duplicate_variants and len(duplicate_variants) > 0:
+                    skip_result = {
+                        "store_id": store_update["store_id"],
+                        "store_name": store_update["store_name"],
+                        "success": False,
+                        "skipped": True,
+                        "skip_reason": "duplicate_found",
+                        "updated_count": 0,
+                        "error": f"UPC '{new_upc}' already exists in this store"
+                    }
+                    all_results.append(skip_result)
+
+                    yield f"event: progress\ndata: {json.dumps({'status': 'skipped_store', 'store_name': store_update['store_name'], 'reason': 'duplicate_found'})}\n\n"
+
+                    # Log skip to history
+                    store_matches = [m for m in matches if m.store_id == store_update["store_id"]]
+                    first_match = store_matches[0] if store_matches else None
+
+                    history_entry = UPCUpdateHistory(
+                        batch_id=batch_id,
+                        store_id=store_update["store_id"],
+                        store_name=store_update["store_name"],
+                        store_type=StoreType.shopify,
+                        old_upc=old_upc,
+                        new_upc=new_upc,
+                        product_id=first_match.product_id if first_match else None,
+                        product_title=first_match.product_title if first_match else None,
+                        variant_id=first_match.variant_id if first_match else None,
+                        variant_title=first_match.variant_title if first_match else None,
+                        success=False,
+                        items_updated_count=0,
+                        error_message=f"Skipped: UPC '{new_upc}' already exists in this store"
+                    )
+                    db.add(history_entry)
+                    db.commit()
+
+                    continue
+
+                # No duplicate, proceed with update
                 yield f"event: progress\ndata: {json.dumps({'status': 'updating_store', 'store_name': store_update['store_name'], 'store_type': 'shopify'})}\n\n"
 
                 # Call update function for this store
                 results = await update_barcodes_across_shopify_stores([store_update])
 
                 for result in results:
+                    result["skipped"] = False
                     all_results.append(result)
                     total_updated += result["updated_count"]
 
@@ -662,12 +609,65 @@ async def update_upc_stream(request: UPCUpdateRequest, db: Session = Depends(get
 
             # Update stores
             for store_update in mssql_updates_list:
+                yield f"event: progress\ndata: {json.dumps({'status': 'validating_store', 'store_name': store_update['store_name'], 'store_type': 'mssql'})}\n\n"
+
+                # Check if new UPC already exists in this store (duplicate validation)
+                duplicate_check_success, duplicate_check_error, duplicate_results = await check_upc_exists(
+                    host=store_update["host"],
+                    port=store_update["port"],
+                    database=store_update["database_name"],
+                    username=store_update["username"],
+                    password=store_update["password"],
+                    upc=new_upc
+                )
+
+                # If duplicate found, skip this store
+                if duplicate_check_success and duplicate_results and len(duplicate_results) > 0:
+                    skip_result = {
+                        "store_id": store_update["store_id"],
+                        "store_name": store_update["store_name"],
+                        "success": False,
+                        "skipped": True,
+                        "skip_reason": "duplicate_found",
+                        "updated_count": 0,
+                        "error": f"UPC '{new_upc}' already exists in this store"
+                    }
+                    all_results.append(skip_result)
+
+                    yield f"event: progress\ndata: {json.dumps({'status': 'skipped_store', 'store_name': store_update['store_name'], 'reason': 'duplicate_found'})}\n\n"
+
+                    # Log skip to history
+                    store_matches = [m for m in matches if m.store_id == store_update["store_id"]]
+                    first_match = store_matches[0] if store_matches else None
+
+                    history_entry = UPCUpdateHistory(
+                        batch_id=batch_id,
+                        store_id=store_update["store_id"],
+                        store_name=store_update["store_name"],
+                        store_type=StoreType.mssql,
+                        old_upc=old_upc,
+                        new_upc=new_upc,
+                        product_id=first_match.product_id if first_match else None,
+                        product_title=first_match.product_title if first_match else None,
+                        table_name=first_match.table_name if first_match else None,
+                        primary_keys=first_match.primary_keys if first_match else None,
+                        success=False,
+                        items_updated_count=0,
+                        error_message=f"Skipped: UPC '{new_upc}' already exists in this store"
+                    )
+                    db.add(history_entry)
+                    db.commit()
+
+                    continue
+
+                # No duplicate, proceed with update
                 yield f"event: progress\ndata: {json.dumps({'status': 'updating_store', 'store_name': store_update['store_name'], 'store_type': 'mssql'})}\n\n"
 
                 # Call update function for this store
                 results = await update_upc_across_mssql_stores([store_update])
 
                 for result in results:
+                    result["skipped"] = False
                     all_results.append(result)
                     total_updated += result["updated_count"]
 

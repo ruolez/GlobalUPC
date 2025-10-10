@@ -297,15 +297,6 @@ class StoreComparisonResponse(BaseModel):
     total_missing: int
     category_stats: Dict[str, int]  # category_name -> count
 
-# UPC Validation Schemas
-class UPCValidationRequest(BaseModel):
-    upc: str
-
-class UPCValidationResponse(BaseModel):
-    exists: bool
-    matches: List[ProductVariantMatch]
-    total_matches: int
-
 # UPC Exclusion Schemas
 class UPCExclusionCreate(BaseModel):
     store_id: int

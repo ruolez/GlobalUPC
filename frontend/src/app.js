@@ -1079,110 +1079,10 @@ document.getElementById("update-all-btn")?.addEventListener("click", async () =>
     return;
   }
 
-  // Show validation loading indicator
-  const validationLoading = document.createElement("div");
-  validationLoading.id = "validation-loading";
-  validationLoading.style.marginTop = "1rem";
-  validationLoading.style.padding = "1rem";
-  validationLoading.style.background = "var(--bg-tertiary)";
-  validationLoading.style.borderRadius = "var(--radius-md)";
-  validationLoading.style.textAlign = "center";
-  validationLoading.style.color = "var(--info)";
-  validationLoading.style.fontSize = "0.875rem";
-  validationLoading.innerHTML = '<strong>⏳ Checking for duplicate barcodes...</strong>';
-
-  const searchResults = document.getElementById("upc-search-results");
-  searchResults.appendChild(validationLoading);
-
-  // Scroll into view to ensure visibility
-  validationLoading.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  console.log("Validation loading indicator displayed");
-
-  // Disable button during validation
-  updateBtn.disabled = true;
-
-  // Track start time to ensure minimum display duration
-  const startTime = Date.now();
-
-  // Validate new UPC doesn't already exist (hard block)
-  try {
-
-    const response = await fetch(`${API_BASE}/upc/validate`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ upc: newUPC }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-
-    const validation = await response.json();
-
-    // Ensure loading indicator shows for at least 500ms so users can see it
-    const elapsedTime = Date.now() - startTime;
-    const minDisplayTime = 500;
-    if (elapsedTime < minDisplayTime) {
-      await new Promise(resolve => setTimeout(resolve, minDisplayTime - elapsedTime));
-    }
-
-    // Remove loading indicator
-    validationLoading.remove();
-    updateBtn.disabled = false;
-
-    if (validation.exists) {
-      // Show duplicate UPC modal with matching products
-      document.getElementById("duplicate-upc-value").textContent = newUPC;
-
-      const duplicateTableBody = document.getElementById("duplicate-upc-matches-table");
-      duplicateTableBody.innerHTML = "";
-
-      validation.matches.forEach((match) => {
-        const row = document.createElement("tr");
-
-        // Store Name
-        const storeTd = document.createElement("td");
-        storeTd.textContent = match.store_name;
-        storeTd.style.color = "var(--accent-primary)";
-        row.appendChild(storeTd);
-
-        // Product Title
-        const productTd = document.createElement("td");
-        productTd.textContent = match.product_title;
-        row.appendChild(productTd);
-
-        // Variant
-        const variantTd = document.createElement("td");
-        variantTd.textContent = match.variant_title || "N/A";
-        variantTd.style.color = "var(--text-tertiary)";
-        row.appendChild(variantTd);
-
-        duplicateTableBody.appendChild(row);
-      });
-
-      openModal("duplicate-upc-modal");
-      return;
-    }
-
-    // Validation passed - proceed with confirmation dialog
-    const message = `Update ${currentSearchResults.total_found} item${currentSearchResults.total_found !== 1 ? "s" : ""} from UPC "${oldUPC}" to "${newUPC}"?`;
-    if (confirm(message)) {
-      updateUPC(oldUPC, newUPC, currentSearchResults.matches);
-    }
-  } catch (error) {
-    // Ensure loading indicator shows for at least 500ms even on error
-    const elapsedTime = Date.now() - startTime;
-    const minDisplayTime = 500;
-    if (elapsedTime < minDisplayTime) {
-      await new Promise(resolve => setTimeout(resolve, minDisplayTime - elapsedTime));
-    }
-
-    // Remove loading indicator on error
-    validationLoading.remove();
-    updateBtn.disabled = false;
-    alert(`Validation error: ${error.message}`);
+  // Proceed with confirmation dialog and update
+  const message = `Update ${currentSearchResults.total_found} item${currentSearchResults.total_found !== 1 ? "s" : ""} from UPC "${oldUPC}" to "${newUPC}"?\n\nNote: Stores with duplicate UPCs will be skipped automatically.`;
+  if (confirm(message)) {
+    updateUPC(oldUPC, newUPC, currentSearchResults.matches);
   }
 });
 
@@ -1278,12 +1178,34 @@ async function updateUPC(oldUPC, newUPC, matches) {
         const data = JSON.parse(dataStr);
 
         if (eventType === "progress") {
-          if (data.status === "updating_store") {
-            const item = createProgressItem(data.store_name, "active");
+          if (data.status === "validating_store") {
+            const item = createProgressItem(`${data.store_name} (validating...)`, "active");
             storeItems.set(data.store_name, item);
             progressItems.appendChild(item);
             // Auto-scroll to bottom like a terminal
             progressContainer.scrollTop = progressContainer.scrollHeight;
+          } else if (data.status === "skipped_store") {
+            const existingItem = storeItems.get(data.store_name);
+            if (existingItem) {
+              const icon = existingItem.querySelector("span");
+              icon.innerHTML = "⚠";
+              icon.style.animation = "";
+              existingItem.style.color = "var(--warning)";
+
+              const textSpan = existingItem.querySelector("span:last-child");
+              textSpan.textContent = `${data.store_name} • Skipped (duplicate found)`;
+            }
+          } else if (data.status === "updating_store") {
+            const existingItem = storeItems.get(data.store_name);
+            if (existingItem) {
+              const textSpan = existingItem.querySelector("span:last-child");
+              textSpan.textContent = `${data.store_name} (updating...)`;
+            } else {
+              const item = createProgressItem(`${data.store_name} (updating...)`, "active");
+              storeItems.set(data.store_name, item);
+              progressItems.appendChild(item);
+              progressContainer.scrollTop = progressContainer.scrollHeight;
+            }
           } else if (data.status === "updated_store") {
             const existingItem = storeItems.get(data.store_name);
             if (existingItem) {
@@ -1346,7 +1268,11 @@ function displayUpdateResults(data) {
 
     // Status
     const statusTd = document.createElement("td");
-    if (result.success) {
+    if (result.skipped) {
+      // Store was skipped due to duplicate
+      statusTd.innerHTML = '<span style="color: var(--warning); font-weight: 500;">⚠ Skipped - Duplicate UPC found</span>';
+      statusTd.style.fontSize = "0.875rem";
+    } else if (result.success) {
       statusTd.innerHTML =
         '<span style="color: var(--success);">✓ Success</span>';
     } else {
