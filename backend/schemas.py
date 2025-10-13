@@ -317,3 +317,14 @@ class UPCExclusionResponse(BaseModel):
 class UPCExclusionListResponse(BaseModel):
     exclusions: List[UPCExclusionResponse]
     total: int
+
+# Delivery B - UnitPriceC Sync Schemas
+class DeliveryBSyncRequest(BaseModel):
+    primary_store_id: int
+
+class DeliveryBStoreResult(BaseModel):
+    store_id: int
+    store_name: str
+    products_matched: int
+    products_updated: int
+    errors: List[str]

@@ -25,13 +25,14 @@ from schemas import (
     ReconciliationUpdateRequest, ReconciliationUpdateResult, ReconciliationUpdateResponse,
     UPCUpdateHistoryResponse, UPCUpdateHistoryListRequest, UPCUpdateHistoryListResponse,
     CategoryResponse, SubCategoryResponse, StoreComparisonRequest, StoreComparisonResponse, MissingProductRecord,
-    UPCExclusionCreate, UPCExclusionResponse, UPCExclusionListResponse
+    UPCExclusionCreate, UPCExclusionResponse, UPCExclusionListResponse,
+    DeliveryBSyncRequest, DeliveryBStoreResult
 )
 from mssql_helper import (
     test_mssql_connection, search_upc_across_mssql_stores, search_products_by_upc,
     update_upc_across_mssql_stores, audit_orphaned_upcs,
     find_matches_by_product_id, find_matches_by_description, update_orphaned_upcs,
-    check_upc_exists
+    check_upc_exists, sync_unit_price_c_across_stores
 )
 from shopify_helper import test_shopify_connection, search_barcode_across_shopify_stores, search_products_by_barcode, update_barcodes_across_shopify_stores, check_barcode_exists
 
@@ -2109,6 +2110,191 @@ def delete_exclusion(exclusion_id: int, db: Session = Depends(get_db)):
     db.delete(exclusion)
     db.commit()
     return None
+
+# Delivery B - UnitPriceC Sync Endpoint
+@app.post("/api/delivery-b/sync/stream")
+async def delivery_b_sync_stream(request: DeliveryBSyncRequest, db: Session = Depends(get_db)):
+    """
+    Sync UnitPriceC from primary MSSQL store to all other active MSSQL stores.
+    Only processes active products (Discontinued = 0) matching by ProductUPC.
+    Returns Server-Sent Events stream with real-time progress.
+    """
+    async def generate_sync_events():
+        """Generator for SSE events during UnitPriceC sync"""
+        try:
+            primary_store_id = request.primary_store_id
+
+            # Get primary store from database
+            primary_store = db.query(Store).filter(Store.id == primary_store_id).first()
+            if not primary_store:
+                yield f"event: error\ndata: {json.dumps({'message': 'Primary store not found'})}\n\n"
+                return
+
+            # Validate primary store is MSSQL type
+            if primary_store.store_type != StoreType.mssql or not primary_store.mssql_connection:
+                yield f"event: error\ndata: {json.dumps({'message': 'Primary store is not an MSSQL database'})}\n\n"
+                return
+
+            # Check if primary store is an inventory store (name contains "inventory" or "inv")
+            store_name_lower = primary_store.name.lower()
+            if "inventory" in store_name_lower or "inv" in store_name_lower:
+                yield f"event: error\ndata: {json.dumps({'message': 'Cannot use inventory store as primary store'})}\n\n"
+                return
+
+            # Get all active MSSQL stores excluding primary and inventory stores
+            all_stores = db.query(Store).filter(
+                Store.is_active == True,
+                Store.store_type == StoreType.mssql
+            ).all()
+
+            # Filter out primary store and inventory stores
+            destination_stores = []
+            for store in all_stores:
+                if store.id == primary_store_id:
+                    continue  # Skip primary store
+
+                store_name_lower = store.name.lower()
+                if "inventory" in store_name_lower or "inv" in store_name_lower:
+                    continue  # Skip inventory stores
+
+                if store.mssql_connection:
+                    destination_stores.append(store)
+
+            if not destination_stores:
+                yield f"event: error\ndata: {json.dumps({'message': 'No valid destination stores found'})}\n\n"
+                return
+
+            print(f"[DELIVERY-B] Starting sync from primary store: {primary_store.name}")
+            print(f"[DELIVERY-B] Destination stores: {[s.name for s in destination_stores]}")
+
+            # Send start event
+            yield f"event: progress\ndata: {json.dumps({'status': 'starting', 'primary_store': primary_store.name, 'destination_count': len(destination_stores)})}\n\n"
+
+            # Create a queue for progress updates from the thread
+            import queue
+            progress_queue = queue.Queue()
+
+            # Define progress callback that puts events in queue
+            def progress_callback(data: dict):
+                progress_queue.put(data)
+
+            # Prepare primary store connection data
+            primary_conn = primary_store.mssql_connection
+            primary_store_data = {
+                "store_id": primary_store.id,
+                "store_name": primary_store.name,
+                "host": primary_conn.host,
+                "port": primary_conn.port,
+                "database_name": primary_conn.database_name,
+                "username": primary_conn.username,
+                "password": primary_conn.password
+            }
+
+            # Prepare destination stores connection data
+            destination_stores_data = []
+            for store in destination_stores:
+                conn = store.mssql_connection
+                destination_stores_data.append({
+                    "store_id": store.id,
+                    "store_name": store.name,
+                    "host": conn.host,
+                    "port": conn.port,
+                    "database_name": conn.database_name,
+                    "username": conn.username,
+                    "password": conn.password
+                })
+
+            # Start sync operation
+            loop = asyncio.get_event_loop()
+
+            # Call sync function
+            sync_task = asyncio.create_task(
+                sync_unit_price_c_across_stores(
+                    primary_store=primary_store_data,
+                    destination_stores=destination_stores_data,
+                    progress_callback=progress_callback,
+                    tds_version="7.4"
+                )
+            )
+
+            # Poll queue for progress updates while sync runs
+            import time
+            last_event_time = time.time()
+            HEARTBEAT_INTERVAL = 15  # Send ping every 15 seconds
+
+            while not sync_task.done():
+                try:
+                    # Check for progress updates (non-blocking)
+                    progress_data = progress_queue.get_nowait()
+
+                    print(f"[DELIVERY-B] Progress: {progress_data}")
+
+                    # Send progress event
+                    yield f"event: progress\ndata: {json.dumps(progress_data)}\n\n"
+
+                    # Update last event time
+                    last_event_time = time.time()
+
+                except queue.Empty:
+                    # No progress update, check if we need to send heartbeat
+                    current_time = time.time()
+                    if current_time - last_event_time >= HEARTBEAT_INTERVAL:
+                        # Send heartbeat ping to keep connection alive
+                        yield ":ping\n\n"
+                        last_event_time = current_time
+
+                    # Wait a bit before checking again
+                    await asyncio.sleep(0.1)
+
+            # Get final result
+            results = await sync_task
+
+            # Drain any remaining progress events
+            while not progress_queue.empty():
+                try:
+                    progress_data = progress_queue.get_nowait()
+                    yield f"event: progress\ndata: {json.dumps(progress_data)}\n\n"
+                except queue.Empty:
+                    break
+
+            print(f"[DELIVERY-B] Completed sync for {primary_store.name}: {len(results)} destination stores processed")
+
+            # Calculate totals
+            total_products_matched = sum(r["products_matched"] for r in results)
+            total_products_updated = sum(r["products_updated"] for r in results)
+            successful_stores = sum(1 for r in results if len(r["errors"]) == 0)
+
+            # Send complete event with results
+            result_data = {
+                'primary_store_id': primary_store_id,
+                'primary_store_name': primary_store.name,
+                'results': results,
+                'total_destination_stores': len(results),
+                'successful_stores': successful_stores,
+                'total_products_matched': total_products_matched,
+                'total_products_updated': total_products_updated
+            }
+
+            yield f"event: complete\ndata: {json.dumps(result_data)}\n\n"
+
+        except GeneratorExit:
+            # Client disconnected - clean shutdown
+            print("[DELIVERY-B] Client disconnected, stopping sync operation")
+            return
+        except Exception as e:
+            print(f"[DELIVERY-B] Error in streaming: {e}")
+            import traceback
+            traceback.print_exc()
+            yield f"event: error\ndata: {json.dumps({'message': str(e)})}\n\n"
+
+    return StreamingResponse(
+        generate_sync_events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        }
+    )
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

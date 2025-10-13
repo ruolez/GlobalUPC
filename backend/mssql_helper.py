@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 
 # Chunk size for processing large tables (prevents timeout)
-CHUNK_SIZE = 5000
+CHUNK_SIZE = 1000
 
 # Mapping of detail tables to their header tables for date filtering
 # Each entry contains: header_table, join_key, and date_field
@@ -805,28 +805,23 @@ def _process_tables_cross_db(
 
                 print(f"[CROSS-DB DEBUG] {table['name']}: Processing chunk {chunk_num + 1}/{total_chunks}, OFFSET {offset} LIMIT {limit}")
 
-                # Query source database for chunk of records (without JOIN to Items_tbl)
+                # Query source database for chunk of records using OFFSET/FETCH (SQL Server 2012+)
+                # This is much more efficient than ROW_NUMBER() for pagination
                 chunk_query = f"""
-                    WITH numbered_records AS (
-                        SELECT
-                            {table_prefix}{table['pk']} as pk,
-                            {table_prefix}ProductID,
-                            {table_prefix}{table['description_field']} as description,
-                            {table_prefix}ProductUPC,
-                            ROW_NUMBER() OVER (ORDER BY {table_prefix}{table['pk']}) as row_num
-                        FROM {from_clause}
-                        WHERE {table_prefix}ProductUPC IS NOT NULL AND {table_prefix}ProductUPC != ''{date_where_clause}
-                    )
-                    SELECT n.pk, n.ProductID, n.description, n.ProductUPC
-                    FROM numbered_records n
-                    WHERE n.row_num > ? AND n.row_num <= ?
+                    SELECT
+                        {table_prefix}{table['pk']} as pk,
+                        {table_prefix}ProductID,
+                        {table_prefix}{table['description_field']} as description,
+                        {table_prefix}ProductUPC
+                    FROM {from_clause}
+                    WHERE {table_prefix}ProductUPC IS NOT NULL AND {table_prefix}ProductUPC != ''{date_where_clause}
+                    ORDER BY {table_prefix}{table['pk']}
+                    OFFSET ? ROWS
+                    FETCH NEXT ? ROWS ONLY
                 """
 
-                start_row = offset
-                end_row = offset + limit
-
-                # Combine chunk query parameters: date params + row range params
-                chunk_params = query_params + [start_row, end_row]
+                # Combine chunk query parameters: date params + offset + limit
+                chunk_params = query_params + [offset, limit]
                 source_cursor.execute(chunk_query, chunk_params)
                 chunk_rows = source_cursor.fetchall()
 
@@ -915,12 +910,15 @@ def _process_tables_cross_db(
                     "orphaned_count": len(table_orphans)
                 })
 
-        except pyodbc.Error:
-            # Table doesn't exist in source database, skip it
+        except pyodbc.Error as e:
+            # Log actual SQL error for debugging
+            error_msg = str(e)
+            print(f"[CROSS-DB ERROR] {table['name']}: {error_msg}")
             if progress_callback:
                 progress_callback({
                     "status": "table_skipped",
-                    "table_name": table["name"]
+                    "table_name": table["name"],
+                    "error": error_msg
                 })
             continue
 
@@ -1041,11 +1039,15 @@ def _audit_orphaned_upcs_sync(
             excluded_tables = {"QuotationDetails", "QuotationsDetails_tbl"}
             cross_db_tables = [t for t in detail_tables if t["name"] not in excluded_tables]
 
-            with pyodbc.connect(source_conn_string, timeout=60) as source_conn, \
-                 pyodbc.connect(target_conn_string, timeout=60) as target_conn:
+            with pyodbc.connect(source_conn_string, timeout=120) as source_conn, \
+                 pyodbc.connect(target_conn_string, timeout=120) as target_conn:
 
                 source_cursor = source_conn.cursor()
                 target_cursor = target_conn.cursor()
+
+                # Set query execution timeout (in seconds) - prevents long-running queries from hanging
+                source_cursor.timeout = 180  # 3 minutes for query execution
+                target_cursor.timeout = 180
 
                 # Process tables with cross-database comparison
                 orphaned_records, tables_checked = _process_tables_cross_db(
@@ -2243,3 +2245,293 @@ async def compare_stores(
             progress_callback,
             tds_version
         )
+
+def _sync_unit_price_c_to_store_sync(
+    primary_host: str,
+    primary_port: int,
+    primary_database: str,
+    primary_username: str,
+    primary_password: str,
+    dest_host: str,
+    dest_port: int,
+    dest_database: str,
+    dest_username: str,
+    dest_password: str,
+    tds_version: str = "7.4"
+) -> tuple[bool, Optional[str], int, int]:
+    """
+    Synchronous function to sync UnitPriceC from primary store to a destination store.
+
+    Only syncs active products (Discontinued = 0) matching by ProductUPC.
+
+    Args:
+        primary_host: Primary store hostname
+        primary_port: Primary store port
+        primary_database: Primary store database name
+        primary_username: Primary store username
+        primary_password: Primary store password
+        dest_host: Destination store hostname
+        dest_port: Destination store port
+        dest_database: Destination store database name
+        dest_username: Destination store username
+        dest_password: Destination store password
+        tds_version: TDS protocol version
+
+    Returns:
+        Tuple of (success: bool, error_message: Optional[str], products_matched: int, products_updated: int)
+    """
+    try:
+        # Connect to primary store
+        primary_conn_string = get_mssql_connection_string(
+            host=primary_host,
+            port=primary_port,
+            database=primary_database,
+            username=primary_username,
+            password=primary_password,
+            tds_version=tds_version
+        )
+
+        # Connect to destination store
+        dest_conn_string = get_mssql_connection_string(
+            host=dest_host,
+            port=dest_port,
+            database=dest_database,
+            username=dest_username,
+            password=dest_password,
+            tds_version=tds_version
+        )
+
+        products_matched = 0
+        products_updated = 0
+
+        with pyodbc.connect(primary_conn_string, timeout=60) as primary_conn, \
+             pyodbc.connect(dest_conn_string, timeout=60, autocommit=False) as dest_conn:
+
+            primary_cursor = primary_conn.cursor()
+            dest_cursor = dest_conn.cursor()
+
+            # Step 1: Get total count of active products in primary store
+            count_query = """
+                SELECT COUNT(*) as total_products
+                FROM Items_tbl
+                WHERE ProductUPC IS NOT NULL
+                  AND ProductUPC != ''
+                  AND Discontinued = 0
+            """
+
+            primary_cursor.execute(count_query)
+            count_result = primary_cursor.fetchone()
+            total_products = count_result[0] if count_result else 0
+
+            if total_products == 0:
+                primary_cursor.close()
+                dest_cursor.close()
+                return True, None, 0, 0
+
+            # Step 2: Calculate chunks
+            total_chunks = max(1, (total_products + CHUNK_SIZE - 1) // CHUNK_SIZE)
+
+            print(f"[DELIVERY-B DEBUG] Total products to sync: {total_products}, chunks: {total_chunks}")
+
+            # Step 3: Process products in chunks
+            for chunk_num in range(total_chunks):
+                offset = chunk_num * CHUNK_SIZE
+                limit = CHUNK_SIZE
+
+                # Fetch chunk of active products from primary store
+                chunk_query = """
+                    WITH numbered_products AS (
+                        SELECT
+                            ProductUPC,
+                            UnitPriceC,
+                            ROW_NUMBER() OVER (ORDER BY ProductID) as row_num
+                        FROM Items_tbl
+                        WHERE ProductUPC IS NOT NULL
+                          AND ProductUPC != ''
+                          AND Discontinued = 0
+                    )
+                    SELECT ProductUPC, UnitPriceC
+                    FROM numbered_products
+                    WHERE row_num > ? AND row_num <= ?
+                """
+
+                start_row = offset
+                end_row = offset + limit
+
+                primary_cursor.execute(chunk_query, [start_row, end_row])
+                chunk_products = primary_cursor.fetchall()
+
+                print(f"[DELIVERY-B DEBUG] Chunk {chunk_num + 1}/{total_chunks}: Fetched {len(chunk_products)} products")
+
+                if not chunk_products:
+                    continue
+
+                # Collect UPCs and build lookup map
+                chunk_upcs = []
+                price_map = {}  # UPC -> UnitPriceC
+
+                for product in chunk_products:
+                    upc, unit_price_c = product[0], product[1]
+                    normalized_upc = str(upc).strip() if upc else ''
+
+                    if normalized_upc:
+                        chunk_upcs.append(normalized_upc)
+                        price_map[normalized_upc] = unit_price_c
+
+                if not chunk_upcs:
+                    continue
+
+                # Step 4: Find matching active products in destination store
+                # Process in batches to avoid SQL Server's 2100 parameter limit
+                MAX_PARAMS_PER_QUERY = 2000
+                matching_upcs = []
+
+                for batch_start in range(0, len(chunk_upcs), MAX_PARAMS_PER_QUERY):
+                    batch_end = min(batch_start + MAX_PARAMS_PER_QUERY, len(chunk_upcs))
+                    upc_batch = chunk_upcs[batch_start:batch_end]
+
+                    placeholders = ','.join(['?'] * len(upc_batch))
+                    match_query = f"""
+                        SELECT ProductUPC
+                        FROM Items_tbl
+                        WHERE ProductUPC IN ({placeholders})
+                          AND Discontinued = 0
+                    """
+
+                    dest_cursor.execute(match_query, upc_batch)
+                    batch_matches = [row[0].strip() if row[0] else '' for row in dest_cursor.fetchall()]
+                    matching_upcs.extend(batch_matches)
+
+                products_matched += len(matching_upcs)
+
+                print(f"[DELIVERY-B DEBUG] Chunk {chunk_num + 1}/{total_chunks}: Found {len(matching_upcs)} matching products")
+
+                # Step 5: Update UnitPriceC for matching products in destination store
+                # Process in batches to avoid parameter limit
+                # UPDATE needs 3 params per product total (2 for CASE + 1 for WHERE), so max 500 products per batch
+                MAX_UPDATES_PER_BATCH = 500
+
+                for batch_start in range(0, len(matching_upcs), MAX_UPDATES_PER_BATCH):
+                    batch_end = min(batch_start + MAX_UPDATES_PER_BATCH, len(matching_upcs))
+                    update_batch = matching_upcs[batch_start:batch_end]
+
+                    # Build CASE statement for batch update
+                    case_parts = []
+                    update_params = []
+
+                    for upc in update_batch:
+                        price = price_map.get(upc)
+                        if price is not None:
+                            case_parts.append("WHEN ProductUPC = ? THEN ?")
+                            update_params.extend([upc, price])
+
+                    if not case_parts:
+                        continue
+
+                    # Build UPC list for WHERE clause
+                    where_placeholders = ','.join(['?'] * len(update_batch))
+                    update_params.extend(update_batch)
+
+                    update_query = f"""
+                        UPDATE Items_tbl
+                        SET UnitPriceC = CASE
+                            {' '.join(case_parts)}
+                        END
+                        WHERE ProductUPC IN ({where_placeholders})
+                          AND Discontinued = 0
+                    """
+
+                    dest_cursor.execute(update_query, update_params)
+                    products_updated += dest_cursor.rowcount
+
+                # Commit after each chunk
+                dest_conn.commit()
+
+                print(f"[DELIVERY-B DEBUG] Chunk {chunk_num + 1}/{total_chunks}: Updated {products_updated} products so far")
+
+            primary_cursor.close()
+            dest_cursor.close()
+
+        return True, None, products_matched, products_updated
+
+    except pyodbc.Error as e:
+        error_msg = str(e)
+        return False, error_msg, 0, 0
+    except Exception as e:
+        return False, f"Unexpected error: {str(e)}", 0, 0
+
+async def sync_unit_price_c_across_stores(
+    primary_store: Dict[str, Any],
+    destination_stores: List[Dict[str, Any]],
+    progress_callback: Optional[callable] = None,
+    tds_version: str = "7.4"
+) -> List[Dict[str, Any]]:
+    """
+    Sync UnitPriceC from primary store to multiple destination stores sequentially (one by one).
+
+    Only syncs active products (Discontinued = 0) matching by ProductUPC.
+
+    Args:
+        primary_store: Primary store dict with keys: id, name, host, port, database_name, username, password
+        destination_stores: List of destination store dicts with same keys
+        progress_callback: Optional callback for progress updates
+        tds_version: TDS protocol version
+
+    Returns:
+        List of result dictionaries with store_id, store_name, products_matched, products_updated, errors
+    """
+    async def sync_single_store(dest_store: Dict[str, Any]) -> Dict[str, Any]:
+        """Sync UnitPriceC to a single destination store."""
+        if progress_callback:
+            progress_callback({
+                "status": "syncing_store",
+                "store_id": dest_store["store_id"],
+                "store_name": dest_store["store_name"]
+            })
+
+        # Run sync in thread pool
+        loop = asyncio.get_event_loop()
+        with ThreadPoolExecutor() as executor:
+            success, error, matched, updated = await loop.run_in_executor(
+                executor,
+                _sync_unit_price_c_to_store_sync,
+                primary_store["host"],
+                primary_store["port"],
+                primary_store["database_name"],
+                primary_store["username"],
+                primary_store["password"],
+                dest_store["host"],
+                dest_store["port"],
+                dest_store["database_name"],
+                dest_store["username"],
+                dest_store["password"],
+                tds_version
+            )
+
+        result = {
+            "store_id": dest_store["store_id"],
+            "store_name": dest_store["store_name"],
+            "products_matched": matched,
+            "products_updated": updated,
+            "errors": [error] if error else []
+        }
+
+        if progress_callback:
+            progress_callback({
+                "status": "store_complete",
+                "store_id": dest_store["store_id"],
+                "store_name": dest_store["store_name"],
+                "products_matched": matched,
+                "products_updated": updated,
+                "success": success
+            })
+
+        return result
+
+    # Sync stores sequentially (one by one)
+    results = []
+    for store in destination_stores:
+        result = await sync_single_store(store)
+        results.append(result)
+
+    return results

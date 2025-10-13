@@ -63,6 +63,8 @@ function navigateTo(page) {
     loadSQLAuditPage();
   } else if (page === "store-comparison") {
     loadMSSQLStoresForComparison();
+  } else if (page === "delivery-b") {
+    loadMSSQLStoresForDeliveryB();
   }
 }
 
@@ -3628,6 +3630,219 @@ document
 document
   .getElementById("export-comparison-btn")
   ?.addEventListener("click", exportComparisonToCSV);
+
+// ==========================================
+// Delivery B Functions
+// ==========================================
+
+let deliveryBState = {
+  primaryStoreId: null,
+  results: null,
+};
+
+async function loadMSSQLStoresForDeliveryB() {
+  try {
+    const response = await fetch(`${API_BASE}/stores`);
+    const stores = await response.json();
+
+    // Filter for MSSQL stores only, excluding inventory stores
+    const mssqlStores = stores.filter((s) => {
+      if (s.store_type !== "mssql") return false;
+      const storeName = s.name.toLowerCase();
+      // Exclude stores with "inventory" or "inv" in the name
+      return !storeName.includes("inventory") && !storeName.includes("inv");
+    });
+
+    const primarySelect = document.getElementById("deliveryb-primary-store");
+    primarySelect.innerHTML = '<option value="">Select primary store...</option>';
+
+    mssqlStores.forEach((store) => {
+      const option = document.createElement("option");
+      option.value = store.id;
+      option.textContent = store.name;
+      primarySelect.appendChild(option);
+    });
+  } catch (error) {
+    console.error("Error loading MSSQL stores:", error);
+  }
+}
+
+async function runDeliveryBSync() {
+  const primaryStoreId = deliveryBState.primaryStoreId;
+
+  if (!primaryStoreId) {
+    alert("Please select a primary store");
+    return;
+  }
+
+  const loadingEl = document.getElementById("deliveryb-loading");
+  const progressContainer = document.getElementById(
+    "deliveryb-progress-container",
+  );
+  const progressItems = document.getElementById("deliveryb-progress-items");
+  const resultsEl = document.getElementById("deliveryb-results");
+  const runBtn = document.getElementById("run-deliveryb-btn");
+
+  loadingEl.style.display = "flex";
+  progressContainer.style.display = "block";
+  progressItems.innerHTML = "";
+  resultsEl.style.display = "none";
+  runBtn.disabled = true;
+
+  // Build request payload
+  const requestBody = {
+    primary_store_id: primaryStoreId,
+  };
+
+  try {
+    const response = await fetch(`${API_BASE}/delivery-b/sync/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(requestBody),
+    });
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n\n");
+      buffer = lines.pop(); // Keep incomplete message in buffer
+
+      for (const line of lines) {
+        if (!line.trim() || line === ":ping") continue;
+
+        const eventMatch = line.match(/event: (\w+)\ndata: (.+)/s);
+        if (!eventMatch) {
+          console.log("[DELIVERY-B] Could not parse SSE line:", line);
+          continue;
+        }
+
+        const [, eventType, dataStr] = eventMatch;
+        console.log("[DELIVERY-B] Received event type:", eventType);
+        const data = JSON.parse(dataStr);
+
+        if (eventType === "progress") {
+          console.log("[DELIVERY-B] Progress event:", data);
+          if (data.status === "starting") {
+            const item = document.createElement("div");
+            item.style.cssText =
+              "font-size: 0.875rem; color: var(--accent-primary);";
+            item.textContent = `Starting sync from ${data.primary_store} to ${data.destination_count} stores...`;
+            progressItems.appendChild(item);
+          } else if (data.status === "syncing_store") {
+            const item = document.createElement("div");
+            item.style.cssText =
+              "font-size: 0.875rem; color: var(--text-secondary);";
+            item.textContent = `🔄 Syncing ${data.store_name}...`;
+            progressItems.appendChild(item);
+            progressContainer.scrollTop = progressContainer.scrollHeight;
+          } else if (data.status === "store_complete") {
+            const item = document.createElement("div");
+            item.style.cssText =
+              "font-size: 0.875rem; color: var(--success);";
+            item.textContent = `✓ Completed ${data.store_name} - ${data.products_matched} matched, ${data.products_updated} updated`;
+            progressItems.appendChild(item);
+            progressContainer.scrollTop = progressContainer.scrollHeight;
+          } else if (data.status === "store_error") {
+            const item = document.createElement("div");
+            item.style.cssText = "font-size: 0.875rem; color: var(--error);";
+            item.textContent = `✗ Error in ${data.store_name}: ${data.error}`;
+            progressItems.appendChild(item);
+            progressContainer.scrollTop = progressContainer.scrollHeight;
+          }
+        } else if (eventType === "complete") {
+          console.log("[DELIVERY-B] Complete event:", data);
+          loadingEl.style.display = "none";
+          progressContainer.style.display = "none";
+
+          deliveryBState.results = data;
+          displayDeliveryBResults(data);
+
+          runBtn.disabled = false;
+        } else if (eventType === "error") {
+          console.log("[DELIVERY-B] Error event:", data);
+          loadingEl.style.display = "none";
+          progressContainer.style.display = "none";
+          alert(`Error: ${data.message}`);
+          runBtn.disabled = false;
+        }
+      }
+    }
+  } catch (error) {
+    loadingEl.style.display = "none";
+    progressContainer.style.display = "none";
+    alert(`Error: ${error.message}`);
+    runBtn.disabled = false;
+  }
+}
+
+function displayDeliveryBResults(data) {
+  const resultsEl = document.getElementById("deliveryb-results");
+  const tableBody = document.getElementById("deliveryb-results-table-body");
+  const primaryNameEl = document.getElementById("deliveryb-primary-name");
+  const totalProductsEl = document.getElementById("deliveryb-total-products");
+  const totalUpdatedEl = document.getElementById("deliveryb-total-updated");
+  const successfulStoresEl = document.getElementById(
+    "deliveryb-successful-stores",
+  );
+  const totalStoresEl = document.getElementById("deliveryb-total-stores");
+
+  // Update summary
+  primaryNameEl.textContent = data.primary_store_name;
+  totalProductsEl.textContent = data.total_products_matched;
+  totalUpdatedEl.textContent = data.total_products_updated;
+  successfulStoresEl.textContent = data.successful_stores;
+  totalStoresEl.textContent = data.total_destination_stores;
+
+  // Display results table
+  tableBody.innerHTML = "";
+  data.results.forEach((result) => {
+    const row = document.createElement("tr");
+
+    const hasErrors = result.errors && result.errors.length > 0;
+    const statusText = hasErrors ? "Error" : "Success";
+    const statusColor = hasErrors ? "var(--error)" : "var(--success)";
+
+    const errorDetails = hasErrors
+      ? `<div style="font-size: 0.75rem; color: var(--error); margin-top: 0.25rem;">${result.errors.join(", ")}</div>`
+      : "";
+
+    row.innerHTML = `
+      <td>${result.store_name}</td>
+      <td>${result.products_matched}</td>
+      <td>${result.products_updated}</td>
+      <td style="color: ${statusColor};">
+        ${statusText}
+        ${errorDetails}
+      </td>
+    `;
+
+    tableBody.appendChild(row);
+  });
+
+  resultsEl.style.display = "block";
+}
+
+// Event listeners for Delivery B
+document
+  .getElementById("deliveryb-primary-store")
+  ?.addEventListener("change", (e) => {
+    const storeId = parseInt(e.target.value);
+    deliveryBState.primaryStoreId = storeId || null;
+
+    // Enable run button if store is selected
+    const runBtn = document.getElementById("run-deliveryb-btn");
+    runBtn.disabled = !storeId;
+  });
+
+document
+  .getElementById("run-deliveryb-btn")
+  ?.addEventListener("click", runDeliveryBSync);
 
 // Initialize
 document.addEventListener("DOMContentLoaded", () => {
