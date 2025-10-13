@@ -1045,10 +1045,6 @@ def _audit_orphaned_upcs_sync(
                 source_cursor = source_conn.cursor()
                 target_cursor = target_conn.cursor()
 
-                # Set query execution timeout (in seconds) - prevents long-running queries from hanging
-                source_cursor.timeout = 180  # 3 minutes for query execution
-                target_cursor.timeout = 180
-
                 # Process tables with cross-database comparison
                 orphaned_records, tables_checked = _process_tables_cross_db(
                     detail_tables=cross_db_tables,
