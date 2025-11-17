@@ -296,6 +296,11 @@ def _search_products_by_upc_sync(
                 "name": "QuotationDetails",
                 "pk": "id",
                 "description_field": "ProductDescription"
+            },
+            {
+                "name": "Items_BinLocations",
+                "pk": "id",
+                "description_field": "ProductDescription"
             }
         ]
 

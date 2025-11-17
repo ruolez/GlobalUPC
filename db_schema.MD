@@ -1,4 +1,19 @@
-	[dbo].[Quotations_tbl](
+***S2S DB TABLES
+
+
+CREATE TABLE [Items_BinLocations] (
+  [id] int identity(1, 1) not null primary key,
+  [CreatedAt] datetime not null CONSTRAINT [items_binlocations_createdat_default] DEFAULT SYSUTCDATETIME(),
+  [ProductUPC] varchar(255) null,
+  [ProductDescription] varchar(255) null,
+  [Qty_Cases] INT null,
+  [BinLocationID] INT null,
+  [LastUpdate] datetime not null CONSTRAINT [items_binlocations_lastupdate_default] DEFAULT SYSUTCDATETIME(),
+  [int1] INT null,
+  [txt1] varchar(255) null
+)
+
+	dbo].[Quotations_tbl](
 	[QuotationID] [int] IDENTITY(1,1) NOT NULL,
 	[QuotationNumber] [nvarchar](20) NULL,
 	[QuotationDate] [smalldatetime] NULL,
@@ -346,9 +361,10 @@
 	[color_code] [varchar](25) NULL,
 	[key_Postion] [int] NULL,
 
+***S2S DB TABLES END
 
 
-***DB_ADMIN TABLE
+***DB_ADMIN DB TABLES
 [dbo].[QuotationDetails](
 	[id] [int] IDENTITY(1,1) NOT NULL,
 	[DateCreate] [datetime] NULL,
@@ -366,5 +382,46 @@
 	[FieldDop_2] [varchar](255) NULL,
 	[FieldDop_3] [varchar](255) NULL,
 	[FieldDop_4] [varchar](255) NULL,
-*** DB ADMIN END
+***DB ADMIN DB END
 
+***ShihpperPlatform DB TABLES
+[dbo].[pick_lists](
+	[id] [int] IDENTITY(1,1) NOT NULL,
+	[date_from] [datetime2](7) NOT NULL,
+	[is_orders_gathered] [tinyint] NULL,
+	[is_products_gathered] [tinyint] NULL,
+	[cdate] [datetime2](7) NULL,
+	[mdate] [datetime2](7) NULL,
+	[is_printed] [tinyint] NULL,
+	[excluded_orders] [text] NULL,
+	[is_locked] [tinyint] NULL
+
+
+[dbo].[pick_list_orders](
+	[id] [int] IDENTITY(1,1) NOT NULL,
+	[remote_id] [bigint] NOT NULL,
+	[id_pick_list] [int] NOT NULL,
+	[id_service] [int] NOT NULL,
+	[name] [nvarchar](50) NOT NULL,
+	[shipping_name] [nvarchar](max) NULL,
+	[shipping_address] [nvarchar](max) NULL,
+	[shipping_method] [nvarchar](max) NULL,
+	[total] [nvarchar](50) NULL,
+	[state] [nvarchar](50) NULL,
+	[approval] [nvarchar](50) NULL,
+	[status_url] [nvarchar](max) NULL,
+	[order_date] [datetime2](7) NULL,
+	[cdate] [datetime2](7) NOT NULL,
+	[tags] [text] NULL
+
+
+[dbo].[pick_list_products](
+	[id] [int] IDENTITY(1,1) NOT NULL,
+	[id_pick_list] [int] NULL,
+	[name] [nvarchar](max) NULL,
+	[sku] [nvarchar](max) NULL,
+	[category] [nvarchar](100) NULL,
+	[amount] [int] NULL,
+	[barcode] [nvarchar](max) NULL
+
+***ShihpperPlatform TABLES END

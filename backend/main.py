@@ -460,7 +460,7 @@ async def update_upc_stream(request: UPCUpdateRequest, db: Session = Depends(get
                 # Determine primary key field based on table
                 if table_name == "Items_tbl":
                     pk_field = "ProductID"
-                elif table_name == "QuotationDetails":
+                elif table_name in ["QuotationDetails", "Items_BinLocations"]:
                     pk_field = "id"
                 else:
                     pk_field = "LineID"
