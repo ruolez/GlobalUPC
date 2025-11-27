@@ -740,6 +740,71 @@ remove_and_reinstall() {
     fresh_install
 }
 
+configure_iframe_embedding() {
+    print_header "Configure Iframe Embedding"
+
+    # Check installation exists
+    if [[ ! -d "${INSTALL_DIR}" ]]; then
+        error_exit "Installation not found. Please install first."
+    fi
+
+    local nginx_conf="${INSTALL_DIR}/frontend/nginx.conf"
+    if [[ ! -f "$nginx_conf" ]]; then
+        error_exit "nginx.conf not found at ${nginx_conf}"
+    fi
+
+    # Prompt for dashboard IP
+    echo "Enter the IP address of the dashboard that will embed this application."
+    echo "This IP will be added to the allowed iframe sources."
+    echo ""
+
+    while true; do
+        read -p "Dashboard IP address: " DASHBOARD_IP
+        if validate_ip "$DASHBOARD_IP"; then
+            print_success "Valid IP: ${DASHBOARD_IP}"
+            break
+        else
+            print_error "Invalid IP address. Please try again."
+        fi
+    done
+
+    # Check if IP already exists in the CSP header
+    if grep -q "http://${DASHBOARD_IP}" "$nginx_conf"; then
+        print_warning "IP ${DASHBOARD_IP} is already configured in nginx.conf"
+        if ! confirm "Continue anyway?"; then
+            print_info "No changes made"
+            return
+        fi
+    fi
+
+    # Update nginx.conf Content-Security-Policy
+    print_info "Updating nginx configuration..."
+
+    # Use sed to update the Content-Security-Policy line
+    # Match the frame-ancestors line and append the new IP before the closing quote
+    sed -i.bak "s|\(frame-ancestors 'self'[^\"]*\)\"|\\1 http://${DASHBOARD_IP}\"|" "$nginx_conf"
+
+    print_success "nginx.conf updated with allowed IP: ${DASHBOARD_IP}"
+    log "Iframe embedding configured for IP: ${DASHBOARD_IP}"
+
+    # Restart only the frontend container
+    print_info "Restarting frontend container (nginx only)..."
+    cd "${INSTALL_DIR}"
+    docker compose -f docker-compose.prod.yml restart frontend
+
+    if [[ $? -eq 0 ]]; then
+        print_success "Frontend container restarted"
+        print_info "Backend and database containers remain unchanged"
+    else
+        print_error "Failed to restart frontend container"
+    fi
+
+    echo ""
+    print_success "Iframe embedding configured successfully!"
+    print_info "Dashboard at http://${DASHBOARD_IP} can now embed this application"
+    log "Iframe embedding configuration completed"
+}
+
 ################################################################################
 # Main Menu
 ################################################################################
@@ -754,7 +819,8 @@ show_menu() {
     echo "  [2] Update from GitHub"
     echo "  [3] Remove Installation Only"
     echo "  [4] Remove and Reinstall"
-    echo "  [5] Exit"
+    echo "  [5] Configure Iframe Embedding"
+    echo "  [6] Exit"
     echo ""
 
     if detect_installation; then
@@ -766,7 +832,7 @@ show_menu() {
 main_menu() {
     while true; do
         show_menu
-        read -p "Select an option [1-5]: " choice
+        read -p "Select an option [1-6]: " choice
 
         case $choice in
             1)
@@ -792,12 +858,21 @@ main_menu() {
                 read -p "Press Enter to continue..."
                 ;;
             5)
+                if ! detect_installation; then
+                    print_error "No installation found. Please install first."
+                    sleep 2
+                    continue
+                fi
+                configure_iframe_embedding
+                read -p "Press Enter to continue..."
+                ;;
+            6)
                 echo ""
                 print_info "Exiting..."
                 exit 0
                 ;;
             *)
-                print_error "Invalid option. Please select 1-5."
+                print_error "Invalid option. Please select 1-6."
                 sleep 2
                 ;;
         esac
