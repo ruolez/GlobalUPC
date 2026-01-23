@@ -133,7 +133,10 @@ check_os() {
 check_internet() {
     print_info "Checking internet connectivity..."
 
-    if ping -c 1 8.8.8.8 &> /dev/null; then
+    # Use curl instead of ping - more reliable as ICMP is often blocked by firewalls
+    if curl -s --head --connect-timeout 5 https://github.com &> /dev/null; then
+        print_success "Internet connection active"
+    elif curl -s --head --connect-timeout 5 https://google.com &> /dev/null; then
         print_success "Internet connection active"
     else
         error_exit "No internet connection. Please check your network."
