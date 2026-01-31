@@ -1087,8 +1087,13 @@ body {
   border-bottom: none;
 }
 
-.autocomplete-item:hover {
+.autocomplete-item:hover,
+.autocomplete-item.selected {
   background: var(--bg-tertiary);
+}
+
+.autocomplete-item.selected {
+  border-left: 2px solid var(--accent-primary);
 }
 
 .autocomplete-item-description {

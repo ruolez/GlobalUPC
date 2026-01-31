@@ -3901,6 +3901,9 @@ let itemTrackerState = {
   sortColumn: "event_date",
   sortDirection: "desc",
   descriptionSearchTimeout: null,
+  autocompleteSelectedIndex: -1,
+  autocompleteResults: [],
+  configExpanded: false,
 };
 
 async function loadItemTrackerPage() {
@@ -4521,6 +4524,9 @@ async function fetchDescriptionSuggestions(query) {
 function showDescriptionDropdown(results) {
   const dropdown = document.getElementById("item-tracker-desc-dropdown");
 
+  itemTrackerState.autocompleteResults = results;
+  itemTrackerState.autocompleteSelectedIndex = -1;
+
   if (results.length === 0) {
     dropdown.innerHTML =
       '<div class="autocomplete-empty">No products found</div>';
@@ -4530,8 +4536,8 @@ function showDescriptionDropdown(results) {
 
   dropdown.innerHTML = results
     .map(
-      (result) => `
-    <div class="autocomplete-item" data-upc="${result.product_upc}" data-desc="${result.product_description}">
+      (result, index) => `
+    <div class="autocomplete-item" data-index="${index}" data-upc="${result.product_upc}" data-desc="${result.product_description}">
       <div class="autocomplete-item-description">${escapeHtml(result.product_description)}</div>
       <div class="autocomplete-item-upc">UPC: ${result.product_upc || "N/A"}</div>
     </div>
@@ -4546,6 +4552,75 @@ function showDescriptionDropdown(results) {
       selectDescriptionResult(item.dataset.upc, item.dataset.desc);
     });
   });
+}
+
+function updateAutocompleteSelection() {
+  const dropdown = document.getElementById("item-tracker-desc-dropdown");
+  const items = dropdown.querySelectorAll(".autocomplete-item");
+
+  items.forEach((item, index) => {
+    if (index === itemTrackerState.autocompleteSelectedIndex) {
+      item.classList.add("selected");
+      item.scrollIntoView({ block: "nearest" });
+    } else {
+      item.classList.remove("selected");
+    }
+  });
+}
+
+function handleAutocompleteKeydown(e) {
+  const dropdown = document.getElementById("item-tracker-desc-dropdown");
+  if (!dropdown.classList.contains("show")) return;
+
+  const results = itemTrackerState.autocompleteResults;
+  if (results.length === 0) return;
+
+  if (e.key === "ArrowDown") {
+    e.preventDefault();
+    itemTrackerState.autocompleteSelectedIndex = Math.min(
+      itemTrackerState.autocompleteSelectedIndex + 1,
+      results.length - 1,
+    );
+    updateAutocompleteSelection();
+  } else if (e.key === "ArrowUp") {
+    e.preventDefault();
+    itemTrackerState.autocompleteSelectedIndex = Math.max(
+      itemTrackerState.autocompleteSelectedIndex - 1,
+      0,
+    );
+    updateAutocompleteSelection();
+  } else if (e.key === "Enter") {
+    e.preventDefault();
+    if (itemTrackerState.autocompleteSelectedIndex >= 0) {
+      const selected = results[itemTrackerState.autocompleteSelectedIndex];
+      selectDescriptionResult(
+        selected.product_upc,
+        selected.product_description,
+      );
+    } else {
+      hideDescriptionDropdown();
+      const upcInput = document.getElementById("item-tracker-upc-input");
+      if (upcInput.value.trim()) {
+        searchItemTracker();
+      }
+    }
+  } else if (e.key === "Escape") {
+    hideDescriptionDropdown();
+  }
+}
+
+function toggleItemTrackerConfig() {
+  itemTrackerState.configExpanded = !itemTrackerState.configExpanded;
+  const details = document.getElementById("item-tracker-config-details");
+  const toggle = document.getElementById("item-tracker-config-toggle");
+
+  if (itemTrackerState.configExpanded) {
+    details.style.display = "block";
+    toggle.style.transform = "rotate(90deg)";
+  } else {
+    details.style.display = "none";
+    toggle.style.transform = "rotate(0deg)";
+  }
 }
 
 function hideDescriptionDropdown() {
@@ -4605,15 +4680,7 @@ document
   ?.addEventListener("input", handleDescriptionInput);
 document
   .getElementById("item-tracker-desc-input")
-  ?.addEventListener("keypress", (e) => {
-    if (e.key === "Enter") {
-      hideDescriptionDropdown();
-      const upcInput = document.getElementById("item-tracker-upc-input");
-      if (upcInput.value.trim()) {
-        searchItemTracker();
-      }
-    }
-  });
+  ?.addEventListener("keydown", handleAutocompleteKeydown);
 
 // Hide dropdown when clicking outside
 document.addEventListener("click", (e) => {
@@ -4628,6 +4695,15 @@ document.addEventListener("click", (e) => {
     hideDescriptionDropdown();
   }
 });
+
+// Config summary toggle
+document
+  .getElementById("item-tracker-config-header")
+  ?.addEventListener("click", (e) => {
+    if (!e.target.closest("#edit-item-tracker-config-btn")) {
+      toggleItemTrackerConfig();
+    }
+  });
 
 // Sort column click handlers for Item Tracker table
 document
