@@ -2162,31 +2162,41 @@
                 </div>
               </div>
 
-              <!-- Event Type Summary Badges -->
+              <!-- Event Type Summary & Filter Row -->
               <div
-                id="item-tracker-summary"
                 style="
-                  margin-bottom: 1rem;
                   display: flex;
-                  gap: 0.5rem;
+                  justify-content: space-between;
+                  align-items: center;
+                  gap: 1rem;
+                  margin-bottom: 1rem;
                   flex-wrap: wrap;
                 "
               >
-                <!-- Badges populated by JavaScript -->
-              </div>
-
-              <!-- Filter Dropdown -->
-              <div class="form-group" style="margin-bottom: 1rem">
-                <label for="item-tracker-filter" style="font-size: 0.875rem"
-                  >Filter by Event Type</label
+                <div
+                  id="item-tracker-summary"
+                  style="display: flex; gap: 0.5rem; flex-wrap: wrap"
                 >
-                <select id="item-tracker-filter" style="max-width: 200px">
-                  <option value="">All Events</option>
-                  <option value="purchase">Purchase</option>
-                  <option value="sale">Sale</option>
-                  <option value="customer_return">Customer Return</option>
-                  <option value="vendor_return">Vendor Return</option>
-                </select>
+                  <!-- Badges populated by JavaScript -->
+                </div>
+                <div style="display: flex; align-items: center; gap: 0.5rem">
+                  <label
+                    for="item-tracker-filter"
+                    style="
+                      font-size: 0.8125rem;
+                      color: var(--text-tertiary);
+                      white-space: nowrap;
+                    "
+                    >Filter:</label
+                  >
+                  <select id="item-tracker-filter" style="min-width: 150px">
+                    <option value="">All Events</option>
+                    <option value="purchase">Purchase</option>
+                    <option value="sale">Sale</option>
+                    <option value="customer_return">Customer Return</option>
+                    <option value="vendor_return">Vendor Return</option>
+                  </select>
+                </div>
               </div>
 
               <!-- Results Summary -->
