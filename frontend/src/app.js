@@ -169,6 +169,7 @@ async function loadDashboard() {
 async function loadSettings() {
   await loadStores();
   await loadExclusions();
+  await loadItemTrackerExclusions();
 
   // Set dropdown value to saved preference
   const savedLandingPage = getDefaultLandingPage();
@@ -327,6 +328,174 @@ async function loadExclusions(storeId = null) {
     loadingEl.style.display = "none";
     emptyEl.style.display = "block";
     showToast(`✗ Failed to load exclusions: ${error.message}`, "error");
+  }
+}
+
+// Item Tracker Exclusions Functions
+async function loadItemTrackerExclusions() {
+  const loadingEl = document.getElementById("item-tracker-exclusions-loading");
+  const emptyEl = document.getElementById("item-tracker-exclusions-empty");
+  const resultsEl = document.getElementById("item-tracker-exclusions-results");
+  const tableBody = document.getElementById(
+    "item-tracker-exclusions-table-body",
+  );
+  const countEl = document.getElementById("item-tracker-exclusions-count");
+
+  // Show loading state
+  loadingEl.style.display = "block";
+  emptyEl.style.display = "none";
+  resultsEl.style.display = "none";
+
+  try {
+    const data = await apiRequest("/item-tracker/exclusions");
+
+    loadingEl.style.display = "none";
+
+    if (data.total === 0) {
+      emptyEl.style.display = "block";
+      return;
+    }
+
+    // Show results
+    resultsEl.style.display = "block";
+    countEl.textContent = data.total;
+
+    // Clear and populate table
+    tableBody.innerHTML = "";
+    data.exclusions.forEach((exclusion) => {
+      const row = document.createElement("tr");
+
+      // Business Name
+      const nameTd = document.createElement("td");
+      nameTd.textContent = exclusion.business_name;
+      nameTd.style.fontWeight = "500";
+      row.appendChild(nameTd);
+
+      // Excluded Date
+      const dateTd = document.createElement("td");
+      const date = new Date(exclusion.excluded_at);
+      dateTd.textContent =
+        date.toLocaleDateString() + " " + date.toLocaleTimeString();
+      dateTd.style.color = "var(--text-secondary)";
+      dateTd.style.fontSize = "0.875rem";
+      row.appendChild(dateTd);
+
+      // Notes
+      const notesTd = document.createElement("td");
+      notesTd.textContent = exclusion.notes || "—";
+      notesTd.style.color = exclusion.notes
+        ? "inherit"
+        : "var(--text-tertiary)";
+      notesTd.style.fontSize = "0.875rem";
+      row.appendChild(notesTd);
+
+      // Actions
+      const actionsTd = document.createElement("td");
+      actionsTd.style.textAlign = "center";
+      const deleteBtn = document.createElement("button");
+      deleteBtn.className = "btn-icon";
+      deleteBtn.title = "Restore (remove exclusion)";
+      deleteBtn.innerHTML = "🗑️";
+      deleteBtn.style.cursor = "pointer";
+      deleteBtn.style.fontSize = "1rem";
+      deleteBtn.style.padding = "0.25rem 0.5rem";
+      deleteBtn.style.background = "transparent";
+      deleteBtn.style.border = "1px solid var(--border-color)";
+      deleteBtn.style.borderRadius = "var(--radius-sm)";
+      deleteBtn.style.transition = "all 0.2s";
+      deleteBtn.onclick = async () => {
+        if (
+          !confirm(
+            `Restore "${exclusion.business_name}"?\n\nThis customer/supplier will appear in future Item Tracker searches.`,
+          )
+        ) {
+          return;
+        }
+
+        try {
+          await apiRequest(`/item-tracker/exclusions/${exclusion.id}`, {
+            method: "DELETE",
+          });
+
+          // Fade out and remove row
+          row.style.transition = "opacity 0.3s";
+          row.style.opacity = "0";
+          setTimeout(() => {
+            row.remove();
+            // Update count
+            const remainingRows = tableBody.querySelectorAll("tr").length;
+            countEl.textContent = remainingRows;
+
+            // Show empty state if no more exclusions
+            if (remainingRows === 0) {
+              resultsEl.style.display = "none";
+              emptyEl.style.display = "block";
+            }
+          }, 300);
+
+          showToast(`✓ Exclusion removed successfully`, "success");
+        } catch (error) {
+          console.error("Error deleting exclusion:", error);
+          showToast(`✗ Failed to delete exclusion: ${error.message}`, "error");
+        }
+      };
+      deleteBtn.onmouseover = () => {
+        deleteBtn.style.background = "var(--error)";
+        deleteBtn.style.borderColor = "var(--error)";
+        deleteBtn.style.color = "#fff";
+      };
+      deleteBtn.onmouseout = () => {
+        deleteBtn.style.background = "transparent";
+        deleteBtn.style.borderColor = "var(--border-color)";
+        deleteBtn.style.color = "inherit";
+      };
+      actionsTd.appendChild(deleteBtn);
+      row.appendChild(actionsTd);
+
+      tableBody.appendChild(row);
+    });
+  } catch (error) {
+    console.error("Error loading Item Tracker exclusions:", error);
+    loadingEl.style.display = "none";
+    emptyEl.style.display = "block";
+    showToast(
+      `✗ Failed to load Item Tracker exclusions: ${error.message}`,
+      "error",
+    );
+  }
+}
+
+async function excludeBusinessName(businessName) {
+  if (
+    !confirm(
+      `Exclude "${businessName}" from all Item Tracker results?\n\nThis customer/supplier will no longer appear in search results.`,
+    )
+  ) {
+    return;
+  }
+
+  try {
+    await apiRequest("/item-tracker/exclusions", {
+      method: "POST",
+      body: JSON.stringify({ business_name: businessName }),
+    });
+
+    showToast(`✓ "${businessName}" excluded successfully`, "success");
+
+    // Re-run search to refresh results
+    if (
+      document.getElementById("item-tracker-upc-input") &&
+      document.getElementById("item-tracker-upc-input").value.trim()
+    ) {
+      searchItemTracker();
+    }
+  } catch (error) {
+    console.error("Error excluding business name:", error);
+    if (error.message && error.message.includes("already excluded")) {
+      showToast(`Already excluded: ${businessName}`, "warning");
+    } else {
+      showToast(`✗ Failed to exclude: ${error.message}`, "error");
+    }
   }
 }
 
@@ -4307,10 +4476,35 @@ function renderItemTrackerTable(events) {
       <td style="font-family: monospace; font-size: 0.8125rem">${event.document_number || "-"}</td>
       <td style="text-align: right">${qty}</td>
       <td style="text-align: right">${priceOrCost}</td>
-      <td style="max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap" title="${event.business_name || ""}">${event.business_name || "-"}</td>
+      <td style="max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap" title="${escapeHtml(event.business_name || "")}">${escapeHtml(event.business_name || "-")}</td>
+      <td style="text-align: center">
+        ${
+          event.business_name
+            ? `<button class="btn-icon exclude-btn" data-name="${escapeHtml(event.business_name)}" title="Exclude from results" style="cursor: pointer; padding: 0.25rem 0.5rem; background: transparent; border: 1px solid var(--border-color); border-radius: var(--radius-sm); font-size: 0.875rem; transition: all 0.2s;">🚫</button>`
+            : "-"
+        }
+      </td>
     `;
 
     tableBody.appendChild(row);
+  });
+
+  // Add event listeners for exclude buttons
+  tableBody.querySelectorAll(".exclude-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const businessName = btn.dataset.name;
+      excludeBusinessName(businessName);
+    });
+    btn.addEventListener("mouseover", () => {
+      btn.style.background = "var(--error)";
+      btn.style.borderColor = "var(--error)";
+      btn.style.color = "#fff";
+    });
+    btn.addEventListener("mouseout", () => {
+      btn.style.background = "transparent";
+      btn.style.borderColor = "var(--border-color)";
+      btn.style.color = "inherit";
+    });
   });
 }
 

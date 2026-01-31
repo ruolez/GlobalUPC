@@ -110,3 +110,11 @@ class ItemTrackerConfig(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     s2s_store = relationship("Store", foreign_keys=[s2s_store_id])
+
+class ItemTrackerExclusion(Base):
+    __tablename__ = "item_tracker_exclusions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    business_name = Column(String(255), nullable=False, unique=True)
+    excluded_at = Column(DateTime(timezone=True), server_default=func.now())
+    notes = Column(Text)

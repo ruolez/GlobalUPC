@@ -12,7 +12,7 @@ import uuid
 import os
 
 from database import get_db, engine
-from models import Store, MSSQLConnection, ShopifyConnection, Setting, StoreType, UPCUpdateHistory, UPCExclusion, ItemTrackerConfig
+from models import Store, MSSQLConnection, ShopifyConnection, Setting, StoreType, UPCUpdateHistory, UPCExclusion, ItemTrackerConfig, ItemTrackerExclusion
 from schemas import (
     MSSQLStoreCreate, ShopifyStoreCreate, StoreResponse,
     SettingCreate, SettingUpdate, SettingResponse,
@@ -29,7 +29,8 @@ from schemas import (
     DeliveryBSyncRequest, DeliveryBStoreResult,
     ItemTrackerConfigCreate, ItemTrackerConfigResponse, ItemTrackerSearchRequest,
     ItemInfo, ItemTrackerEvent, ItemTrackerSearchResponse,
-    DescriptionAutocompleteRequest, DescriptionAutocompleteResult, DescriptionAutocompleteResponse
+    DescriptionAutocompleteRequest, DescriptionAutocompleteResult, DescriptionAutocompleteResponse,
+    ItemTrackerExclusionCreate, ItemTrackerExclusionResponse, ItemTrackerExclusionListResponse
 )
 from mssql_helper import (
     test_mssql_connection, search_upc_across_mssql_stores, search_products_by_upc,
@@ -2670,6 +2671,28 @@ async def search_item_tracker_stream(request: ItemTrackerSearchRequest, db: Sess
 
                             yield f"event: progress\ndata: {json.dumps({'status': 'store_complete', 'store_name': store_name, 'event_type': 'customer_return', 'count': len(returns)})}\n\n"
 
+            # Filter out excluded business names
+            exclusions = db.query(ItemTrackerExclusion).all()
+            excluded_names = {e.business_name.lower() for e in exclusions}
+
+            if excluded_names:
+                original_count = len(all_events)
+                all_events = [
+                    e for e in all_events
+                    if not e.business_name or e.business_name.lower() not in excluded_names
+                ]
+                filtered_count = original_count - len(all_events)
+                if filtered_count > 0:
+                    # Update event counts after filtering
+                    event_counts = {
+                        "purchase": 0,
+                        "sale": 0,
+                        "customer_return": 0,
+                        "vendor_return": 0
+                    }
+                    for event in all_events:
+                        event_counts[event.event_type] += 1
+
             # Sort all events by date (newest first)
             all_events.sort(key=lambda e: e.event_date if e.event_date else datetime.min, reverse=True)
 
@@ -2791,6 +2814,82 @@ async def autocomplete_product_description(request: DescriptionAutocompleteReque
     ]
 
     return DescriptionAutocompleteResponse(results=results, count=len(results))
+
+
+@app.post("/api/item-tracker/exclusions", response_model=ItemTrackerExclusionResponse)
+async def add_item_tracker_exclusion(request: ItemTrackerExclusionCreate, db: Session = Depends(get_db)):
+    """
+    Add a business name (customer/supplier) to the Item Tracker exclusion list.
+    """
+    business_name = request.business_name.strip()
+    if not business_name:
+        raise HTTPException(status_code=400, detail="Business name is required")
+
+    existing = db.query(ItemTrackerExclusion).filter(
+        ItemTrackerExclusion.business_name.ilike(business_name)
+    ).first()
+
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Business name '{business_name}' is already excluded"
+        )
+
+    exclusion = ItemTrackerExclusion(
+        business_name=business_name,
+        notes=request.notes
+    )
+    db.add(exclusion)
+    db.commit()
+    db.refresh(exclusion)
+
+    return ItemTrackerExclusionResponse(
+        id=exclusion.id,
+        business_name=exclusion.business_name,
+        excluded_at=exclusion.excluded_at,
+        notes=exclusion.notes
+    )
+
+
+@app.get("/api/item-tracker/exclusions", response_model=ItemTrackerExclusionListResponse)
+async def list_item_tracker_exclusions(db: Session = Depends(get_db)):
+    """
+    List all excluded business names for Item Tracker.
+    """
+    exclusions = db.query(ItemTrackerExclusion).order_by(
+        ItemTrackerExclusion.excluded_at.desc()
+    ).all()
+
+    return ItemTrackerExclusionListResponse(
+        exclusions=[
+            ItemTrackerExclusionResponse(
+                id=e.id,
+                business_name=e.business_name,
+                excluded_at=e.excluded_at,
+                notes=e.notes
+            )
+            for e in exclusions
+        ],
+        total=len(exclusions)
+    )
+
+
+@app.delete("/api/item-tracker/exclusions/{exclusion_id}")
+async def delete_item_tracker_exclusion(exclusion_id: int, db: Session = Depends(get_db)):
+    """
+    Remove a business name from the Item Tracker exclusion list.
+    """
+    exclusion = db.query(ItemTrackerExclusion).filter(
+        ItemTrackerExclusion.id == exclusion_id
+    ).first()
+
+    if not exclusion:
+        raise HTTPException(status_code=404, detail="Exclusion not found")
+
+    db.delete(exclusion)
+    db.commit()
+
+    return {"message": "Exclusion removed successfully"}
 
 
 if __name__ == "__main__":

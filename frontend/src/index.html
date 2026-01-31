@@ -613,6 +613,88 @@
               </div>
             </div>
           </section>
+
+          <!-- Item Tracker Exclusions Section -->
+          <section class="settings-section">
+            <div class="section-header">
+              <h3>Item Tracker Exclusions</h3>
+            </div>
+            <p
+              style="
+                margin: 0 0 1rem;
+                font-size: 0.875rem;
+                color: var(--text-secondary);
+              "
+            >
+              Manage excluded customers/suppliers from Item Tracker results.
+              Excluded business names will not appear in future searches.
+            </p>
+
+            <!-- Loading State -->
+            <div
+              id="item-tracker-exclusions-loading"
+              class="test-status"
+              style="display: none; margin-top: 1rem"
+            >
+              <div class="loading">Loading exclusions...</div>
+            </div>
+
+            <!-- Empty State -->
+            <div
+              id="item-tracker-exclusions-empty"
+              style="
+                display: none;
+                text-align: center;
+                padding: 2rem 1rem;
+                color: var(--text-tertiary);
+                margin-top: 1rem;
+                background: var(--bg-secondary);
+                border-radius: var(--radius-md);
+              "
+            >
+              <p style="margin: 0; font-size: 0.875rem">
+                No customer/supplier exclusions found
+              </p>
+              <p style="margin: 0.5rem 0 0; font-size: 0.75rem">
+                Excluded business names will appear here after you exclude them
+                from Item Tracker results
+              </p>
+            </div>
+
+            <!-- Exclusions Table -->
+            <div
+              id="item-tracker-exclusions-results"
+              style="display: none; margin-top: 1rem"
+            >
+              <div style="margin-bottom: 1rem">
+                <p
+                  style="
+                    margin: 0;
+                    font-size: 0.875rem;
+                    color: var(--text-secondary);
+                  "
+                >
+                  <strong id="item-tracker-exclusions-count">0</strong> excluded
+                  customers/suppliers
+                </p>
+              </div>
+              <div style="overflow-x: auto">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th style="width: 40%">Customer/Supplier</th>
+                      <th style="width: 25%">Excluded Date</th>
+                      <th style="width: 25%">Notes</th>
+                      <th style="width: 10%">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="item-tracker-exclusions-table-body">
+                    <!-- Exclusions will be populated here by JavaScript -->
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
         </div>
 
         <!-- Update UPC Page -->
@@ -1881,7 +1963,12 @@
 
               <!-- Product Search -->
               <div
-                style="display: flex; gap: 0.5rem; align-items: flex-end; flex: 1"
+                style="
+                  display: flex;
+                  gap: 0.5rem;
+                  align-items: flex-end;
+                  flex: 1;
+                "
               >
                 <div>
                   <label
@@ -2307,12 +2394,13 @@
                         Price/Cost <span class="sort-indicator"></span>
                       </th>
                       <th
-                        style="width: 20%; cursor: pointer; user-select: none"
+                        style="width: 17%; cursor: pointer; user-select: none"
                         data-sort="business_name"
                         class="sortable"
                       >
                         Customer/Supplier <span class="sort-indicator"></span>
                       </th>
+                      <th style="width: 5%">Actions</th>
                     </tr>
                   </thead>
                   <tbody id="item-tracker-table-body">

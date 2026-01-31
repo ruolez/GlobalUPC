@@ -141,6 +141,17 @@ CREATE TRIGGER update_item_tracker_config_updated_at
     BEFORE UPDATE ON item_tracker_config
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+-- Item Tracker exclusions for customers/suppliers
+CREATE TABLE item_tracker_exclusions (
+    id SERIAL PRIMARY KEY,
+    business_name VARCHAR(255) NOT NULL UNIQUE,
+    excluded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    notes TEXT
+);
+
+-- Index for fast lookups by business name
+CREATE INDEX idx_item_tracker_exclusions_name ON item_tracker_exclusions(business_name);
+
 -- Insert default settings
 INSERT INTO settings (key, value, description) VALUES
     ('app_name', 'Global UPC', 'Application name'),

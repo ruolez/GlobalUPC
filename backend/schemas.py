@@ -396,3 +396,23 @@ class DescriptionAutocompleteResult(BaseModel):
 class DescriptionAutocompleteResponse(BaseModel):
     results: List[DescriptionAutocompleteResult]
     count: int
+
+
+class ItemTrackerExclusionCreate(BaseModel):
+    business_name: str
+    notes: Optional[str] = None
+
+
+class ItemTrackerExclusionResponse(BaseModel):
+    id: int
+    business_name: str
+    excluded_at: datetime
+    notes: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class ItemTrackerExclusionListResponse(BaseModel):
+    exclusions: List[ItemTrackerExclusionResponse]
+    total: int
