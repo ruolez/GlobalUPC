@@ -4382,16 +4382,24 @@ function displayItemTrackerResults(data) {
   const summaryEl = document.getElementById("item-tracker-summary");
   summaryEl.innerHTML = "";
 
+  // Calculate total quantities per event type
+  const qtyTotals = {};
+  data.events.forEach((event) => {
+    if (!qtyTotals[event.event_type]) qtyTotals[event.event_type] = 0;
+    qtyTotals[event.event_type] += event.quantity || 0;
+  });
+
   const eventTypes = [
     { key: "purchase", label: "Purchases", color: "#22c55e" },
     { key: "sale", label: "Sales", color: "#3b82f6" },
-    { key: "customer_return", label: "Customer Returns", color: "#f59e0b" },
+    { key: "customer_return", label: "Cust. Returns", color: "#f59e0b" },
     { key: "vendor_return", label: "Vendor Returns", color: "#ef4444" },
   ];
 
   eventTypes.forEach((type) => {
     const count = data.event_counts[type.key] || 0;
     if (count > 0) {
+      const totalQty = qtyTotals[type.key] || 0;
       const badge = document.createElement("span");
       badge.style.padding = "0.375rem 0.75rem";
       badge.style.borderRadius = "var(--radius-sm)";
@@ -4400,7 +4408,10 @@ function displayItemTrackerResults(data) {
       badge.style.background = type.color + "20";
       badge.style.color = type.color;
       badge.style.border = `1px solid ${type.color}40`;
-      badge.textContent = `${type.label}: ${count}`;
+      badge.style.display = "inline-flex";
+      badge.style.alignItems = "center";
+      badge.style.gap = "0.5rem";
+      badge.innerHTML = `${type.label}: ${count} <span style="opacity: 0.6;">·</span> <span style="opacity: 0.7;">${totalQty.toLocaleString()}</span>`;
       summaryEl.appendChild(badge);
     }
   });
