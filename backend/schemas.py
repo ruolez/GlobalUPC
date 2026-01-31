@@ -402,12 +402,14 @@ class DescriptionAutocompleteResponse(BaseModel):
 
 class ItemTrackerExclusionCreate(BaseModel):
     business_name: str
+    void_status: Optional[int] = None  # NULL=all, 0=non-voided, 1=voided
     notes: Optional[str] = None
 
 
 class ItemTrackerExclusionResponse(BaseModel):
     id: int
     business_name: str
+    void_status: Optional[int] = None
     excluded_at: datetime
     notes: Optional[str] = None
 

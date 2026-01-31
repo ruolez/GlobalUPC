@@ -144,13 +144,17 @@ CREATE TRIGGER update_item_tracker_config_updated_at
 -- Item Tracker exclusions for customers/suppliers
 CREATE TABLE item_tracker_exclusions (
     id SERIAL PRIMARY KEY,
-    business_name VARCHAR(255) NOT NULL UNIQUE,
+    business_name VARCHAR(255) NOT NULL,
+    void_status INTEGER,  -- NULL=all events, 0=non-voided only, 1=voided only
     excluded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     notes TEXT
 );
 
 -- Index for fast lookups by business name
 CREATE INDEX idx_item_tracker_exclusions_name ON item_tracker_exclusions(business_name);
+-- Unique constraint on (business_name, void_status) using COALESCE for NULL handling
+CREATE UNIQUE INDEX idx_exclusions_name_void
+    ON item_tracker_exclusions(business_name, COALESCE(void_status, -1));
 
 -- Insert default settings
 INSERT INTO settings (key, value, description) VALUES

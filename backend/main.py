@@ -2674,16 +2674,41 @@ async def search_item_tracker_stream(request: ItemTrackerSearchRequest, db: Sess
 
                             yield f"event: progress\ndata: {json.dumps({'status': 'store_complete', 'store_name': store_name, 'event_type': 'customer_return', 'count': len(returns)})}\n\n"
 
-            # Filter out excluded business names
+            # Filter out excluded business names (void-aware)
             exclusions = db.query(ItemTrackerExclusion).all()
-            excluded_names = {e.business_name.lower() for e in exclusions}
 
-            if excluded_names:
+            # Build exclusion lookup: {business_name_lower: [exclusion objects]}
+            exclusion_map = {}
+            for excl in exclusions:
+                key = excl.business_name.lower()
+                if key not in exclusion_map:
+                    exclusion_map[key] = []
+                exclusion_map[key].append(excl)
+
+            def should_exclude(event):
+                if not event.business_name:
+                    return False
+
+                key = event.business_name.lower()
+                if key not in exclusion_map:
+                    return False
+
+                for excl in exclusion_map[key]:
+                    # NULL void_status = exclude all events for this business
+                    if excl.void_status is None:
+                        return True
+                    # For sale events, check void status match
+                    if event.event_type == "sale" and event.is_voided is not None:
+                        if excl.void_status == 1 and event.is_voided:
+                            return True  # Exclude voided
+                        if excl.void_status == 0 and not event.is_voided:
+                            return True  # Exclude non-voided
+
+                return False
+
+            if exclusion_map:
                 original_count = len(all_events)
-                all_events = [
-                    e for e in all_events
-                    if not e.business_name or e.business_name.lower() not in excluded_names
-                ]
+                all_events = [e for e in all_events if not should_exclude(e)]
                 filtered_count = original_count - len(all_events)
                 if filtered_count > 0:
                     # Update event counts after filtering
@@ -2824,23 +2849,37 @@ async def autocomplete_product_description(request: DescriptionAutocompleteReque
 async def add_item_tracker_exclusion(request: ItemTrackerExclusionCreate, db: Session = Depends(get_db)):
     """
     Add a business name (customer/supplier) to the Item Tracker exclusion list.
+    void_status: NULL=all events, 0=non-voided only, 1=voided only
     """
     business_name = request.business_name.strip()
     if not business_name:
         raise HTTPException(status_code=400, detail="Business name is required")
 
-    existing = db.query(ItemTrackerExclusion).filter(
+    # Check for existing exclusion with same business_name AND void_status
+    query = db.query(ItemTrackerExclusion).filter(
         ItemTrackerExclusion.business_name.ilike(business_name)
-    ).first()
+    )
+    if request.void_status is None:
+        query = query.filter(ItemTrackerExclusion.void_status.is_(None))
+    else:
+        query = query.filter(ItemTrackerExclusion.void_status == request.void_status)
+
+    existing = query.first()
 
     if existing:
+        scope_text = "all events"
+        if request.void_status == 0:
+            scope_text = "non-voided invoices"
+        elif request.void_status == 1:
+            scope_text = "voided invoices"
         raise HTTPException(
             status_code=409,
-            detail=f"Business name '{business_name}' is already excluded"
+            detail=f"Business name '{business_name}' is already excluded for {scope_text}"
         )
 
     exclusion = ItemTrackerExclusion(
         business_name=business_name,
+        void_status=request.void_status,
         notes=request.notes
     )
     db.add(exclusion)
@@ -2850,6 +2889,7 @@ async def add_item_tracker_exclusion(request: ItemTrackerExclusionCreate, db: Se
     return ItemTrackerExclusionResponse(
         id=exclusion.id,
         business_name=exclusion.business_name,
+        void_status=exclusion.void_status,
         excluded_at=exclusion.excluded_at,
         notes=exclusion.notes
     )
@@ -2869,6 +2909,7 @@ async def list_item_tracker_exclusions(db: Session = Depends(get_db)):
             ItemTrackerExclusionResponse(
                 id=e.id,
                 business_name=e.business_name,
+                void_status=e.void_status,
                 excluded_at=e.excluded_at,
                 notes=e.notes
             )

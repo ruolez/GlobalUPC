@@ -115,6 +115,7 @@ class ItemTrackerExclusion(Base):
     __tablename__ = "item_tracker_exclusions"
 
     id = Column(Integer, primary_key=True, index=True)
-    business_name = Column(String(255), nullable=False, unique=True)
+    business_name = Column(String(255), nullable=False)
+    void_status = Column(Integer, nullable=True)  # NULL=all, 0=non-voided, 1=voided
     excluded_at = Column(DateTime(timezone=True), server_default=func.now())
     notes = Column(Text)

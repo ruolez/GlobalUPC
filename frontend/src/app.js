@@ -371,6 +371,21 @@ async function loadItemTrackerExclusions() {
       nameTd.style.fontWeight = "500";
       row.appendChild(nameTd);
 
+      // Scope
+      const scopeTd = document.createElement("td");
+      let scopeText = "All";
+      let scopeStyle = "color: var(--text-secondary);";
+      if (exclusion.void_status === 0) {
+        scopeText = "Non-voided only";
+        scopeStyle = "color: var(--success);";
+      } else if (exclusion.void_status === 1) {
+        scopeText = "Voided only";
+        scopeStyle = "color: var(--warning);";
+      }
+      scopeTd.textContent = scopeText;
+      scopeTd.style.cssText = scopeStyle + " font-size: 0.8125rem;";
+      row.appendChild(scopeTd);
+
       // Excluded Date
       const dateTd = document.createElement("td");
       const date = new Date(exclusion.excluded_at);
@@ -465,7 +480,7 @@ async function loadItemTrackerExclusions() {
   }
 }
 
-async function excludeBusinessName(businessName) {
+async function excludeBusinessName(businessName, voidStatus) {
   if (
     !confirm(
       `Exclude "${businessName}" from all Item Tracker results?\n\nThis customer/supplier will no longer appear in search results.`,
@@ -477,7 +492,10 @@ async function excludeBusinessName(businessName) {
   try {
     await apiRequest("/item-tracker/exclusions", {
       method: "POST",
-      body: JSON.stringify({ business_name: businessName }),
+      body: JSON.stringify({
+        business_name: businessName,
+        void_status: voidStatus,
+      }),
     });
 
     showToast(`✓ "${businessName}" excluded successfully`, "success");
@@ -4499,9 +4517,19 @@ function renderItemTrackerTable(events) {
       <td style="max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap" title="${escapeHtml(event.business_name || "")}">${escapeHtml(event.business_name || "-")}</td>
       <td style="text-align: center">
         ${
-          event.business_name
-            ? `<button class="btn-icon exclude-btn" data-name="${escapeHtml(event.business_name)}" title="Exclude from results" style="cursor: pointer; padding: 0.25rem 0.5rem; background: transparent; border: 1px solid var(--border-color); border-radius: var(--radius-sm); font-size: 0.875rem; transition: all 0.2s;">🚫</button>`
-            : "-"
+          event.business_name && event.event_type === "sale"
+            ? `<select class="exclude-select" data-name="${escapeHtml(event.business_name)}"
+                 style="padding: 0.25rem; font-size: 0.75rem; background: var(--bg-tertiary);
+                        border: 1px solid var(--border-color); border-radius: var(--radius-sm);
+                        color: var(--text-primary); cursor: pointer;">
+                 <option value="">🚫</option>
+                 <option value="all">Exclude All</option>
+                 <option value="voided">Voided Only</option>
+                 <option value="nonvoided">Non-voided Only</option>
+               </select>`
+            : event.business_name
+              ? `<button class="btn-icon exclude-btn" data-name="${escapeHtml(event.business_name)}" title="Exclude from results" style="cursor: pointer; padding: 0.25rem 0.5rem; background: transparent; border: 1px solid var(--border-color); border-radius: var(--radius-sm); font-size: 0.875rem; transition: all 0.2s;">🚫</button>`
+              : "-"
         }
       </td>
     `;
@@ -4509,11 +4537,11 @@ function renderItemTrackerTable(events) {
     tableBody.appendChild(row);
   });
 
-  // Add event listeners for exclude buttons
+  // Add event listeners for exclude buttons (non-sale events)
   tableBody.querySelectorAll(".exclude-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
       const businessName = btn.dataset.name;
-      excludeBusinessName(businessName);
+      excludeBusinessName(businessName, null);
     });
     btn.addEventListener("mouseover", () => {
       btn.style.background = "var(--error)";
@@ -4524,6 +4552,56 @@ function renderItemTrackerTable(events) {
       btn.style.background = "transparent";
       btn.style.borderColor = "var(--border-color)";
       btn.style.color = "inherit";
+    });
+  });
+
+  // Add event listeners for exclude dropdowns (sale events)
+  tableBody.querySelectorAll(".exclude-select").forEach((select) => {
+    select.addEventListener("change", async (e) => {
+      const value = e.target.value;
+      if (!value) return;
+
+      const businessName = select.dataset.name;
+      let voidStatus = null;
+      let scopeText = "all invoices";
+      if (value === "voided") {
+        voidStatus = 1;
+        scopeText = "voided only";
+      } else if (value === "nonvoided") {
+        voidStatus = 0;
+        scopeText = "non-voided only";
+      }
+
+      if (
+        !confirm(
+          `Exclude "${businessName}" (${scopeText})?\n\nThis will hide matching invoices from search results.`,
+        )
+      ) {
+        select.value = "";
+        return;
+      }
+
+      try {
+        await apiRequest("/item-tracker/exclusions", {
+          method: "POST",
+          body: JSON.stringify({
+            business_name: businessName,
+            void_status: voidStatus,
+          }),
+        });
+
+        showToast(`✓ "${businessName}" excluded (${scopeText})`, "success");
+        select.value = "";
+        searchItemTracker();
+      } catch (error) {
+        console.error("Error excluding business name:", error);
+        select.value = "";
+        if (error.message && error.message.includes("already excluded")) {
+          showToast(`Already excluded: ${businessName} (${scopeText})`, "warning");
+        } else {
+          showToast(`✗ Failed to exclude: ${error.message}`, "error");
+        }
+      }
     });
   });
 }
