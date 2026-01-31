@@ -52,6 +52,14 @@ function navigateTo(page) {
     }, 100);
   }
 
+  // Autofocus on description search input when navigating to item-tracker page
+  if (page === "item-tracker") {
+    setTimeout(() => {
+      const descInput = document.getElementById("item-tracker-desc-input");
+      if (descInput) descInput.focus();
+    }, 100);
+  }
+
   // Load page data
   if (page === "dashboard") {
     loadDashboard();
@@ -4864,6 +4872,15 @@ document
 document
   .getElementById("item-tracker-filter")
   ?.addEventListener("change", filterItemTrackerEvents);
+document
+  .getElementById("item-tracker-show-voided")
+  ?.addEventListener("change", () => {
+    // Re-run search if there's a UPC entered
+    const upc = document.getElementById("item-tracker-upc-input")?.value.trim();
+    if (upc) {
+      searchItemTracker();
+    }
+  });
 document
   .getElementById("export-item-tracker-btn")
   ?.addEventListener("click", exportItemTrackerCSV);
