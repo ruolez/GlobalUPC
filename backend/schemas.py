@@ -381,3 +381,18 @@ class ItemTrackerSearchResponse(BaseModel):
     event_counts: Dict[str, int]
     total_events: int
     stores_searched: int
+
+
+class DescriptionAutocompleteRequest(BaseModel):
+    query: str
+
+
+class DescriptionAutocompleteResult(BaseModel):
+    product_id: int
+    product_upc: str
+    product_description: str
+
+
+class DescriptionAutocompleteResponse(BaseModel):
+    results: List[DescriptionAutocompleteResult]
+    count: int

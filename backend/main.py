@@ -28,7 +28,8 @@ from schemas import (
     UPCExclusionCreate, UPCExclusionResponse, UPCExclusionListResponse,
     DeliveryBSyncRequest, DeliveryBStoreResult,
     ItemTrackerConfigCreate, ItemTrackerConfigResponse, ItemTrackerSearchRequest,
-    ItemInfo, ItemTrackerEvent, ItemTrackerSearchResponse
+    ItemInfo, ItemTrackerEvent, ItemTrackerSearchResponse,
+    DescriptionAutocompleteRequest, DescriptionAutocompleteResult, DescriptionAutocompleteResponse
 )
 from mssql_helper import (
     test_mssql_connection, search_upc_across_mssql_stores, search_products_by_upc,
@@ -39,7 +40,8 @@ from mssql_helper import (
 from shopify_helper import test_shopify_connection, search_barcode_across_shopify_stores, search_products_by_barcode, update_barcodes_across_shopify_stores, check_barcode_exists
 from item_tracker_helper import (
     get_item_info_async, get_purchases_async, get_sales_async,
-    get_customer_returns_async, get_vendor_returns_async
+    get_customer_returns_async, get_vendor_returns_async,
+    search_products_by_description_async
 )
 
 app = FastAPI(title="Global UPC API", version="1.0.0")
@@ -2732,6 +2734,63 @@ async def search_item_tracker_stream(request: ItemTrackerSearchRequest, db: Sess
             "Connection": "keep-alive",
         }
     )
+
+
+@app.post("/api/item-tracker/description/autocomplete", response_model=DescriptionAutocompleteResponse)
+async def autocomplete_product_description(request: DescriptionAutocompleteRequest, db: Session = Depends(get_db)):
+    """
+    Search for products by description for autocomplete suggestions.
+    Only returns active products (Discontinued=0) from the configured S2S database.
+    """
+    query = request.query.strip()
+
+    if not query or len(query) < 2:
+        return DescriptionAutocompleteResponse(results=[], count=0)
+
+    config = db.query(ItemTrackerConfig).first()
+
+    if not config or not config.s2s_store_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Item Tracker not configured. Please configure S2S database in Settings."
+        )
+
+    s2s_store = db.query(Store).filter(
+        Store.id == config.s2s_store_id,
+        Store.store_type == StoreType.mssql
+    ).first()
+
+    if not s2s_store or not s2s_store.mssql_connection:
+        raise HTTPException(
+            status_code=400,
+            detail="S2S database not found or missing connection details"
+        )
+
+    conn = s2s_store.mssql_connection
+
+    success, error, products = await search_products_by_description_async(
+        host=conn.host,
+        port=conn.port,
+        database=conn.database_name,
+        username=conn.username,
+        password=conn.password,
+        query=query,
+        limit=10
+    )
+
+    if not success:
+        raise HTTPException(status_code=500, detail=f"Database error: {error}")
+
+    results = [
+        DescriptionAutocompleteResult(
+            product_id=p["product_id"],
+            product_upc=p["product_upc"],
+            product_description=p["product_description"]
+        )
+        for p in products
+    ]
+
+    return DescriptionAutocompleteResponse(results=results, count=len(results))
 
 
 if __name__ == "__main__":

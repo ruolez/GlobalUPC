@@ -4,7 +4,11 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Global UPC - Barcode Management</title>
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='2' y='8' width='2' height='16' fill='%23000000'/%3E%3Crect x='6' y='8' width='1' height='16' fill='%23000000'/%3E%3Crect x='9' y='8' width='3' height='16' fill='%23000000'/%3E%3Crect x='14' y='8' width='1' height='16' fill='%23000000'/%3E%3Crect x='17' y='8' width='2' height='16' fill='%23000000'/%3E%3Crect x='21' y='8' width='1' height='16' fill='%23000000'/%3E%3Crect x='24' y='8' width='2' height='16' fill='%23000000'/%3E%3Crect x='28' y='8' width='2' height='16' fill='%23000000'/%3E%3C/svg%3E" />
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='2' y='8' width='2' height='16' fill='%23000000'/%3E%3Crect x='6' y='8' width='1' height='16' fill='%23000000'/%3E%3Crect x='9' y='8' width='3' height='16' fill='%23000000'/%3E%3Crect x='14' y='8' width='1' height='16' fill='%23000000'/%3E%3Crect x='17' y='8' width='2' height='16' fill='%23000000'/%3E%3Crect x='21' y='8' width='1' height='16' fill='%23000000'/%3E%3Crect x='24' y='8' width='2' height='16' fill='%23000000'/%3E%3Crect x='28' y='8' width='2' height='16' fill='%23000000'/%3E%3C/svg%3E"
+    />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
@@ -525,8 +529,15 @@
             <div class="section-header">
               <h3>UPC Exclusions</h3>
             </div>
-            <p style="margin: 0 0 1rem; font-size: 0.875rem; color: var(--text-secondary)">
-              Manage UPCs excluded from orphaned UPC audits. Excluded UPCs will not appear in future audit results.
+            <p
+              style="
+                margin: 0 0 1rem;
+                font-size: 0.875rem;
+                color: var(--text-secondary);
+              "
+            >
+              Manage UPCs excluded from orphaned UPC audits. Excluded UPCs will
+              not appear in future audit results.
             </p>
 
             <!-- Filter by Store -->
@@ -559,14 +570,20 @@
                 border-radius: var(--radius-md);
               "
             >
-              <p style="margin: 0; font-size: 0.875rem">No UPC exclusions found</p>
+              <p style="margin: 0; font-size: 0.875rem">
+                No UPC exclusions found
+              </p>
               <p style="margin: 0.5rem 0 0; font-size: 0.75rem">
-                Excluded UPCs will appear here after you exclude them from audit results
+                Excluded UPCs will appear here after you exclude them from audit
+                results
               </p>
             </div>
 
             <!-- Exclusions Table -->
-            <div id="exclusions-results" style="display: none; margin-top: 1rem">
+            <div
+              id="exclusions-results"
+              style="display: none; margin-top: 1rem"
+            >
               <div style="margin-bottom: 1rem">
                 <p
                   style="
@@ -1136,13 +1153,28 @@
                 </div>
               </div>
               <div style="display: flex; gap: 0.5rem; margin-top: 0.75rem">
-                <button type="button" class="btn btn-secondary" id="audit-date-last-month" style="font-size: 0.75rem; padding: 0.375rem 0.75rem">
+                <button
+                  type="button"
+                  class="btn btn-secondary"
+                  id="audit-date-last-month"
+                  style="font-size: 0.75rem; padding: 0.375rem 0.75rem"
+                >
                   Last Month
                 </button>
-                <button type="button" class="btn btn-secondary" id="audit-date-this-month" style="font-size: 0.75rem; padding: 0.375rem 0.75rem">
+                <button
+                  type="button"
+                  class="btn btn-secondary"
+                  id="audit-date-this-month"
+                  style="font-size: 0.75rem; padding: 0.375rem 0.75rem"
+                >
                   This Month
                 </button>
-                <button type="button" class="btn btn-secondary" id="audit-date-clear" style="font-size: 0.75rem; padding: 0.375rem 0.75rem">
+                <button
+                  type="button"
+                  class="btn btn-secondary"
+                  id="audit-date-clear"
+                  style="font-size: 0.75rem; padding: 0.375rem 0.75rem"
+                >
                   Clear Dates
                 </button>
               </div>
@@ -1177,12 +1209,17 @@
                   display: block;
                 "
               >
-                Check this option to find UPCs from the selected store that don't exist in a different database's Items_tbl.
+                Check this option to find UPCs from the selected store that
+                don't exist in a different database's Items_tbl.
               </small>
             </div>
 
             <!-- Target Database Dropdown (hidden by default) -->
-            <div class="form-group" id="audit-target-db-group" style="display: none">
+            <div
+              class="form-group"
+              id="audit-target-db-group"
+              style="display: none"
+            >
               <label for="audit-target-store-select">Target Database</label>
               <select id="audit-target-store-select" style="width: 300px">
                 <option value="">-- Select target database --</option>
@@ -1195,7 +1232,8 @@
                   display: block;
                 "
               >
-                Select which database's Items_tbl to check against. Only UPCs not found in this database will be reported.
+                Select which database's Items_tbl to check against. Only UPCs
+                not found in this database will be reported.
               </small>
             </div>
 
@@ -1628,60 +1666,150 @@
           <header class="page-header">
             <h2>Item Tracker</h2>
             <p class="subtitle">
-              Track product history across databases - purchases, sales, returns, and more
+              Track product history across databases - purchases, sales,
+              returns, and more
             </p>
           </header>
 
           <!-- Configuration Section -->
-          <div id="item-tracker-config-section" class="card" style="display: none">
+          <div
+            id="item-tracker-config-section"
+            class="card"
+            style="display: none"
+          >
             <div class="card-header">
               <h3>Configuration Required</h3>
             </div>
-            <p style="margin: 0 0 1rem; font-size: 0.875rem; color: var(--text-secondary)">
-              Configure your S2S database and sales stores to start tracking item history.
+            <p
+              style="
+                margin: 0 0 1rem;
+                font-size: 0.875rem;
+                color: var(--text-secondary);
+              "
+            >
+              Configure your S2S database and sales stores to start tracking
+              item history.
             </p>
 
             <div class="form-group">
               <label for="item-tracker-s2s-store">S2S Database (Primary)</label>
-              <select id="item-tracker-s2s-store" required style="max-width: 400px">
+              <select
+                id="item-tracker-s2s-store"
+                required
+                style="max-width: 400px"
+              >
                 <option value="">Select S2S database...</option>
               </select>
-              <small style="color: var(--text-tertiary); font-size: 0.75rem; margin-top: 0.5rem; display: block;">
-                The main database containing Items_tbl, PurchaseOrders, and PurchasesReturns.
+              <small
+                style="
+                  color: var(--text-tertiary);
+                  font-size: 0.75rem;
+                  margin-top: 0.5rem;
+                  display: block;
+                "
+              >
+                The main database containing Items_tbl, PurchaseOrders, and
+                PurchasesReturns.
               </small>
             </div>
 
             <div class="form-group">
               <label>Sales Stores</label>
-              <div id="item-tracker-sales-stores" style="max-width: 400px; display: flex; flex-direction: column; gap: 0.5rem">
+              <div
+                id="item-tracker-sales-stores"
+                style="
+                  max-width: 400px;
+                  display: flex;
+                  flex-direction: column;
+                  gap: 0.5rem;
+                "
+              >
                 <!-- Checkboxes populated by JavaScript -->
               </div>
-              <small style="color: var(--text-tertiary); font-size: 0.75rem; margin-top: 0.5rem; display: block;">
-                Select stores to search for Invoices and CreditMemos. Multiple stores can be selected.
+              <small
+                style="
+                  color: var(--text-tertiary);
+                  font-size: 0.75rem;
+                  margin-top: 0.5rem;
+                  display: block;
+                "
+              >
+                Select stores to search for Invoices and CreditMemos. Multiple
+                stores can be selected.
               </small>
             </div>
 
             <div style="margin-top: 1.5rem">
-              <button type="button" class="btn btn-primary" id="save-item-tracker-config-btn">
+              <button
+                type="button"
+                class="btn btn-primary"
+                id="save-item-tracker-config-btn"
+              >
                 Save Configuration
               </button>
             </div>
           </div>
 
           <!-- Search Section (shown after configuration) -->
-          <div id="item-tracker-search-section" class="settings-section" style="display: none">
+          <div
+            id="item-tracker-search-section"
+            class="settings-section"
+            style="display: none"
+          >
             <!-- Config Summary -->
-            <div id="item-tracker-config-summary" style="margin-bottom: 1.5rem; padding: 1rem; background: var(--bg-secondary); border-radius: var(--radius-md); border: 1px solid var(--border-color)">
-              <div style="display: flex; justify-content: space-between; align-items: center">
+            <div
+              id="item-tracker-config-summary"
+              style="
+                margin-bottom: 1.5rem;
+                padding: 1rem;
+                background: var(--bg-secondary);
+                border-radius: var(--radius-md);
+                border: 1px solid var(--border-color);
+              "
+            >
+              <div
+                style="
+                  display: flex;
+                  justify-content: space-between;
+                  align-items: center;
+                "
+              >
                 <div>
-                  <p style="margin: 0; font-size: 0.875rem; color: var(--text-secondary)">
-                    S2S Database: <strong id="config-s2s-name" style="color: var(--text-primary)">-</strong>
+                  <p
+                    style="
+                      margin: 0;
+                      font-size: 0.875rem;
+                      color: var(--text-secondary);
+                    "
+                  >
+                    S2S Database:
+                    <strong
+                      id="config-s2s-name"
+                      style="color: var(--text-primary)"
+                      >-</strong
+                    >
                   </p>
-                  <p style="margin: 0.25rem 0 0; font-size: 0.875rem; color: var(--text-secondary)">
-                    Sales Stores: <strong id="config-sales-names" style="color: var(--text-primary)">-</strong>
+                  <p
+                    style="
+                      margin: 0.25rem 0 0;
+                      font-size: 0.875rem;
+                      color: var(--text-secondary);
+                    "
+                  >
+                    Sales Stores:
+                    <strong
+                      id="config-sales-names"
+                      style="color: var(--text-primary)"
+                      >-</strong
+                    >
                   </p>
                 </div>
-                <button type="button" class="btn btn-secondary" id="edit-item-tracker-config-btn" style="font-size: 0.75rem; padding: 0.375rem 0.75rem">
+                <button
+                  type="button"
+                  class="btn btn-secondary"
+                  id="edit-item-tracker-config-btn"
+                  style="font-size: 0.75rem; padding: 0.375rem 0.75rem"
+                >
                   Configure
                 </button>
               </div>
@@ -1689,15 +1817,32 @@
 
             <!-- Search Input -->
             <div class="form-group">
-              <label for="item-tracker-upc-input">Search by UPC</label>
+              <label>Search by UPC or Description</label>
               <div style="display: flex; gap: 0.75rem; align-items: stretch">
                 <input
                   type="text"
                   id="item-tracker-upc-input"
-                  placeholder="Enter UPC/barcode"
-                  style="width: 240px"
+                  placeholder="UPC"
+                  style="width: 180px"
                 />
-                <button type="button" class="btn btn-primary" id="item-tracker-search-btn">
+                <div style="position: relative; flex: 1; max-width: 300px">
+                  <input
+                    type="text"
+                    id="item-tracker-desc-input"
+                    placeholder="Product description"
+                    style="width: 100%"
+                    autocomplete="off"
+                  />
+                  <div
+                    id="item-tracker-desc-dropdown"
+                    class="autocomplete-dropdown"
+                  ></div>
+                </div>
+                <button
+                  type="button"
+                  class="btn btn-primary"
+                  id="item-tracker-search-btn"
+                >
                   Search
                 </button>
               </div>
@@ -1708,88 +1853,327 @@
               <label>Date Range Filter (Optional)</label>
               <div style="display: flex; gap: 0.75rem; align-items: center">
                 <div style="flex: 1; max-width: 200px">
-                  <label for="item-tracker-date-from" style="font-size: 0.875rem; margin-bottom: 0.25rem; display: block;">From Date</label>
-                  <input type="date" id="item-tracker-date-from" style="width: 100%" />
+                  <label
+                    for="item-tracker-date-from"
+                    style="
+                      font-size: 0.875rem;
+                      margin-bottom: 0.25rem;
+                      display: block;
+                    "
+                    >From Date</label
+                  >
+                  <input
+                    type="date"
+                    id="item-tracker-date-from"
+                    style="width: 100%"
+                  />
                 </div>
                 <div style="flex: 1; max-width: 200px">
-                  <label for="item-tracker-date-to" style="font-size: 0.875rem; margin-bottom: 0.25rem; display: block;">To Date</label>
-                  <input type="date" id="item-tracker-date-to" style="width: 100%" />
+                  <label
+                    for="item-tracker-date-to"
+                    style="
+                      font-size: 0.875rem;
+                      margin-bottom: 0.25rem;
+                      display: block;
+                    "
+                    >To Date</label
+                  >
+                  <input
+                    type="date"
+                    id="item-tracker-date-to"
+                    style="width: 100%"
+                  />
                 </div>
               </div>
-              <small style="color: var(--text-tertiary); font-size: 0.75rem; margin-top: 0.5rem; display: block;">
+              <small
+                style="
+                  color: var(--text-tertiary);
+                  font-size: 0.75rem;
+                  margin-top: 0.5rem;
+                  display: block;
+                "
+              >
                 Leave empty to search all records.
               </small>
             </div>
 
             <!-- Loading State -->
-            <div id="item-tracker-loading" class="test-status" style="display: none; margin-top: 1.5rem">
+            <div
+              id="item-tracker-loading"
+              class="test-status"
+              style="display: none; margin-top: 1.5rem"
+            >
               <div class="loading">Searching item history...</div>
-              <div id="item-tracker-progress" style="margin-top: 1rem; padding: 1rem; background: var(--bg-tertiary); border-radius: var(--radius-md); display: none; max-height: 200px; overflow-y: auto;">
-                <div id="item-tracker-progress-items" style="display: flex; flex-direction: column; gap: 0.5rem"></div>
+              <div
+                id="item-tracker-progress"
+                style="
+                  margin-top: 1rem;
+                  padding: 1rem;
+                  background: var(--bg-tertiary);
+                  border-radius: var(--radius-md);
+                  display: none;
+                  max-height: 200px;
+                  overflow-y: auto;
+                "
+              >
+                <div
+                  id="item-tracker-progress-items"
+                  style="display: flex; flex-direction: column; gap: 0.5rem"
+                ></div>
               </div>
             </div>
 
             <!-- Empty State -->
-            <div id="item-tracker-empty" style="display: none; text-align: center; padding: 3rem 1rem; color: var(--text-tertiary); margin-top: 1.5rem">
-              <svg width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg" style="margin: 0 auto 1rem">
-                <rect x="6" y="14" width="4" height="20" stroke="currentColor" stroke-width="2" />
-                <rect x="13" y="14" width="2" height="20" stroke="currentColor" stroke-width="2" />
-                <rect x="19" y="14" width="4" height="20" stroke="currentColor" stroke-width="2" />
-                <rect x="27" y="14" width="2" height="20" stroke="currentColor" stroke-width="2" />
-                <rect x="33" y="14" width="4" height="20" stroke="currentColor" stroke-width="2" />
-                <rect x="41" y="14" width="2" height="20" stroke="currentColor" stroke-width="2" />
+            <div
+              id="item-tracker-empty"
+              style="
+                display: none;
+                text-align: center;
+                padding: 3rem 1rem;
+                color: var(--text-tertiary);
+                margin-top: 1.5rem;
+              "
+            >
+              <svg
+                width="48"
+                height="48"
+                viewBox="0 0 48 48"
+                fill="none"
+                xmlns="http://www.w3.org/2000/svg"
+                style="margin: 0 auto 1rem"
+              >
+                <rect
+                  x="6"
+                  y="14"
+                  width="4"
+                  height="20"
+                  stroke="currentColor"
+                  stroke-width="2"
+                />
+                <rect
+                  x="13"
+                  y="14"
+                  width="2"
+                  height="20"
+                  stroke="currentColor"
+                  stroke-width="2"
+                />
+                <rect
+                  x="19"
+                  y="14"
+                  width="4"
+                  height="20"
+                  stroke="currentColor"
+                  stroke-width="2"
+                />
+                <rect
+                  x="27"
+                  y="14"
+                  width="2"
+                  height="20"
+                  stroke="currentColor"
+                  stroke-width="2"
+                />
+                <rect
+                  x="33"
+                  y="14"
+                  width="4"
+                  height="20"
+                  stroke="currentColor"
+                  stroke-width="2"
+                />
+                <rect
+                  x="41"
+                  y="14"
+                  width="2"
+                  height="20"
+                  stroke="currentColor"
+                  stroke-width="2"
+                />
               </svg>
-              <p style="margin: 0; font-size: 0.875rem">No history found for this UPC</p>
-              <p style="margin: 0.5rem 0 0; font-size: 0.75rem">Try searching for a different barcode</p>
+              <p style="margin: 0; font-size: 0.875rem">
+                No history found for this UPC
+              </p>
+              <p style="margin: 0.5rem 0 0; font-size: 0.75rem">
+                Try searching for a different barcode
+              </p>
             </div>
 
             <!-- Results Section -->
-            <div id="item-tracker-results" style="display: none; margin-top: 1.5rem">
+            <div
+              id="item-tracker-results"
+              style="display: none; margin-top: 1.5rem"
+            >
               <!-- Item Info Card -->
-              <div id="item-tracker-info-card" class="card" style="margin-bottom: 1.5rem; display: none">
+              <div
+                id="item-tracker-info-card"
+                class="card"
+                style="margin-bottom: 1.5rem; display: none"
+              >
                 <div class="card-header">
                   <h3>Product Information</h3>
                 </div>
-                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem">
+                <div
+                  style="
+                    display: grid;
+                    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                    gap: 1rem;
+                  "
+                >
                   <div>
-                    <p style="margin: 0; font-size: 0.75rem; color: var(--text-tertiary)">Product ID</p>
-                    <p style="margin: 0.25rem 0 0; font-size: 0.875rem; font-weight: 500" id="item-info-product-id">-</p>
+                    <p
+                      style="
+                        margin: 0;
+                        font-size: 0.75rem;
+                        color: var(--text-tertiary);
+                      "
+                    >
+                      Product ID
+                    </p>
+                    <p
+                      style="
+                        margin: 0.25rem 0 0;
+                        font-size: 0.875rem;
+                        font-weight: 500;
+                      "
+                      id="item-info-product-id"
+                    >
+                      -
+                    </p>
                   </div>
                   <div>
-                    <p style="margin: 0; font-size: 0.75rem; color: var(--text-tertiary)">UPC</p>
-                    <p style="margin: 0.25rem 0 0; font-size: 0.875rem; font-family: monospace; font-weight: bold; color: var(--accent-primary)" id="item-info-upc">-</p>
+                    <p
+                      style="
+                        margin: 0;
+                        font-size: 0.75rem;
+                        color: var(--text-tertiary);
+                      "
+                    >
+                      UPC
+                    </p>
+                    <p
+                      style="
+                        margin: 0.25rem 0 0;
+                        font-size: 0.875rem;
+                        font-family: monospace;
+                        font-weight: bold;
+                        color: var(--accent-primary);
+                      "
+                      id="item-info-upc"
+                    >
+                      -
+                    </p>
                   </div>
                   <div style="grid-column: span 2">
-                    <p style="margin: 0; font-size: 0.75rem; color: var(--text-tertiary)">Description</p>
-                    <p style="margin: 0.25rem 0 0; font-size: 0.875rem; font-weight: 500" id="item-info-description">-</p>
+                    <p
+                      style="
+                        margin: 0;
+                        font-size: 0.75rem;
+                        color: var(--text-tertiary);
+                      "
+                    >
+                      Description
+                    </p>
+                    <p
+                      style="
+                        margin: 0.25rem 0 0;
+                        font-size: 0.875rem;
+                        font-weight: 500;
+                      "
+                      id="item-info-description"
+                    >
+                      -
+                    </p>
                   </div>
                   <div>
-                    <p style="margin: 0; font-size: 0.75rem; color: var(--text-tertiary)">Unit Price</p>
-                    <p style="margin: 0.25rem 0 0; font-size: 0.875rem" id="item-info-price">-</p>
+                    <p
+                      style="
+                        margin: 0;
+                        font-size: 0.75rem;
+                        color: var(--text-tertiary);
+                      "
+                    >
+                      Unit Price
+                    </p>
+                    <p
+                      style="margin: 0.25rem 0 0; font-size: 0.875rem"
+                      id="item-info-price"
+                    >
+                      -
+                    </p>
                   </div>
                   <div>
-                    <p style="margin: 0; font-size: 0.75rem; color: var(--text-tertiary)">Unit Cost</p>
-                    <p style="margin: 0.25rem 0 0; font-size: 0.875rem" id="item-info-cost">-</p>
+                    <p
+                      style="
+                        margin: 0;
+                        font-size: 0.75rem;
+                        color: var(--text-tertiary);
+                      "
+                    >
+                      Unit Cost
+                    </p>
+                    <p
+                      style="margin: 0.25rem 0 0; font-size: 0.875rem"
+                      id="item-info-cost"
+                    >
+                      -
+                    </p>
                   </div>
                   <div>
-                    <p style="margin: 0; font-size: 0.75rem; color: var(--text-tertiary)">Avg Cost</p>
-                    <p style="margin: 0.25rem 0 0; font-size: 0.875rem" id="item-info-avr-cost">-</p>
+                    <p
+                      style="
+                        margin: 0;
+                        font-size: 0.75rem;
+                        color: var(--text-tertiary);
+                      "
+                    >
+                      Avg Cost
+                    </p>
+                    <p
+                      style="margin: 0.25rem 0 0; font-size: 0.875rem"
+                      id="item-info-avr-cost"
+                    >
+                      -
+                    </p>
                   </div>
                   <div>
-                    <p style="margin: 0; font-size: 0.75rem; color: var(--text-tertiary)">Qty on Hand</p>
-                    <p style="margin: 0.25rem 0 0; font-size: 0.875rem" id="item-info-qty">-</p>
+                    <p
+                      style="
+                        margin: 0;
+                        font-size: 0.75rem;
+                        color: var(--text-tertiary);
+                      "
+                    >
+                      Qty on Hand
+                    </p>
+                    <p
+                      style="margin: 0.25rem 0 0; font-size: 0.875rem"
+                      id="item-info-qty"
+                    >
+                      -
+                    </p>
                   </div>
                 </div>
               </div>
 
               <!-- Event Type Summary Badges -->
-              <div id="item-tracker-summary" style="margin-bottom: 1rem; display: flex; gap: 0.5rem; flex-wrap: wrap">
+              <div
+                id="item-tracker-summary"
+                style="
+                  margin-bottom: 1rem;
+                  display: flex;
+                  gap: 0.5rem;
+                  flex-wrap: wrap;
+                "
+              >
                 <!-- Badges populated by JavaScript -->
               </div>
 
               <!-- Filter Dropdown -->
               <div class="form-group" style="margin-bottom: 1rem">
-                <label for="item-tracker-filter" style="font-size: 0.875rem">Filter by Event Type</label>
+                <label for="item-tracker-filter" style="font-size: 0.875rem"
+                  >Filter by Event Type</label
+                >
                 <select id="item-tracker-filter" style="max-width: 200px">
                   <option value="">All Events</option>
                   <option value="purchase">Purchase</option>
@@ -1801,9 +2185,15 @@
 
               <!-- Results Summary -->
               <div style="margin-bottom: 1rem">
-                <p style="margin: 0; font-size: 0.875rem; color: var(--text-secondary)">
-                  <strong id="item-tracker-event-count">0</strong> events found across
-                  <strong id="item-tracker-store-count">0</strong> stores
+                <p
+                  style="
+                    margin: 0;
+                    font-size: 0.875rem;
+                    color: var(--text-secondary);
+                  "
+                >
+                  <strong id="item-tracker-event-count">0</strong> events found
+                  across <strong id="item-tracker-store-count">0</strong> stores
                 </p>
               </div>
 
@@ -1813,13 +2203,55 @@
                   <thead>
                     <tr>
                       <th style="width: 4%">#</th>
-                      <th style="width: 15%; cursor: pointer; user-select: none" data-sort="event_date" class="sortable">Date <span class="sort-indicator">▼</span></th>
-                      <th style="width: 11%; cursor: pointer; user-select: none" data-sort="event_type" class="sortable">Type <span class="sort-indicator"></span></th>
-                      <th style="width: 13%; cursor: pointer; user-select: none" data-sort="store_name" class="sortable">Store <span class="sort-indicator"></span></th>
-                      <th style="width: 11%; cursor: pointer; user-select: none" data-sort="document_number" class="sortable">Document # <span class="sort-indicator"></span></th>
-                      <th style="width: 7%; cursor: pointer; user-select: none" data-sort="quantity" class="sortable">Qty <span class="sort-indicator"></span></th>
-                      <th style="width: 9%; cursor: pointer; user-select: none" data-sort="price_or_cost" class="sortable">Price/Cost <span class="sort-indicator"></span></th>
-                      <th style="width: 20%; cursor: pointer; user-select: none" data-sort="business_name" class="sortable">Customer/Supplier <span class="sort-indicator"></span></th>
+                      <th
+                        style="width: 15%; cursor: pointer; user-select: none"
+                        data-sort="event_date"
+                        class="sortable"
+                      >
+                        Date <span class="sort-indicator">▼</span>
+                      </th>
+                      <th
+                        style="width: 11%; cursor: pointer; user-select: none"
+                        data-sort="event_type"
+                        class="sortable"
+                      >
+                        Type <span class="sort-indicator"></span>
+                      </th>
+                      <th
+                        style="width: 13%; cursor: pointer; user-select: none"
+                        data-sort="store_name"
+                        class="sortable"
+                      >
+                        Store <span class="sort-indicator"></span>
+                      </th>
+                      <th
+                        style="width: 11%; cursor: pointer; user-select: none"
+                        data-sort="document_number"
+                        class="sortable"
+                      >
+                        Document # <span class="sort-indicator"></span>
+                      </th>
+                      <th
+                        style="width: 7%; cursor: pointer; user-select: none"
+                        data-sort="quantity"
+                        class="sortable"
+                      >
+                        Qty <span class="sort-indicator"></span>
+                      </th>
+                      <th
+                        style="width: 9%; cursor: pointer; user-select: none"
+                        data-sort="price_or_cost"
+                        class="sortable"
+                      >
+                        Price/Cost <span class="sort-indicator"></span>
+                      </th>
+                      <th
+                        style="width: 20%; cursor: pointer; user-select: none"
+                        data-sort="business_name"
+                        class="sortable"
+                      >
+                        Customer/Supplier <span class="sort-indicator"></span>
+                      </th>
                     </tr>
                   </thead>
                   <tbody id="item-tracker-table-body">
@@ -1830,7 +2262,11 @@
 
               <!-- Export Button -->
               <div style="margin-top: 1rem">
-                <button type="button" class="btn btn-secondary" id="export-item-tracker-btn">
+                <button
+                  type="button"
+                  class="btn btn-secondary"
+                  id="export-item-tracker-btn"
+                >
                   Export to CSV
                 </button>
               </div>
@@ -1843,7 +2279,8 @@
           <header class="page-header">
             <h2>Delivery B - Price Sync</h2>
             <p class="subtitle">
-              Synchronize UnitPriceC values from a primary store to all other MSSQL stores
+              Synchronize UnitPriceC values from a primary store to all other
+              MSSQL stores
             </p>
           </header>
 
@@ -1858,8 +2295,16 @@
               <select id="deliveryb-primary-store" required>
                 <option value="">Select primary store...</option>
               </select>
-              <small style="color: var(--text-tertiary); font-size: 0.75rem; margin-top: 0.5rem; display: block;">
-                Select the MSSQL store to use as the source for UnitPriceC values. Inventory stores are excluded.
+              <small
+                style="
+                  color: var(--text-tertiary);
+                  font-size: 0.75rem;
+                  margin-top: 0.5rem;
+                  display: block;
+                "
+              >
+                Select the MSSQL store to use as the source for UnitPriceC
+                values. Inventory stores are excluded.
               </small>
             </div>
 
@@ -1906,10 +2351,7 @@
           </div>
 
           <!-- Results Section -->
-          <div
-            id="deliveryb-results"
-            style="display: none; margin-top: 1.5rem"
-          >
+          <div id="deliveryb-results" style="display: none; margin-top: 1.5rem">
             <div class="card">
               <div class="card-header">
                 <h3>Sync Results</h3>
@@ -1923,9 +2365,12 @@
                     color: var(--text-secondary);
                   "
                 >
-                  Primary Store: <strong id="deliveryb-primary-name">-</strong><br>
-                  <strong id="deliveryb-total-products">0</strong> products matched,
-                  <strong id="deliveryb-total-updated">0</strong> products updated across
+                  Primary Store: <strong id="deliveryb-primary-name">-</strong
+                  ><br />
+                  <strong id="deliveryb-total-products">0</strong> products
+                  matched,
+                  <strong id="deliveryb-total-updated">0</strong> products
+                  updated across
                   <strong id="deliveryb-successful-stores">0</strong> of
                   <strong id="deliveryb-total-stores">0</strong> stores
                 </p>
@@ -2268,12 +2713,28 @@
           </button>
         </div>
         <div class="modal-body" style="padding: 1.5rem">
-          <p style="margin: 0; font-size: 0.875rem; color: var(--text-secondary)">
-            The new UPC is identical to the old UPC. Please enter a different barcode value to proceed with the update.
+          <p
+            style="margin: 0; font-size: 0.875rem; color: var(--text-secondary)"
+          >
+            The new UPC is identical to the old UPC. Please enter a different
+            barcode value to proceed with the update.
           </p>
-          <div style="margin-top: 1rem; padding: 1rem; background: var(--bg-tertiary); border-radius: var(--radius-md)">
-            <p style="margin: 0; font-size: 0.75rem; color: var(--text-tertiary)">
-              Current UPC: <strong id="same-upc-value" style="color: var(--text-secondary)"></strong>
+          <div
+            style="
+              margin-top: 1rem;
+              padding: 1rem;
+              background: var(--bg-tertiary);
+              border-radius: var(--radius-md);
+            "
+          >
+            <p
+              style="margin: 0; font-size: 0.75rem; color: var(--text-tertiary)"
+            >
+              Current UPC:
+              <strong
+                id="same-upc-value"
+                style="color: var(--text-secondary)"
+              ></strong>
             </p>
           </div>
         </div>

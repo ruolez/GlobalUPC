@@ -465,3 +465,69 @@ async def get_vendor_returns_async(
             executor,
             lambda: get_vendor_returns(host, port, database, username, password, upc, date_from, date_to, limit)
         )
+
+
+def search_products_by_description(
+    host: str,
+    port: int,
+    database: str,
+    username: str,
+    password: str,
+    query: str,
+    limit: int = 10
+) -> Tuple[bool, Optional[str], List[Dict[str, Any]]]:
+    """
+    Search Items_tbl by ProductDescription.
+    Only returns active products (Discontinued=0).
+    Returns: (success, error_message, products)
+    """
+    conn_str = get_mssql_connection_string(host, port, database, username, password)
+
+    try:
+        conn = pyodbc.connect(conn_str, timeout=30)
+        cursor = conn.cursor()
+
+        sql = """
+            SELECT TOP (?) ProductID, ProductUPC, ProductDescription
+            FROM Items_tbl
+            WHERE ProductDescription LIKE ? + '%'
+              AND Discontinued = 0
+            ORDER BY ProductDescription
+        """
+
+        cursor.execute(sql, (limit, query))
+        rows = cursor.fetchall()
+
+        cursor.close()
+        conn.close()
+
+        products = []
+        for row in rows:
+            products.append({
+                "product_id": row[0],
+                "product_upc": row[1] or "",
+                "product_description": row[2] or ""
+            })
+
+        return True, None, products
+
+    except Exception as e:
+        return False, str(e), []
+
+
+async def search_products_by_description_async(
+    host: str,
+    port: int,
+    database: str,
+    username: str,
+    password: str,
+    query: str,
+    limit: int = 10
+) -> Tuple[bool, Optional[str], List[Dict[str, Any]]]:
+    """Async wrapper for search_products_by_description."""
+    loop = asyncio.get_event_loop()
+    with ThreadPoolExecutor() as executor:
+        return await loop.run_in_executor(
+            executor,
+            lambda: search_products_by_description(host, port, database, username, password, query, limit)
+        )

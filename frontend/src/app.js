@@ -196,8 +196,8 @@ async function loadExclusions(storeId = null) {
     // Populate store filter dropdown if not already done
     if (storeFilter && storeFilter.options.length === 1) {
       const stores = await apiRequest("/stores");
-      const mssqlStores = stores.filter(s => s.store_type === "mssql");
-      mssqlStores.forEach(store => {
+      const mssqlStores = stores.filter((s) => s.store_type === "mssql");
+      mssqlStores.forEach((store) => {
         const option = document.createElement("option");
         option.value = store.id;
         option.textContent = store.name;
@@ -206,7 +206,9 @@ async function loadExclusions(storeId = null) {
     }
 
     // Fetch exclusions
-    const endpoint = storeId ? `/exclusions?store_id=${storeId}` : "/exclusions";
+    const endpoint = storeId
+      ? `/exclusions?store_id=${storeId}`
+      : "/exclusions";
     const data = await apiRequest(endpoint);
 
     loadingEl.style.display = "none";
@@ -222,7 +224,7 @@ async function loadExclusions(storeId = null) {
 
     // Clear and populate table
     tableBody.innerHTML = "";
-    data.exclusions.forEach(exclusion => {
+    data.exclusions.forEach((exclusion) => {
       const row = document.createElement("tr");
 
       // Store Name
@@ -242,7 +244,8 @@ async function loadExclusions(storeId = null) {
       // Excluded Date
       const dateTd = document.createElement("td");
       const date = new Date(exclusion.excluded_at);
-      dateTd.textContent = date.toLocaleDateString() + " " + date.toLocaleTimeString();
+      dateTd.textContent =
+        date.toLocaleDateString() + " " + date.toLocaleTimeString();
       dateTd.style.color = "var(--text-secondary)";
       dateTd.style.fontSize = "0.875rem";
       row.appendChild(dateTd);
@@ -250,7 +253,9 @@ async function loadExclusions(storeId = null) {
       // Notes
       const notesTd = document.createElement("td");
       notesTd.textContent = exclusion.notes || "—";
-      notesTd.style.color = exclusion.notes ? "inherit" : "var(--text-tertiary)";
+      notesTd.style.color = exclusion.notes
+        ? "inherit"
+        : "var(--text-tertiary)";
       notesTd.style.fontSize = "0.875rem";
       row.appendChild(notesTd);
 
@@ -269,7 +274,11 @@ async function loadExclusions(storeId = null) {
       deleteBtn.style.borderRadius = "var(--radius-sm)";
       deleteBtn.style.transition = "all 0.2s";
       deleteBtn.onclick = async () => {
-        if (!confirm(`Remove exclusion for UPC ${exclusion.upc}?\n\nThis UPC will appear in future audit results for ${exclusion.store_name}.`)) {
+        if (
+          !confirm(
+            `Remove exclusion for UPC ${exclusion.upc}?\n\nThis UPC will appear in future audit results for ${exclusion.store_name}.`,
+          )
+        ) {
           return;
         }
 
@@ -1060,35 +1069,37 @@ document.getElementById("new-upc-input")?.addEventListener("keypress", (e) => {
   }
 });
 
-document.getElementById("update-all-btn")?.addEventListener("click", async () => {
-  const newUPC = document.getElementById("new-upc-input").value.trim();
-  const oldUPC = currentSearchResults.upc;
-  const updateBtn = document.getElementById("update-all-btn");
+document
+  .getElementById("update-all-btn")
+  ?.addEventListener("click", async () => {
+    const newUPC = document.getElementById("new-upc-input").value.trim();
+    const oldUPC = currentSearchResults.upc;
+    const updateBtn = document.getElementById("update-all-btn");
 
-  // Basic validation checks
-  if (!newUPC) {
-    alert("Please enter a new UPC");
-    return;
-  }
+    // Basic validation checks
+    if (!newUPC) {
+      alert("Please enter a new UPC");
+      return;
+    }
 
-  if (currentSearchResults.matches.length === 0) {
-    alert("No search results to update");
-    return;
-  }
+    if (currentSearchResults.matches.length === 0) {
+      alert("No search results to update");
+      return;
+    }
 
-  // Check if same UPC (hard block)
-  if (newUPC === oldUPC) {
-    document.getElementById("same-upc-value").textContent = oldUPC;
-    openModal("same-upc-modal");
-    return;
-  }
+    // Check if same UPC (hard block)
+    if (newUPC === oldUPC) {
+      document.getElementById("same-upc-value").textContent = oldUPC;
+      openModal("same-upc-modal");
+      return;
+    }
 
-  // Proceed with confirmation dialog and update
-  const message = `Update ${currentSearchResults.total_found} item${currentSearchResults.total_found !== 1 ? "s" : ""} from UPC "${oldUPC}" to "${newUPC}"?\n\nNote: Stores with duplicate UPCs will be skipped automatically.`;
-  if (confirm(message)) {
-    updateUPC(oldUPC, newUPC, currentSearchResults.matches);
-  }
-});
+    // Proceed with confirmation dialog and update
+    const message = `Update ${currentSearchResults.total_found} item${currentSearchResults.total_found !== 1 ? "s" : ""} from UPC "${oldUPC}" to "${newUPC}"?\n\nNote: Stores with duplicate UPCs will be skipped automatically.`;
+    if (confirm(message)) {
+      updateUPC(oldUPC, newUPC, currentSearchResults.matches);
+    }
+  });
 
 async function updateUPC(oldUPC, newUPC, matches) {
   const loadingEl = document.getElementById("upc-update-loading");
@@ -1183,7 +1194,10 @@ async function updateUPC(oldUPC, newUPC, matches) {
 
         if (eventType === "progress") {
           if (data.status === "validating_store") {
-            const item = createProgressItem(`${data.store_name} (validating...)`, "active");
+            const item = createProgressItem(
+              `${data.store_name} (validating...)`,
+              "active",
+            );
             storeItems.set(data.store_name, item);
             progressItems.appendChild(item);
             // Auto-scroll to bottom like a terminal
@@ -1205,7 +1219,10 @@ async function updateUPC(oldUPC, newUPC, matches) {
               const textSpan = existingItem.querySelector("span:last-child");
               textSpan.textContent = `${data.store_name} (updating...)`;
             } else {
-              const item = createProgressItem(`${data.store_name} (updating...)`, "active");
+              const item = createProgressItem(
+                `${data.store_name} (updating...)`,
+                "active",
+              );
               storeItems.set(data.store_name, item);
               progressItems.appendChild(item);
               progressContainer.scrollTop = progressContainer.scrollHeight;
@@ -1274,7 +1291,8 @@ function displayUpdateResults(data) {
     const statusTd = document.createElement("td");
     if (result.skipped) {
       // Store was skipped due to duplicate
-      statusTd.innerHTML = '<span style="color: var(--warning); font-weight: 500;">⚠ Skipped - Duplicate UPC found</span>';
+      statusTd.innerHTML =
+        '<span style="color: var(--warning); font-weight: 500;">⚠ Skipped - Duplicate UPC found</span>';
       statusTd.style.fontSize = "0.875rem";
     } else if (result.success) {
       statusTd.innerHTML =
@@ -1538,10 +1556,13 @@ document
   ?.addEventListener("change", (e) => {
     const runBtn = document.getElementById("run-audit-btn");
     const crossDbCheckbox = document.getElementById("audit-cross-db-checkbox");
-    const targetStoreSelect = document.getElementById("audit-target-store-select");
+    const targetStoreSelect = document.getElementById(
+      "audit-target-store-select",
+    );
 
     // Enable run button if store is selected and (cross-db is unchecked OR target is selected)
-    const isValid = e.target.value && (!crossDbCheckbox.checked || targetStoreSelect.value);
+    const isValid =
+      e.target.value && (!crossDbCheckbox.checked || targetStoreSelect.value);
     runBtn.disabled = !isValid;
 
     // Reload target dropdown to exclude selected source store
@@ -1622,8 +1643,10 @@ document
     const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
     const lastDayOfLastMonth = new Date(now.getFullYear(), now.getMonth(), 0);
 
-    document.getElementById("audit-date-from").value = formatDateForInput(lastMonth);
-    document.getElementById("audit-date-to").value = formatDateForInput(lastDayOfLastMonth);
+    document.getElementById("audit-date-from").value =
+      formatDateForInput(lastMonth);
+    document.getElementById("audit-date-to").value =
+      formatDateForInput(lastDayOfLastMonth);
   });
 
 document
@@ -1633,22 +1656,22 @@ document
     const firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
     const lastDayOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
 
-    document.getElementById("audit-date-from").value = formatDateForInput(firstDayOfMonth);
-    document.getElementById("audit-date-to").value = formatDateForInput(lastDayOfMonth);
+    document.getElementById("audit-date-from").value =
+      formatDateForInput(firstDayOfMonth);
+    document.getElementById("audit-date-to").value =
+      formatDateForInput(lastDayOfMonth);
   });
 
-document
-  .getElementById("audit-date-clear")
-  ?.addEventListener("click", () => {
-    document.getElementById("audit-date-from").value = "";
-    document.getElementById("audit-date-to").value = "";
-  });
+document.getElementById("audit-date-clear")?.addEventListener("click", () => {
+  document.getElementById("audit-date-from").value = "";
+  document.getElementById("audit-date-to").value = "";
+});
 
 // Helper function to format date as YYYY-MM-DD for HTML date inputs
 function formatDateForInput(date) {
   const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
 }
 
@@ -1671,10 +1694,13 @@ async function runAudit(storeId) {
 
   // Capture cross-database options
   const crossDbCheckbox = document.getElementById("audit-cross-db-checkbox");
-  const targetStoreSelect = document.getElementById("audit-target-store-select");
-  const targetStoreId = crossDbCheckbox.checked && targetStoreSelect.value
-    ? parseInt(targetStoreSelect.value)
-    : null;
+  const targetStoreSelect = document.getElementById(
+    "audit-target-store-select",
+  );
+  const targetStoreId =
+    crossDbCheckbox.checked && targetStoreSelect.value
+      ? parseInt(targetStoreSelect.value)
+      : null;
 
   // Show loading state
   loadingEl.style.display = "block";
@@ -1851,7 +1877,8 @@ function displayAuditResults(data, isCrossDatabase = false) {
 
   // Update filter text based on mode
   if (isCrossDatabase) {
-    filterTextEl.textContent = "UPCs found in source but missing in target database across";
+    filterTextEl.textContent =
+      "UPCs found in source but missing in target database across";
   } else {
     filterTextEl.textContent = "orphaned UPCs found across";
   }
@@ -1986,7 +2013,11 @@ function displayAuditResults(data, isCrossDatabase = false) {
     excludeBtn.style.borderRadius = "var(--radius-sm)";
     excludeBtn.style.transition = "all 0.2s";
     excludeBtn.onclick = async () => {
-      if (!confirm(`Exclude UPC ${record.upc} from future audits?\n\nThis will hide this UPC from all future orphaned UPC audit results for this store.`)) {
+      if (
+        !confirm(
+          `Exclude UPC ${record.upc} from future audits?\n\nThis will hide this UPC from all future orphaned UPC audit results for this store.`,
+        )
+      ) {
         return;
       }
 
@@ -1997,8 +2028,8 @@ function displayAuditResults(data, isCrossDatabase = false) {
           body: JSON.stringify({
             store_id: currentAuditStoreId,
             upc: record.upc,
-            notes: `Excluded from ${record.table_name}`
-          })
+            notes: `Excluded from ${record.table_name}`,
+          }),
         });
 
         if (!response.ok) {
@@ -2013,7 +2044,9 @@ function displayAuditResults(data, isCrossDatabase = false) {
           row.remove();
           // Update counts
           const remainingRows = tableBody.querySelectorAll("tr").length;
-          const orphanedCountEl = document.getElementById("audit-orphaned-count");
+          const orphanedCountEl = document.getElementById(
+            "audit-orphaned-count",
+          );
           if (orphanedCountEl) {
             orphanedCountEl.textContent = remainingRows;
           }
@@ -2100,7 +2133,8 @@ function filterAuditResults(filterTableName) {
     // No filter - show all
     orphanedCountEl.textContent = totalOrphaned;
     if (isCrossDb) {
-      filterTextEl.textContent = " UPCs found in source but missing in target database across";
+      filterTextEl.textContent =
+        " UPCs found in source but missing in target database across";
     } else {
       filterTextEl.textContent = " orphaned UPCs found across";
     }
@@ -3496,7 +3530,10 @@ function exportComparisonToCSV() {
 }
 
 function exportAuditToCSV() {
-  if (!currentAuditResults.orphaned_records || currentAuditResults.orphaned_records.length === 0) {
+  if (
+    !currentAuditResults.orphaned_records ||
+    currentAuditResults.orphaned_records.length === 0
+  ) {
     return;
   }
 
@@ -3522,31 +3559,33 @@ function exportAuditToCSV() {
     <Cell ss:StyleID="header"><Data ss:Type="String">Product Description</Data></Cell>
    </Row>`;
 
-  const rows = currentAuditResults.orphaned_records.map((record) => {
-    const escapeXml = (str) => {
-      if (!str) return '';
-      return String(str)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&apos;');
-    };
+  const rows = currentAuditResults.orphaned_records
+    .map((record) => {
+      const escapeXml = (str) => {
+        if (!str) return "";
+        return String(str)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&apos;");
+      };
 
-    return `   <Row>
+      return `   <Row>
     <Cell><Data ss:Type="String">${escapeXml(record.table_name)}</Data></Cell>
     <Cell><Data ss:Type="Number">${record.primary_key}</Data></Cell>
     <Cell ss:StyleID="text"><Data ss:Type="String">${escapeXml(record.upc)}</Data></Cell>
-    <Cell><Data ss:Type="String">${escapeXml(record.description || '')}</Data></Cell>
+    <Cell><Data ss:Type="String">${escapeXml(record.description || "")}</Data></Cell>
    </Row>`;
-  }).join('\n');
+    })
+    .join("\n");
 
   const footer = `
   </Table>
  </Worksheet>
 </Workbook>`;
 
-  const excelContent = header + '\n' + rows + footer;
+  const excelContent = header + "\n" + rows + footer;
   const blob = new Blob([excelContent], { type: "application/vnd.ms-excel" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -3554,9 +3593,12 @@ function exportAuditToCSV() {
 
   // Get store name from the dropdown
   const storeSelect = document.getElementById("audit-store-select");
-  const storeName = storeSelect.options[storeSelect.selectedIndex]?.text || "unknown";
+  const storeName =
+    storeSelect.options[storeSelect.selectedIndex]?.text || "unknown";
   const dateStr = new Date().toISOString().split("T")[0];
-  const mode = currentAuditResults.isCrossDatabase ? "cross-database" : "orphaned";
+  const mode = currentAuditResults.isCrossDatabase
+    ? "cross-database"
+    : "orphaned";
 
   a.download = `${mode}-upcs-${storeName}-${dateStr}.xls`;
   a.click();
@@ -3656,7 +3698,8 @@ async function loadMSSQLStoresForDeliveryB() {
     });
 
     const primarySelect = document.getElementById("deliveryb-primary-store");
-    primarySelect.innerHTML = '<option value="">Select primary store...</option>';
+    primarySelect.innerHTML =
+      '<option value="">Select primary store...</option>';
 
     mssqlStores.forEach((store) => {
       const option = document.createElement("option");
@@ -3745,8 +3788,7 @@ async function runDeliveryBSync() {
             progressContainer.scrollTop = progressContainer.scrollHeight;
           } else if (data.status === "store_complete") {
             const item = document.createElement("div");
-            item.style.cssText =
-              "font-size: 0.875rem; color: var(--success);";
+            item.style.cssText = "font-size: 0.875rem; color: var(--success);";
             item.textContent = `✓ Completed ${data.store_name} - ${data.products_matched} matched, ${data.products_updated} updated`;
             progressItems.appendChild(item);
             progressContainer.scrollTop = progressContainer.scrollHeight;
@@ -3857,7 +3899,8 @@ let itemTrackerState = {
   filteredEvents: [],
   isSearching: false,
   sortColumn: "event_date",
-  sortDirection: "desc"
+  sortDirection: "desc",
+  descriptionSearchTimeout: null,
 };
 
 async function loadItemTrackerPage() {
@@ -3880,7 +3923,9 @@ async function loadItemTrackerPage() {
     });
 
     // Populate sales stores checkboxes
-    const salesStoresContainer = document.getElementById("item-tracker-sales-stores");
+    const salesStoresContainer = document.getElementById(
+      "item-tracker-sales-stores",
+    );
     salesStoresContainer.innerHTML = "";
     mssqlStores.forEach((store) => {
       const label = document.createElement("label");
@@ -3939,7 +3984,8 @@ async function loadItemTrackerPage() {
 }
 
 function updateConfigSummary(config) {
-  document.getElementById("config-s2s-name").textContent = config.s2s_store_name || "-";
+  document.getElementById("config-s2s-name").textContent =
+    config.s2s_store_name || "-";
   document.getElementById("config-sales-names").textContent =
     config.sales_store_names && config.sales_store_names.length > 0
       ? config.sales_store_names.join(", ")
@@ -3956,25 +4002,31 @@ async function saveItemTrackerConfig() {
 
   // Get selected sales stores
   const salesStoreIds = [];
-  document.querySelectorAll('#item-tracker-sales-stores input[type="checkbox"]:checked').forEach((checkbox) => {
-    salesStoreIds.push(parseInt(checkbox.value));
-  });
+  document
+    .querySelectorAll(
+      '#item-tracker-sales-stores input[type="checkbox"]:checked',
+    )
+    .forEach((checkbox) => {
+      salesStoreIds.push(parseInt(checkbox.value));
+    });
 
   try {
     const config = await apiRequest("/item-tracker/config", {
       method: "POST",
       body: JSON.stringify({
         s2s_store_id: parseInt(s2sStoreId),
-        sales_store_ids: salesStoreIds
-      })
+        sales_store_ids: salesStoreIds,
+      }),
     });
 
     itemTrackerState.config = config;
     updateConfigSummary(config);
 
     // Hide config section, show search section
-    document.getElementById("item-tracker-config-section").style.display = "none";
-    document.getElementById("item-tracker-search-section").style.display = "block";
+    document.getElementById("item-tracker-config-section").style.display =
+      "none";
+    document.getElementById("item-tracker-search-section").style.display =
+      "block";
 
     showToast("Configuration saved successfully", "success");
 
@@ -3990,7 +4042,8 @@ async function saveItemTrackerConfig() {
 }
 
 function showItemTrackerConfigSection() {
-  document.getElementById("item-tracker-config-section").style.display = "block";
+  document.getElementById("item-tracker-config-section").style.display =
+    "block";
   document.getElementById("item-tracker-search-section").style.display = "none";
 }
 
@@ -4003,7 +4056,8 @@ async function searchItemTracker() {
     return;
   }
 
-  const dateFrom = document.getElementById("item-tracker-date-from").value || null;
+  const dateFrom =
+    document.getElementById("item-tracker-date-from").value || null;
   const dateTo = document.getElementById("item-tracker-date-to").value || null;
 
   // Reset state
@@ -4034,7 +4088,7 @@ async function searchItemTracker() {
     const response = await fetch(`${API_BASE}/item-tracker/search/stream`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(requestBody)
+      body: JSON.stringify(requestBody),
     });
 
     const reader = response.body.getReader();
@@ -4123,13 +4177,28 @@ function displayItemTrackerResults(data) {
   // Display item info if available
   if (data.item_info) {
     infoCard.style.display = "block";
-    document.getElementById("item-info-product-id").textContent = data.item_info.product_id || "-";
-    document.getElementById("item-info-upc").textContent = data.item_info.product_upc || "-";
-    document.getElementById("item-info-description").textContent = data.item_info.product_description || "-";
-    document.getElementById("item-info-price").textContent = data.item_info.unit_price !== null ? `$${data.item_info.unit_price.toFixed(2)}` : "-";
-    document.getElementById("item-info-cost").textContent = data.item_info.unit_cost !== null ? `$${data.item_info.unit_cost.toFixed(2)}` : "-";
-    document.getElementById("item-info-avr-cost").textContent = data.item_info.avr_cost !== null ? `$${data.item_info.avr_cost.toFixed(2)}` : "-";
-    document.getElementById("item-info-qty").textContent = data.item_info.quant_on_hand !== null ? data.item_info.quant_on_hand.toLocaleString() : "-";
+    document.getElementById("item-info-product-id").textContent =
+      data.item_info.product_id || "-";
+    document.getElementById("item-info-upc").textContent =
+      data.item_info.product_upc || "-";
+    document.getElementById("item-info-description").textContent =
+      data.item_info.product_description || "-";
+    document.getElementById("item-info-price").textContent =
+      data.item_info.unit_price !== null
+        ? `$${data.item_info.unit_price.toFixed(2)}`
+        : "-";
+    document.getElementById("item-info-cost").textContent =
+      data.item_info.unit_cost !== null
+        ? `$${data.item_info.unit_cost.toFixed(2)}`
+        : "-";
+    document.getElementById("item-info-avr-cost").textContent =
+      data.item_info.avr_cost !== null
+        ? `$${data.item_info.avr_cost.toFixed(2)}`
+        : "-";
+    document.getElementById("item-info-qty").textContent =
+      data.item_info.quant_on_hand !== null
+        ? data.item_info.quant_on_hand.toLocaleString()
+        : "-";
   } else {
     infoCard.style.display = "none";
   }
@@ -4142,7 +4211,7 @@ function displayItemTrackerResults(data) {
     { key: "purchase", label: "Purchases", color: "#22c55e" },
     { key: "sale", label: "Sales", color: "#3b82f6" },
     { key: "customer_return", label: "Customer Returns", color: "#f59e0b" },
-    { key: "vendor_return", label: "Vendor Returns", color: "#ef4444" }
+    { key: "vendor_return", label: "Vendor Returns", color: "#ef4444" },
   ];
 
   eventTypes.forEach((type) => {
@@ -4162,8 +4231,10 @@ function displayItemTrackerResults(data) {
   });
 
   // Update counts
-  document.getElementById("item-tracker-event-count").textContent = data.total_events;
-  document.getElementById("item-tracker-store-count").textContent = data.stores_searched;
+  document.getElementById("item-tracker-event-count").textContent =
+    data.total_events;
+  document.getElementById("item-tracker-store-count").textContent =
+    data.stores_searched;
 
   // Reset filter
   document.getElementById("item-tracker-filter").value = "";
@@ -4179,28 +4250,47 @@ function renderItemTrackerTable(events) {
   const eventTypeColors = {
     purchase: { bg: "#22c55e20", color: "#22c55e", label: "Purchase" },
     sale: { bg: "#3b82f620", color: "#3b82f6", label: "Sale" },
-    customer_return: { bg: "#f59e0b20", color: "#f59e0b", label: "Cust. Return" },
-    vendor_return: { bg: "#ef444420", color: "#ef4444", label: "Vendor Return" }
+    customer_return: {
+      bg: "#f59e0b20",
+      color: "#f59e0b",
+      label: "Cust. Return",
+    },
+    vendor_return: {
+      bg: "#ef444420",
+      color: "#ef4444",
+      label: "Vendor Return",
+    },
   };
 
   events.forEach((event, index) => {
     const row = document.createElement("tr");
-    const typeInfo = eventTypeColors[event.event_type] || { bg: "transparent", color: "inherit", label: event.event_type };
+    const typeInfo = eventTypeColors[event.event_type] || {
+      bg: "transparent",
+      color: "inherit",
+      label: event.event_type,
+    };
 
     // Format date
     let dateStr = "-";
     if (event.event_date) {
       const date = new Date(event.event_date);
-      dateStr = date.toLocaleDateString() + " " + date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      dateStr =
+        date.toLocaleDateString() +
+        " " +
+        date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     }
 
     // Format quantity
-    const qty = event.quantity !== null && event.quantity !== undefined ? event.quantity.toLocaleString() : "-";
+    const qty =
+      event.quantity !== null && event.quantity !== undefined
+        ? event.quantity.toLocaleString()
+        : "-";
 
     // Format price/cost
-    const priceOrCost = event.price_or_cost !== null && event.price_or_cost !== undefined
-      ? `$${event.price_or_cost.toFixed(2)}`
-      : "-";
+    const priceOrCost =
+      event.price_or_cost !== null && event.price_or_cost !== undefined
+        ? `$${event.price_or_cost.toFixed(2)}`
+        : "-";
 
     row.innerHTML = `
       <td style="color: var(--text-tertiary)">${index + 1}</td>
@@ -4228,18 +4318,23 @@ function filterItemTrackerEvents() {
     itemTrackerState.filteredEvents = [...itemTrackerState.events];
   } else {
     itemTrackerState.filteredEvents = itemTrackerState.events.filter(
-      (event) => event.event_type === filterValue
+      (event) => event.event_type === filterValue,
     );
   }
 
   // Apply current sort
-  sortItemTrackerEvents(itemTrackerState.sortColumn, itemTrackerState.sortDirection, false);
+  sortItemTrackerEvents(
+    itemTrackerState.sortColumn,
+    itemTrackerState.sortDirection,
+    false,
+  );
 }
 
 function sortItemTrackerEvents(column, direction = null, toggle = true) {
   // If same column clicked, toggle direction; otherwise use specified or default desc
   if (toggle && column === itemTrackerState.sortColumn) {
-    itemTrackerState.sortDirection = itemTrackerState.sortDirection === "asc" ? "desc" : "asc";
+    itemTrackerState.sortDirection =
+      itemTrackerState.sortDirection === "asc" ? "desc" : "asc";
   } else if (direction) {
     itemTrackerState.sortDirection = direction;
   } else if (column !== itemTrackerState.sortColumn) {
@@ -4287,7 +4382,8 @@ function sortItemTrackerEvents(column, direction = null, toggle = true) {
 
   // Re-render table
   renderItemTrackerTable(itemTrackerState.filteredEvents);
-  document.getElementById("item-tracker-event-count").textContent = itemTrackerState.filteredEvents.length;
+  document.getElementById("item-tracker-event-count").textContent =
+    itemTrackerState.filteredEvents.length;
 }
 
 function updateSortIndicators() {
@@ -4301,7 +4397,8 @@ function updateSortIndicators() {
 
     const column = header.dataset.sort;
     if (column === itemTrackerState.sortColumn) {
-      indicator.textContent = itemTrackerState.sortDirection === "asc" ? "▲" : "▼";
+      indicator.textContent =
+        itemTrackerState.sortDirection === "asc" ? "▲" : "▼";
       indicator.style.opacity = "1";
     } else {
       indicator.textContent = "";
@@ -4318,7 +4415,17 @@ function exportItemTrackerCSV() {
   }
 
   // CSV headers
-  const headers = ["#", "Date", "Type", "Store", "Document #", "Qty", "Price/Cost", "Extended Amount", "Customer/Supplier"];
+  const headers = [
+    "#",
+    "Date",
+    "Type",
+    "Store",
+    "Document #",
+    "Qty",
+    "Price/Cost",
+    "Extended Amount",
+    "Customer/Supplier",
+  ];
 
   // Convert events to CSV rows
   const rows = events.map((event, index) => {
@@ -4337,14 +4444,16 @@ function exportItemTrackerCSV() {
       event.quantity !== null ? event.quantity : "",
       event.price_or_cost !== null ? event.price_or_cost : "",
       event.extended_amount !== null ? event.extended_amount : "",
-      event.business_name || ""
+      event.business_name || "",
     ];
   });
 
   // Build CSV content
   const csvContent = [
     headers.join(","),
-    ...rows.map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(","))
+    ...rows.map((row) =>
+      row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(","),
+    ),
   ].join("\n");
 
   // Create and download file
@@ -4365,29 +4474,173 @@ function exportItemTrackerCSV() {
   showToast(`Exported ${events.length} events to CSV`, "success");
 }
 
+// Description autocomplete functions
+function handleDescriptionInput(e) {
+  const query = e.target.value.trim();
+  clearTimeout(itemTrackerState.descriptionSearchTimeout);
+
+  if (query.length < 2) {
+    hideDescriptionDropdown();
+    return;
+  }
+
+  itemTrackerState.descriptionSearchTimeout = setTimeout(() => {
+    fetchDescriptionSuggestions(query);
+  }, 300);
+}
+
+async function fetchDescriptionSuggestions(query) {
+  const dropdown = document.getElementById("item-tracker-desc-dropdown");
+
+  dropdown.innerHTML = '<div class="autocomplete-loading">Searching...</div>';
+  dropdown.classList.add("show");
+
+  try {
+    const response = await fetch(
+      `${API_BASE}/item-tracker/description/autocomplete`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query }),
+      },
+    );
+
+    if (!response.ok) {
+      throw new Error("Failed to fetch suggestions");
+    }
+
+    const data = await response.json();
+    showDescriptionDropdown(data.results);
+  } catch (error) {
+    console.error("Autocomplete error:", error);
+    dropdown.innerHTML =
+      '<div class="autocomplete-empty">Error fetching suggestions</div>';
+  }
+}
+
+function showDescriptionDropdown(results) {
+  const dropdown = document.getElementById("item-tracker-desc-dropdown");
+
+  if (results.length === 0) {
+    dropdown.innerHTML =
+      '<div class="autocomplete-empty">No products found</div>';
+    dropdown.classList.add("show");
+    return;
+  }
+
+  dropdown.innerHTML = results
+    .map(
+      (result) => `
+    <div class="autocomplete-item" data-upc="${result.product_upc}" data-desc="${result.product_description}">
+      <div class="autocomplete-item-description">${escapeHtml(result.product_description)}</div>
+      <div class="autocomplete-item-upc">UPC: ${result.product_upc || "N/A"}</div>
+    </div>
+  `,
+    )
+    .join("");
+
+  dropdown.classList.add("show");
+
+  dropdown.querySelectorAll(".autocomplete-item").forEach((item) => {
+    item.addEventListener("click", () => {
+      selectDescriptionResult(item.dataset.upc, item.dataset.desc);
+    });
+  });
+}
+
+function hideDescriptionDropdown() {
+  const dropdown = document.getElementById("item-tracker-desc-dropdown");
+  if (dropdown) {
+    dropdown.classList.remove("show");
+    dropdown.innerHTML = "";
+  }
+}
+
+function selectDescriptionResult(upc, description) {
+  document.getElementById("item-tracker-upc-input").value = upc || "";
+  document.getElementById("item-tracker-desc-input").value = description || "";
+  hideDescriptionDropdown();
+
+  if (upc) {
+    searchItemTracker();
+  }
+}
+
+function escapeHtml(text) {
+  if (!text) return "";
+  const div = document.createElement("div");
+  div.textContent = text;
+  return div.innerHTML;
+}
+
 // Event listeners for Item Tracker
-document.getElementById("save-item-tracker-config-btn")?.addEventListener("click", saveItemTrackerConfig);
-document.getElementById("edit-item-tracker-config-btn")?.addEventListener("click", showItemTrackerConfigSection);
-document.getElementById("item-tracker-search-btn")?.addEventListener("click", searchItemTracker);
-document.getElementById("item-tracker-filter")?.addEventListener("change", filterItemTrackerEvents);
-document.getElementById("export-item-tracker-btn")?.addEventListener("click", exportItemTrackerCSV);
+document
+  .getElementById("save-item-tracker-config-btn")
+  ?.addEventListener("click", saveItemTrackerConfig);
+document
+  .getElementById("edit-item-tracker-config-btn")
+  ?.addEventListener("click", showItemTrackerConfigSection);
+document
+  .getElementById("item-tracker-search-btn")
+  ?.addEventListener("click", searchItemTracker);
+document
+  .getElementById("item-tracker-filter")
+  ?.addEventListener("change", filterItemTrackerEvents);
+document
+  .getElementById("export-item-tracker-btn")
+  ?.addEventListener("click", exportItemTrackerCSV);
 
 // Enter key handler for Item Tracker UPC input
-document.getElementById("item-tracker-upc-input")?.addEventListener("keypress", (e) => {
-  if (e.key === "Enter") {
-    searchItemTracker();
+document
+  .getElementById("item-tracker-upc-input")
+  ?.addEventListener("keypress", (e) => {
+    if (e.key === "Enter") {
+      searchItemTracker();
+    }
+  });
+
+// Description input handlers
+document
+  .getElementById("item-tracker-desc-input")
+  ?.addEventListener("input", handleDescriptionInput);
+document
+  .getElementById("item-tracker-desc-input")
+  ?.addEventListener("keypress", (e) => {
+    if (e.key === "Enter") {
+      hideDescriptionDropdown();
+      const upcInput = document.getElementById("item-tracker-upc-input");
+      if (upcInput.value.trim()) {
+        searchItemTracker();
+      }
+    }
+  });
+
+// Hide dropdown when clicking outside
+document.addEventListener("click", (e) => {
+  const descInput = document.getElementById("item-tracker-desc-input");
+  const dropdown = document.getElementById("item-tracker-desc-dropdown");
+  if (
+    descInput &&
+    dropdown &&
+    !descInput.contains(e.target) &&
+    !dropdown.contains(e.target)
+  ) {
+    hideDescriptionDropdown();
   }
 });
 
 // Sort column click handlers for Item Tracker table
-document.getElementById("item-tracker-table")?.querySelectorAll("th.sortable").forEach((header) => {
-  header.addEventListener("click", () => {
-    const column = header.dataset.sort;
-    if (column) {
-      sortItemTrackerEvents(column);
-    }
+document
+  .getElementById("item-tracker-table")
+  ?.querySelectorAll("th.sortable")
+  .forEach((header) => {
+    header.addEventListener("click", () => {
+      const column = header.dataset.sort;
+      if (column) {
+        sortItemTrackerEvents(column);
+      }
+    });
   });
-});
 
 // Initialize
 document.addEventListener("DOMContentLoaded", () => {
