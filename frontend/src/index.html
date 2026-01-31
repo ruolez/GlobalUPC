@@ -1821,21 +1821,101 @@
               </div>
             </div>
 
-            <!-- Search Input -->
-            <div class="form-group">
-              <label>Search by UPC or Description</label>
-              <div style="display: flex; gap: 0.75rem; align-items: stretch">
-                <input
-                  type="text"
-                  id="item-tracker-upc-input"
-                  placeholder="UPC"
-                  style="width: 180px"
-                />
-                <div style="position: relative; flex: 1; max-width: 450px">
+            <!-- Search Row: Date Range + Product Search -->
+            <div
+              style="
+                display: flex;
+                gap: 1rem;
+                align-items: flex-end;
+                flex-wrap: wrap;
+                margin-bottom: 1rem;
+              "
+            >
+              <!-- Date Range -->
+              <div style="display: flex; gap: 0.5rem; align-items: flex-end">
+                <div>
+                  <label
+                    for="item-tracker-date-from"
+                    style="
+                      font-size: 0.75rem;
+                      color: var(--text-tertiary);
+                      margin-bottom: 0.25rem;
+                      display: block;
+                    "
+                    >From</label
+                  >
+                  <input
+                    type="date"
+                    id="item-tracker-date-from"
+                    style="width: 140px"
+                  />
+                </div>
+                <div>
+                  <label
+                    for="item-tracker-date-to"
+                    style="
+                      font-size: 0.75rem;
+                      color: var(--text-tertiary);
+                      margin-bottom: 0.25rem;
+                      display: block;
+                    "
+                    >To</label
+                  >
+                  <input
+                    type="date"
+                    id="item-tracker-date-to"
+                    style="width: 140px"
+                  />
+                </div>
+              </div>
+
+              <!-- Divider -->
+              <div
+                style="
+                  width: 1px;
+                  height: 32px;
+                  background: var(--border-color);
+                  margin: 0 0.25rem;
+                "
+              ></div>
+
+              <!-- Product Search -->
+              <div
+                style="display: flex; gap: 0.5rem; align-items: flex-end; flex: 1"
+              >
+                <div>
+                  <label
+                    for="item-tracker-upc-input"
+                    style="
+                      font-size: 0.75rem;
+                      color: var(--text-tertiary);
+                      margin-bottom: 0.25rem;
+                      display: block;
+                    "
+                    >UPC</label
+                  >
+                  <input
+                    type="text"
+                    id="item-tracker-upc-input"
+                    placeholder="Enter UPC"
+                    style="width: 150px"
+                  />
+                </div>
+                <div style="position: relative; flex: 1; max-width: 400px">
+                  <label
+                    for="item-tracker-desc-input"
+                    style="
+                      font-size: 0.75rem;
+                      color: var(--text-tertiary);
+                      margin-bottom: 0.25rem;
+                      display: block;
+                    "
+                    >Description</label
+                  >
                   <input
                     type="text"
                     id="item-tracker-desc-input"
-                    placeholder="Product description"
+                    placeholder="Search by product name"
                     style="width: 100%"
                     autocomplete="off"
                   />
@@ -1848,59 +1928,11 @@
                   type="button"
                   class="btn btn-primary"
                   id="item-tracker-search-btn"
+                  style="height: 38px"
                 >
                   Search
                 </button>
               </div>
-            </div>
-
-            <!-- Date Range Filter (Optional) -->
-            <div class="form-group">
-              <label>Date Range Filter (Optional)</label>
-              <div style="display: flex; gap: 0.75rem; align-items: center">
-                <div style="flex: 1; max-width: 200px">
-                  <label
-                    for="item-tracker-date-from"
-                    style="
-                      font-size: 0.875rem;
-                      margin-bottom: 0.25rem;
-                      display: block;
-                    "
-                    >From Date</label
-                  >
-                  <input
-                    type="date"
-                    id="item-tracker-date-from"
-                    style="width: 100%"
-                  />
-                </div>
-                <div style="flex: 1; max-width: 200px">
-                  <label
-                    for="item-tracker-date-to"
-                    style="
-                      font-size: 0.875rem;
-                      margin-bottom: 0.25rem;
-                      display: block;
-                    "
-                    >To Date</label
-                  >
-                  <input
-                    type="date"
-                    id="item-tracker-date-to"
-                    style="width: 100%"
-                  />
-                </div>
-              </div>
-              <small
-                style="
-                  color: var(--text-tertiary);
-                  font-size: 0.75rem;
-                  margin-top: 0.5rem;
-                  display: block;
-                "
-              >
-                Leave empty to search all records.
-              </small>
             </div>
 
             <!-- Loading State -->
@@ -2189,7 +2221,18 @@
                     "
                     >Filter:</label
                   >
-                  <select id="item-tracker-filter" style="min-width: 150px">
+                  <select
+                    id="item-tracker-filter"
+                    style="
+                      min-width: 150px;
+                      padding: 0.5rem 0.75rem;
+                      background: var(--bg-tertiary);
+                      border: 1px solid var(--border-color);
+                      border-radius: var(--radius-md);
+                      color: var(--text-primary);
+                      font-size: 0.875rem;
+                    "
+                  >
                     <option value="">All Events</option>
                     <option value="purchase">Purchase</option>
                     <option value="sale">Sale</option>
