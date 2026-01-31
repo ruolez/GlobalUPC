@@ -2452,7 +2452,6 @@ async def search_item_tracker_stream(request: ItemTrackerSearchRequest, db: Sess
         s2s_conn = s2s_store.mssql_connection
         all_events = []
         event_counts = {
-            "creation": 0,
             "purchase": 0,
             "sale": 0,
             "customer_return": 0,
@@ -2489,21 +2488,6 @@ async def search_item_tracker_stream(request: ItemTrackerSearchRequest, db: Sess
                     avr_cost=item_data["avr_cost"],
                     quant_on_hand=item_data["quant_on_hand"]
                 )
-
-                # Add creation event if last_received exists
-                if item_data["last_received"]:
-                    creation_event = ItemTrackerEvent(
-                        event_type="creation",
-                        event_date=item_data["last_received"],
-                        store_name=s2s_store.name,
-                        document_number=None,
-                        quantity=None,
-                        price_or_cost=item_data["unit_cost"],
-                        business_name=None,
-                        line_id=item_data["product_id"]
-                    )
-                    all_events.append(creation_event)
-                    event_counts["creation"] = 1
 
                 description = item_data["product_description"] or upc
                 yield f"event: progress\ndata: {json.dumps({'status': 'found_item', 'message': f'Found item: {description}'})}\n\n"

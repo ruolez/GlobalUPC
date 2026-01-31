@@ -4137,7 +4137,6 @@ function displayItemTrackerResults(data) {
   summaryEl.innerHTML = "";
 
   const eventTypes = [
-    { key: "creation", label: "Creation", color: "#6366f1" },
     { key: "purchase", label: "Purchases", color: "#22c55e" },
     { key: "sale", label: "Sales", color: "#3b82f6" },
     { key: "customer_return", label: "Customer Returns", color: "#f59e0b" },
@@ -4176,7 +4175,6 @@ function renderItemTrackerTable(events) {
   tableBody.innerHTML = "";
 
   const eventTypeColors = {
-    creation: { bg: "#6366f120", color: "#6366f1", label: "Creation" },
     purchase: { bg: "#22c55e20", color: "#22c55e", label: "Purchase" },
     sale: { bg: "#3b82f620", color: "#3b82f6", label: "Sale" },
     customer_return: { bg: "#f59e0b20", color: "#f59e0b", label: "Cust. Return" },
@@ -4204,7 +4202,7 @@ function renderItemTrackerTable(events) {
 
     row.innerHTML = `
       <td style="color: var(--text-tertiary)">${index + 1}</td>
-      <td style="font-size: 0.8125rem">${dateStr}</td>
+      <td style="font-size: 0.8125rem; white-space: nowrap">${dateStr}</td>
       <td>
         <span style="padding: 0.25rem 0.5rem; border-radius: var(--radius-sm); font-size: 0.75rem; font-weight: 500; background: ${typeInfo.bg}; color: ${typeInfo.color}; white-space: nowrap;">
           ${typeInfo.label}
