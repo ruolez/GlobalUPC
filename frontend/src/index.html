@@ -1809,17 +1809,17 @@
 
               <!-- Timeline Table -->
               <div style="overflow-x: auto">
-                <table class="data-table">
+                <table class="data-table" id="item-tracker-table">
                   <thead>
                     <tr>
                       <th style="width: 4%">#</th>
-                      <th style="width: 15%">Date</th>
-                      <th style="width: 11%">Type</th>
-                      <th style="width: 13%">Store</th>
-                      <th style="width: 11%">Document #</th>
-                      <th style="width: 7%">Qty</th>
-                      <th style="width: 9%">Price/Cost</th>
-                      <th style="width: 20%">Customer/Supplier</th>
+                      <th style="width: 15%; cursor: pointer; user-select: none" data-sort="event_date" class="sortable">Date <span class="sort-indicator">▼</span></th>
+                      <th style="width: 11%; cursor: pointer; user-select: none" data-sort="event_type" class="sortable">Type <span class="sort-indicator"></span></th>
+                      <th style="width: 13%; cursor: pointer; user-select: none" data-sort="store_name" class="sortable">Store <span class="sort-indicator"></span></th>
+                      <th style="width: 11%; cursor: pointer; user-select: none" data-sort="document_number" class="sortable">Document # <span class="sort-indicator"></span></th>
+                      <th style="width: 7%; cursor: pointer; user-select: none" data-sort="quantity" class="sortable">Qty <span class="sort-indicator"></span></th>
+                      <th style="width: 9%; cursor: pointer; user-select: none" data-sort="price_or_cost" class="sortable">Price/Cost <span class="sort-indicator"></span></th>
+                      <th style="width: 20%; cursor: pointer; user-select: none" data-sort="business_name" class="sortable">Customer/Supplier <span class="sort-indicator"></span></th>
                     </tr>
                   </thead>
                   <tbody id="item-tracker-table-body">

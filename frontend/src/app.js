@@ -3855,7 +3855,9 @@ let itemTrackerState = {
   config: null,
   events: [],
   filteredEvents: [],
-  isSearching: false
+  isSearching: false,
+  sortColumn: "event_date",
+  sortDirection: "desc"
 };
 
 async function loadItemTrackerPage() {
@@ -4230,8 +4232,82 @@ function filterItemTrackerEvents() {
     );
   }
 
+  // Apply current sort
+  sortItemTrackerEvents(itemTrackerState.sortColumn, itemTrackerState.sortDirection, false);
+}
+
+function sortItemTrackerEvents(column, direction = null, toggle = true) {
+  // If same column clicked, toggle direction; otherwise use specified or default desc
+  if (toggle && column === itemTrackerState.sortColumn) {
+    itemTrackerState.sortDirection = itemTrackerState.sortDirection === "asc" ? "desc" : "asc";
+  } else if (direction) {
+    itemTrackerState.sortDirection = direction;
+  } else if (column !== itemTrackerState.sortColumn) {
+    itemTrackerState.sortDirection = "desc";
+  }
+
+  itemTrackerState.sortColumn = column;
+
+  // Sort the filtered events
+  itemTrackerState.filteredEvents.sort((a, b) => {
+    let valA = a[column];
+    let valB = b[column];
+
+    // Handle null/undefined values
+    if (valA === null || valA === undefined) valA = "";
+    if (valB === null || valB === undefined) valB = "";
+
+    // Handle date comparison
+    if (column === "event_date") {
+      valA = valA ? new Date(valA).getTime() : 0;
+      valB = valB ? new Date(valB).getTime() : 0;
+    }
+
+    // Handle numeric comparison
+    if (column === "quantity" || column === "price_or_cost") {
+      valA = typeof valA === "number" ? valA : 0;
+      valB = typeof valB === "number" ? valB : 0;
+    }
+
+    // String comparison for other columns
+    if (typeof valA === "string") {
+      valA = valA.toLowerCase();
+      valB = valB.toLowerCase();
+    }
+
+    let result = 0;
+    if (valA < valB) result = -1;
+    else if (valA > valB) result = 1;
+
+    return itemTrackerState.sortDirection === "asc" ? result : -result;
+  });
+
+  // Update sort indicators in the table header
+  updateSortIndicators();
+
+  // Re-render table
   renderItemTrackerTable(itemTrackerState.filteredEvents);
   document.getElementById("item-tracker-event-count").textContent = itemTrackerState.filteredEvents.length;
+}
+
+function updateSortIndicators() {
+  const table = document.getElementById("item-tracker-table");
+  if (!table) return;
+
+  const headers = table.querySelectorAll("th.sortable");
+  headers.forEach((header) => {
+    const indicator = header.querySelector(".sort-indicator");
+    if (!indicator) return;
+
+    const column = header.dataset.sort;
+    if (column === itemTrackerState.sortColumn) {
+      indicator.textContent = itemTrackerState.sortDirection === "asc" ? "▲" : "▼";
+      indicator.style.opacity = "1";
+    } else {
+      indicator.textContent = "";
+      indicator.style.opacity = "0.3";
+    }
+  });
 }
 
 function exportItemTrackerCSV() {
@@ -4301,6 +4377,16 @@ document.getElementById("item-tracker-upc-input")?.addEventListener("keypress", 
   if (e.key === "Enter") {
     searchItemTracker();
   }
+});
+
+// Sort column click handlers for Item Tracker table
+document.getElementById("item-tracker-table")?.querySelectorAll("th.sortable").forEach((header) => {
+  header.addEventListener("click", () => {
+    const column = header.dataset.sort;
+    if (column) {
+      sortItemTrackerEvents(column);
+    }
+  });
 });
 
 // Initialize
