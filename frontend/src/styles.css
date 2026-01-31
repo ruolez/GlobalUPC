@@ -764,6 +764,27 @@ body {
   box-shadow: 0 0 0 3px var(--accent-glow);
 }
 
+/* Dark input for standalone inputs outside form-group */
+.dark-input {
+  padding: 0.625rem 0.875rem;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  transition: var(--transition);
+}
+
+.dark-input:focus {
+  outline: none;
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.dark-input::placeholder {
+  color: var(--text-tertiary);
+}
+
 .form-group input::placeholder {
   color: var(--text-tertiary);
 }
