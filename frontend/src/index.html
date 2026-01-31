@@ -2300,34 +2300,58 @@
                 >
                   <!-- Badges populated by JavaScript -->
                 </div>
-                <div style="display: flex; align-items: center; gap: 0.5rem">
+                <div style="display: flex; align-items: center; gap: 1rem">
+                  <div style="display: flex; align-items: center; gap: 0.5rem">
+                    <label
+                      for="item-tracker-filter"
+                      style="
+                        font-size: 0.8125rem;
+                        color: var(--text-tertiary);
+                        white-space: nowrap;
+                      "
+                      >Filter:</label
+                    >
+                    <select
+                      id="item-tracker-filter"
+                      style="
+                        min-width: 150px;
+                        padding: 0.5rem 0.75rem;
+                        background: var(--bg-tertiary);
+                        border: 1px solid var(--border-color);
+                        border-radius: var(--radius-md);
+                        color: var(--text-primary);
+                        font-size: 0.875rem;
+                      "
+                    >
+                      <option value="">All Events</option>
+                      <option value="purchase">Purchase</option>
+                      <option value="sale">Sale</option>
+                      <option value="customer_return">Customer Return</option>
+                      <option value="vendor_return">Vendor Return</option>
+                    </select>
+                  </div>
                   <label
-                    for="item-tracker-filter"
                     style="
+                      display: flex;
+                      align-items: center;
+                      gap: 0.375rem;
                       font-size: 0.8125rem;
                       color: var(--text-tertiary);
-                      white-space: nowrap;
-                    "
-                    >Filter:</label
-                  >
-                  <select
-                    id="item-tracker-filter"
-                    style="
-                      min-width: 150px;
-                      padding: 0.5rem 0.75rem;
-                      background: var(--bg-tertiary);
-                      border: 1px solid var(--border-color);
-                      border-radius: var(--radius-md);
-                      color: var(--text-primary);
-                      font-size: 0.875rem;
+                      cursor: pointer;
                     "
                   >
-                    <option value="">All Events</option>
-                    <option value="purchase">Purchase</option>
-                    <option value="sale">Sale</option>
-                    <option value="customer_return">Customer Return</option>
-                    <option value="vendor_return">Vendor Return</option>
-                  </select>
+                    <input
+                      type="checkbox"
+                      id="item-tracker-show-voided"
+                      style="
+                        width: 1rem;
+                        height: 1rem;
+                        accent-color: var(--accent-primary);
+                        cursor: pointer;
+                      "
+                    />
+                    Show Voided
+                  </label>
                 </div>
               </div>
 

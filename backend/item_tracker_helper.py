@@ -146,7 +146,8 @@ def get_sales(
     upc: str,
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
-    limit: int = 1000
+    limit: int = 1000,
+    show_voided: bool = False
 ) -> Tuple[bool, Optional[str], List[Dict[str, Any]]]:
     """
     Get sales history from InvoicesDetails_tbl.
@@ -172,14 +173,17 @@ def get_sales(
 
         query = """
             SELECT TOP (?) d.LineID, h.InvoiceNumber, h.InvoiceDate, d.QtyShipped,
-                   d.UnitPrice, d.ExtendedPrice, d.UnitCost, h.BusinessName
+                   d.UnitPrice, d.ExtendedPrice, d.UnitCost, h.BusinessName,
+                   ISNULL(h.Void, 0) AS IsVoided
             FROM InvoicesDetails_tbl d
             INNER JOIN Invoices_tbl h ON d.InvoiceID = h.InvoiceID
             WHERE d.ProductUPC = ?
-              AND ISNULL(h.Void, 0) = 0
         """
 
         params = [limit, upc]
+
+        if not show_voided:
+            query += " AND ISNULL(h.Void, 0) = 0"
 
         if date_from:
             query += " AND h.InvoiceDate >= ?"
@@ -208,6 +212,7 @@ def get_sales(
                 "extended_amount": float(row[5]) if row[5] is not None else None,
                 "unit_cost": float(row[6]) if row[6] is not None else None,
                 "business_name": row[7],
+                "is_voided": bool(row[8]) if row[8] is not None else False,
             })
 
         return True, None, sales
@@ -417,14 +422,15 @@ async def get_sales_async(
     upc: str,
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
-    limit: int = 1000
+    limit: int = 1000,
+    show_voided: bool = False
 ) -> Tuple[bool, Optional[str], List[Dict[str, Any]]]:
     """Async wrapper for get_sales."""
     loop = asyncio.get_event_loop()
     with ThreadPoolExecutor() as executor:
         return await loop.run_in_executor(
             executor,
-            lambda: get_sales(host, port, database, username, password, upc, date_from, date_to, limit)
+            lambda: get_sales(host, port, database, username, password, upc, date_from, date_to, limit, show_voided)
         )
 
 

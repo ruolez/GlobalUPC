@@ -351,6 +351,7 @@ class ItemTrackerSearchRequest(BaseModel):
     upc: str
     date_from: Optional[date] = None
     date_to: Optional[date] = None
+    show_voided: bool = False
 
 class ItemInfo(BaseModel):
     product_id: int
@@ -373,6 +374,7 @@ class ItemTrackerEvent(BaseModel):
     business_name: Optional[str] = None
     line_id: Optional[int] = None
     extended_amount: Optional[float] = None
+    is_voided: Optional[bool] = None
 
 class ItemTrackerSearchResponse(BaseModel):
     upc: str

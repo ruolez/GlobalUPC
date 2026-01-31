@@ -4253,7 +4253,10 @@ async function searchItemTracker() {
   progressItems.innerHTML = "";
 
   try {
-    const requestBody = { upc };
+    const showVoided =
+      document.getElementById("item-tracker-show-voided")?.checked || false;
+
+    const requestBody = { upc, show_voided: showVoided };
     if (dateFrom) requestBody.date_from = dateFrom;
     if (dateTo) requestBody.date_to = dateTo;
 
@@ -4464,6 +4467,12 @@ function renderItemTrackerTable(events) {
         ? `$${event.price_or_cost.toFixed(2)}`
         : "-";
 
+    // Format document number with voided badge if applicable
+    const docNumber = event.document_number || "-";
+    const voidedBadge = event.is_voided
+      ? `<span style="margin-left: 0.375rem; padding: 0.125rem 0.375rem; border-radius: var(--radius-sm); font-size: 0.625rem; font-weight: 600; background: #dc262620; color: #f87171; border: 1px solid #dc262640; vertical-align: middle;">VOID</span>`
+      : "";
+
     row.innerHTML = `
       <td style="color: var(--text-tertiary)">${index + 1}</td>
       <td style="font-size: 0.8125rem; white-space: nowrap">${dateStr}</td>
@@ -4473,7 +4482,7 @@ function renderItemTrackerTable(events) {
         </span>
       </td>
       <td style="font-weight: 500">${event.store_name || "-"}</td>
-      <td style="font-family: monospace; font-size: 0.8125rem">${event.document_number || "-"}</td>
+      <td style="font-family: monospace; font-size: 0.8125rem; white-space: nowrap">${docNumber}${voidedBadge}</td>
       <td style="text-align: right">${qty}</td>
       <td style="text-align: right">${priceOrCost}</td>
       <td style="max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap" title="${escapeHtml(event.business_name || "")}">${escapeHtml(event.business_name || "-")}</td>

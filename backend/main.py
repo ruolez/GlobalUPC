@@ -2430,6 +2430,7 @@ async def search_item_tracker_stream(request: ItemTrackerSearchRequest, db: Sess
         upc = request.upc.strip()
         date_from = request.date_from
         date_to = request.date_to
+        show_voided = request.show_voided
 
         if not upc:
             yield f"event: error\ndata: {json.dumps({'message': 'UPC is required'})}\n\n"
@@ -2600,7 +2601,8 @@ async def search_item_tracker_stream(request: ItemTrackerSearchRequest, db: Sess
                                 password=conn.password,
                                 upc=upc,
                                 date_from=date_from,
-                                date_to=date_to
+                                date_to=date_to,
+                                show_voided=show_voided
                             )
                         ))
 
@@ -2638,7 +2640,8 @@ async def search_item_tracker_stream(request: ItemTrackerSearchRequest, db: Sess
                                     price_or_cost=s["price_or_cost"],
                                     business_name=s["business_name"],
                                     line_id=s["line_id"],
-                                    extended_amount=s["extended_amount"]
+                                    extended_amount=s["extended_amount"],
+                                    is_voided=s.get("is_voided", False)
                                 )
                                 all_events.append(event)
                             event_counts["sale"] += len(sales)
@@ -2708,7 +2711,8 @@ async def search_item_tracker_stream(request: ItemTrackerSearchRequest, db: Sess
                     "price_or_cost": event.price_or_cost,
                     "business_name": event.business_name,
                     "line_id": event.line_id,
-                    "extended_amount": event.extended_amount
+                    "extended_amount": event.extended_amount,
+                    "is_voided": event.is_voided
                 }
                 events_dict.append(event_data)
 
