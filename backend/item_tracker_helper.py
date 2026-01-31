@@ -176,6 +176,7 @@ def get_sales(
             FROM InvoicesDetails_tbl d
             INNER JOIN Invoices_tbl h ON d.InvoiceID = h.InvoiceID
             WHERE d.ProductUPC = ?
+              AND ISNULL(h.Void, 0) = 0
         """
 
         params = [limit, upc]
