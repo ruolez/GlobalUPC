@@ -125,6 +125,22 @@ CREATE TABLE upc_exclusions (
 CREATE INDEX idx_exclusions_store_upc ON upc_exclusions(store_id, upc);
 CREATE INDEX idx_exclusions_store_id ON upc_exclusions(store_id);
 
+-- Item Tracker configuration (singleton pattern)
+CREATE TABLE item_tracker_config (
+    id SERIAL PRIMARY KEY,
+    s2s_store_id INTEGER REFERENCES stores(id) ON DELETE SET NULL,
+    sales_store_ids JSONB DEFAULT '[]'::jsonb,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Only one config row allowed
+CREATE UNIQUE INDEX idx_item_tracker_singleton ON item_tracker_config ((true));
+
+CREATE TRIGGER update_item_tracker_config_updated_at
+    BEFORE UPDATE ON item_tracker_config
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
 -- Insert default settings
 INSERT INTO settings (key, value, description) VALUES
     ('app_name', 'Global UPC', 'Application name'),

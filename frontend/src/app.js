@@ -65,6 +65,8 @@ function navigateTo(page) {
     loadMSSQLStoresForComparison();
   } else if (page === "delivery-b") {
     loadMSSQLStoresForDeliveryB();
+  } else if (page === "item-tracker") {
+    loadItemTrackerPage();
   }
 }
 
@@ -3843,6 +3845,465 @@ document
 document
   .getElementById("run-deliveryb-btn")
   ?.addEventListener("click", runDeliveryBSync);
+
+// ============================================================================
+// Item Tracker Functions
+// ============================================================================
+
+// Global state for Item Tracker
+let itemTrackerState = {
+  config: null,
+  events: [],
+  filteredEvents: [],
+  isSearching: false
+};
+
+async function loadItemTrackerPage() {
+  const configSection = document.getElementById("item-tracker-config-section");
+  const searchSection = document.getElementById("item-tracker-search-section");
+
+  // Load MSSQL stores for dropdowns
+  try {
+    const stores = await apiRequest("/stores");
+    const mssqlStores = stores.filter((s) => s.store_type === "mssql");
+
+    // Populate S2S store dropdown
+    const s2sDropdown = document.getElementById("item-tracker-s2s-store");
+    s2sDropdown.innerHTML = '<option value="">Select S2S database...</option>';
+    mssqlStores.forEach((store) => {
+      const option = document.createElement("option");
+      option.value = store.id;
+      option.textContent = store.name;
+      s2sDropdown.appendChild(option);
+    });
+
+    // Populate sales stores checkboxes
+    const salesStoresContainer = document.getElementById("item-tracker-sales-stores");
+    salesStoresContainer.innerHTML = "";
+    mssqlStores.forEach((store) => {
+      const label = document.createElement("label");
+      label.style.display = "flex";
+      label.style.alignItems = "center";
+      label.style.gap = "0.5rem";
+      label.style.cursor = "pointer";
+
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.value = store.id;
+      checkbox.id = `sales-store-${store.id}`;
+      checkbox.style.width = "auto";
+      checkbox.style.margin = "0";
+
+      const span = document.createElement("span");
+      span.textContent = store.name;
+
+      label.appendChild(checkbox);
+      label.appendChild(span);
+      salesStoresContainer.appendChild(label);
+    });
+
+    // Load existing config
+    const config = await apiRequest("/item-tracker/config");
+    itemTrackerState.config = config;
+
+    if (config.s2s_store_id) {
+      // Config exists - show search section
+      s2sDropdown.value = config.s2s_store_id;
+
+      // Check sales store checkboxes
+      config.sales_store_ids.forEach((storeId) => {
+        const checkbox = document.getElementById(`sales-store-${storeId}`);
+        if (checkbox) checkbox.checked = true;
+      });
+
+      updateConfigSummary(config);
+      configSection.style.display = "none";
+      searchSection.style.display = "block";
+
+      // Focus on UPC input
+      setTimeout(() => {
+        const upcInput = document.getElementById("item-tracker-upc-input");
+        if (upcInput) upcInput.focus();
+      }, 100);
+    } else {
+      // No config - show config section
+      configSection.style.display = "block";
+      searchSection.style.display = "none";
+    }
+  } catch (error) {
+    console.error("Error loading Item Tracker page:", error);
+    showToast(`Failed to load Item Tracker: ${error.message}`, "error");
+  }
+}
+
+function updateConfigSummary(config) {
+  document.getElementById("config-s2s-name").textContent = config.s2s_store_name || "-";
+  document.getElementById("config-sales-names").textContent =
+    config.sales_store_names && config.sales_store_names.length > 0
+      ? config.sales_store_names.join(", ")
+      : "None selected";
+}
+
+async function saveItemTrackerConfig() {
+  const s2sStoreId = document.getElementById("item-tracker-s2s-store").value;
+
+  if (!s2sStoreId) {
+    showToast("Please select an S2S database", "error");
+    return;
+  }
+
+  // Get selected sales stores
+  const salesStoreIds = [];
+  document.querySelectorAll('#item-tracker-sales-stores input[type="checkbox"]:checked').forEach((checkbox) => {
+    salesStoreIds.push(parseInt(checkbox.value));
+  });
+
+  try {
+    const config = await apiRequest("/item-tracker/config", {
+      method: "POST",
+      body: JSON.stringify({
+        s2s_store_id: parseInt(s2sStoreId),
+        sales_store_ids: salesStoreIds
+      })
+    });
+
+    itemTrackerState.config = config;
+    updateConfigSummary(config);
+
+    // Hide config section, show search section
+    document.getElementById("item-tracker-config-section").style.display = "none";
+    document.getElementById("item-tracker-search-section").style.display = "block";
+
+    showToast("Configuration saved successfully", "success");
+
+    // Focus on UPC input
+    setTimeout(() => {
+      const upcInput = document.getElementById("item-tracker-upc-input");
+      if (upcInput) upcInput.focus();
+    }, 100);
+  } catch (error) {
+    console.error("Error saving Item Tracker config:", error);
+    showToast(`Failed to save configuration: ${error.message}`, "error");
+  }
+}
+
+function showItemTrackerConfigSection() {
+  document.getElementById("item-tracker-config-section").style.display = "block";
+  document.getElementById("item-tracker-search-section").style.display = "none";
+}
+
+async function searchItemTracker() {
+  if (itemTrackerState.isSearching) return;
+
+  const upc = document.getElementById("item-tracker-upc-input").value.trim();
+  if (!upc) {
+    showToast("Please enter a UPC to search", "error");
+    return;
+  }
+
+  const dateFrom = document.getElementById("item-tracker-date-from").value || null;
+  const dateTo = document.getElementById("item-tracker-date-to").value || null;
+
+  // Reset state
+  itemTrackerState.isSearching = true;
+  itemTrackerState.events = [];
+  itemTrackerState.filteredEvents = [];
+
+  // UI state
+  const searchBtn = document.getElementById("item-tracker-search-btn");
+  const loadingEl = document.getElementById("item-tracker-loading");
+  const emptyEl = document.getElementById("item-tracker-empty");
+  const resultsEl = document.getElementById("item-tracker-results");
+  const progressEl = document.getElementById("item-tracker-progress");
+  const progressItems = document.getElementById("item-tracker-progress-items");
+
+  searchBtn.disabled = true;
+  loadingEl.style.display = "block";
+  emptyEl.style.display = "none";
+  resultsEl.style.display = "none";
+  progressEl.style.display = "block";
+  progressItems.innerHTML = "";
+
+  try {
+    const requestBody = { upc };
+    if (dateFrom) requestBody.date_from = dateFrom;
+    if (dateTo) requestBody.date_to = dateTo;
+
+    const response = await fetch(`${API_BASE}/item-tracker/search/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(requestBody)
+    });
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        if (line.startsWith("event: ")) {
+          const eventType = line.substring(7);
+          continue;
+        }
+        if (line.startsWith("data: ")) {
+          const data = JSON.parse(line.substring(6));
+          handleItemTrackerEvent(data, progressItems);
+        }
+      }
+    }
+  } catch (error) {
+    console.error("Error searching Item Tracker:", error);
+    showToast(`Search failed: ${error.message}`, "error");
+  } finally {
+    itemTrackerState.isSearching = false;
+    searchBtn.disabled = false;
+    loadingEl.style.display = "none";
+    progressEl.style.display = "none";
+  }
+}
+
+function handleItemTrackerEvent(data, progressItems) {
+  if (data.status) {
+    // Progress event
+    const progressItem = document.createElement("div");
+    progressItem.style.fontSize = "0.875rem";
+    progressItem.style.color = "var(--text-secondary)";
+
+    if (data.status === "searching") {
+      progressItem.textContent = data.message;
+    } else if (data.status === "found_item") {
+      progressItem.style.color = "var(--success)";
+      progressItem.textContent = `✓ ${data.message}`;
+    } else if (data.status === "not_found") {
+      progressItem.style.color = "var(--text-tertiary)";
+      progressItem.textContent = data.message;
+    } else if (data.status === "completed") {
+      progressItem.style.color = "var(--success)";
+      progressItem.textContent = `✓ ${data.message}`;
+    } else if (data.status === "store_complete") {
+      progressItem.textContent = `✓ ${data.store_name}: ${data.count} ${data.event_type.replace("_", " ")}s found`;
+    }
+
+    progressItems.appendChild(progressItem);
+    progressItems.scrollTop = progressItems.scrollHeight;
+  } else if (data.events !== undefined) {
+    // Complete event
+    displayItemTrackerResults(data);
+  } else if (data.message) {
+    // Error event
+    showToast(`Error: ${data.message}`, "error");
+  }
+}
+
+function displayItemTrackerResults(data) {
+  const emptyEl = document.getElementById("item-tracker-empty");
+  const resultsEl = document.getElementById("item-tracker-results");
+  const infoCard = document.getElementById("item-tracker-info-card");
+
+  itemTrackerState.events = data.events || [];
+  itemTrackerState.filteredEvents = [...itemTrackerState.events];
+
+  if (data.total_events === 0 && !data.item_info) {
+    emptyEl.style.display = "block";
+    resultsEl.style.display = "none";
+    return;
+  }
+
+  resultsEl.style.display = "block";
+
+  // Display item info if available
+  if (data.item_info) {
+    infoCard.style.display = "block";
+    document.getElementById("item-info-product-id").textContent = data.item_info.product_id || "-";
+    document.getElementById("item-info-upc").textContent = data.item_info.product_upc || "-";
+    document.getElementById("item-info-description").textContent = data.item_info.product_description || "-";
+    document.getElementById("item-info-price").textContent = data.item_info.unit_price !== null ? `$${data.item_info.unit_price.toFixed(2)}` : "-";
+    document.getElementById("item-info-cost").textContent = data.item_info.unit_cost !== null ? `$${data.item_info.unit_cost.toFixed(2)}` : "-";
+    document.getElementById("item-info-avr-cost").textContent = data.item_info.avr_cost !== null ? `$${data.item_info.avr_cost.toFixed(2)}` : "-";
+    document.getElementById("item-info-qty").textContent = data.item_info.quant_on_hand !== null ? data.item_info.quant_on_hand.toLocaleString() : "-";
+  } else {
+    infoCard.style.display = "none";
+  }
+
+  // Display event type summary badges
+  const summaryEl = document.getElementById("item-tracker-summary");
+  summaryEl.innerHTML = "";
+
+  const eventTypes = [
+    { key: "creation", label: "Creation", color: "#6366f1" },
+    { key: "purchase", label: "Purchases", color: "#22c55e" },
+    { key: "sale", label: "Sales", color: "#3b82f6" },
+    { key: "customer_return", label: "Customer Returns", color: "#f59e0b" },
+    { key: "vendor_return", label: "Vendor Returns", color: "#ef4444" }
+  ];
+
+  eventTypes.forEach((type) => {
+    const count = data.event_counts[type.key] || 0;
+    if (count > 0) {
+      const badge = document.createElement("span");
+      badge.style.padding = "0.375rem 0.75rem";
+      badge.style.borderRadius = "var(--radius-sm)";
+      badge.style.fontSize = "0.75rem";
+      badge.style.fontWeight = "500";
+      badge.style.background = type.color + "20";
+      badge.style.color = type.color;
+      badge.style.border = `1px solid ${type.color}40`;
+      badge.textContent = `${type.label}: ${count}`;
+      summaryEl.appendChild(badge);
+    }
+  });
+
+  // Update counts
+  document.getElementById("item-tracker-event-count").textContent = data.total_events;
+  document.getElementById("item-tracker-store-count").textContent = data.stores_searched;
+
+  // Reset filter
+  document.getElementById("item-tracker-filter").value = "";
+
+  // Render table
+  renderItemTrackerTable(itemTrackerState.events);
+}
+
+function renderItemTrackerTable(events) {
+  const tableBody = document.getElementById("item-tracker-table-body");
+  tableBody.innerHTML = "";
+
+  const eventTypeColors = {
+    creation: { bg: "#6366f120", color: "#6366f1", label: "Creation" },
+    purchase: { bg: "#22c55e20", color: "#22c55e", label: "Purchase" },
+    sale: { bg: "#3b82f620", color: "#3b82f6", label: "Sale" },
+    customer_return: { bg: "#f59e0b20", color: "#f59e0b", label: "Cust. Return" },
+    vendor_return: { bg: "#ef444420", color: "#ef4444", label: "Vendor Return" }
+  };
+
+  events.forEach((event, index) => {
+    const row = document.createElement("tr");
+    const typeInfo = eventTypeColors[event.event_type] || { bg: "transparent", color: "inherit", label: event.event_type };
+
+    // Format date
+    let dateStr = "-";
+    if (event.event_date) {
+      const date = new Date(event.event_date);
+      dateStr = date.toLocaleDateString() + " " + date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    }
+
+    // Format quantity
+    const qty = event.quantity !== null && event.quantity !== undefined ? event.quantity.toLocaleString() : "-";
+
+    // Format price/cost
+    const priceOrCost = event.price_or_cost !== null && event.price_or_cost !== undefined
+      ? `$${event.price_or_cost.toFixed(2)}`
+      : "-";
+
+    row.innerHTML = `
+      <td style="color: var(--text-tertiary)">${index + 1}</td>
+      <td style="font-size: 0.8125rem">${dateStr}</td>
+      <td>
+        <span style="padding: 0.25rem 0.5rem; border-radius: var(--radius-sm); font-size: 0.75rem; font-weight: 500; background: ${typeInfo.bg}; color: ${typeInfo.color}; white-space: nowrap;">
+          ${typeInfo.label}
+        </span>
+      </td>
+      <td style="font-weight: 500">${event.store_name || "-"}</td>
+      <td style="font-family: monospace; font-size: 0.8125rem">${event.document_number || "-"}</td>
+      <td style="text-align: right">${qty}</td>
+      <td style="text-align: right">${priceOrCost}</td>
+      <td style="max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap" title="${event.business_name || ""}">${event.business_name || "-"}</td>
+    `;
+
+    tableBody.appendChild(row);
+  });
+}
+
+function filterItemTrackerEvents() {
+  const filterValue = document.getElementById("item-tracker-filter").value;
+
+  if (!filterValue) {
+    itemTrackerState.filteredEvents = [...itemTrackerState.events];
+  } else {
+    itemTrackerState.filteredEvents = itemTrackerState.events.filter(
+      (event) => event.event_type === filterValue
+    );
+  }
+
+  renderItemTrackerTable(itemTrackerState.filteredEvents);
+  document.getElementById("item-tracker-event-count").textContent = itemTrackerState.filteredEvents.length;
+}
+
+function exportItemTrackerCSV() {
+  const events = itemTrackerState.filteredEvents;
+  if (events.length === 0) {
+    showToast("No data to export", "error");
+    return;
+  }
+
+  // CSV headers
+  const headers = ["#", "Date", "Type", "Store", "Document #", "Qty", "Price/Cost", "Extended Amount", "Customer/Supplier"];
+
+  // Convert events to CSV rows
+  const rows = events.map((event, index) => {
+    let dateStr = "";
+    if (event.event_date) {
+      const date = new Date(event.event_date);
+      dateStr = date.toLocaleDateString() + " " + date.toLocaleTimeString();
+    }
+
+    return [
+      index + 1,
+      dateStr,
+      event.event_type,
+      event.store_name || "",
+      event.document_number || "",
+      event.quantity !== null ? event.quantity : "",
+      event.price_or_cost !== null ? event.price_or_cost : "",
+      event.extended_amount !== null ? event.extended_amount : "",
+      event.business_name || ""
+    ];
+  });
+
+  // Build CSV content
+  const csvContent = [
+    headers.join(","),
+    ...rows.map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(","))
+  ].join("\n");
+
+  // Create and download file
+  const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+
+  const upc = document.getElementById("item-tracker-upc-input").value.trim();
+  const timestamp = new Date().toISOString().slice(0, 10);
+  link.download = `item-tracker-${upc}-${timestamp}.csv`;
+
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+
+  showToast(`Exported ${events.length} events to CSV`, "success");
+}
+
+// Event listeners for Item Tracker
+document.getElementById("save-item-tracker-config-btn")?.addEventListener("click", saveItemTrackerConfig);
+document.getElementById("edit-item-tracker-config-btn")?.addEventListener("click", showItemTrackerConfigSection);
+document.getElementById("item-tracker-search-btn")?.addEventListener("click", searchItemTracker);
+document.getElementById("item-tracker-filter")?.addEventListener("change", filterItemTrackerEvents);
+document.getElementById("export-item-tracker-btn")?.addEventListener("click", exportItemTrackerCSV);
+
+// Enter key handler for Item Tracker UPC input
+document.getElementById("item-tracker-upc-input")?.addEventListener("keypress", (e) => {
+  if (e.key === "Enter") {
+    searchItemTracker();
+  }
+});
 
 // Initialize
 document.addEventListener("DOMContentLoaded", () => {

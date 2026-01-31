@@ -644,6 +644,60 @@ fresh_install() {
     log "Fresh installation completed"
 }
 
+run_database_migrations() {
+    print_info "Checking for database migrations..."
+
+    local migrations_dir="${INSTALL_DIR}/backend/migrations"
+
+    if [[ ! -d "$migrations_dir" ]]; then
+        print_info "No migrations directory found, skipping"
+        return 0
+    fi
+
+    # Find all .sql files in migrations directory
+    local migration_files=$(find "$migrations_dir" -name "*.sql" -type f | sort)
+
+    if [[ -z "$migration_files" ]]; then
+        print_info "No migration files found, skipping"
+        return 0
+    fi
+
+    # Wait for database to be ready
+    local max_attempts=15
+    local attempt=0
+
+    print_info "Waiting for database to be ready..."
+    while [[ $attempt -lt $max_attempts ]]; do
+        if docker exec ${CONTAINER_DB} pg_isready -U globalupc -d globalupc &> /dev/null; then
+            print_success "Database is ready"
+            break
+        fi
+        attempt=$((attempt + 1))
+        sleep 2
+    done
+
+    if [[ $attempt -eq $max_attempts ]]; then
+        print_warning "Database not ready, skipping migrations"
+        return 1
+    fi
+
+    # Run each migration file
+    for migration_file in $migration_files; do
+        local filename=$(basename "$migration_file")
+        print_info "Running migration: $filename"
+
+        if docker exec -i ${CONTAINER_DB} psql -U globalupc -d globalupc < "$migration_file" 2>&1; then
+            print_success "Migration completed: $filename"
+            log "Migration applied: $filename"
+        else
+            print_warning "Migration may have issues: $filename (check logs)"
+            log "Migration warning: $filename"
+        fi
+    done
+
+    print_success "Database migrations completed"
+}
+
 update_from_github() {
     print_header "Update from GitHub"
 
@@ -673,6 +727,9 @@ update_from_github() {
 
     # Start containers (volumes will be reused)
     start_containers
+
+    # Run database migrations
+    run_database_migrations
 
     # Wait for health checks
     wait_for_health

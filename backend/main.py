@@ -12,7 +12,7 @@ import uuid
 import os
 
 from database import get_db, engine
-from models import Store, MSSQLConnection, ShopifyConnection, Setting, StoreType, UPCUpdateHistory, UPCExclusion
+from models import Store, MSSQLConnection, ShopifyConnection, Setting, StoreType, UPCUpdateHistory, UPCExclusion, ItemTrackerConfig
 from schemas import (
     MSSQLStoreCreate, ShopifyStoreCreate, StoreResponse,
     SettingCreate, SettingUpdate, SettingResponse,
@@ -26,7 +26,9 @@ from schemas import (
     UPCUpdateHistoryResponse, UPCUpdateHistoryListRequest, UPCUpdateHistoryListResponse,
     CategoryResponse, SubCategoryResponse, StoreComparisonRequest, StoreComparisonResponse, MissingProductRecord,
     UPCExclusionCreate, UPCExclusionResponse, UPCExclusionListResponse,
-    DeliveryBSyncRequest, DeliveryBStoreResult
+    DeliveryBSyncRequest, DeliveryBStoreResult,
+    ItemTrackerConfigCreate, ItemTrackerConfigResponse, ItemTrackerSearchRequest,
+    ItemInfo, ItemTrackerEvent, ItemTrackerSearchResponse
 )
 from mssql_helper import (
     test_mssql_connection, search_upc_across_mssql_stores, search_products_by_upc,
@@ -35,12 +37,17 @@ from mssql_helper import (
     check_upc_exists, sync_unit_price_c_across_stores
 )
 from shopify_helper import test_shopify_connection, search_barcode_across_shopify_stores, search_products_by_barcode, update_barcodes_across_shopify_stores, check_barcode_exists
+from item_tracker_helper import (
+    get_item_info_async, get_purchases_async, get_sales_async,
+    get_customer_returns_async, get_vendor_returns_async
+)
 
 app = FastAPI(title="Global UPC API", version="1.0.0")
 
 # Read SERVER_IP from environment variable
 SERVER_IP = os.getenv("SERVER_IP", "localhost")
 FRONTEND_PORT = os.getenv("FRONTEND_PORT", "8080")
+ALLOWED_IFRAME_ORIGINS = os.getenv("ALLOWED_IFRAME_ORIGINS", "")
 
 # Build CORS origins list
 cors_origins = [
@@ -48,6 +55,11 @@ cors_origins = [
     f"http://localhost:{FRONTEND_PORT}",
     "http://localhost:8080",  # Fallback for development
 ]
+
+# Add iframe origins if configured
+if ALLOWED_IFRAME_ORIGINS:
+    iframe_origins = [origin.strip() for origin in ALLOWED_IFRAME_ORIGINS.split(",") if origin.strip()]
+    cors_origins.extend(iframe_origins)
 
 # Remove duplicates while preserving order
 cors_origins = list(dict.fromkeys(cors_origins))
@@ -2295,6 +2307,448 @@ async def delivery_b_sync_stream(request: DeliveryBSyncRequest, db: Session = De
             "Connection": "keep-alive",
         }
     )
+
+# ============================================================================
+# Item Tracker Endpoints
+# ============================================================================
+
+@app.get("/api/item-tracker/config", response_model=ItemTrackerConfigResponse)
+def get_item_tracker_config(db: Session = Depends(get_db)):
+    """Get Item Tracker configuration."""
+    config = db.query(ItemTrackerConfig).first()
+
+    if not config:
+        # Return empty config
+        return ItemTrackerConfigResponse(
+            id=0,
+            s2s_store_id=None,
+            s2s_store_name=None,
+            sales_store_ids=[],
+            sales_store_names=[],
+            created_at=datetime.now(),
+            updated_at=datetime.now()
+        )
+
+    # Get store names
+    s2s_store_name = None
+    if config.s2s_store_id:
+        s2s_store = db.query(Store).filter(Store.id == config.s2s_store_id).first()
+        if s2s_store:
+            s2s_store_name = s2s_store.name
+
+    sales_store_names = []
+    if config.sales_store_ids:
+        for store_id in config.sales_store_ids:
+            store = db.query(Store).filter(Store.id == store_id).first()
+            if store:
+                sales_store_names.append(store.name)
+
+    return ItemTrackerConfigResponse(
+        id=config.id,
+        s2s_store_id=config.s2s_store_id,
+        s2s_store_name=s2s_store_name,
+        sales_store_ids=config.sales_store_ids or [],
+        sales_store_names=sales_store_names,
+        created_at=config.created_at,
+        updated_at=config.updated_at
+    )
+
+
+@app.post("/api/item-tracker/config", response_model=ItemTrackerConfigResponse)
+def save_item_tracker_config(config_data: ItemTrackerConfigCreate, db: Session = Depends(get_db)):
+    """Save or update Item Tracker configuration (upsert)."""
+    # Validate s2s_store_id if provided
+    if config_data.s2s_store_id:
+        s2s_store = db.query(Store).filter(
+            Store.id == config_data.s2s_store_id,
+            Store.store_type == StoreType.mssql
+        ).first()
+        if not s2s_store:
+            raise HTTPException(status_code=400, detail="Invalid S2S store ID")
+
+    # Validate sales_store_ids if provided
+    if config_data.sales_store_ids:
+        for store_id in config_data.sales_store_ids:
+            store = db.query(Store).filter(
+                Store.id == store_id,
+                Store.store_type == StoreType.mssql
+            ).first()
+            if not store:
+                raise HTTPException(status_code=400, detail=f"Invalid sales store ID: {store_id}")
+
+    # Get existing config or create new one
+    config = db.query(ItemTrackerConfig).first()
+
+    if config:
+        config.s2s_store_id = config_data.s2s_store_id
+        config.sales_store_ids = config_data.sales_store_ids
+    else:
+        config = ItemTrackerConfig(
+            s2s_store_id=config_data.s2s_store_id,
+            sales_store_ids=config_data.sales_store_ids
+        )
+        db.add(config)
+
+    db.commit()
+    db.refresh(config)
+
+    # Get store names for response
+    s2s_store_name = None
+    if config.s2s_store_id:
+        s2s_store = db.query(Store).filter(Store.id == config.s2s_store_id).first()
+        if s2s_store:
+            s2s_store_name = s2s_store.name
+
+    sales_store_names = []
+    if config.sales_store_ids:
+        for store_id in config.sales_store_ids:
+            store = db.query(Store).filter(Store.id == store_id).first()
+            if store:
+                sales_store_names.append(store.name)
+
+    return ItemTrackerConfigResponse(
+        id=config.id,
+        s2s_store_id=config.s2s_store_id,
+        s2s_store_name=s2s_store_name,
+        sales_store_ids=config.sales_store_ids or [],
+        sales_store_names=sales_store_names,
+        created_at=config.created_at,
+        updated_at=config.updated_at
+    )
+
+
+@app.post("/api/item-tracker/search/stream")
+async def search_item_tracker_stream(request: ItemTrackerSearchRequest, db: Session = Depends(get_db)):
+    """
+    Search for item history by UPC with real-time progress updates.
+    Returns Server-Sent Events stream.
+    """
+    async def generate_search_events() -> AsyncGenerator[str, None]:
+        upc = request.upc.strip()
+        date_from = request.date_from
+        date_to = request.date_to
+
+        if not upc:
+            yield f"event: error\ndata: {json.dumps({'message': 'UPC is required'})}\n\n"
+            return
+
+        # Get Item Tracker config
+        config = db.query(ItemTrackerConfig).first()
+
+        if not config or not config.s2s_store_id:
+            yield f"event: error\ndata: {json.dumps({'message': 'Item Tracker not configured. Please configure S2S database in Settings.'})}\n\n"
+            return
+
+        # Get S2S store connection
+        s2s_store = db.query(Store).filter(
+            Store.id == config.s2s_store_id,
+            Store.store_type == StoreType.mssql
+        ).first()
+
+        if not s2s_store or not s2s_store.mssql_connection:
+            yield f"event: error\ndata: {json.dumps({'message': 'S2S database not found or missing connection details'})}\n\n"
+            return
+
+        s2s_conn = s2s_store.mssql_connection
+        all_events = []
+        event_counts = {
+            "creation": 0,
+            "purchase": 0,
+            "sale": 0,
+            "customer_return": 0,
+            "vendor_return": 0
+        }
+        stores_searched = 1  # S2S store
+        item_info = None
+        errors = []
+
+        try:
+            # 1. Get Item Info from S2S
+            yield f"event: progress\ndata: {json.dumps({'status': 'searching', 'message': f'Fetching item info from {s2s_store.name}...'})}\n\n"
+
+            success, error, item_data = await get_item_info_async(
+                host=s2s_conn.host,
+                port=s2s_conn.port,
+                database=s2s_conn.database_name,
+                username=s2s_conn.username,
+                password=s2s_conn.password,
+                upc=upc
+            )
+
+            if not success:
+                errors.append(f"S2S Items_tbl: {error}")
+            elif item_data:
+                item_info = ItemInfo(
+                    product_id=item_data["product_id"],
+                    product_upc=item_data["product_upc"],
+                    product_description=item_data["product_description"],
+                    last_received=item_data["last_received"],
+                    last_sold=item_data["last_sold"],
+                    unit_price=item_data["unit_price"],
+                    unit_cost=item_data["unit_cost"],
+                    avr_cost=item_data["avr_cost"],
+                    quant_on_hand=item_data["quant_on_hand"]
+                )
+
+                # Add creation event if last_received exists
+                if item_data["last_received"]:
+                    creation_event = ItemTrackerEvent(
+                        event_type="creation",
+                        event_date=item_data["last_received"],
+                        store_name=s2s_store.name,
+                        document_number=None,
+                        quantity=None,
+                        price_or_cost=item_data["unit_cost"],
+                        business_name=None,
+                        line_id=item_data["product_id"]
+                    )
+                    all_events.append(creation_event)
+                    event_counts["creation"] = 1
+
+                description = item_data["product_description"] or upc
+                yield f"event: progress\ndata: {json.dumps({'status': 'found_item', 'message': f'Found item: {description}'})}\n\n"
+            else:
+                yield f"event: progress\ndata: {json.dumps({'status': 'not_found', 'message': 'Item not found in S2S Items_tbl'})}\n\n"
+
+            # 2. Get Purchases from S2S (run in parallel with vendor returns)
+            yield f"event: progress\ndata: {json.dumps({'status': 'searching', 'message': 'Fetching purchase history...'})}\n\n"
+
+            purchases_task = get_purchases_async(
+                host=s2s_conn.host,
+                port=s2s_conn.port,
+                database=s2s_conn.database_name,
+                username=s2s_conn.username,
+                password=s2s_conn.password,
+                upc=upc,
+                date_from=date_from,
+                date_to=date_to
+            )
+
+            # 3. Get Vendor Returns from S2S
+            vendor_returns_task = get_vendor_returns_async(
+                host=s2s_conn.host,
+                port=s2s_conn.port,
+                database=s2s_conn.database_name,
+                username=s2s_conn.username,
+                password=s2s_conn.password,
+                upc=upc,
+                date_from=date_from,
+                date_to=date_to
+            )
+
+            # Wait for both S2S queries
+            purchases_result, vendor_returns_result = await asyncio.gather(
+                purchases_task, vendor_returns_task
+            )
+
+            # Process purchases
+            success, error, purchases = purchases_result
+            if not success:
+                errors.append(f"S2S Purchases: {error}")
+            else:
+                for p in purchases:
+                    event = ItemTrackerEvent(
+                        event_type="purchase",
+                        event_date=p["event_date"],
+                        store_name=s2s_store.name,
+                        document_number=p["document_number"],
+                        quantity=p["quantity"],
+                        price_or_cost=p["price_or_cost"],
+                        business_name=p["business_name"],
+                        line_id=p["line_id"],
+                        extended_amount=p["extended_amount"]
+                    )
+                    all_events.append(event)
+                event_counts["purchase"] = len(purchases)
+
+            yield f"event: progress\ndata: {json.dumps({'status': 'completed', 'message': f'Found {len(purchases)} purchases'})}\n\n"
+
+            # Process vendor returns
+            success, error, vendor_returns = vendor_returns_result
+            if not success:
+                errors.append(f"S2S Vendor Returns: {error}")
+            else:
+                for r in vendor_returns:
+                    event = ItemTrackerEvent(
+                        event_type="vendor_return",
+                        event_date=r["event_date"],
+                        store_name=s2s_store.name,
+                        document_number=r["document_number"],
+                        quantity=r["quantity"],
+                        price_or_cost=r["price_or_cost"],
+                        business_name=r["business_name"],
+                        line_id=r["line_id"],
+                        extended_amount=r["extended_amount"]
+                    )
+                    all_events.append(event)
+                event_counts["vendor_return"] = len(vendor_returns)
+
+            yield f"event: progress\ndata: {json.dumps({'status': 'completed', 'message': f'Found {len(vendor_returns)} vendor returns'})}\n\n"
+
+            # 4. Get Sales and Customer Returns from Sales Stores
+            if config.sales_store_ids:
+                sales_stores = db.query(Store).filter(
+                    Store.id.in_(config.sales_store_ids),
+                    Store.store_type == StoreType.mssql
+                ).all()
+
+                stores_searched += len(sales_stores)
+
+                # Create tasks for all sales stores
+                sales_tasks = []
+                customer_return_tasks = []
+
+                for store in sales_stores:
+                    if store.mssql_connection:
+                        conn = store.mssql_connection
+
+                        # Sales task
+                        sales_tasks.append((
+                            store.name,
+                            get_sales_async(
+                                host=conn.host,
+                                port=conn.port,
+                                database=conn.database_name,
+                                username=conn.username,
+                                password=conn.password,
+                                upc=upc,
+                                date_from=date_from,
+                                date_to=date_to
+                            )
+                        ))
+
+                        # Customer returns task
+                        customer_return_tasks.append((
+                            store.name,
+                            get_customer_returns_async(
+                                host=conn.host,
+                                port=conn.port,
+                                database=conn.database_name,
+                                username=conn.username,
+                                password=conn.password,
+                                upc=upc,
+                                date_from=date_from,
+                                date_to=date_to
+                            )
+                        ))
+
+                # Process sales from all stores in parallel
+                if sales_tasks:
+                    yield f"event: progress\ndata: {json.dumps({'status': 'searching', 'message': f'Searching sales across {len(sales_tasks)} stores...'})}\n\n"
+
+                    for store_name, task in sales_tasks:
+                        success, error, sales = await task
+                        if not success:
+                            errors.append(f"{store_name} Sales: {error}")
+                        else:
+                            for s in sales:
+                                event = ItemTrackerEvent(
+                                    event_type="sale",
+                                    event_date=s["event_date"],
+                                    store_name=store_name,
+                                    document_number=s["document_number"],
+                                    quantity=s["quantity"],
+                                    price_or_cost=s["price_or_cost"],
+                                    business_name=s["business_name"],
+                                    line_id=s["line_id"],
+                                    extended_amount=s["extended_amount"]
+                                )
+                                all_events.append(event)
+                            event_counts["sale"] += len(sales)
+
+                            yield f"event: progress\ndata: {json.dumps({'status': 'store_complete', 'store_name': store_name, 'event_type': 'sale', 'count': len(sales)})}\n\n"
+
+                # Process customer returns from all stores in parallel
+                if customer_return_tasks:
+                    yield f"event: progress\ndata: {json.dumps({'status': 'searching', 'message': f'Searching customer returns across {len(customer_return_tasks)} stores...'})}\n\n"
+
+                    for store_name, task in customer_return_tasks:
+                        success, error, returns = await task
+                        if not success:
+                            errors.append(f"{store_name} Customer Returns: {error}")
+                        else:
+                            for r in returns:
+                                event = ItemTrackerEvent(
+                                    event_type="customer_return",
+                                    event_date=r["event_date"],
+                                    store_name=store_name,
+                                    document_number=r["document_number"],
+                                    quantity=r["quantity"],
+                                    price_or_cost=r["price_or_cost"],
+                                    business_name=r["business_name"],
+                                    line_id=r["line_id"],
+                                    extended_amount=r["extended_amount"]
+                                )
+                                all_events.append(event)
+                            event_counts["customer_return"] += len(returns)
+
+                            yield f"event: progress\ndata: {json.dumps({'status': 'store_complete', 'store_name': store_name, 'event_type': 'customer_return', 'count': len(returns)})}\n\n"
+
+            # Sort all events by date (newest first)
+            all_events.sort(key=lambda e: e.event_date if e.event_date else datetime.min, reverse=True)
+
+            # Convert events to dict for JSON serialization
+            events_dict = []
+            for event in all_events:
+                event_data = {
+                    "event_type": event.event_type,
+                    "event_date": event.event_date.isoformat() if event.event_date else None,
+                    "store_name": event.store_name,
+                    "document_number": event.document_number,
+                    "quantity": event.quantity,
+                    "price_or_cost": event.price_or_cost,
+                    "business_name": event.business_name,
+                    "line_id": event.line_id,
+                    "extended_amount": event.extended_amount
+                }
+                events_dict.append(event_data)
+
+            # Prepare item_info for JSON
+            item_info_dict = None
+            if item_info:
+                item_info_dict = {
+                    "product_id": item_info.product_id,
+                    "product_upc": item_info.product_upc,
+                    "product_description": item_info.product_description,
+                    "last_received": item_info.last_received.isoformat() if item_info.last_received else None,
+                    "last_sold": item_info.last_sold.isoformat() if item_info.last_sold else None,
+                    "unit_price": item_info.unit_price,
+                    "unit_cost": item_info.unit_cost,
+                    "avr_cost": item_info.avr_cost,
+                    "quant_on_hand": item_info.quant_on_hand
+                }
+
+            # Send complete event
+            result = {
+                "upc": upc,
+                "item_info": item_info_dict,
+                "events": events_dict,
+                "event_counts": event_counts,
+                "total_events": len(all_events),
+                "stores_searched": stores_searched,
+                "errors": errors if errors else None
+            }
+
+            yield f"event: complete\ndata: {json.dumps(result)}\n\n"
+
+        except GeneratorExit:
+            print("[ITEM-TRACKER] Client disconnected")
+            return
+        except Exception as e:
+            print(f"[ITEM-TRACKER] Error: {e}")
+            import traceback
+            traceback.print_exc()
+            yield f"event: error\ndata: {json.dumps({'message': str(e)})}\n\n"
+
+    return StreamingResponse(
+        generate_search_events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        }
+    )
+
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

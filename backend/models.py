@@ -99,3 +99,14 @@ class UPCExclusion(Base):
     notes = Column(Text)
 
     store = relationship("Store")
+
+class ItemTrackerConfig(Base):
+    __tablename__ = "item_tracker_config"
+
+    id = Column(Integer, primary_key=True, index=True)
+    s2s_store_id = Column(Integer, ForeignKey("stores.id", ondelete="SET NULL"), nullable=True)
+    sales_store_ids = Column(JSONB, default=[])
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    s2s_store = relationship("Store", foreign_keys=[s2s_store_id])

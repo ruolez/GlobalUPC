@@ -328,3 +328,56 @@ class DeliveryBStoreResult(BaseModel):
     products_matched: int
     products_updated: int
     errors: List[str]
+
+# Item Tracker Schemas
+class ItemTrackerConfigBase(BaseModel):
+    s2s_store_id: Optional[int] = None
+    sales_store_ids: List[int] = []
+
+class ItemTrackerConfigCreate(ItemTrackerConfigBase):
+    pass
+
+class ItemTrackerConfigResponse(ItemTrackerConfigBase):
+    id: int
+    s2s_store_name: Optional[str] = None
+    sales_store_names: List[str] = []
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class ItemTrackerSearchRequest(BaseModel):
+    upc: str
+    date_from: Optional[date] = None
+    date_to: Optional[date] = None
+
+class ItemInfo(BaseModel):
+    product_id: int
+    product_upc: str
+    product_description: Optional[str] = None
+    last_received: Optional[datetime] = None
+    last_sold: Optional[datetime] = None
+    unit_price: Optional[float] = None
+    unit_cost: Optional[float] = None
+    avr_cost: Optional[float] = None
+    quant_on_hand: Optional[float] = None
+
+class ItemTrackerEvent(BaseModel):
+    event_type: Literal["creation", "purchase", "sale", "customer_return", "vendor_return"]
+    event_date: Optional[datetime] = None
+    store_name: str
+    document_number: Optional[str] = None
+    quantity: Optional[float] = None
+    price_or_cost: Optional[float] = None
+    business_name: Optional[str] = None
+    line_id: Optional[int] = None
+    extended_amount: Optional[float] = None
+
+class ItemTrackerSearchResponse(BaseModel):
+    upc: str
+    item_info: Optional[ItemInfo] = None
+    events: List[ItemTrackerEvent]
+    event_counts: Dict[str, int]
+    total_events: int
+    stores_searched: int
