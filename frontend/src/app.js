@@ -52,14 +52,6 @@ function navigateTo(page) {
     }, 100);
   }
 
-  // Autofocus on description search input when navigating to item-tracker page
-  if (page === "item-tracker") {
-    setTimeout(() => {
-      const descInput = document.getElementById("item-tracker-desc-input");
-      if (descInput) descInput.focus();
-    }, 100);
-  }
-
   // Load page data
   if (page === "dashboard") {
     loadDashboard();
@@ -4147,10 +4139,10 @@ async function loadItemTrackerPage() {
       configSection.style.display = "none";
       searchSection.style.display = "block";
 
-      // Focus on UPC input
+      // Focus on description input
       setTimeout(() => {
-        const upcInput = document.getElementById("item-tracker-upc-input");
-        if (upcInput) upcInput.focus();
+        const descInput = document.getElementById("item-tracker-desc-input");
+        if (descInput) descInput.focus();
       }, 100);
     } else {
       // No config - show config section
