@@ -4370,8 +4370,6 @@ function displayItemTrackerResults(data) {
   // Display item info if available
   if (data.item_info) {
     infoCard.style.display = "block";
-    document.getElementById("item-info-product-id").textContent =
-      data.item_info.product_id || "-";
     document.getElementById("item-info-upc").textContent =
       data.item_info.product_upc || "-";
     document.getElementById("item-info-description").textContent =
@@ -4383,10 +4381,6 @@ function displayItemTrackerResults(data) {
     document.getElementById("item-info-cost").textContent =
       data.item_info.unit_cost !== null
         ? `$${data.item_info.unit_cost.toFixed(2)}`
-        : "-";
-    document.getElementById("item-info-avr-cost").textContent =
-      data.item_info.avr_cost !== null
-        ? `$${data.item_info.avr_cost.toFixed(2)}`
         : "-";
     document.getElementById("item-info-qty").textContent =
       data.item_info.quant_on_hand !== null
