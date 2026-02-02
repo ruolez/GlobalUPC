@@ -4374,14 +4374,6 @@ function displayItemTrackerResults(data) {
       data.item_info.product_upc || "-";
     document.getElementById("item-info-description").textContent =
       data.item_info.product_description || "-";
-    document.getElementById("item-info-price").textContent =
-      data.item_info.unit_price !== null
-        ? `$${data.item_info.unit_price.toFixed(2)}`
-        : "-";
-    document.getElementById("item-info-cost").textContent =
-      data.item_info.unit_cost !== null
-        ? `$${data.item_info.unit_cost.toFixed(2)}`
-        : "-";
     document.getElementById("item-info-qty").textContent =
       data.item_info.quant_on_hand !== null
         ? data.item_info.quant_on_hand.toLocaleString()
@@ -4506,7 +4498,7 @@ function renderItemTrackerTable(events) {
       </td>
       <td style="font-weight: 500">${event.store_name || "-"}</td>
       <td style="font-family: monospace; font-size: 0.8125rem; white-space: nowrap">${docNumber}${voidedBadge}</td>
-      <td style="text-align: right">${qty}</td>
+      <td style="text-align: center">${qty}</td>
       <td style="text-align: right">${priceOrCost}</td>
       <td style="max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap" title="${escapeHtml(event.business_name || "")}">${escapeHtml(event.business_name || "-")}</td>
       <td style="text-align: center">
