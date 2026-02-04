@@ -4532,7 +4532,7 @@ function renderItemTrackerTable(events) {
         const diff = event.running_balance - event.expected_balance;
         const diffStr = diff > 0 ? `+${diff.toLocaleString()}` : diff.toLocaleString();
         const diffColor = diff > 0 ? "#22c55e" : "#ef4444";
-        balanceStr = `${event.running_balance.toLocaleString()}<br><span style="color: ${diffColor}; font-size: 0.75rem;">${diffStr}</span>`;
+        balanceStr = `${event.running_balance.toLocaleString()} <span style="color: ${diffColor}; font-size: 0.75rem;">${diffStr}</span>`;
       } else {
         balanceStr = event.running_balance.toLocaleString();
       }
