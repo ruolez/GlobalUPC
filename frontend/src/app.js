@@ -4541,6 +4541,8 @@ function renderItemTrackerTable(events) {
       }
     }
 
+    const isRecount = event.event_type === "inventory_recount";
+
     row.innerHTML = `
       <td style="color: var(--text-tertiary)">${index + 1}</td>
       <td style="font-size: 0.8125rem; white-space: nowrap">${dateStr}</td>
@@ -4549,10 +4551,10 @@ function renderItemTrackerTable(events) {
           ${typeInfo.label}
         </span>
       </td>
-      <td style="font-weight: 500">${event.store_name || "-"}</td>
-      <td style="font-family: monospace; font-size: 0.8125rem; white-space: nowrap">${docNumber}${voidedBadge}</td>
+      <td style="font-weight: 500">${isRecount ? "-" : event.store_name || "-"}</td>
+      <td style="font-family: monospace; font-size: 0.8125rem; white-space: nowrap">${isRecount ? "-" : docNumber}${isRecount ? "" : voidedBadge}</td>
       <td style="text-align: center">${qty}</td>
-      <td style="text-align: center">${balanceStr}</td>
+      <td style="text-align: center; white-space: nowrap">${balanceStr}</td>
       <td style="text-align: right">${priceOrCost}</td>
       <td style="max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap" title="${escapeHtml(event.business_name || "")}">${escapeHtml(event.business_name || "-")}</td>
       <td style="text-align: center">
