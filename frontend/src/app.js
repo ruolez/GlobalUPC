@@ -4513,12 +4513,6 @@ function renderItemTrackerTable(events) {
         ? event.quantity.toLocaleString()
         : "-";
 
-    // Format price/cost
-    const priceOrCost =
-      event.price_or_cost !== null && event.price_or_cost !== undefined
-        ? `$${event.price_or_cost.toFixed(2)}`
-        : "-";
-
     // Format document number with voided badge if applicable
     const docNumber = event.document_number || "-";
     const voidedBadge = event.is_voided
@@ -4555,8 +4549,7 @@ function renderItemTrackerTable(events) {
       <td style="font-family: monospace; font-size: 0.8125rem; white-space: nowrap">${isRecount ? "-" : docNumber}${isRecount ? "" : voidedBadge}</td>
       <td style="text-align: center">${qty}</td>
       <td style="text-align: center; white-space: nowrap">${balanceStr}</td>
-      <td style="text-align: right">${priceOrCost}</td>
-      <td style="max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap" title="${escapeHtml(event.business_name || "")}">${escapeHtml(event.business_name || "-")}</td>
+      <td style="max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap" title="${escapeHtml(event.business_name || "")}">${escapeHtml(event.business_name || "-")}</td>
       <td style="text-align: center">
         ${
           event.event_type === "inventory_recount" || !event.business_name
@@ -4750,7 +4743,7 @@ function sortItemTrackerEvents(column, direction = null, toggle = true) {
     }
 
     // Handle numeric comparison
-    if (column === "quantity" || column === "price_or_cost") {
+    if (column === "quantity") {
       valA = typeof valA === "number" ? valA : 0;
       valB = typeof valB === "number" ? valB : 0;
     }
@@ -4814,7 +4807,6 @@ function exportItemTrackerCSV() {
     "Document #",
     "Qty",
     "Balance",
-    "Price/Cost",
     "Extended Amount",
     "Customer/Supplier",
   ];
@@ -4850,7 +4842,6 @@ function exportItemTrackerCSV() {
       event.document_number || "",
       event.quantity !== null ? event.quantity : "",
       balanceStr,
-      event.price_or_cost !== null ? event.price_or_cost : "",
       event.extended_amount !== null ? event.extended_amount : "",
       event.business_name || "",
     ];
