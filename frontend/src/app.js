@@ -4444,7 +4444,10 @@ function displayItemTrackerResults(data) {
       badge.style.display = "inline-flex";
       badge.style.alignItems = "center";
       badge.style.gap = "0.5rem";
-      badge.innerHTML = `${type.label}: ${count} <span style="opacity: 0.6;">·</span> <span style="opacity: 0.7;">${totalQty.toLocaleString()}</span>`;
+      badge.innerHTML =
+        type.key === "inventory_recount"
+          ? `${type.label}: ${count}`
+          : `${type.label}: ${count} <span style="opacity: 0.6;">·</span> <span style="opacity: 0.7;">${totalQty.toLocaleString()}</span>`;
       summaryEl.appendChild(badge);
     }
   });
