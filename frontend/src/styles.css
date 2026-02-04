@@ -135,6 +135,29 @@
   --accent-glow: rgba(245, 245, 245, 0.25);
 }
 
+/* Theme 6: Author's Light - Professional readability for long work sessions */
+[data-theme="author-light"] {
+  --bg-primary: #faf9f7;
+  --bg-secondary: #f5f4f1;
+  --bg-tertiary: #ffffff;
+  --bg-hover: #f0efec;
+
+  --border-color: #e0ddd8;
+  --border-focus: #4a7c59;
+
+  --text-primary: #2c2c2c;
+  --text-secondary: #5a5a5a;
+  --text-tertiary: #8a8a8a;
+
+  --accent-primary: #4a7c59;
+  --accent-hover: #3d6649;
+  --accent-glow: rgba(74, 124, 89, 0.15);
+
+  --success: #2d7a4d;
+  --warning: #c67700;
+  --danger: #c53030;
+}
+
 body {
   font-family:
     -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen", "Ubuntu",
