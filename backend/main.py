@@ -2801,6 +2801,26 @@ async def search_item_tracker_stream(request: ItemTrackerSearchRequest, db: Sess
             # Sort all events by date (newest first)
             all_events.sort(key=lambda e: e.event_date if e.event_date else datetime.min, reverse=True)
 
+            # Calculate running balance (working backwards from current QoH)
+            if item_info and item_info.quant_on_hand is not None:
+                balance = item_info.quant_on_hand
+                for event in all_events:
+                    if event.event_type == "inventory_recount":
+                        event.expected_balance = balance
+                        event.running_balance = event.quantity
+                        balance = event.quantity if event.quantity is not None else balance
+                    else:
+                        event.running_balance = balance
+                        qty = event.quantity or 0
+                        if event.event_type == "sale":
+                            balance += qty
+                        elif event.event_type == "purchase":
+                            balance -= qty
+                        elif event.event_type == "customer_return":
+                            balance -= qty
+                        elif event.event_type == "vendor_return":
+                            balance += qty
+
             # Convert events to dict for JSON serialization
             events_dict = []
             for event in all_events:
@@ -2816,7 +2836,9 @@ async def search_item_tracker_stream(request: ItemTrackerSearchRequest, db: Sess
                     "extended_amount": event.extended_amount,
                     "is_voided": event.is_voided,
                     "username": event.username,
-                    "update_type": event.update_type
+                    "update_type": event.update_type,
+                    "running_balance": event.running_balance,
+                    "expected_balance": event.expected_balance
                 }
                 events_dict.append(event_data)
 

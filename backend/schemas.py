@@ -379,6 +379,8 @@ class ItemTrackerEvent(BaseModel):
     is_voided: Optional[bool] = None
     username: Optional[str] = None
     update_type: Optional[str] = None
+    running_balance: Optional[float] = None
+    expected_balance: Optional[float] = None
 
 class ItemTrackerSearchResponse(BaseModel):
     upc: str

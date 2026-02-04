@@ -4522,6 +4522,19 @@ function renderItemTrackerTable(events) {
       ? `<span style="margin-left: 0.375rem; padding: 0.125rem 0.375rem; border-radius: var(--radius-sm); font-size: 0.625rem; font-weight: 600; background: #dc262620; color: #f87171; border: 1px solid #dc262640; vertical-align: middle;">VOID</span>`
       : "";
 
+    // Format running balance with mismatch indicator for recounts
+    let balanceStr = "-";
+    if (event.running_balance != null) {
+      if (
+        event.expected_balance != null &&
+        event.expected_balance !== event.running_balance
+      ) {
+        balanceStr = `<span style="color: var(--warning-color, #f59e0b); font-size: 0.75rem;">${event.expected_balance.toLocaleString()} →</span> ${event.running_balance.toLocaleString()}`;
+      } else {
+        balanceStr = event.running_balance.toLocaleString();
+      }
+    }
+
     row.innerHTML = `
       <td style="color: var(--text-tertiary)">${index + 1}</td>
       <td style="font-size: 0.8125rem; white-space: nowrap">${dateStr}</td>
@@ -4533,6 +4546,7 @@ function renderItemTrackerTable(events) {
       <td style="font-weight: 500">${event.store_name || "-"}</td>
       <td style="font-family: monospace; font-size: 0.8125rem; white-space: nowrap">${docNumber}${voidedBadge}</td>
       <td style="text-align: center">${qty}</td>
+      <td style="text-align: center">${balanceStr}</td>
       <td style="text-align: right">${priceOrCost}</td>
       <td style="max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap" title="${escapeHtml(event.business_name || "")}">${escapeHtml(event.business_name || "-")}</td>
       <td style="text-align: center">
@@ -4742,6 +4756,7 @@ function exportItemTrackerCSV() {
     "Store",
     "Document #",
     "Qty",
+    "Balance",
     "Price/Cost",
     "Extended Amount",
     "Customer/Supplier",
@@ -4755,6 +4770,19 @@ function exportItemTrackerCSV() {
       dateStr = date.toLocaleDateString() + " " + date.toLocaleTimeString();
     }
 
+    // Format balance for CSV (show mismatch if applicable)
+    let balanceStr = "";
+    if (event.running_balance != null) {
+      if (
+        event.expected_balance != null &&
+        event.expected_balance !== event.running_balance
+      ) {
+        balanceStr = `${event.expected_balance} -> ${event.running_balance}`;
+      } else {
+        balanceStr = event.running_balance;
+      }
+    }
+
     return [
       index + 1,
       dateStr,
@@ -4762,6 +4790,7 @@ function exportItemTrackerCSV() {
       event.store_name || "",
       event.document_number || "",
       event.quantity !== null ? event.quantity : "",
+      balanceStr,
       event.price_or_cost !== null ? event.price_or_cost : "",
       event.extended_amount !== null ? event.extended_amount : "",
       event.business_name || "",
