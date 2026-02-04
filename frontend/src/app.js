@@ -4806,7 +4806,7 @@ function exportItemTrackerCSV() {
     "Store",
     "Document #",
     "Qty",
-    "Balance",
+    "TRACK QTY",
     "Extended Amount",
     "Customer/Supplier",
   ];
