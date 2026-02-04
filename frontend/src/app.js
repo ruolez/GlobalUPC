@@ -4559,21 +4559,23 @@ function renderItemTrackerTable(events) {
       <td style="max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap" title="${escapeHtml(event.business_name || "")}">${escapeHtml(event.business_name || "-")}</td>
       <td style="text-align: center">
         ${
-          event.event_type === "inventory_recount"
+          event.event_type === "inventory_recount" || !event.business_name
             ? "-"
-            : event.business_name && event.event_type === "sale"
-              ? `<select class="exclude-select" data-name="${escapeHtml(event.business_name)}"
-                   style="padding: 0.25rem; font-size: 0.75rem; background: var(--bg-tertiary);
-                          border: 1px solid var(--border-color); border-radius: var(--radius-sm);
-                          color: var(--text-primary); cursor: pointer;">
-                   <option value="">🚫</option>
-                   <option value="all">Exclude All</option>
-                   <option value="voided">Voided Only</option>
-                   <option value="nonvoided">Non-voided Only</option>
-                 </select>`
-              : event.business_name
-                ? `<button class="btn-icon exclude-btn" data-name="${escapeHtml(event.business_name)}" title="Exclude from results" style="cursor: pointer; padding: 0.25rem 0.5rem; background: transparent; border: 1px solid var(--border-color); border-radius: var(--radius-sm); font-size: 0.875rem; transition: all 0.2s;">🚫</button>`
-                : "-"
+            : `<div class="exclude-dropdown" style="position: relative; display: inline-block;">
+                 <button class="exclude-trigger" data-name="${escapeHtml(event.business_name)}" data-type="${event.event_type}"
+                   style="cursor: pointer; padding: 0.25rem 0.5rem; background: transparent; border: 1px solid var(--border-color); border-radius: var(--radius-sm); color: var(--text-tertiary); transition: all 0.15s; display: flex; align-items: center;">
+                   <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style="opacity: 0.7;">
+                     <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                   </svg>
+                 </button>
+                 <div class="exclude-menu" style="display: none; position: absolute; right: 0; top: 100%; margin-top: 0.25rem; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-sm); box-shadow: 0 4px 12px rgba(0,0,0,0.3); z-index: 100; min-width: 120px; overflow: hidden;">
+                   <button class="exclude-option" data-value="all" style="width: 100%; padding: 0.5rem 0.75rem; background: transparent; border: none; color: var(--text-primary); font-size: 0.75rem; text-align: left; cursor: pointer; transition: background 0.15s;">Exclude All</button>
+                   ${event.event_type === "sale" ? `
+                   <button class="exclude-option" data-value="voided" style="width: 100%; padding: 0.5rem 0.75rem; background: transparent; border: none; color: var(--text-primary); font-size: 0.75rem; text-align: left; cursor: pointer; transition: background 0.15s;">Voided Only</button>
+                   <button class="exclude-option" data-value="nonvoided" style="width: 100%; padding: 0.5rem 0.75rem; background: transparent; border: none; color: var(--text-primary); font-size: 0.75rem; text-align: left; cursor: pointer; transition: background 0.15s;">Non-voided Only</button>
+                   ` : ""}
+                 </div>
+               </div>`
         }
       </td>
     `;
@@ -4581,74 +4583,92 @@ function renderItemTrackerTable(events) {
     tableBody.appendChild(row);
   });
 
-  // Add event listeners for exclude buttons (non-sale events)
-  tableBody.querySelectorAll(".exclude-btn").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const businessName = btn.dataset.name;
-      excludeBusinessName(businessName, null);
+  // Add event listeners for exclude dropdowns
+  tableBody.querySelectorAll(".exclude-dropdown").forEach((dropdown) => {
+    const trigger = dropdown.querySelector(".exclude-trigger");
+    const menu = dropdown.querySelector(".exclude-menu");
+    const businessName = trigger.dataset.name;
+
+    // Toggle menu on trigger click
+    trigger.addEventListener("click", (e) => {
+      e.stopPropagation();
+      // Close all other open menus
+      tableBody.querySelectorAll(".exclude-menu").forEach((m) => {
+        if (m !== menu) m.style.display = "none";
+      });
+      menu.style.display = menu.style.display === "none" ? "block" : "none";
     });
-    btn.addEventListener("mouseover", () => {
-      btn.style.background = "var(--error)";
-      btn.style.borderColor = "var(--error)";
-      btn.style.color = "#fff";
+
+    // Hover effects for trigger
+    trigger.addEventListener("mouseover", () => {
+      trigger.style.borderColor = "var(--text-tertiary)";
+      trigger.style.color = "var(--text-primary)";
     });
-    btn.addEventListener("mouseout", () => {
-      btn.style.background = "transparent";
-      btn.style.borderColor = "var(--border-color)";
-      btn.style.color = "inherit";
+    trigger.addEventListener("mouseout", () => {
+      trigger.style.borderColor = "var(--border-color)";
+      trigger.style.color = "var(--text-tertiary)";
+    });
+
+    // Handle option clicks
+    menu.querySelectorAll(".exclude-option").forEach((option) => {
+      option.addEventListener("mouseover", () => {
+        option.style.background = "var(--bg-tertiary)";
+      });
+      option.addEventListener("mouseout", () => {
+        option.style.background = "transparent";
+      });
+      option.addEventListener("click", async () => {
+        const value = option.dataset.value;
+        let voidStatus = null;
+        let scopeText = "all";
+        if (value === "voided") {
+          voidStatus = 1;
+          scopeText = "voided only";
+        } else if (value === "nonvoided") {
+          voidStatus = 0;
+          scopeText = "non-voided only";
+        }
+
+        menu.style.display = "none";
+
+        if (
+          !confirm(
+            `Exclude "${businessName}" (${scopeText})?\n\nThis will hide matching events from search results.`,
+          )
+        ) {
+          return;
+        }
+
+        try {
+          await apiRequest("/item-tracker/exclusions", {
+            method: "POST",
+            body: JSON.stringify({
+              business_name: businessName,
+              void_status: voidStatus,
+            }),
+          });
+
+          showToast(`✓ "${businessName}" excluded (${scopeText})`, "success");
+          searchItemTracker();
+        } catch (error) {
+          console.error("Error excluding business name:", error);
+          if (error.message && error.message.includes("already excluded")) {
+            showToast(
+              `Already excluded: ${businessName} (${scopeText})`,
+              "warning",
+            );
+          } else {
+            showToast(`✗ Failed to exclude: ${error.message}`, "error");
+          }
+        }
+      });
     });
   });
 
-  // Add event listeners for exclude dropdowns (sale events)
-  tableBody.querySelectorAll(".exclude-select").forEach((select) => {
-    select.addEventListener("change", async (e) => {
-      const value = e.target.value;
-      if (!value) return;
-
-      const businessName = select.dataset.name;
-      let voidStatus = null;
-      let scopeText = "all invoices";
-      if (value === "voided") {
-        voidStatus = 1;
-        scopeText = "voided only";
-      } else if (value === "nonvoided") {
-        voidStatus = 0;
-        scopeText = "non-voided only";
-      }
-
-      if (
-        !confirm(
-          `Exclude "${businessName}" (${scopeText})?\n\nThis will hide matching invoices from search results.`,
-        )
-      ) {
-        select.value = "";
-        return;
-      }
-
-      try {
-        await apiRequest("/item-tracker/exclusions", {
-          method: "POST",
-          body: JSON.stringify({
-            business_name: businessName,
-            void_status: voidStatus,
-          }),
-        });
-
-        showToast(`✓ "${businessName}" excluded (${scopeText})`, "success");
-        select.value = "";
-        searchItemTracker();
-      } catch (error) {
-        console.error("Error excluding business name:", error);
-        select.value = "";
-        if (error.message && error.message.includes("already excluded")) {
-          showToast(
-            `Already excluded: ${businessName} (${scopeText})`,
-            "warning",
-          );
-        } else {
-          showToast(`✗ Failed to exclude: ${error.message}`, "error");
-        }
-      }
+  // Close menus when clicking outside
+  document.addEventListener("click", () => {
+    tableBody.querySelectorAll(".exclude-menu").forEach((m) => {
+      m.style.display = "none";
     });
   });
 }
