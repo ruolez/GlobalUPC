@@ -575,7 +575,7 @@ def get_inventory_recounts(
             return True, None, []
 
         query = """
-            SELECT TOP (?) id, DateCreated, Username, UpdateType, NewQty
+            SELECT TOP (?) id, DateCreated, Username, UpdateType, DiffQty, NewQty
             FROM ManualInventoryUpdate
             WHERE ProductUPC = ?
         """
@@ -605,7 +605,8 @@ def get_inventory_recounts(
                 "event_date": row[1],
                 "username": row[2],
                 "update_type": row[3],
-                "quantity": float(row[4]) if row[4] is not None else None,
+                "quantity": float(row[4]) if row[4] is not None else None,  # DiffQty for Qty column
+                "new_qty": float(row[5]) if row[5] is not None else None,   # NewQty for running_balance
             })
 
         return True, None, recounts

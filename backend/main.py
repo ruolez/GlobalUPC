@@ -2737,11 +2737,11 @@ async def search_item_tracker_stream(request: ItemTrackerSearchRequest, db: Sess
                                 event_date=r["event_date"],
                                 store_name=inventory_store.name,
                                 document_number=r["update_type"],
-                                quantity=r["quantity"],
+                                quantity=r["quantity"],  # DiffQty for Qty column
                                 price_or_cost=None,
                                 business_name=r["username"],
                                 line_id=r["line_id"],
-                                extended_amount=None,
+                                extended_amount=r.get("new_qty"),  # NewQty for running_balance
                                 username=r["username"],
                                 update_type=r["update_type"]
                             )
@@ -2807,8 +2807,10 @@ async def search_item_tracker_stream(request: ItemTrackerSearchRequest, db: Sess
                 for event in all_events:
                     if event.event_type == "inventory_recount":
                         event.expected_balance = balance
-                        event.running_balance = event.quantity
-                        balance = event.quantity if event.quantity is not None else balance
+                        new_qty = event.extended_amount  # NewQty stored in extended_amount
+                        event.running_balance = new_qty  # Absolute qty after recount
+                        event.extended_amount = None  # Clear it, not needed in response
+                        balance = new_qty if new_qty is not None else balance
                     else:
                         event.running_balance = balance
                         qty = event.quantity or 0

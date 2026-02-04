@@ -4519,20 +4519,10 @@ function renderItemTrackerTable(events) {
       ? `<span style="margin-left: 0.375rem; padding: 0.125rem 0.375rem; border-radius: var(--radius-sm); font-size: 0.625rem; font-weight: 600; background: #dc262620; color: #f87171; border: 1px solid #dc262640; vertical-align: middle;">VOID</span>`
       : "";
 
-    // Format running balance with difference indicator for recounts
+    // Format running balance (no inline variance for recounts - difference is in Qty column)
     let balanceStr = "-";
     if (event.running_balance != null) {
-      if (
-        event.expected_balance != null &&
-        event.expected_balance !== event.running_balance
-      ) {
-        const diff = event.running_balance - event.expected_balance;
-        const diffStr = diff > 0 ? `+${diff.toLocaleString()}` : diff.toLocaleString();
-        const diffColor = diff > 0 ? "#22c55e" : "#ef4444";
-        balanceStr = `${event.running_balance.toLocaleString()} <span style="color: ${diffColor}; font-size: 0.75rem;">${diffStr}</span>`;
-      } else {
-        balanceStr = event.running_balance.toLocaleString();
-      }
+      balanceStr = event.running_balance.toLocaleString();
     }
 
     const isRecount = event.event_type === "inventory_recount";
@@ -4819,19 +4809,10 @@ function exportItemTrackerCSV() {
       dateStr = date.toLocaleDateString() + " " + date.toLocaleTimeString();
     }
 
-    // Format balance for CSV (show difference if applicable)
+    // Format balance for CSV (no inline variance - difference is in Qty column for recounts)
     let balanceStr = "";
     if (event.running_balance != null) {
-      if (
-        event.expected_balance != null &&
-        event.expected_balance !== event.running_balance
-      ) {
-        const diff = event.running_balance - event.expected_balance;
-        const diffStr = diff > 0 ? `+${diff}` : `${diff}`;
-        balanceStr = `${event.running_balance} (${diffStr})`;
-      } else {
-        balanceStr = event.running_balance;
-      }
+      balanceStr = event.running_balance;
     }
 
     return [
