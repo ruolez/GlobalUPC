@@ -333,6 +333,7 @@ class DeliveryBStoreResult(BaseModel):
 class ItemTrackerConfigBase(BaseModel):
     s2s_store_id: Optional[int] = None
     sales_store_ids: List[int] = []
+    inventory_store_id: Optional[int] = None
 
 class ItemTrackerConfigCreate(ItemTrackerConfigBase):
     pass
@@ -341,6 +342,7 @@ class ItemTrackerConfigResponse(ItemTrackerConfigBase):
     id: int
     s2s_store_name: Optional[str] = None
     sales_store_names: List[str] = []
+    inventory_store_name: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -365,7 +367,7 @@ class ItemInfo(BaseModel):
     quant_on_hand: Optional[float] = None
 
 class ItemTrackerEvent(BaseModel):
-    event_type: Literal["purchase", "sale", "customer_return", "vendor_return"]
+    event_type: Literal["purchase", "sale", "customer_return", "vendor_return", "inventory_recount"]
     event_date: Optional[datetime] = None
     store_name: str
     document_number: Optional[str] = None
@@ -375,6 +377,8 @@ class ItemTrackerEvent(BaseModel):
     line_id: Optional[int] = None
     extended_amount: Optional[float] = None
     is_voided: Optional[bool] = None
+    username: Optional[str] = None
+    update_type: Optional[str] = None
 
 class ItemTrackerSearchResponse(BaseModel):
     upc: str

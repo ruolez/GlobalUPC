@@ -381,7 +381,7 @@ CREATE TABLE [Items_BinLocations] (
 	[FieldDop_1] [varchar](255) NULL,
 	[FieldDop_2] [varchar](255) NULL,
 	[FieldDop_3] [varchar](255) NULL,
-	[FieldDop_4] [varchar](255) NULL,
+	[FieldDop_4] [varchar](255) NULL
 
 
 	[dbo].[QuotationsStatus](
@@ -420,7 +420,45 @@ CREATE TABLE [Items_BinLocations] (
 	[Dop2] [varchar](255) NULL,
 	[Dop3] [varchar](255) NULL,
 
+
+	[dbo].[ManualInventoryUpdate](
+	[id] [int] IDENTITY(1,1) NOT NULL,
+	[DateCreated] [datetime] NULL,
+	[Username] [varchar](255) NULL,
+	[UserStatus] [varchar](255) NULL,
+	[UpdateType] [varchar](255) NULL,
+	[ProductDescription] [varchar](255) NULL,
+	[OldDescription] [varchar](255) NULL,
+	[NewDescription] [varchar](255) NULL,
+	[ProductSKU] [varchar](255) NULL,
+	[OldSKU] [varchar](255) NULL,
+	[NewSKU] [varchar](255) NULL,
+	[ProductUPC] [varchar](255) NULL,
+	[OldUPC] [varchar](255) NULL,
+	[NewUPC] [varchar](255) NULL,
+	[OldQty] [int] NULL,
+	[NewQty] [int] NULL,
+	[DiffQty] [int] NULL,
+	[OldPrice] [float] NULL,
+	[NewPrice] [float] NULL,
+	[DiffPrice] [float] NULL,
+	[OldCost] [float] NULL,
+	[NewCost] [float] NULL,
+	[DiffCost] [float] NULL,
+	[OldPriceB] [float] NULL,
+	[NewPriceB] [float] NULL,
+	[DiffPriceB] [float] NULL,
+	[tmp1] [varchar](255) NULL,
+	[tmp2] [varchar](255) NULL,
+	[tmp3] [varchar](255) NULL,
+	[flag1] [bit] NULL,
+	[flag2] [bit] NULL,
+	[flag3] [bit] NULL,
+
+
 ***DB ADMIN DB END
+
+
 
 ***ShihpperPlatform DB TABLES
 [dbo].[pick_lists](

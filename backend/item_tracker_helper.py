@@ -538,3 +538,96 @@ async def search_products_by_description_async(
             executor,
             lambda: search_products_by_description(host, port, database, username, password, query, limit)
         )
+
+
+def get_inventory_recounts(
+    host: str,
+    port: int,
+    database: str,
+    username: str,
+    password: str,
+    upc: str,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    limit: int = 1000
+) -> Tuple[bool, Optional[str], List[Dict[str, Any]]]:
+    """
+    Get inventory recount history from ManualInventoryUpdate table.
+    Returns: (success, error_message, recounts)
+    """
+    conn_str = get_mssql_connection_string(host, port, database, username, password)
+
+    try:
+        conn = pyodbc.connect(conn_str, timeout=30)
+        cursor = conn.cursor()
+
+        # Check if table exists
+        cursor.execute("""
+            SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES
+            WHERE TABLE_NAME = 'ManualInventoryUpdate'
+        """)
+        table_exists = cursor.fetchone()[0] > 0
+
+        if not table_exists:
+            cursor.close()
+            conn.close()
+            return True, None, []
+
+        query = """
+            SELECT TOP (?) id, DateCreated, Username, UpdateType, NewQty
+            FROM ManualInventoryUpdate
+            WHERE ProductUPC = ?
+        """
+
+        params = [limit, upc]
+
+        if date_from:
+            query += " AND DateCreated >= ?"
+            params.append(date_from)
+
+        if date_to:
+            query += " AND DateCreated <= ?"
+            params.append(date_to)
+
+        query += " ORDER BY DateCreated DESC"
+
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+
+        cursor.close()
+        conn.close()
+
+        recounts = []
+        for row in rows:
+            recounts.append({
+                "line_id": row[0],
+                "event_date": row[1],
+                "username": row[2],
+                "update_type": row[3],
+                "quantity": float(row[4]) if row[4] is not None else None,
+            })
+
+        return True, None, recounts
+
+    except Exception as e:
+        return False, str(e), []
+
+
+async def get_inventory_recounts_async(
+    host: str,
+    port: int,
+    database: str,
+    username: str,
+    password: str,
+    upc: str,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    limit: int = 1000
+) -> Tuple[bool, Optional[str], List[Dict[str, Any]]]:
+    """Async wrapper for get_inventory_recounts."""
+    loop = asyncio.get_event_loop()
+    with ThreadPoolExecutor() as executor:
+        return await loop.run_in_executor(
+            executor,
+            lambda: get_inventory_recounts(host, port, database, username, password, upc, date_from, date_to, limit)
+        )

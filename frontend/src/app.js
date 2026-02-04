@@ -4139,6 +4139,19 @@ async function loadItemTrackerPage() {
       salesStoresContainer.appendChild(label);
     });
 
+    // Populate inventory store dropdown
+    const inventoryDropdown = document.getElementById(
+      "item-tracker-inventory-store",
+    );
+    inventoryDropdown.innerHTML =
+      '<option value="">None - Skip inventory recounts</option>';
+    mssqlStores.forEach((store) => {
+      const option = document.createElement("option");
+      option.value = store.id;
+      option.textContent = store.name;
+      inventoryDropdown.appendChild(option);
+    });
+
     // Load existing config
     const config = await apiRequest("/item-tracker/config");
     itemTrackerState.config = config;
@@ -4152,6 +4165,11 @@ async function loadItemTrackerPage() {
         const checkbox = document.getElementById(`sales-store-${storeId}`);
         if (checkbox) checkbox.checked = true;
       });
+
+      // Set inventory store dropdown
+      if (config.inventory_store_id) {
+        inventoryDropdown.value = config.inventory_store_id;
+      }
 
       updateConfigSummary(config);
       configSection.style.display = "none";
@@ -4180,6 +4198,8 @@ function updateConfigSummary(config) {
     config.sales_store_names && config.sales_store_names.length > 0
       ? config.sales_store_names.join(", ")
       : "None selected";
+  document.getElementById("config-inventory-name").textContent =
+    config.inventory_store_name || "Not configured";
 }
 
 async function saveItemTrackerConfig() {
@@ -4200,12 +4220,20 @@ async function saveItemTrackerConfig() {
       salesStoreIds.push(parseInt(checkbox.value));
     });
 
+  // Get inventory store (optional)
+  const inventoryStoreId = document.getElementById(
+    "item-tracker-inventory-store",
+  ).value;
+
   try {
     const config = await apiRequest("/item-tracker/config", {
       method: "POST",
       body: JSON.stringify({
         s2s_store_id: parseInt(s2sStoreId),
         sales_store_ids: salesStoreIds,
+        inventory_store_id: inventoryStoreId
+          ? parseInt(inventoryStoreId)
+          : null,
       }),
     });
 
@@ -4398,6 +4426,7 @@ function displayItemTrackerResults(data) {
     { key: "sale", label: "Sales", color: "#3b82f6" },
     { key: "customer_return", label: "Cust. Returns", color: "#f59e0b" },
     { key: "vendor_return", label: "Vendor Returns", color: "#ef4444" },
+    { key: "inventory_recount", label: "Inv. Recounts", color: "#a855f7" },
   ];
 
   eventTypes.forEach((type) => {
@@ -4449,6 +4478,11 @@ function renderItemTrackerTable(events) {
       bg: "#ef444420",
       color: "#ef4444",
       label: "Vendor Return",
+    },
+    inventory_recount: {
+      bg: "#a855f720",
+      color: "#a855f7",
+      label: "Inv. Recount",
     },
   };
 
@@ -4503,19 +4537,21 @@ function renderItemTrackerTable(events) {
       <td style="max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap" title="${escapeHtml(event.business_name || "")}">${escapeHtml(event.business_name || "-")}</td>
       <td style="text-align: center">
         ${
-          event.business_name && event.event_type === "sale"
-            ? `<select class="exclude-select" data-name="${escapeHtml(event.business_name)}"
-                 style="padding: 0.25rem; font-size: 0.75rem; background: var(--bg-tertiary);
-                        border: 1px solid var(--border-color); border-radius: var(--radius-sm);
-                        color: var(--text-primary); cursor: pointer;">
-                 <option value="">🚫</option>
-                 <option value="all">Exclude All</option>
-                 <option value="voided">Voided Only</option>
-                 <option value="nonvoided">Non-voided Only</option>
-               </select>`
-            : event.business_name
-              ? `<button class="btn-icon exclude-btn" data-name="${escapeHtml(event.business_name)}" title="Exclude from results" style="cursor: pointer; padding: 0.25rem 0.5rem; background: transparent; border: 1px solid var(--border-color); border-radius: var(--radius-sm); font-size: 0.875rem; transition: all 0.2s;">🚫</button>`
-              : "-"
+          event.event_type === "inventory_recount"
+            ? "-"
+            : event.business_name && event.event_type === "sale"
+              ? `<select class="exclude-select" data-name="${escapeHtml(event.business_name)}"
+                   style="padding: 0.25rem; font-size: 0.75rem; background: var(--bg-tertiary);
+                          border: 1px solid var(--border-color); border-radius: var(--radius-sm);
+                          color: var(--text-primary); cursor: pointer;">
+                   <option value="">🚫</option>
+                   <option value="all">Exclude All</option>
+                   <option value="voided">Voided Only</option>
+                   <option value="nonvoided">Non-voided Only</option>
+                 </select>`
+              : event.business_name
+                ? `<button class="btn-icon exclude-btn" data-name="${escapeHtml(event.business_name)}" title="Exclude from results" style="cursor: pointer; padding: 0.25rem 0.5rem; background: transparent; border: 1px solid var(--border-color); border-radius: var(--radius-sm); font-size: 0.875rem; transition: all 0.2s;">🚫</button>`
+                : "-"
         }
       </td>
     `;
@@ -4583,7 +4619,10 @@ function renderItemTrackerTable(events) {
         console.error("Error excluding business name:", error);
         select.value = "";
         if (error.message && error.message.includes("already excluded")) {
-          showToast(`Already excluded: ${businessName} (${scopeText})`, "warning");
+          showToast(
+            `Already excluded: ${businessName} (${scopeText})`,
+            "warning",
+          );
         } else {
           showToast(`✗ Failed to exclude: ${error.message}`, "error");
         }

@@ -130,6 +130,7 @@ CREATE TABLE item_tracker_config (
     id SERIAL PRIMARY KEY,
     s2s_store_id INTEGER REFERENCES stores(id) ON DELETE SET NULL,
     sales_store_ids JSONB DEFAULT '[]'::jsonb,
+    inventory_store_id INTEGER REFERENCES stores(id) ON DELETE SET NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );

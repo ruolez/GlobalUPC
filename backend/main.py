@@ -42,7 +42,7 @@ from shopify_helper import test_shopify_connection, search_barcode_across_shopif
 from item_tracker_helper import (
     get_item_info_async, get_purchases_async, get_sales_async,
     get_customer_returns_async, get_vendor_returns_async,
-    search_products_by_description_async
+    search_products_by_description_async, get_inventory_recounts_async
 )
 
 app = FastAPI(title="Global UPC API", version="1.0.0")
@@ -2328,6 +2328,8 @@ def get_item_tracker_config(db: Session = Depends(get_db)):
             s2s_store_name=None,
             sales_store_ids=[],
             sales_store_names=[],
+            inventory_store_id=None,
+            inventory_store_name=None,
             created_at=datetime.now(),
             updated_at=datetime.now()
         )
@@ -2346,12 +2348,20 @@ def get_item_tracker_config(db: Session = Depends(get_db)):
             if store:
                 sales_store_names.append(store.name)
 
+    inventory_store_name = None
+    if config.inventory_store_id:
+        inventory_store = db.query(Store).filter(Store.id == config.inventory_store_id).first()
+        if inventory_store:
+            inventory_store_name = inventory_store.name
+
     return ItemTrackerConfigResponse(
         id=config.id,
         s2s_store_id=config.s2s_store_id,
         s2s_store_name=s2s_store_name,
         sales_store_ids=config.sales_store_ids or [],
         sales_store_names=sales_store_names,
+        inventory_store_id=config.inventory_store_id,
+        inventory_store_name=inventory_store_name,
         created_at=config.created_at,
         updated_at=config.updated_at
     )
@@ -2379,16 +2389,27 @@ def save_item_tracker_config(config_data: ItemTrackerConfigCreate, db: Session =
             if not store:
                 raise HTTPException(status_code=400, detail=f"Invalid sales store ID: {store_id}")
 
+    # Validate inventory_store_id if provided
+    if config_data.inventory_store_id:
+        inventory_store = db.query(Store).filter(
+            Store.id == config_data.inventory_store_id,
+            Store.store_type == StoreType.mssql
+        ).first()
+        if not inventory_store:
+            raise HTTPException(status_code=400, detail="Invalid inventory store ID")
+
     # Get existing config or create new one
     config = db.query(ItemTrackerConfig).first()
 
     if config:
         config.s2s_store_id = config_data.s2s_store_id
         config.sales_store_ids = config_data.sales_store_ids
+        config.inventory_store_id = config_data.inventory_store_id
     else:
         config = ItemTrackerConfig(
             s2s_store_id=config_data.s2s_store_id,
-            sales_store_ids=config_data.sales_store_ids
+            sales_store_ids=config_data.sales_store_ids,
+            inventory_store_id=config_data.inventory_store_id
         )
         db.add(config)
 
@@ -2409,12 +2430,20 @@ def save_item_tracker_config(config_data: ItemTrackerConfigCreate, db: Session =
             if store:
                 sales_store_names.append(store.name)
 
+    inventory_store_name = None
+    if config.inventory_store_id:
+        inventory_store = db.query(Store).filter(Store.id == config.inventory_store_id).first()
+        if inventory_store:
+            inventory_store_name = inventory_store.name
+
     return ItemTrackerConfigResponse(
         id=config.id,
         s2s_store_id=config.s2s_store_id,
         s2s_store_name=s2s_store_name,
         sales_store_ids=config.sales_store_ids or [],
         sales_store_names=sales_store_names,
+        inventory_store_id=config.inventory_store_id,
+        inventory_store_name=inventory_store_name,
         created_at=config.created_at,
         updated_at=config.updated_at
     )
@@ -2459,7 +2488,8 @@ async def search_item_tracker_stream(request: ItemTrackerSearchRequest, db: Sess
             "purchase": 0,
             "sale": 0,
             "customer_return": 0,
-            "vendor_return": 0
+            "vendor_return": 0,
+            "inventory_recount": 0
         }
         stores_searched = 1  # S2S store
         item_info = None
@@ -2674,6 +2704,52 @@ async def search_item_tracker_stream(request: ItemTrackerSearchRequest, db: Sess
 
                             yield f"event: progress\ndata: {json.dumps({'status': 'store_complete', 'store_name': store_name, 'event_type': 'customer_return', 'count': len(returns)})}\n\n"
 
+            # 5. Get Inventory Recounts (if configured)
+            if config.inventory_store_id:
+                inventory_store = db.query(Store).filter(
+                    Store.id == config.inventory_store_id,
+                    Store.store_type == StoreType.mssql
+                ).first()
+
+                if inventory_store and inventory_store.mssql_connection:
+                    stores_searched += 1
+                    inv_conn = inventory_store.mssql_connection
+
+                    yield f"event: progress\ndata: {json.dumps({'status': 'searching', 'message': f'Fetching inventory recounts from {inventory_store.name}...'})}\n\n"
+
+                    success, error, recounts = await get_inventory_recounts_async(
+                        host=inv_conn.host,
+                        port=inv_conn.port,
+                        database=inv_conn.database_name,
+                        username=inv_conn.username,
+                        password=inv_conn.password,
+                        upc=upc,
+                        date_from=date_from,
+                        date_to=date_to
+                    )
+
+                    if not success:
+                        errors.append(f"Inventory Recounts: {error}")
+                    else:
+                        for r in recounts:
+                            event = ItemTrackerEvent(
+                                event_type="inventory_recount",
+                                event_date=r["event_date"],
+                                store_name=inventory_store.name,
+                                document_number=r["update_type"],
+                                quantity=r["quantity"],
+                                price_or_cost=None,
+                                business_name=r["username"],
+                                line_id=r["line_id"],
+                                extended_amount=None,
+                                username=r["username"],
+                                update_type=r["update_type"]
+                            )
+                            all_events.append(event)
+                        event_counts["inventory_recount"] = len(recounts)
+
+                        yield f"event: progress\ndata: {json.dumps({'status': 'completed', 'message': f'Found {len(recounts)} inventory recounts'})}\n\n"
+
             # Filter out excluded business names (void-aware)
             exclusions = db.query(ItemTrackerExclusion).all()
 
@@ -2716,7 +2792,8 @@ async def search_item_tracker_stream(request: ItemTrackerSearchRequest, db: Sess
                         "purchase": 0,
                         "sale": 0,
                         "customer_return": 0,
-                        "vendor_return": 0
+                        "vendor_return": 0,
+                        "inventory_recount": 0
                     }
                     for event in all_events:
                         event_counts[event.event_type] += 1
@@ -2737,7 +2814,9 @@ async def search_item_tracker_stream(request: ItemTrackerSearchRequest, db: Sess
                     "business_name": event.business_name,
                     "line_id": event.line_id,
                     "extended_amount": event.extended_amount,
-                    "is_voided": event.is_voided
+                    "is_voided": event.is_voided,
+                    "username": event.username,
+                    "update_type": event.update_type
                 }
                 events_dict.append(event_data)
 
