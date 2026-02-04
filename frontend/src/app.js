@@ -4406,8 +4406,13 @@ function displayItemTrackerResults(data) {
       data.item_info.quant_on_hand !== null
         ? data.item_info.quant_on_hand.toLocaleString()
         : "-";
+    // Sync description input field with search result
+    document.getElementById("item-tracker-desc-input").value =
+      data.item_info.product_description || "";
   } else {
     infoCard.style.display = "none";
+    // Clear description input if no item found
+    document.getElementById("item-tracker-desc-input").value = "";
   }
 
   // Display event type summary badges
