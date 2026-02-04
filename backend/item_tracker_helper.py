@@ -495,7 +495,7 @@ def search_products_by_description(
         cursor = conn.cursor()
 
         sql = """
-            SELECT TOP (?) ProductID, ProductUPC, ProductDescription
+            SELECT TOP (?) ProductID, ProductUPC, ProductDescription, QuantOnHand
             FROM Items_tbl
             WHERE ProductDescription LIKE ? + '%'
               AND Discontinued = 0
@@ -513,7 +513,8 @@ def search_products_by_description(
             products.append({
                 "product_id": row[0],
                 "product_upc": row[1] or "",
-                "product_description": row[2] or ""
+                "product_description": row[2] or "",
+                "quant_on_hand": row[3] if row[3] is not None else 0
             })
 
         return True, None, products

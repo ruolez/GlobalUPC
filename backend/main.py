@@ -2938,7 +2938,8 @@ async def autocomplete_product_description(request: DescriptionAutocompleteReque
         DescriptionAutocompleteResult(
             product_id=p["product_id"],
             product_upc=p["product_upc"],
-            product_description=p["product_description"]
+            product_description=p["product_description"],
+            quant_on_hand=p["quant_on_hand"]
         )
         for p in products
     ]

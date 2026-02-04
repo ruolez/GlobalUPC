@@ -4935,7 +4935,7 @@ function showDescriptionDropdown(results) {
       (result, index) => `
     <div class="autocomplete-item" data-index="${index}" data-upc="${result.product_upc}" data-desc="${result.product_description}">
       <div class="autocomplete-item-description">${escapeHtml(result.product_description)}</div>
-      <div class="autocomplete-item-upc">UPC: ${result.product_upc || "N/A"}</div>
+      <div class="autocomplete-item-upc">UPC: ${result.product_upc || "N/A"} · Qty: ${result.quant_on_hand?.toLocaleString() ?? 0}</div>
     </div>
   `,
     )

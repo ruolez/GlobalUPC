@@ -399,6 +399,7 @@ class DescriptionAutocompleteResult(BaseModel):
     product_id: int
     product_upc: str
     product_description: str
+    quant_on_hand: int = 0
 
 
 class DescriptionAutocompleteResponse(BaseModel):
