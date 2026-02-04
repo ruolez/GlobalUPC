@@ -4507,11 +4507,24 @@ function renderItemTrackerTable(events) {
         date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     }
 
-    // Format quantity
-    const qty =
-      event.quantity !== null && event.quantity !== undefined
-        ? event.quantity.toLocaleString()
-        : "-";
+    // Format quantity with +/- sign based on balance impact
+    let qty = "-";
+    if (event.quantity !== null && event.quantity !== undefined) {
+      const absQty = Math.abs(event.quantity).toLocaleString();
+      if (event.event_type === "inventory_recount") {
+        // DiffQty already has correct sign from backend
+        qty = event.quantity >= 0 ? `+${absQty}` : `-${absQty}`;
+      } else if (
+        event.event_type === "purchase" ||
+        event.event_type === "customer_return"
+      ) {
+        // These add to inventory
+        qty = `+${absQty}`;
+      } else {
+        // sale, vendor_return - these remove from inventory
+        qty = `-${absQty}`;
+      }
+    }
 
     // Format document number with voided badge if applicable
     const docNumber = event.document_number || "-";
@@ -4815,13 +4828,29 @@ function exportItemTrackerCSV() {
       balanceStr = event.running_balance;
     }
 
+    // Format quantity with +/- sign based on balance impact
+    let qtyStr = "";
+    if (event.quantity !== null && event.quantity !== undefined) {
+      const absQty = Math.abs(event.quantity);
+      if (event.event_type === "inventory_recount") {
+        qtyStr = event.quantity >= 0 ? `+${absQty}` : `-${absQty}`;
+      } else if (
+        event.event_type === "purchase" ||
+        event.event_type === "customer_return"
+      ) {
+        qtyStr = `+${absQty}`;
+      } else {
+        qtyStr = `-${absQty}`;
+      }
+    }
+
     return [
       index + 1,
       dateStr,
       event.event_type,
       event.store_name || "",
       event.document_number || "",
-      event.quantity !== null ? event.quantity : "",
+      qtyStr,
       balanceStr,
       event.extended_amount !== null ? event.extended_amount : "",
       event.business_name || "",
