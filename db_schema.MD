@@ -326,6 +326,33 @@ CREATE TABLE [Items_BinLocations] (
 	[ItemTaxID] [int] NULL,
 	[Catch] [int] NULL,
 
+	 [dbo].[PurchasesReturns_tbl](
+	[ReturnID] [int] IDENTITY(1,1) NOT NULL,
+	[ReturnDate] [smalldatetime] NULL,
+	[SlipNumber] [nvarchar](20) NULL,
+	[SlipTitle] [nvarchar](50) NULL,
+	[OrderNumber] [nvarchar](20) NULL,
+	[OrderDate] [smalldatetime] NULL,
+	[Refrence] [nvarchar](20) NULL,
+	[RmaNumber] [nvarchar](20) NULL,
+	[SupplierID] [int] NULL,
+	[BusinessName] [nvarchar](50) NULL,
+	[AccountNo] [nvarchar](13) NULL,
+	[Shipto] [nvarchar](50) NULL,
+	[ShipAddress1] [nvarchar](50) NULL,
+	[ShipAddress2] [nvarchar](50) NULL,
+	[ShipContact] [nvarchar](50) NULL,
+	[ShipCity] [nvarchar](24) NULL,
+	[ShipState] [nvarchar](3) NULL,
+	[ShipZipCode] [nvarchar](10) NULL,
+	[ShipPhoneNo] [nvarchar](13) NULL,
+	[TotQty] [real] NULL,
+	[ReturnTotal] [money] NULL,
+	[Notes] [nvarchar](255) NULL,
+	[Header] [nvarchar](255) NULL,
+	[Footer] [nvarchar](255) NULL,
+
+
 [dbo].[PurchasesReturnsDetails_tbl](	
 	[LineID] [int] IDENTITY(1,1) NOT NULL,
 	[ReturnID] [int] NOT NULL,

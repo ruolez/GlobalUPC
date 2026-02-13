@@ -332,7 +332,7 @@ def get_vendor_returns(
             return True, None, []
 
         query = """
-            SELECT TOP (?) d.LineID, h.ReturnNumber, h.ReturnDate, d.Qty,
+            SELECT TOP (?) d.LineID, h.SlipNumber, h.ReturnDate, d.Qty,
                    d.UnitCost, d.ExtendedCost, h.BusinessName
             FROM PurchasesReturnsDetails_tbl d
             INNER JOIN PurchasesReturns_tbl h ON d.ReturnID = h.ReturnID
