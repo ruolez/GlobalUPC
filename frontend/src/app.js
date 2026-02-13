@@ -5454,9 +5454,10 @@ function displayPriceResults(upc, prices, siblingPrices) {
       const currentCost =
         p.unit_cost != null ? parseFloat(p.unit_cost).toFixed(2) : "-";
 
+      const mssqlDesc = p.product_description ? escapeHtml(p.product_description) : "-";
       tr.innerHTML = `
         <td>${escapeHtml(p.store_name)}</td>
-        <td style="color: var(--text-tertiary); font-size: 0.75rem">-</td>
+        <td style="font-size: 0.75rem; color: var(--text-secondary)">${p.product_found ? mssqlDesc : "-"}</td>
         <td style="font-family: monospace">${p.product_found ? "$" + currentPrice : "Not Found"}</td>
         <td style="font-family: monospace">${p.product_found ? "$" + currentCost : ""}</td>
         <td>${p.product_found ? '<input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="' + currentPrice + '">' : ""}</td>
