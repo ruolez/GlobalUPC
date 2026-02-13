@@ -5457,9 +5457,7 @@ function displayPriceResults(upc, prices, siblingPrices) {
       const mssqlDesc = p.product_description ? escapeHtml(p.product_description) : "-";
       tr.innerHTML = `
         <td>${escapeHtml(p.store_name)}</td>
-        <td style="font-size: 0.75rem; color: var(--text-secondary)">${p.product_found ? mssqlDesc : "-"}</td>
-        <td style="font-family: monospace">${p.product_found ? "$" + currentPrice : "Not Found"}</td>
-        <td style="font-family: monospace">${p.product_found ? "$" + currentCost : ""}</td>
+        <td style="font-size: 0.75rem; color: var(--text-secondary)">${p.product_found ? mssqlDesc : "Not Found"}</td>
         <td>${p.product_found ? '<input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="' + currentPrice + '">' : ""}</td>
         <td>${p.product_found ? '<input type="number" class="dark-input price-input new-cost" step="0.01" min="0" placeholder="' + currentCost + '">' : ""}</td>
       `;
@@ -5472,7 +5470,7 @@ function displayPriceResults(upc, prices, siblingPrices) {
         tr.innerHTML = `
           <td>${escapeHtml(p.store_name)}</td>
           <td style="color: var(--text-tertiary); font-size: 0.75rem">-</td>
-          <td colspan="4" style="color: var(--text-tertiary)">Not Found</td>
+          <td colspan="2" style="color: var(--text-tertiary)">Not Found</td>
         `;
         tbody.appendChild(tr);
         return;
@@ -5501,8 +5499,6 @@ function displayPriceResults(upc, prices, siblingPrices) {
         tr.innerHTML = `
           <td>${idx === 0 ? escapeHtml(p.store_name) : ""}</td>
           <td style="font-size: 0.75rem; color: var(--text-secondary)">${variantLabel}${barcodeLabel}${searchedTag}</td>
-          <td style="font-family: monospace">$${vPrice}</td>
-          <td style="font-family: monospace">$${vCost}</td>
           <td><input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="${vPrice}"></td>
           <td><input type="number" class="dark-input price-input new-cost" step="0.01" min="0" placeholder="${vCost}"></td>
         `;
@@ -5525,7 +5521,7 @@ function displayPriceResults(upc, prices, siblingPrices) {
     for (const [barcode, group] of Object.entries(grouped)) {
       const headerTr = document.createElement("tr");
       headerTr.classList.add("sibling-header-row");
-      headerTr.innerHTML = `<td colspan="6">Sibling: ${escapeHtml(barcode)} (${escapeHtml(group.variant_title || "Unknown")})</td>`;
+      headerTr.innerHTML = `<td colspan="4">Sibling: ${escapeHtml(barcode)} (${escapeHtml(group.variant_title || "Unknown")})</td>`;
       tbody.appendChild(headerTr);
 
       group.rows.forEach((sp) => {
@@ -5540,7 +5536,7 @@ function displayPriceResults(upc, prices, siblingPrices) {
           tr.innerHTML = `
             <td>${escapeHtml(sp.store_name)}</td>
             <td style="color: var(--text-tertiary); font-size: 0.75rem">-</td>
-            <td colspan="4" style="color: var(--text-tertiary)">Not Found</td>
+            <td colspan="2" style="color: var(--text-tertiary)">Not Found</td>
           `;
         } else {
           const currentPrice = sp.unit_price != null ? parseFloat(sp.unit_price).toFixed(2) : "-";
@@ -5549,8 +5545,6 @@ function displayPriceResults(upc, prices, siblingPrices) {
           tr.innerHTML = `
             <td>${escapeHtml(sp.store_name)}</td>
             <td style="color: var(--text-tertiary); font-size: 0.75rem">${escapeHtml(sp.product_description || "-")}</td>
-            <td style="font-family: monospace">$${currentPrice}</td>
-            <td style="font-family: monospace">$${currentCost}</td>
             <td><input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="${currentPrice}"></td>
             <td><input type="number" class="dark-input price-input new-cost" step="0.01" min="0" placeholder="${currentCost}"></td>
           `;
