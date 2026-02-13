@@ -3144,6 +3144,13 @@ async def fetch_prices_stream(request: PriceSearchRequest, db: Session = Depends
                         if p_success and p_variants:
                             all_variants.extend(p_variants)
 
+                    # Get searched variant price for filtering siblings
+                    searched_price = None
+                    for v in variants:
+                        if v.get("price") is not None:
+                            searched_price = str(v["price"])
+                            break
+
                     # Deduplicate by variant_id, mark searched vs sibling
                     seen = set()
                     merged_variants = []
@@ -3153,9 +3160,12 @@ async def fetch_prices_stream(request: PriceSearchRequest, db: Session = Depends
                             continue
                         seen.add(vid)
                         v["is_searched"] = vid in searched_variant_ids
-                        # Filter out siblings with empty barcodes
-                        if v["is_searched"] or (v.get("barcode") and v["barcode"].strip()):
+                        if v["is_searched"]:
                             merged_variants.append(v)
+                        elif v.get("barcode") and v["barcode"].strip():
+                            # Only include siblings at the same price level
+                            if searched_price is not None and str(v.get("price")) == searched_price:
+                                merged_variants.append(v)
 
                     prices.append({
                         "store_id": store.id,
