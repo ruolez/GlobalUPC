@@ -5468,6 +5468,7 @@ function displayPriceResults(upc, prices, siblingPrices) {
       if (!p.product_found || !p.variants || p.variants.length === 0) {
         const tr = document.createElement("tr");
         tr.classList.add("not-found-row");
+        tr.dataset.storeId = p.store_id;
         tr.innerHTML = `
           <td>${escapeHtml(p.store_name)}</td>
           <td style="color: var(--text-tertiary); font-size: 0.75rem">-</td>
@@ -5558,6 +5559,65 @@ function displayPriceResults(upc, prices, siblingPrices) {
       });
     }
   }
+
+  // Build store filter chips
+  const storeMap = {};
+  prices.forEach((p) => {
+    storeMap[p.store_id] = { name: p.store_name, found: p.product_found };
+  });
+  if (siblingPrices) {
+    siblingPrices.forEach((sp) => {
+      if (!storeMap[sp.store_id]) {
+        storeMap[sp.store_id] = { name: sp.store_name, found: sp.product_found };
+      }
+    });
+  }
+
+  const filtersEl = document.getElementById("price-store-filters");
+  filtersEl.innerHTML = "";
+  for (const [storeId, info] of Object.entries(storeMap)) {
+    const chip = document.createElement("span");
+    chip.className = "store-filter-chip" + (info.found ? " active" : " not-found");
+    chip.dataset.storeId = storeId;
+    chip.textContent = info.name;
+    chip.addEventListener("click", () => {
+      chip.classList.toggle("active");
+      chip.classList.toggle("not-found", !chip.classList.contains("active"));
+      applyStoreFilters();
+    });
+    filtersEl.appendChild(chip);
+  }
+}
+
+function applyStoreFilters() {
+  const activeIds = new Set();
+  document.querySelectorAll("#price-store-filters .store-filter-chip.active").forEach((chip) => {
+    activeIds.add(chip.dataset.storeId);
+  });
+
+  const tbody = document.getElementById("price-updates-tbody");
+  const rows = Array.from(tbody.children);
+
+  rows.forEach((tr) => {
+    if (tr.classList.contains("sibling-header-row")) return;
+    if (tr.dataset.storeId) {
+      tr.style.display = activeIds.has(tr.dataset.storeId) ? "" : "none";
+    }
+  });
+
+  // Hide sibling headers when all their child rows are hidden
+  rows.forEach((tr, i) => {
+    if (!tr.classList.contains("sibling-header-row")) return;
+    let anyVisible = false;
+    for (let j = i + 1; j < rows.length; j++) {
+      if (rows[j].classList.contains("sibling-header-row")) break;
+      if (rows[j].style.display !== "none") {
+        anyVisible = true;
+        break;
+      }
+    }
+    tr.style.display = anyVisible ? "" : "none";
+  });
 }
 
 function fillAllPrices() {
@@ -5565,7 +5625,7 @@ function fillAllPrices() {
   const newCost = document.getElementById("price-fill-all-cost").value;
 
   document
-    .querySelectorAll("#price-updates-tbody tr:not(.not-found-row):not(.sibling-header-row)")
+    .querySelectorAll('#price-updates-tbody tr:not(.not-found-row):not(.sibling-header-row):not([style*="display: none"])')
     .forEach((tr) => {
       if (newPrice !== "") {
         const priceInput = tr.querySelector(".new-price");
@@ -5591,6 +5651,7 @@ async function updatePrices() {
   rows.forEach((tr) => {
     if (tr.classList.contains("not-found-row")) return;
     if (tr.classList.contains("sibling-header-row")) return;
+    if (tr.style.display === "none") return;
 
     const storeId = parseInt(tr.dataset.storeId);
     const storeType = tr.dataset.storeType;
