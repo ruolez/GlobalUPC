@@ -407,6 +407,35 @@ class DescriptionAutocompleteResponse(BaseModel):
     count: int
 
 
+class PriceSearchRequest(BaseModel):
+    upc: str
+    store_ids: List[int]
+
+
+class StorePriceInfo(BaseModel):
+    store_id: int
+    store_name: str
+    store_type: str
+    product_found: bool
+    product_description: Optional[str] = None
+    unit_price: Optional[float] = None
+    unit_cost: Optional[float] = None
+    variants: Optional[List[dict]] = None
+
+
+class PriceUpdateItem(BaseModel):
+    store_id: int
+    store_type: str
+    new_price: Optional[float] = None
+    new_cost: Optional[float] = None
+    variant_updates: Optional[List[dict]] = None
+
+
+class PriceUpdateRequest(BaseModel):
+    upc: str
+    updates: List[PriceUpdateItem]
+
+
 class ItemTrackerExclusionCreate(BaseModel):
     business_name: str
     void_status: Optional[int] = None  # NULL=all, 0=non-voided, 1=voided

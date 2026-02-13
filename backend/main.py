@@ -30,15 +30,21 @@ from schemas import (
     ItemTrackerConfigCreate, ItemTrackerConfigResponse, ItemTrackerSearchRequest,
     ItemInfo, ItemTrackerEvent, ItemTrackerSearchResponse,
     DescriptionAutocompleteRequest, DescriptionAutocompleteResult, DescriptionAutocompleteResponse,
-    ItemTrackerExclusionCreate, ItemTrackerExclusionResponse, ItemTrackerExclusionListResponse
+    ItemTrackerExclusionCreate, ItemTrackerExclusionResponse, ItemTrackerExclusionListResponse,
+    PriceSearchRequest, StorePriceInfo, PriceUpdateItem, PriceUpdateRequest
 )
 from mssql_helper import (
     test_mssql_connection, search_upc_across_mssql_stores, search_products_by_upc,
     update_upc_across_mssql_stores, audit_orphaned_upcs,
     find_matches_by_product_id, find_matches_by_description, update_orphaned_upcs,
-    check_upc_exists, sync_unit_price_c_across_stores
+    check_upc_exists, sync_unit_price_c_across_stores,
+    get_item_prices_async, update_item_prices_async
 )
-from shopify_helper import test_shopify_connection, search_barcode_across_shopify_stores, search_products_by_barcode, update_barcodes_across_shopify_stores, check_barcode_exists
+from shopify_helper import (
+    test_shopify_connection, search_barcode_across_shopify_stores,
+    search_products_by_barcode, update_barcodes_across_shopify_stores,
+    check_barcode_exists, search_product_prices_by_barcode, update_variant_prices
+)
 from item_tracker_helper import (
     get_item_info_async, get_purchases_async, get_sales_async,
     get_customer_returns_async, get_vendor_returns_async,
@@ -3039,6 +3045,268 @@ async def delete_item_tracker_exclusion(exclusion_id: int, db: Session = Depends
     db.commit()
 
     return {"message": "Exclusion removed successfully"}
+
+
+## ==================== Price Updates ====================
+
+@app.post("/api/price-updates/fetch-prices/stream")
+async def fetch_prices_stream(request: PriceSearchRequest, db: Session = Depends(get_db)):
+    async def generate_events() -> AsyncGenerator[str, None]:
+        upc = request.upc.strip()
+        if not upc:
+            yield f"event: error\ndata: {json.dumps({'message': 'UPC is required'})}\n\n"
+            return
+
+        if not request.store_ids:
+            yield f"event: error\ndata: {json.dumps({'message': 'No stores selected'})}\n\n"
+            return
+
+        prices = []
+
+        for store_id in request.store_ids:
+            store = db.query(Store).filter(Store.id == store_id, Store.is_active == True).first()
+            if not store:
+                continue
+
+            yield f"event: progress\ndata: {json.dumps({'status': 'searching', 'message': f'Searching {store.name}...'})}\n\n"
+
+            if store.store_type == StoreType.mssql and store.mssql_connection:
+                conn = store.mssql_connection
+                success, error, item_data = await get_item_prices_async(
+                    host=conn.host,
+                    port=conn.port,
+                    database=conn.database_name,
+                    username=conn.username,
+                    password=conn.password,
+                    upc=upc
+                )
+
+                if success and item_data:
+                    prices.append({
+                        "store_id": store.id,
+                        "store_name": store.name,
+                        "store_type": "mssql",
+                        "product_found": True,
+                        "product_description": item_data["description"],
+                        "unit_price": item_data["unit_price"],
+                        "unit_cost": item_data["unit_cost"],
+                        "variants": None,
+                    })
+                    yield f"event: progress\ndata: {json.dumps({'status': 'found', 'message': f'Found in {store.name}'})}\n\n"
+                elif success:
+                    prices.append({
+                        "store_id": store.id,
+                        "store_name": store.name,
+                        "store_type": "mssql",
+                        "product_found": False,
+                        "product_description": None,
+                        "unit_price": None,
+                        "unit_cost": None,
+                        "variants": None,
+                    })
+                    yield f"event: progress\ndata: {json.dumps({'status': 'not_found', 'message': f'Not found in {store.name}'})}\n\n"
+                else:
+                    prices.append({
+                        "store_id": store.id,
+                        "store_name": store.name,
+                        "store_type": "mssql",
+                        "product_found": False,
+                        "product_description": None,
+                        "unit_price": None,
+                        "unit_cost": None,
+                        "variants": None,
+                    })
+                    yield f"event: progress\ndata: {json.dumps({'status': 'error', 'message': f'Error searching {store.name}: {error}'})}\n\n"
+
+            elif store.store_type == StoreType.shopify and store.shopify_connection:
+                conn = store.shopify_connection
+                success, error, variants = await search_product_prices_by_barcode(
+                    shop_domain=conn.shop_domain,
+                    admin_api_key=conn.admin_api_key,
+                    barcode=upc,
+                    api_version=conn.api_version
+                )
+
+                if success and variants:
+                    prices.append({
+                        "store_id": store.id,
+                        "store_name": store.name,
+                        "store_type": "shopify",
+                        "product_found": True,
+                        "product_description": variants[0].get("product_title"),
+                        "unit_price": None,
+                        "unit_cost": None,
+                        "variants": variants,
+                    })
+                    yield f"event: progress\ndata: {json.dumps({'status': 'found', 'message': f'Found {len(variants)} variant(s) in {store.name}'})}\n\n"
+                elif success:
+                    prices.append({
+                        "store_id": store.id,
+                        "store_name": store.name,
+                        "store_type": "shopify",
+                        "product_found": False,
+                        "product_description": None,
+                        "unit_price": None,
+                        "unit_cost": None,
+                        "variants": None,
+                    })
+                    yield f"event: progress\ndata: {json.dumps({'status': 'not_found', 'message': f'Not found in {store.name}'})}\n\n"
+                else:
+                    prices.append({
+                        "store_id": store.id,
+                        "store_name": store.name,
+                        "store_type": "shopify",
+                        "product_found": False,
+                        "product_description": None,
+                        "unit_price": None,
+                        "unit_cost": None,
+                        "variants": None,
+                    })
+                    yield f"event: progress\ndata: {json.dumps({'status': 'error', 'message': f'Error searching {store.name}: {error}'})}\n\n"
+
+        yield f"event: complete\ndata: {json.dumps({'prices': prices})}\n\n"
+
+    return StreamingResponse(
+        generate_events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
+    )
+
+
+@app.post("/api/price-updates/update/stream")
+async def update_prices_stream(request: PriceUpdateRequest, db: Session = Depends(get_db)):
+    async def generate_events() -> AsyncGenerator[str, None]:
+        upc = request.upc.strip()
+        if not upc:
+            yield f"event: error\ndata: {json.dumps({'message': 'UPC is required'})}\n\n"
+            return
+
+        results = []
+
+        for update in request.updates:
+            store = db.query(Store).filter(Store.id == update.store_id, Store.is_active == True).first()
+            if not store:
+                results.append({"store_id": update.store_id, "store_name": "Unknown", "success": False, "error": "Store not found"})
+                continue
+
+            yield f"event: progress\ndata: {json.dumps({'status': 'updating', 'message': f'Updating {store.name}...'})}\n\n"
+
+            if update.store_type == "mssql" and store.mssql_connection:
+                conn = store.mssql_connection
+                success, error, rows = await update_item_prices_async(
+                    host=conn.host,
+                    port=conn.port,
+                    database=conn.database_name,
+                    username=conn.username,
+                    password=conn.password,
+                    upc=upc,
+                    unit_price=update.new_price,
+                    unit_cost=update.new_cost
+                )
+
+                results.append({
+                    "store_id": store.id,
+                    "store_name": store.name,
+                    "success": success,
+                    "rows_affected": rows,
+                    "error": error,
+                })
+
+                if success:
+                    yield f"event: progress\ndata: {json.dumps({'status': 'updated', 'message': f'Updated {store.name} ({rows} row(s))'})}\n\n"
+                else:
+                    yield f"event: progress\ndata: {json.dumps({'status': 'error', 'message': f'Failed to update {store.name}: {error}'})}\n\n"
+
+            elif update.store_type == "shopify" and store.shopify_connection and update.variant_updates:
+                conn = store.shopify_connection
+                # Group variants by product_id
+                products = {}
+                for vu in update.variant_updates:
+                    pid = vu["product_id"]
+                    if pid not in products:
+                        products[pid] = []
+                    products[pid].append(vu)
+
+                total_updated = 0
+                errors = []
+                for product_id, variants in products.items():
+                    success, error, count = await update_variant_prices(
+                        shop_domain=conn.shop_domain,
+                        admin_api_key=conn.admin_api_key,
+                        product_id=product_id,
+                        variant_updates=variants,
+                        api_version=conn.api_version
+                    )
+                    if success:
+                        total_updated += count
+                    else:
+                        errors.append(error)
+
+                store_success = len(errors) == 0
+                results.append({
+                    "store_id": store.id,
+                    "store_name": store.name,
+                    "success": store_success,
+                    "rows_affected": total_updated,
+                    "error": "; ".join(errors) if errors else None,
+                })
+
+                if store_success:
+                    yield f"event: progress\ndata: {json.dumps({'status': 'updated', 'message': f'Updated {store.name} ({total_updated} variant(s))'})}\n\n"
+                else:
+                    error_detail = '; '.join(errors)
+                    yield f"event: progress\ndata: {json.dumps({'status': 'error', 'message': f'Failed to update {store.name}: {error_detail}'})}\n\n"
+
+        yield f"event: complete\ndata: {json.dumps({'results': results})}\n\n"
+
+    return StreamingResponse(
+        generate_events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
+    )
+
+
+@app.post("/api/price-updates/description/autocomplete", response_model=DescriptionAutocompleteResponse)
+async def price_updates_autocomplete(request: DescriptionAutocompleteRequest, store_id: int, db: Session = Depends(get_db)):
+    query = request.query.strip()
+
+    if not query or len(query) < 2:
+        return DescriptionAutocompleteResponse(results=[], count=0)
+
+    store = db.query(Store).filter(
+        Store.id == store_id,
+        Store.store_type == StoreType.mssql
+    ).first()
+
+    if not store or not store.mssql_connection:
+        raise HTTPException(status_code=400, detail="MSSQL store not found or missing connection details")
+
+    conn = store.mssql_connection
+
+    success, error, products = await search_products_by_description_async(
+        host=conn.host,
+        port=conn.port,
+        database=conn.database_name,
+        username=conn.username,
+        password=conn.password,
+        query=query,
+        limit=10
+    )
+
+    if not success:
+        raise HTTPException(status_code=500, detail=f"Database error: {error}")
+
+    results = [
+        DescriptionAutocompleteResult(
+            product_id=p["product_id"],
+            product_upc=p["product_upc"],
+            product_description=p["product_description"],
+            quant_on_hand=p["quant_on_hand"]
+        )
+        for p in products
+    ]
+
+    return DescriptionAutocompleteResponse(results=results, count=len(results))
 
 
 if __name__ == "__main__":

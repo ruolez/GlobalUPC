@@ -2536,3 +2536,124 @@ async def sync_unit_price_c_across_stores(
         results.append(result)
 
     return results
+
+
+def get_item_prices(
+    host: str,
+    port: int,
+    database: str,
+    username: str,
+    password: str,
+    upc: str,
+    tds_version: str = "7.4"
+) -> tuple[bool, Optional[str], Optional[Dict[str, Any]]]:
+    conn_str = get_mssql_connection_string(host, port, database, username, password, tds_version)
+
+    try:
+        conn = pyodbc.connect(conn_str, timeout=30)
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "SELECT ProductID, ProductUPC, ProductDescription, UnitPrice, UnitCost "
+            "FROM Items_tbl WHERE ProductUPC = ? AND Discontinued = 0",
+            (upc,)
+        )
+        row = cursor.fetchone()
+
+        cursor.close()
+        conn.close()
+
+        if not row:
+            return True, None, None
+
+        return True, None, {
+            "product_id": row[0],
+            "product_upc": row[1],
+            "description": row[2],
+            "unit_price": float(row[3]) if row[3] is not None else None,
+            "unit_cost": float(row[4]) if row[4] is not None else None,
+        }
+
+    except Exception as e:
+        return False, str(e), None
+
+
+async def get_item_prices_async(
+    host: str,
+    port: int,
+    database: str,
+    username: str,
+    password: str,
+    upc: str,
+    tds_version: str = "7.4"
+) -> tuple[bool, Optional[str], Optional[Dict[str, Any]]]:
+    loop = asyncio.get_event_loop()
+    with ThreadPoolExecutor() as executor:
+        return await loop.run_in_executor(
+            executor,
+            lambda: get_item_prices(host, port, database, username, password, upc, tds_version)
+        )
+
+
+def update_item_prices(
+    host: str,
+    port: int,
+    database: str,
+    username: str,
+    password: str,
+    upc: str,
+    unit_price: Optional[float] = None,
+    unit_cost: Optional[float] = None,
+    tds_version: str = "7.4"
+) -> tuple[bool, Optional[str], int]:
+    if unit_price is None and unit_cost is None:
+        return True, None, 0
+
+    conn_str = get_mssql_connection_string(host, port, database, username, password, tds_version)
+
+    try:
+        conn = pyodbc.connect(conn_str, timeout=30)
+        cursor = conn.cursor()
+
+        set_clauses = []
+        params = []
+        if unit_price is not None:
+            set_clauses.append("UnitPrice = ?")
+            params.append(unit_price)
+        if unit_cost is not None:
+            set_clauses.append("UnitCost = ?")
+            params.append(unit_cost)
+
+        params.append(upc)
+        query = f"UPDATE Items_tbl SET {', '.join(set_clauses)} WHERE ProductUPC = ? AND Discontinued = 0"
+
+        cursor.execute(query, tuple(params))
+        rows_affected = cursor.rowcount
+        conn.commit()
+
+        cursor.close()
+        conn.close()
+
+        return True, None, rows_affected
+
+    except Exception as e:
+        return False, str(e), 0
+
+
+async def update_item_prices_async(
+    host: str,
+    port: int,
+    database: str,
+    username: str,
+    password: str,
+    upc: str,
+    unit_price: Optional[float] = None,
+    unit_cost: Optional[float] = None,
+    tds_version: str = "7.4"
+) -> tuple[bool, Optional[str], int]:
+    loop = asyncio.get_event_loop()
+    with ThreadPoolExecutor() as executor:
+        return await loop.run_in_executor(
+            executor,
+            lambda: update_item_prices(host, port, database, username, password, upc, unit_price, unit_cost, tds_version)
+        )

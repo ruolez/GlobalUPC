@@ -67,6 +67,8 @@ function navigateTo(page) {
     loadMSSQLStoresForDeliveryB();
   } else if (page === "item-tracker") {
     loadItemTrackerPage();
+  } else if (page === "price-updates") {
+    loadPriceUpdatesPage();
   }
 }
 
@@ -5136,6 +5138,710 @@ document
         sortItemTrackerEvents(column);
       }
     });
+  });
+
+// ==================== Price Updates ====================
+
+let priceUpdatesState = {
+  config: null,
+  prices: [],
+  isSearching: false,
+  isUpdating: false,
+  descriptionSearchTimeout: null,
+  autocompleteSelectedIndex: -1,
+  autocompleteResults: [],
+  configExpanded: false,
+};
+
+async function loadPriceUpdatesPage() {
+  const configSection = document.getElementById("price-updates-config-section");
+  const searchSection = document.getElementById("price-updates-search-section");
+
+  try {
+    const stores = await apiRequest("/stores");
+    const allStores = stores.filter((s) => s.is_active);
+    const mssqlStores = allStores.filter((s) => s.store_type === "mssql");
+
+    // Populate primary store dropdown (MSSQL only)
+    const primaryDropdown = document.getElementById(
+      "price-updates-primary-store",
+    );
+    primaryDropdown.innerHTML =
+      '<option value="">Select primary store...</option>';
+    mssqlStores.forEach((store) => {
+      const option = document.createElement("option");
+      option.value = store.id;
+      option.textContent = store.name;
+      primaryDropdown.appendChild(option);
+    });
+
+    // Populate store checkboxes (all stores)
+    const checkboxContainer = document.getElementById(
+      "price-updates-store-checkboxes",
+    );
+    checkboxContainer.innerHTML = "";
+    allStores.forEach((store) => {
+      const label = document.createElement("label");
+      label.style.display = "flex";
+      label.style.alignItems = "center";
+      label.style.gap = "0.5rem";
+      label.style.cursor = "pointer";
+
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.value = store.id;
+      checkbox.id = `price-store-${store.id}`;
+      checkbox.dataset.storeName = store.name;
+      checkbox.dataset.storeType = store.store_type;
+      checkbox.style.width = "auto";
+      checkbox.style.margin = "0";
+
+      const span = document.createElement("span");
+      span.textContent = `${store.name} (${store.store_type.toUpperCase()})`;
+
+      label.appendChild(checkbox);
+      label.appendChild(span);
+      checkboxContainer.appendChild(label);
+    });
+
+    // Load config from localStorage
+    const savedConfig = localStorage.getItem("priceUpdatesConfig");
+    if (savedConfig) {
+      const config = JSON.parse(savedConfig);
+      priceUpdatesState.config = config;
+
+      // Verify primary store still exists
+      const primaryExists = mssqlStores.some(
+        (s) => s.id === config.primaryStoreId,
+      );
+      if (primaryExists && config.storeIds && config.storeIds.length > 0) {
+        primaryDropdown.value = config.primaryStoreId;
+
+        config.storeIds.forEach((id) => {
+          const cb = document.getElementById(`price-store-${id}`);
+          if (cb) cb.checked = true;
+        });
+
+        updatePriceUpdatesConfigSummary(config);
+        configSection.style.display = "none";
+        searchSection.style.display = "block";
+
+        setTimeout(() => {
+          const descInput = document.getElementById("price-updates-desc-input");
+          if (descInput) descInput.focus();
+        }, 100);
+        return;
+      }
+    }
+
+    // No valid config — show config section
+    configSection.style.display = "block";
+    searchSection.style.display = "none";
+  } catch (error) {
+    console.error("Error loading Price Updates page:", error);
+    showToast(`Failed to load Price Updates: ${error.message}`, "error");
+  }
+}
+
+function updatePriceUpdatesConfigSummary(config) {
+  document.getElementById("price-updates-primary-name").textContent =
+    config.primaryStoreName || "-";
+  document.getElementById("price-updates-store-names").textContent =
+    config.storeNames && config.storeNames.length > 0
+      ? config.storeNames.join(", ")
+      : "None selected";
+}
+
+function savePriceUpdatesConfig() {
+  const primaryStoreId = document.getElementById(
+    "price-updates-primary-store",
+  ).value;
+
+  if (!primaryStoreId) {
+    showToast("Please select a primary store", "error");
+    return;
+  }
+
+  const storeIds = [];
+  const storeNames = [];
+  document
+    .querySelectorAll(
+      '#price-updates-store-checkboxes input[type="checkbox"]:checked',
+    )
+    .forEach((cb) => {
+      storeIds.push(parseInt(cb.value));
+      storeNames.push(cb.dataset.storeName);
+    });
+
+  if (storeIds.length === 0) {
+    showToast("Please select at least one store to update", "error");
+    return;
+  }
+
+  const primaryOption = document.querySelector(
+    `#price-updates-primary-store option[value="${primaryStoreId}"]`,
+  );
+  const config = {
+    primaryStoreId: parseInt(primaryStoreId),
+    primaryStoreName: primaryOption ? primaryOption.textContent : "-",
+    storeIds,
+    storeNames,
+  };
+
+  localStorage.setItem("priceUpdatesConfig", JSON.stringify(config));
+  priceUpdatesState.config = config;
+  updatePriceUpdatesConfigSummary(config);
+
+  document.getElementById("price-updates-config-section").style.display =
+    "none";
+  document.getElementById("price-updates-search-section").style.display =
+    "block";
+
+  showToast("Configuration saved", "success");
+
+  setTimeout(() => {
+    const descInput = document.getElementById("price-updates-desc-input");
+    if (descInput) descInput.focus();
+  }, 100);
+}
+
+function showPriceUpdatesConfigSection() {
+  document.getElementById("price-updates-config-section").style.display =
+    "block";
+  document.getElementById("price-updates-search-section").style.display =
+    "none";
+}
+
+function togglePriceUpdatesConfig() {
+  priceUpdatesState.configExpanded = !priceUpdatesState.configExpanded;
+  const details = document.getElementById("price-updates-config-details");
+  const toggle = document.getElementById("price-updates-config-toggle");
+
+  if (priceUpdatesState.configExpanded) {
+    details.style.display = "block";
+    toggle.style.transform = "rotate(90deg)";
+  } else {
+    details.style.display = "none";
+    toggle.style.transform = "";
+  }
+}
+
+async function searchPriceUpdates() {
+  if (priceUpdatesState.isSearching) return;
+
+  const upc = document.getElementById("price-updates-upc-input").value.trim();
+  if (!upc) {
+    showToast("Please enter a UPC to search", "error");
+    return;
+  }
+
+  const config = priceUpdatesState.config;
+  if (!config || !config.storeIds || config.storeIds.length === 0) {
+    showToast("No stores configured", "error");
+    return;
+  }
+
+  priceUpdatesState.isSearching = true;
+  priceUpdatesState.prices = [];
+
+  const searchBtn = document.getElementById("price-updates-search-btn");
+  const loadingEl = document.getElementById("price-updates-loading");
+  const progressEl = document.getElementById("price-updates-progress");
+  const progressItems = document.getElementById(
+    "price-updates-progress-items",
+  );
+  const resultsEl = document.getElementById("price-updates-results");
+
+  searchBtn.disabled = true;
+  loadingEl.style.display = "block";
+  progressEl.style.display = "block";
+  progressItems.innerHTML = "";
+  resultsEl.style.display = "none";
+
+  try {
+    const response = await fetch(
+      `${API_BASE}/price-updates/fetch-prices/stream`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ upc, store_ids: config.storeIds }),
+      },
+    );
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        if (line.startsWith("event: ")) continue;
+        if (line.startsWith("data: ")) {
+          const data = JSON.parse(line.substring(6));
+
+          if (data.prices) {
+            priceUpdatesState.prices = data.prices;
+            displayPriceResults(upc, data.prices);
+          } else if (data.status) {
+            const item = document.createElement("div");
+            item.style.fontSize = "0.875rem";
+            if (data.status === "found") {
+              item.style.color = "var(--success)";
+              item.textContent = `\u2713 ${data.message}`;
+            } else if (data.status === "not_found") {
+              item.style.color = "var(--text-tertiary)";
+              item.textContent = data.message;
+            } else if (data.status === "error") {
+              item.style.color = "var(--error)";
+              item.textContent = data.message;
+            } else {
+              item.style.color = "var(--text-secondary)";
+              item.textContent = data.message;
+            }
+            progressItems.appendChild(item);
+          }
+        }
+      }
+    }
+  } catch (error) {
+    console.error("Error searching prices:", error);
+    showToast(`Search failed: ${error.message}`, "error");
+  } finally {
+    priceUpdatesState.isSearching = false;
+    searchBtn.disabled = false;
+    loadingEl.style.display = "none";
+    progressEl.style.display = "none";
+  }
+}
+
+function displayPriceResults(upc, prices) {
+  const resultsEl = document.getElementById("price-updates-results");
+  resultsEl.style.display = "block";
+
+  // Find first available description
+  const desc =
+    prices.find((p) => p.product_found && p.product_description)
+      ?.product_description || "-";
+
+  document.getElementById("price-info-upc").textContent = upc;
+  document.getElementById("price-info-description").textContent = desc;
+
+  // Build table rows
+  const tbody = document.getElementById("price-updates-tbody");
+  tbody.innerHTML = "";
+
+  prices.forEach((p) => {
+    if (p.store_type === "mssql") {
+      const tr = document.createElement("tr");
+      if (!p.product_found) tr.classList.add("not-found-row");
+
+      tr.dataset.storeId = p.store_id;
+      tr.dataset.storeType = "mssql";
+
+      const currentPrice =
+        p.unit_price != null ? parseFloat(p.unit_price).toFixed(2) : "-";
+      const currentCost =
+        p.unit_cost != null ? parseFloat(p.unit_cost).toFixed(2) : "-";
+
+      tr.innerHTML = `
+        <td>${escapeHtml(p.store_name)}</td>
+        <td style="color: var(--text-tertiary); font-size: 0.75rem">-</td>
+        <td style="font-family: monospace">${p.product_found ? "$" + currentPrice : "Not Found"}</td>
+        <td style="font-family: monospace">${p.product_found ? "$" + currentCost : ""}</td>
+        <td>${p.product_found ? '<input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="' + currentPrice + '">' : ""}</td>
+        <td>${p.product_found ? '<input type="number" class="dark-input price-input new-cost" step="0.01" min="0" placeholder="' + currentCost + '">' : ""}</td>
+      `;
+      tbody.appendChild(tr);
+    } else if (p.store_type === "shopify") {
+      if (!p.product_found || !p.variants || p.variants.length === 0) {
+        const tr = document.createElement("tr");
+        tr.classList.add("not-found-row");
+        tr.innerHTML = `
+          <td>${escapeHtml(p.store_name)}</td>
+          <td style="color: var(--text-tertiary); font-size: 0.75rem">-</td>
+          <td colspan="4" style="color: var(--text-tertiary)">Not Found</td>
+        `;
+        tbody.appendChild(tr);
+        return;
+      }
+
+      p.variants.forEach((v, idx) => {
+        const tr = document.createElement("tr");
+        tr.classList.add("variant-subrow");
+        tr.dataset.storeId = p.store_id;
+        tr.dataset.storeType = "shopify";
+        tr.dataset.variantId = v.variant_id;
+        tr.dataset.productId = v.product_id;
+
+        const vPrice =
+          v.price != null ? parseFloat(v.price).toFixed(2) : "-";
+        const vCost = v.cost != null ? parseFloat(v.cost).toFixed(2) : "-";
+
+        tr.innerHTML = `
+          <td>${idx === 0 ? escapeHtml(p.store_name) : ""}</td>
+          <td style="font-size: 0.75rem; color: var(--text-secondary)">${escapeHtml(v.variant_title || "Default")}</td>
+          <td style="font-family: monospace">$${vPrice}</td>
+          <td style="font-family: monospace">$${vCost}</td>
+          <td><input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="${vPrice}"></td>
+          <td><input type="number" class="dark-input price-input new-cost" step="0.01" min="0" placeholder="${vCost}"></td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+  });
+}
+
+function fillAllPrices() {
+  const newPrice = document.getElementById("price-fill-all-price").value;
+  const newCost = document.getElementById("price-fill-all-cost").value;
+
+  document
+    .querySelectorAll("#price-updates-tbody tr:not(.not-found-row)")
+    .forEach((tr) => {
+      if (newPrice !== "") {
+        const priceInput = tr.querySelector(".new-price");
+        if (priceInput) priceInput.value = newPrice;
+      }
+      if (newCost !== "") {
+        const costInput = tr.querySelector(".new-cost");
+        if (costInput) costInput.value = newCost;
+      }
+    });
+}
+
+async function updatePrices() {
+  if (priceUpdatesState.isUpdating) return;
+
+  const upc = document.getElementById("price-updates-upc-input").value.trim();
+  if (!upc) return;
+
+  // Collect updates from table rows
+  const updates = [];
+  const rows = document.querySelectorAll("#price-updates-tbody tr");
+
+  // Group MSSQL rows
+  rows.forEach((tr) => {
+    if (tr.classList.contains("not-found-row")) return;
+
+    const storeId = parseInt(tr.dataset.storeId);
+    const storeType = tr.dataset.storeType;
+    const priceInput = tr.querySelector(".new-price");
+    const costInput = tr.querySelector(".new-cost");
+
+    const newPrice = priceInput?.value ? parseFloat(priceInput.value) : null;
+    const newCost = costInput?.value ? parseFloat(costInput.value) : null;
+
+    if (newPrice === null && newCost === null) return;
+
+    if (storeType === "mssql") {
+      updates.push({
+        store_id: storeId,
+        store_type: "mssql",
+        new_price: newPrice,
+        new_cost: newCost,
+      });
+    } else if (storeType === "shopify") {
+      // Find or create Shopify update entry for this store
+      let shopifyUpdate = updates.find(
+        (u) => u.store_id === storeId && u.store_type === "shopify",
+      );
+      if (!shopifyUpdate) {
+        shopifyUpdate = {
+          store_id: storeId,
+          store_type: "shopify",
+          variant_updates: [],
+        };
+        updates.push(shopifyUpdate);
+      }
+
+      shopifyUpdate.variant_updates.push({
+        variant_id: tr.dataset.variantId,
+        product_id: tr.dataset.productId,
+        new_price: newPrice,
+        new_cost: newCost,
+      });
+    }
+  });
+
+  if (updates.length === 0) {
+    showToast("No price changes to update", "error");
+    return;
+  }
+
+  priceUpdatesState.isUpdating = true;
+  const updateBtn = document.getElementById("price-updates-update-btn");
+  const updateProgress = document.getElementById(
+    "price-updates-update-progress",
+  );
+  const updateProgressItems = document.getElementById(
+    "price-updates-update-progress-items",
+  );
+
+  updateBtn.disabled = true;
+  updateProgress.style.display = "block";
+  updateProgressItems.innerHTML = "";
+
+  try {
+    const response = await fetch(`${API_BASE}/price-updates/update/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ upc, updates }),
+    });
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        if (line.startsWith("event: ")) continue;
+        if (line.startsWith("data: ")) {
+          const data = JSON.parse(line.substring(6));
+
+          if (data.results) {
+            // Final results
+            const succeeded = data.results.filter((r) => r.success).length;
+            const failed = data.results.filter((r) => !r.success).length;
+            showToast(
+              `Update complete: ${succeeded} succeeded, ${failed} failed`,
+              failed > 0 ? "error" : "success",
+            );
+
+            // Re-fetch prices to show updated values
+            searchPriceUpdates();
+          } else if (data.status) {
+            const item = document.createElement("div");
+            item.style.fontSize = "0.875rem";
+            if (data.status === "updated") {
+              item.style.color = "var(--success)";
+              item.textContent = `\u2713 ${data.message}`;
+            } else if (data.status === "error") {
+              item.style.color = "var(--error)";
+              item.textContent = data.message;
+            } else {
+              item.style.color = "var(--text-secondary)";
+              item.textContent = data.message;
+            }
+            updateProgressItems.appendChild(item);
+          }
+        }
+      }
+    }
+  } catch (error) {
+    console.error("Error updating prices:", error);
+    showToast(`Update failed: ${error.message}`, "error");
+  } finally {
+    priceUpdatesState.isUpdating = false;
+    updateBtn.disabled = false;
+  }
+}
+
+// Price Updates description autocomplete
+function handlePriceDescriptionInput(e) {
+  const query = e.target.value.trim();
+  clearTimeout(priceUpdatesState.descriptionSearchTimeout);
+
+  if (query.length < 2) {
+    hidePriceDescriptionDropdown();
+    return;
+  }
+
+  priceUpdatesState.descriptionSearchTimeout = setTimeout(() => {
+    fetchPriceDescriptionSuggestions(query);
+  }, 300);
+}
+
+async function fetchPriceDescriptionSuggestions(query) {
+  const dropdown = document.getElementById("price-updates-desc-dropdown");
+  const config = priceUpdatesState.config;
+
+  if (!config || !config.primaryStoreId) return;
+
+  dropdown.innerHTML = '<div class="autocomplete-loading">Searching...</div>';
+  dropdown.classList.add("show");
+
+  try {
+    const response = await fetch(
+      `${API_BASE}/price-updates/description/autocomplete?store_id=${config.primaryStoreId}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query }),
+      },
+    );
+
+    if (!response.ok) throw new Error("Failed to fetch suggestions");
+
+    const data = await response.json();
+    showPriceDescriptionDropdown(data.results);
+  } catch (error) {
+    console.error("Price autocomplete error:", error);
+    dropdown.innerHTML =
+      '<div class="autocomplete-empty">Error fetching suggestions</div>';
+  }
+}
+
+function showPriceDescriptionDropdown(results) {
+  const dropdown = document.getElementById("price-updates-desc-dropdown");
+  priceUpdatesState.autocompleteResults = results;
+  priceUpdatesState.autocompleteSelectedIndex = -1;
+
+  if (results.length === 0) {
+    dropdown.innerHTML =
+      '<div class="autocomplete-empty">No products found</div>';
+    dropdown.classList.add("show");
+    return;
+  }
+
+  dropdown.innerHTML = results
+    .map(
+      (result, index) => `
+    <div class="autocomplete-item" data-index="${index}" data-upc="${result.product_upc}" data-desc="${result.product_description}">
+      <div class="autocomplete-item-description">${escapeHtml(result.product_description)}</div>
+      <div class="autocomplete-item-upc">UPC: ${result.product_upc || "N/A"} \u00b7 Qty: ${result.quant_on_hand?.toLocaleString() ?? 0}</div>
+    </div>
+  `,
+    )
+    .join("");
+
+  dropdown.classList.add("show");
+
+  dropdown.querySelectorAll(".autocomplete-item").forEach((item) => {
+    item.addEventListener("click", () => {
+      selectPriceDescriptionResult(item.dataset.upc, item.dataset.desc);
+    });
+  });
+}
+
+function hidePriceDescriptionDropdown() {
+  const dropdown = document.getElementById("price-updates-desc-dropdown");
+  if (dropdown) {
+    dropdown.classList.remove("show");
+    dropdown.innerHTML = "";
+  }
+}
+
+function selectPriceDescriptionResult(upc, description) {
+  document.getElementById("price-updates-upc-input").value = upc || "";
+  document.getElementById("price-updates-desc-input").value = description || "";
+  hidePriceDescriptionDropdown();
+
+  if (upc) {
+    searchPriceUpdates();
+  }
+}
+
+function updatePriceAutocompleteSelection() {
+  const dropdown = document.getElementById("price-updates-desc-dropdown");
+  const items = dropdown.querySelectorAll(".autocomplete-item");
+
+  items.forEach((item, index) => {
+    if (index === priceUpdatesState.autocompleteSelectedIndex) {
+      item.classList.add("selected");
+      item.scrollIntoView({ block: "nearest" });
+    } else {
+      item.classList.remove("selected");
+    }
+  });
+}
+
+function handlePriceAutocompleteKeydown(e) {
+  const results = priceUpdatesState.autocompleteResults;
+  if (!results || results.length === 0) return;
+
+  if (e.key === "ArrowDown") {
+    e.preventDefault();
+    priceUpdatesState.autocompleteSelectedIndex = Math.min(
+      priceUpdatesState.autocompleteSelectedIndex + 1,
+      results.length - 1,
+    );
+    updatePriceAutocompleteSelection();
+  } else if (e.key === "ArrowUp") {
+    e.preventDefault();
+    priceUpdatesState.autocompleteSelectedIndex = Math.max(
+      priceUpdatesState.autocompleteSelectedIndex - 1,
+      0,
+    );
+    updatePriceAutocompleteSelection();
+  } else if (e.key === "Enter") {
+    e.preventDefault();
+    if (priceUpdatesState.autocompleteSelectedIndex >= 0) {
+      const selected =
+        results[priceUpdatesState.autocompleteSelectedIndex];
+      selectPriceDescriptionResult(
+        selected.product_upc,
+        selected.product_description,
+      );
+    } else {
+      searchPriceUpdates();
+    }
+  } else if (e.key === "Escape") {
+    hidePriceDescriptionDropdown();
+  }
+}
+
+// Price Updates event listeners
+document
+  .getElementById("save-price-updates-config-btn")
+  ?.addEventListener("click", savePriceUpdatesConfig);
+document
+  .getElementById("edit-price-updates-config-btn")
+  ?.addEventListener("click", showPriceUpdatesConfigSection);
+document
+  .getElementById("price-updates-search-btn")
+  ?.addEventListener("click", searchPriceUpdates);
+document
+  .getElementById("price-updates-upc-input")
+  ?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") searchPriceUpdates();
+  });
+document
+  .getElementById("price-fill-all-btn")
+  ?.addEventListener("click", fillAllPrices);
+document
+  .getElementById("price-updates-update-btn")
+  ?.addEventListener("click", updatePrices);
+document
+  .getElementById("price-updates-desc-input")
+  ?.addEventListener("input", handlePriceDescriptionInput);
+document
+  .getElementById("price-updates-desc-input")
+  ?.addEventListener("keydown", handlePriceAutocompleteKeydown);
+
+// Hide price description dropdown when clicking outside
+document.addEventListener("click", (e) => {
+  const descInput = document.getElementById("price-updates-desc-input");
+  const dropdown = document.getElementById("price-updates-desc-dropdown");
+  if (
+    descInput &&
+    dropdown &&
+    !descInput.contains(e.target) &&
+    !dropdown.contains(e.target)
+  ) {
+    hidePriceDescriptionDropdown();
+  }
+});
+
+// Price Updates config summary toggle
+document
+  .getElementById("price-updates-config-header")
+  ?.addEventListener("click", (e) => {
+    if (!e.target.closest("#edit-price-updates-config-btn")) {
+      togglePriceUpdatesConfig();
+    }
   });
 
 // Initialize

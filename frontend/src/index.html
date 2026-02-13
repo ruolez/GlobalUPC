@@ -53,6 +53,9 @@
           <a href="#" class="nav-item" data-page="item-tracker">
             <span>Item Tracker</span>
           </a>
+          <a href="#" class="nav-item" data-page="price-updates">
+            <span>Price Updates</span>
+          </a>
           <a href="#" class="nav-item" data-page="history">
             <span>History</span>
           </a>
@@ -2432,6 +2435,410 @@
                 >
                   Export to CSV
                 </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Price Updates Page -->
+        <div id="price-updates-page" class="page" style="display: none">
+          <!-- Configuration Section -->
+          <div
+            id="price-updates-config-section"
+            class="card"
+            style="display: none"
+          >
+            <div class="card-header">
+              <h3>Configuration Required</h3>
+            </div>
+            <p
+              style="
+                margin: 0 0 1rem;
+                font-size: 0.875rem;
+                color: var(--text-secondary);
+              "
+            >
+              Select a primary MSSQL store for search and choose which stores to
+              include in price updates.
+            </p>
+
+            <div class="form-group">
+              <label for="price-updates-primary-store"
+                >Primary MSSQL Store (for search)</label
+              >
+              <select
+                id="price-updates-primary-store"
+                required
+                style="max-width: 400px"
+              >
+                <option value="">Select primary store...</option>
+              </select>
+              <small
+                style="
+                  color: var(--text-tertiary);
+                  font-size: 0.75rem;
+                  margin-top: 0.5rem;
+                  display: block;
+                "
+              >
+                Used for description autocomplete and as the main search
+                database.
+              </small>
+            </div>
+
+            <div class="form-group">
+              <label>Stores to Update</label>
+              <div
+                id="price-updates-store-checkboxes"
+                style="
+                  max-width: 400px;
+                  display: flex;
+                  flex-direction: column;
+                  gap: 0.5rem;
+                "
+              >
+                <!-- Checkboxes populated by JavaScript -->
+              </div>
+              <small
+                style="
+                  color: var(--text-tertiary);
+                  font-size: 0.75rem;
+                  margin-top: 0.5rem;
+                  display: block;
+                "
+              >
+                Select MSSQL and Shopify stores where prices should be fetched
+                and updated.
+              </small>
+            </div>
+
+            <div style="margin-top: 1.5rem">
+              <button
+                type="button"
+                class="btn btn-primary"
+                id="save-price-updates-config-btn"
+              >
+                Save Configuration
+              </button>
+            </div>
+          </div>
+
+          <!-- Search Section (shown after configuration) -->
+          <div
+            id="price-updates-search-section"
+            style="display: none"
+          >
+            <!-- Config Summary (Collapsible) -->
+            <div
+              id="price-updates-config-summary"
+              style="
+                margin-bottom: 1rem;
+                background: var(--bg-secondary);
+                border-radius: var(--radius-md);
+                border: 1px solid var(--border-color);
+                overflow: hidden;
+              "
+            >
+              <div
+                id="price-updates-config-header"
+                style="
+                  display: flex;
+                  justify-content: space-between;
+                  align-items: center;
+                  padding: 0.625rem 1rem;
+                  cursor: pointer;
+                  user-select: none;
+                "
+              >
+                <div style="display: flex; align-items: center; gap: 0.5rem">
+                  <span
+                    id="price-updates-config-toggle"
+                    style="
+                      font-size: 0.75rem;
+                      color: var(--text-tertiary);
+                      transition: transform 0.2s;
+                    "
+                    >&#9654;</span
+                  >
+                  <span
+                    style="font-size: 0.8125rem; color: var(--text-secondary)"
+                  >
+                    Primary Store:
+                    <strong
+                      id="price-updates-primary-name"
+                      style="color: var(--text-primary)"
+                      >-</strong
+                    >
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  class="btn btn-secondary"
+                  id="edit-price-updates-config-btn"
+                  style="font-size: 0.6875rem; padding: 0.25rem 0.5rem"
+                >
+                  Edit
+                </button>
+              </div>
+              <div
+                id="price-updates-config-details"
+                style="
+                  display: none;
+                  padding: 0.75rem 1rem;
+                  border-top: 1px solid var(--border-color);
+                  font-size: 0.8125rem;
+                  color: var(--text-secondary);
+                "
+              >
+                <p style="margin: 0">
+                  Update Stores:
+                  <strong
+                    id="price-updates-store-names"
+                    style="color: var(--text-primary)"
+                    >-</strong
+                  >
+                </p>
+              </div>
+            </div>
+
+            <!-- Search Row -->
+            <div
+              style="
+                display: flex;
+                gap: 0.5rem;
+                align-items: flex-end;
+                flex-wrap: wrap;
+                margin-bottom: 1rem;
+              "
+            >
+              <div>
+                <label
+                  for="price-updates-upc-input"
+                  style="
+                    font-size: 0.75rem;
+                    color: var(--text-tertiary);
+                    margin-bottom: 0.25rem;
+                    display: block;
+                  "
+                  >UPC</label
+                >
+                <input
+                  type="text"
+                  id="price-updates-upc-input"
+                  placeholder="Enter UPC"
+                  class="dark-input"
+                  style="width: 150px"
+                />
+              </div>
+              <div style="position: relative; flex: 1; max-width: 400px">
+                <label
+                  for="price-updates-desc-input"
+                  style="
+                    font-size: 0.75rem;
+                    color: var(--text-tertiary);
+                    margin-bottom: 0.25rem;
+                    display: block;
+                  "
+                  >Description</label
+                >
+                <input
+                  type="text"
+                  id="price-updates-desc-input"
+                  placeholder="Search by product name"
+                  class="dark-input"
+                  style="width: 100%"
+                  autocomplete="off"
+                />
+                <div
+                  id="price-updates-desc-dropdown"
+                  class="autocomplete-dropdown"
+                ></div>
+              </div>
+              <button
+                type="button"
+                class="btn btn-primary"
+                id="price-updates-search-btn"
+                style="height: 38px"
+              >
+                Search
+              </button>
+            </div>
+
+            <!-- Loading State -->
+            <div
+              id="price-updates-loading"
+              class="loading-state"
+              style="display: none"
+            >
+              <div class="spinner"></div>
+              <p>Fetching prices...</p>
+            </div>
+
+            <!-- Progress Container -->
+            <div
+              id="price-updates-progress"
+              style="
+                margin-top: 0.5rem;
+                margin-bottom: 1rem;
+                padding: 1rem;
+                background: var(--bg-tertiary);
+                border-radius: var(--radius-md);
+                display: none;
+                max-height: 200px;
+                overflow-y: auto;
+              "
+            >
+              <div
+                id="price-updates-progress-items"
+                style="display: flex; flex-direction: column; gap: 0.5rem"
+              ></div>
+            </div>
+
+            <!-- Results Section -->
+            <div id="price-updates-results" style="display: none">
+              <!-- Product Info Card -->
+              <div
+                id="price-updates-info-card"
+                class="card"
+                style="margin-bottom: 1rem"
+              >
+                <div
+                  style="
+                    display: flex;
+                    gap: 2rem;
+                    padding: 1rem;
+                    align-items: center;
+                  "
+                >
+                  <div>
+                    <p
+                      style="
+                        margin: 0;
+                        font-size: 0.75rem;
+                        color: var(--text-tertiary);
+                      "
+                    >
+                      UPC
+                    </p>
+                    <p
+                      style="
+                        margin: 0.25rem 0 0;
+                        font-size: 0.875rem;
+                        font-family: monospace;
+                        font-weight: bold;
+                        color: var(--accent-primary);
+                      "
+                      id="price-info-upc"
+                    >
+                      -
+                    </p>
+                  </div>
+                  <div>
+                    <p
+                      style="
+                        margin: 0;
+                        font-size: 0.75rem;
+                        color: var(--text-tertiary);
+                      "
+                    >
+                      Description
+                    </p>
+                    <p
+                      style="
+                        margin: 0.25rem 0 0;
+                        font-size: 0.875rem;
+                        font-weight: 500;
+                      "
+                      id="price-info-description"
+                    >
+                      -
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Fill All Row -->
+              <div class="fill-all-row">
+                <span style="font-size: 0.8125rem; font-weight: 500; color: var(--text-secondary)">Apply to All:</span>
+                <input
+                  type="number"
+                  id="price-fill-all-price"
+                  placeholder="New Price"
+                  class="dark-input price-input"
+                  step="0.01"
+                  min="0"
+                />
+                <input
+                  type="number"
+                  id="price-fill-all-cost"
+                  placeholder="New Cost"
+                  class="dark-input price-input"
+                  step="0.01"
+                  min="0"
+                />
+                <button
+                  type="button"
+                  class="btn btn-secondary"
+                  id="price-fill-all-btn"
+                  style="font-size: 0.75rem; padding: 0.375rem 0.75rem"
+                >
+                  Fill All
+                </button>
+              </div>
+
+              <!-- Price Table -->
+              <div class="table-container" style="margin-top: 0.75rem">
+                <table class="price-table" id="price-updates-table">
+                  <thead>
+                    <tr>
+                      <th>Store</th>
+                      <th>Variant</th>
+                      <th>Current Price</th>
+                      <th>Current Cost</th>
+                      <th>New Price</th>
+                      <th>New Cost</th>
+                    </tr>
+                  </thead>
+                  <tbody id="price-updates-tbody">
+                  </tbody>
+                </table>
+              </div>
+
+              <!-- Update Button -->
+              <div
+                style="
+                  display: flex;
+                  gap: 0.75rem;
+                  margin-top: 1rem;
+                  align-items: center;
+                "
+              >
+                <button
+                  type="button"
+                  class="btn btn-primary"
+                  id="price-updates-update-btn"
+                >
+                  Update Prices
+                </button>
+              </div>
+
+              <!-- Update Progress -->
+              <div
+                id="price-updates-update-progress"
+                style="
+                  margin-top: 1rem;
+                  padding: 1rem;
+                  background: var(--bg-tertiary);
+                  border-radius: var(--radius-md);
+                  display: none;
+                  max-height: 200px;
+                  overflow-y: auto;
+                "
+              >
+                <div
+                  id="price-updates-update-progress-items"
+                  style="display: flex; flex-direction: column; gap: 0.5rem"
+                ></div>
               </div>
             </div>
           </div>

@@ -516,6 +516,177 @@ async def update_barcodes_for_product(
     except Exception as e:
         return False, f"Unexpected error: {str(e)}", 0
 
+async def search_product_prices_by_barcode(
+    shop_domain: str,
+    admin_api_key: str,
+    barcode: str,
+    api_version: str = "2025-01"
+) -> tuple[bool, Optional[str], List[Dict[str, Any]]]:
+    try:
+        shop_domain = validate_shop_domain(shop_domain)
+
+        query = """
+        query searchPricesByBarcode($query: String!) {
+          productVariants(first: 100, query: $query) {
+            edges {
+              node {
+                id
+                barcode
+                sku
+                displayName
+                title
+                price
+                inventoryItem {
+                  id
+                  unitCost { amount currencyCode }
+                }
+                product {
+                  id
+                  title
+                  status
+                }
+              }
+            }
+          }
+        }
+        """
+
+        variables = {
+            "query": f"barcode:{barcode}"
+        }
+
+        url = f"https://{shop_domain}/admin/api/{api_version}/graphql.json"
+        headers = {
+            "X-Shopify-Access-Token": admin_api_key,
+            "Content-Type": "application/json"
+        }
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url,
+                json={"query": query, "variables": variables},
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=30)
+            ) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    return False, f"HTTP {response.status}: {error_text}", []
+
+                data = await response.json()
+
+                if "errors" in data:
+                    errors = data["errors"]
+                    error_msg = "; ".join([e.get("message", str(e)) for e in errors])
+                    return False, f"GraphQL errors: {error_msg}", []
+
+                variants = []
+                edges = data.get("data", {}).get("productVariants", {}).get("edges", [])
+
+                for edge in edges:
+                    node = edge.get("node", {})
+                    product = node.get("product", {})
+
+                    if product.get("status") == "ACTIVE":
+                        inventory_item = node.get("inventoryItem") or {}
+                        unit_cost = inventory_item.get("unitCost") or {}
+
+                        variants.append({
+                            "variant_id": node.get("id"),
+                            "product_id": product.get("id"),
+                            "product_title": product.get("title"),
+                            "variant_title": node.get("title") or "Default",
+                            "display_name": node.get("displayName"),
+                            "barcode": node.get("barcode"),
+                            "sku": node.get("sku"),
+                            "price": node.get("price"),
+                            "cost": unit_cost.get("amount"),
+                            "inventory_item_id": inventory_item.get("id"),
+                        })
+
+                return True, None, variants
+
+    except aiohttp.ClientError as e:
+        return False, f"Network error: {str(e)}", []
+    except Exception as e:
+        return False, f"Unexpected error: {str(e)}", []
+
+
+async def update_variant_prices(
+    shop_domain: str,
+    admin_api_key: str,
+    product_id: str,
+    variant_updates: List[Dict[str, Any]],
+    api_version: str = "2025-01"
+) -> tuple[bool, Optional[str], int]:
+    try:
+        shop_domain = validate_shop_domain(shop_domain)
+
+        mutation = """
+        mutation updateVariantPrices($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+          productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+            productVariants {
+              id
+              price
+            }
+            userErrors { field message }
+          }
+        }
+        """
+
+        variants_input = []
+        for v in variant_updates:
+            variant_input = {"id": v["variant_id"]}
+            if v.get("new_price") is not None:
+                variant_input["price"] = str(v["new_price"])
+            if v.get("new_cost") is not None:
+                variant_input["inventoryItem"] = {"cost": float(v["new_cost"])}
+            variants_input.append(variant_input)
+
+        variables = {
+            "productId": product_id,
+            "variants": variants_input
+        }
+
+        url = f"https://{shop_domain}/admin/api/{api_version}/graphql.json"
+        headers = {
+            "X-Shopify-Access-Token": admin_api_key,
+            "Content-Type": "application/json"
+        }
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url,
+                json={"query": mutation, "variables": variables},
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=30)
+            ) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    return False, f"HTTP {response.status}: {error_text}", 0
+
+                data = await response.json()
+
+                if "errors" in data:
+                    errors = data["errors"]
+                    error_msg = "; ".join([e.get("message", str(e)) for e in errors])
+                    return False, f"GraphQL errors: {error_msg}", 0
+
+                result = data.get("data", {}).get("productVariantsBulkUpdate", {})
+                user_errors = result.get("userErrors", [])
+
+                if user_errors:
+                    error_msg = "; ".join([e.get("message", str(e)) for e in user_errors])
+                    return False, f"Update errors: {error_msg}", 0
+
+                updated_variants = result.get("productVariants", [])
+                return True, None, len(updated_variants)
+
+    except aiohttp.ClientError as e:
+        return False, f"Network error: {str(e)}", 0
+    except Exception as e:
+        return False, f"Unexpected error: {str(e)}", 0
+
+
 async def update_barcodes_across_shopify_stores(
     store_updates: List[Dict[str, Any]]
 ) -> List[Dict[str, Any]]:

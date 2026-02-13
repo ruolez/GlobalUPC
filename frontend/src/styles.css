@@ -1169,3 +1169,69 @@ body {
   color: var(--text-tertiary);
   font-size: 0.875rem;
 }
+
+/* Price Updates */
+.price-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+}
+
+.price-table th {
+  background: var(--bg-tertiary);
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.025em;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.price-table td {
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border-color);
+  color: var(--text-primary);
+  vertical-align: middle;
+}
+
+.price-table tbody tr:hover {
+  background: var(--bg-tertiary);
+}
+
+.price-input {
+  width: 100px;
+  padding: 0.375rem 0.5rem;
+  font-size: 0.8125rem;
+  text-align: right;
+}
+
+.fill-all-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.625rem 0.75rem;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+}
+
+.not-found-row td {
+  opacity: 0.4;
+  font-style: italic;
+}
+
+.variant-subrow td:first-child {
+  padding-left: 1.5rem;
+}
+
+.store-group-header td {
+  background: var(--bg-secondary);
+  font-weight: 600;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.025em;
+  color: var(--text-secondary);
+  padding: 0.375rem 0.75rem;
+}
