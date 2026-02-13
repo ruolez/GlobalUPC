@@ -5145,6 +5145,7 @@ document
 let priceUpdatesState = {
   config: null,
   prices: [],
+  siblingPrices: [],
   isSearching: false,
   isUpdating: false,
   descriptionSearchTimeout: null,
@@ -5364,7 +5365,11 @@ async function searchPriceUpdates() {
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ upc, store_ids: config.storeIds }),
+        body: JSON.stringify({
+          upc,
+          store_ids: config.storeIds,
+          include_sibling_barcodes: document.getElementById("price-updates-include-siblings")?.checked || false
+        }),
       },
     );
 
@@ -5387,7 +5392,8 @@ async function searchPriceUpdates() {
 
           if (data.prices) {
             priceUpdatesState.prices = data.prices;
-            displayPriceResults(upc, data.prices);
+            priceUpdatesState.siblingPrices = data.sibling_prices || [];
+            displayPriceResults(upc, data.prices, priceUpdatesState.siblingPrices);
           } else if (data.status) {
             const item = document.createElement("div");
             item.style.fontSize = "0.875rem";
@@ -5420,11 +5426,10 @@ async function searchPriceUpdates() {
   }
 }
 
-function displayPriceResults(upc, prices) {
+function displayPriceResults(upc, prices, siblingPrices) {
   const resultsEl = document.getElementById("price-updates-results");
   resultsEl.style.display = "block";
 
-  // Find first available description
   const desc =
     prices.find((p) => p.product_found && p.product_description)
       ?.product_description || "-";
@@ -5432,7 +5437,6 @@ function displayPriceResults(upc, prices) {
   document.getElementById("price-info-upc").textContent = upc;
   document.getElementById("price-info-description").textContent = desc;
 
-  // Build table rows
   const tbody = document.getElementById("price-updates-tbody");
   tbody.innerHTML = "";
 
@@ -5443,6 +5447,7 @@ function displayPriceResults(upc, prices) {
 
       tr.dataset.storeId = p.store_id;
       tr.dataset.storeType = "mssql";
+      tr.dataset.barcode = upc;
 
       const currentPrice =
         p.unit_price != null ? parseFloat(p.unit_price).toFixed(2) : "-";
@@ -5474,18 +5479,26 @@ function displayPriceResults(upc, prices) {
       p.variants.forEach((v, idx) => {
         const tr = document.createElement("tr");
         tr.classList.add("variant-subrow");
+        if (v.is_searched) {
+          tr.classList.add("searched-variant");
+        }
         tr.dataset.storeId = p.store_id;
         tr.dataset.storeType = "shopify";
         tr.dataset.variantId = v.variant_id;
         tr.dataset.productId = v.product_id;
+        tr.dataset.barcode = v.barcode || "";
 
         const vPrice =
           v.price != null ? parseFloat(v.price).toFixed(2) : "-";
         const vCost = v.cost != null ? parseFloat(v.cost).toFixed(2) : "-";
 
+        const variantLabel = escapeHtml(v.variant_title || "Default");
+        const barcodeLabel = v.barcode ? ` [${escapeHtml(v.barcode)}]` : "";
+        const searchedTag = v.is_searched ? ' <span style="color: var(--accent-primary); font-size: 0.625rem;">(searched)</span>' : "";
+
         tr.innerHTML = `
           <td>${idx === 0 ? escapeHtml(p.store_name) : ""}</td>
-          <td style="font-size: 0.75rem; color: var(--text-secondary)">${escapeHtml(v.variant_title || "Default")}</td>
+          <td style="font-size: 0.75rem; color: var(--text-secondary)">${variantLabel}${barcodeLabel}${searchedTag}</td>
           <td style="font-family: monospace">$${vPrice}</td>
           <td style="font-family: monospace">$${vCost}</td>
           <td><input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="${vPrice}"></td>
@@ -5495,6 +5508,55 @@ function displayPriceResults(upc, prices) {
       });
     }
   });
+
+  // Render sibling MSSQL rows grouped by barcode
+  if (siblingPrices && siblingPrices.length > 0) {
+    const grouped = {};
+    siblingPrices.forEach((sp) => {
+      const key = sp.sibling_barcode;
+      if (!grouped[key]) {
+        grouped[key] = { variant_title: sp.sibling_variant_title, rows: [] };
+      }
+      grouped[key].rows.push(sp);
+    });
+
+    for (const [barcode, group] of Object.entries(grouped)) {
+      const headerTr = document.createElement("tr");
+      headerTr.classList.add("sibling-header-row");
+      headerTr.innerHTML = `<td colspan="6">Sibling: ${escapeHtml(barcode)} (${escapeHtml(group.variant_title || "Unknown")})</td>`;
+      tbody.appendChild(headerTr);
+
+      group.rows.forEach((sp) => {
+        const tr = document.createElement("tr");
+        tr.classList.add("sibling-row");
+        tr.dataset.storeId = sp.store_id;
+        tr.dataset.storeType = "mssql";
+        tr.dataset.barcode = sp.sibling_barcode;
+
+        if (!sp.product_found) {
+          tr.classList.add("not-found-row");
+          tr.innerHTML = `
+            <td>${escapeHtml(sp.store_name)}</td>
+            <td style="color: var(--text-tertiary); font-size: 0.75rem">-</td>
+            <td colspan="4" style="color: var(--text-tertiary)">Not Found</td>
+          `;
+        } else {
+          const currentPrice = sp.unit_price != null ? parseFloat(sp.unit_price).toFixed(2) : "-";
+          const currentCost = sp.unit_cost != null ? parseFloat(sp.unit_cost).toFixed(2) : "-";
+
+          tr.innerHTML = `
+            <td>${escapeHtml(sp.store_name)}</td>
+            <td style="color: var(--text-tertiary); font-size: 0.75rem">${escapeHtml(sp.product_description || "-")}</td>
+            <td style="font-family: monospace">$${currentPrice}</td>
+            <td style="font-family: monospace">$${currentCost}</td>
+            <td><input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="${currentPrice}"></td>
+            <td><input type="number" class="dark-input price-input new-cost" step="0.01" min="0" placeholder="${currentCost}"></td>
+          `;
+        }
+        tbody.appendChild(tr);
+      });
+    }
+  }
 }
 
 function fillAllPrices() {
@@ -5502,7 +5564,7 @@ function fillAllPrices() {
   const newCost = document.getElementById("price-fill-all-cost").value;
 
   document
-    .querySelectorAll("#price-updates-tbody tr:not(.not-found-row)")
+    .querySelectorAll("#price-updates-tbody tr:not(.not-found-row):not(.sibling-header-row)")
     .forEach((tr) => {
       if (newPrice !== "") {
         const priceInput = tr.querySelector(".new-price");
@@ -5525,9 +5587,9 @@ async function updatePrices() {
   const updates = [];
   const rows = document.querySelectorAll("#price-updates-tbody tr");
 
-  // Group MSSQL rows
   rows.forEach((tr) => {
     if (tr.classList.contains("not-found-row")) return;
+    if (tr.classList.contains("sibling-header-row")) return;
 
     const storeId = parseInt(tr.dataset.storeId);
     const storeType = tr.dataset.storeType;
@@ -5543,6 +5605,7 @@ async function updatePrices() {
       updates.push({
         store_id: storeId,
         store_type: "mssql",
+        upc: tr.dataset.barcode || null,
         new_price: newPrice,
         new_cost: newCost,
       });

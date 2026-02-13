@@ -611,6 +611,100 @@ async def search_product_prices_by_barcode(
         return False, f"Unexpected error: {str(e)}", []
 
 
+async def get_all_product_variant_prices(
+    shop_domain: str,
+    admin_api_key: str,
+    product_id: str,
+    api_version: str = "2025-01"
+) -> tuple[bool, Optional[str], List[Dict[str, Any]]]:
+    try:
+        shop_domain = validate_shop_domain(shop_domain)
+
+        query = """
+        query getProductVariants($productId: ID!) {
+          product(id: $productId) {
+            id
+            title
+            status
+            variants(first: 100) {
+              edges {
+                node {
+                  id
+                  barcode
+                  sku
+                  displayName
+                  title
+                  price
+                  inventoryItem {
+                    id
+                    unitCost { amount currencyCode }
+                  }
+                }
+              }
+            }
+          }
+        }
+        """
+
+        variables = {"productId": product_id}
+
+        url = f"https://{shop_domain}/admin/api/{api_version}/graphql.json"
+        headers = {
+            "X-Shopify-Access-Token": admin_api_key,
+            "Content-Type": "application/json"
+        }
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url,
+                json={"query": query, "variables": variables},
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=30)
+            ) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    return False, f"HTTP {response.status}: {error_text}", []
+
+                data = await response.json()
+
+                if "errors" in data:
+                    errors = data["errors"]
+                    error_msg = "; ".join([e.get("message", str(e)) for e in errors])
+                    return False, f"GraphQL errors: {error_msg}", []
+
+                product = data.get("data", {}).get("product")
+                if not product or product.get("status") != "ACTIVE":
+                    return True, None, []
+
+                variants = []
+                edges = product.get("variants", {}).get("edges", [])
+
+                for edge in edges:
+                    node = edge.get("node", {})
+                    inventory_item = node.get("inventoryItem") or {}
+                    unit_cost = inventory_item.get("unitCost") or {}
+
+                    variants.append({
+                        "variant_id": node.get("id"),
+                        "product_id": product.get("id"),
+                        "product_title": product.get("title"),
+                        "variant_title": node.get("title") or "Default",
+                        "display_name": node.get("displayName"),
+                        "barcode": node.get("barcode"),
+                        "sku": node.get("sku"),
+                        "price": node.get("price"),
+                        "cost": unit_cost.get("amount"),
+                        "inventory_item_id": inventory_item.get("id"),
+                    })
+
+                return True, None, variants
+
+    except aiohttp.ClientError as e:
+        return False, f"Network error: {str(e)}", []
+    except Exception as e:
+        return False, f"Unexpected error: {str(e)}", []
+
+
 async def update_variant_prices(
     shop_domain: str,
     admin_api_key: str,

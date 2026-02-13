@@ -410,6 +410,7 @@ class DescriptionAutocompleteResponse(BaseModel):
 class PriceSearchRequest(BaseModel):
     upc: str
     store_ids: List[int]
+    include_sibling_barcodes: bool = False
 
 
 class StorePriceInfo(BaseModel):
@@ -426,6 +427,7 @@ class StorePriceInfo(BaseModel):
 class PriceUpdateItem(BaseModel):
     store_id: int
     store_type: str
+    upc: Optional[str] = None
     new_price: Optional[float] = None
     new_cost: Optional[float] = None
     variant_updates: Optional[List[dict]] = None
