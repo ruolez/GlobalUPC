@@ -14,7 +14,7 @@ class Store(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(255), nullable=False)
-    store_type = Column(Enum(StoreType), nullable=False)
+    store_type = Column(Enum(StoreType, name='store_type', create_type=False), nullable=False)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -68,7 +68,7 @@ class UPCUpdateHistory(Base):
     batch_id = Column(String(36), nullable=False, index=True)
     store_id = Column(Integer, ForeignKey("stores.id", ondelete="CASCADE"), nullable=False, index=True)
     store_name = Column(String(255), nullable=False)
-    store_type = Column(Enum(StoreType), nullable=False)
+    store_type = Column(Enum(StoreType, name='store_type', create_type=False), nullable=False)
     old_upc = Column(String(255), nullable=False, index=True)
     new_upc = Column(String(255), nullable=False, index=True)
 
@@ -120,7 +120,7 @@ class PriceUpdateHistory(Base):
     batch_id = Column(String(36), nullable=False, index=True)
     store_id = Column(Integer, ForeignKey("stores.id", ondelete="CASCADE"), nullable=False, index=True)
     store_name = Column(String(255), nullable=False)
-    store_type = Column(Enum(StoreType), nullable=False)
+    store_type = Column(Enum(StoreType, name='store_type', create_type=False), nullable=False)
     upc = Column(String(255), nullable=False, index=True)
     product_description = Column(Text)
     variant_id = Column(String(255))
