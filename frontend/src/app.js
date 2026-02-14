@@ -5111,9 +5111,21 @@ function buildStoreFilterChips(containerEl, stores, { localStorageKey, onToggle 
   const shopifyStores = stores.filter((s) => s.type === "shopify");
   const mssqlStores = stores.filter((s) => s.type === "mssql");
 
-  const sortFn = (a, b) => getStoreBaseName(a.name).localeCompare(getStoreBaseName(b.name));
-  shopifyStores.sort(sortFn);
-  mssqlStores.sort(sortFn);
+  const shopifyNames = new Set(shopifyStores.map((s) => getStoreBaseName(s.name)));
+  const mssqlNames = new Set(mssqlStores.map((s) => getStoreBaseName(s.name)));
+
+  const sortFn = (pairedNames) => (a, b) => {
+    const aBase = getStoreBaseName(a.name);
+    const bBase = getStoreBaseName(b.name);
+    const aPaired = pairedNames.has(aBase);
+    const bPaired = pairedNames.has(bBase);
+    if (aPaired !== bPaired) return aPaired ? -1 : 1;
+    return aBase.localeCompare(bBase);
+  };
+
+  const pairedNames = new Set([...shopifyNames].filter((n) => mssqlNames.has(n)));
+  shopifyStores.sort(sortFn(pairedNames));
+  mssqlStores.sort(sortFn(pairedNames));
 
   const savedStores = (() => {
     try {
