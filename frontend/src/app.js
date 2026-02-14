@@ -5473,9 +5473,9 @@ function displayPriceResults(upc, prices, siblingPrices) {
 
   prices.forEach((p) => {
     if (p.store_type === "mssql") {
-      const tr = document.createElement("tr");
-      if (!p.product_found) tr.classList.add("not-found-row");
+      if (!p.product_found) return;
 
+      const tr = document.createElement("tr");
       tr.dataset.storeId = p.store_id;
       tr.dataset.storeType = "mssql";
       tr.dataset.barcode = upc;
@@ -5488,28 +5488,19 @@ function displayPriceResults(upc, prices, siblingPrices) {
       const mssqlDesc = p.product_description ? escapeHtml(p.product_description) : "-";
       const mPrice = p.unit_price != null ? parseFloat(p.unit_price) : null;
       const mCost = p.unit_cost != null ? parseFloat(p.unit_cost) : null;
-      const mMarkup = p.product_found ? formatMarkup(mPrice, mCost) : { text: "-", color: "" };
-      const mCostMarkup = p.product_found ? formatCostMarkup(mCost, primaryCost, p.store_id) : { text: "-", color: "" };
+      const mMarkup = formatMarkup(mPrice, mCost);
+      const mCostMarkup = formatCostMarkup(mCost, primaryCost, p.store_id);
       tr.innerHTML = `
         <td>${escapeHtml(p.store_name)}</td>
-        <td style="font-size: 0.75rem; color: var(--text-secondary)">${p.product_found ? mssqlDesc : "Not Found"}</td>
-        <td>${p.product_found ? '<input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="' + currentPrice + '">' : ""}</td>
-        <td>${p.product_found ? '<input type="number" class="dark-input price-input new-cost" step="0.01" min="0" placeholder="' + currentCost + '">' : ""}</td>
+        <td style="font-size: 0.75rem; color: var(--text-secondary)">${mssqlDesc}</td>
+        <td><input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="${currentPrice}"></td>
+        <td><input type="number" class="dark-input price-input new-cost" step="0.01" min="0" placeholder="${currentCost}"></td>
         ${markupTd(mMarkup)}
         ${markupTd(mCostMarkup)}
       `;
       tbody.appendChild(tr);
     } else if (p.store_type === "shopify") {
       if (!p.product_found || !p.variants || p.variants.length === 0) {
-        const tr = document.createElement("tr");
-        tr.classList.add("not-found-row");
-        tr.dataset.storeId = p.store_id;
-        tr.innerHTML = `
-          <td>${escapeHtml(p.store_name)}</td>
-          <td style="color: var(--text-tertiary); font-size: 0.75rem">-</td>
-          <td colspan="4" style="color: var(--text-tertiary)">Not Found</td>
-        `;
-        tbody.appendChild(tr);
         return;
       }
 
@@ -5568,36 +5559,29 @@ function displayPriceResults(upc, prices, siblingPrices) {
       tbody.appendChild(headerTr);
 
       group.rows.forEach((sp) => {
+        if (!sp.product_found) return;
+
         const tr = document.createElement("tr");
         tr.classList.add("sibling-row");
         tr.dataset.storeId = sp.store_id;
         tr.dataset.storeType = "mssql";
         tr.dataset.barcode = sp.sibling_barcode;
 
-        if (!sp.product_found) {
-          tr.classList.add("not-found-row");
-          tr.innerHTML = `
-            <td>${escapeHtml(sp.store_name)}</td>
-            <td style="color: var(--text-tertiary); font-size: 0.75rem">-</td>
-            <td colspan="4" style="color: var(--text-tertiary)">Not Found</td>
-          `;
-        } else {
-          const currentPrice = sp.unit_price != null ? parseFloat(sp.unit_price).toFixed(2) : "-";
-          const currentCost = sp.unit_cost != null ? parseFloat(sp.unit_cost).toFixed(2) : "-";
-          const spPrice = sp.unit_price != null ? parseFloat(sp.unit_price) : null;
-          const spCost = sp.unit_cost != null ? parseFloat(sp.unit_cost) : null;
-          const spMarkup = formatMarkup(spPrice, spCost);
-          const spCostMarkup = formatCostMarkup(spCost, primaryCost, sp.store_id);
+        const currentPrice = sp.unit_price != null ? parseFloat(sp.unit_price).toFixed(2) : "-";
+        const currentCost = sp.unit_cost != null ? parseFloat(sp.unit_cost).toFixed(2) : "-";
+        const spPrice = sp.unit_price != null ? parseFloat(sp.unit_price) : null;
+        const spCost = sp.unit_cost != null ? parseFloat(sp.unit_cost) : null;
+        const spMarkup = formatMarkup(spPrice, spCost);
+        const spCostMarkup = formatCostMarkup(spCost, primaryCost, sp.store_id);
 
-          tr.innerHTML = `
-            <td>${escapeHtml(sp.store_name)}</td>
-            <td style="color: var(--text-tertiary); font-size: 0.75rem">${escapeHtml(sp.product_description || "-")}</td>
-            <td><input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="${currentPrice}"></td>
-            <td><input type="number" class="dark-input price-input new-cost" step="0.01" min="0" placeholder="${currentCost}"></td>
-            ${markupTd(spMarkup)}
-            ${markupTd(spCostMarkup)}
-          `;
-        }
+        tr.innerHTML = `
+          <td>${escapeHtml(sp.store_name)}</td>
+          <td style="color: var(--text-tertiary); font-size: 0.75rem">${escapeHtml(sp.product_description || "-")}</td>
+          <td><input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="${currentPrice}"></td>
+          <td><input type="number" class="dark-input price-input new-cost" step="0.01" min="0" placeholder="${currentCost}"></td>
+          ${markupTd(spMarkup)}
+          ${markupTd(spCostMarkup)}
+        `;
         tbody.appendChild(tr);
       });
     }
@@ -5668,7 +5652,7 @@ function fillAllPrices() {
   const newCost = document.getElementById("price-fill-all-cost").value;
 
   document
-    .querySelectorAll('#price-updates-tbody tr:not(.not-found-row):not(.sibling-header-row):not([style*="display: none"])')
+    .querySelectorAll('#price-updates-tbody tr:not(.sibling-header-row):not([style*="display: none"])')
     .forEach((tr) => {
       if (newPrice !== "") {
         const priceInput = tr.querySelector(".new-price");
@@ -5692,7 +5676,6 @@ async function updatePrices() {
   const rows = document.querySelectorAll("#price-updates-tbody tr");
 
   rows.forEach((tr) => {
-    if (tr.classList.contains("not-found-row")) return;
     if (tr.classList.contains("sibling-header-row")) return;
     if (tr.style.display === "none") return;
 
