@@ -131,11 +131,17 @@ function showToast(message, type = "info") {
 
   // Set color based on type
   if (type === "success") {
-    toast.style.background = "var(--success)";
-    toast.style.color = "#fff";
+    toast.style.background = "rgba(16, 185, 129, 0.15)";
+    toast.style.color = "var(--success)";
+    toast.style.border = "1px solid rgba(16, 185, 129, 0.3)";
   } else if (type === "error") {
-    toast.style.background = "var(--error)";
-    toast.style.color = "#fff";
+    toast.style.background = "rgba(239, 68, 68, 0.15)";
+    toast.style.color = "var(--error)";
+    toast.style.border = "1px solid rgba(239, 68, 68, 0.3)";
+  } else if (type === "warning") {
+    toast.style.background = "rgba(245, 158, 11, 0.15)";
+    toast.style.color = "var(--warning, #f59e0b)";
+    toast.style.border = "1px solid rgba(245, 158, 11, 0.3)";
   } else {
     toast.style.background = "var(--bg-secondary)";
     toast.style.color = "var(--text-primary)";
