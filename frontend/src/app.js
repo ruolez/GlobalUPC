@@ -5660,6 +5660,26 @@ function applyStoreFilters() {
   });
 }
 
+function resetPriceUpdates() {
+  document.getElementById("price-updates-upc-input").value = "";
+  document.getElementById("price-updates-desc-input").value = "";
+  document.getElementById("price-updates-results").style.display = "none";
+  document.getElementById("price-updates-progress").style.display = "none";
+  document.getElementById("price-updates-update-progress").style.display = "none";
+  document.getElementById("price-updates-loading").style.display = "none";
+  document.getElementById("price-updates-tbody").innerHTML = "";
+  document.getElementById("price-store-filters").innerHTML = "";
+  document.getElementById("price-fill-all-price").value = "";
+  document.getElementById("price-fill-all-cost").value = "";
+  hidePriceDescriptionDropdown();
+  priceUpdatesState.prices = [];
+  priceUpdatesState.siblingPrices = [];
+  priceUpdatesState.isSearching = false;
+  priceUpdatesState.isUpdating = false;
+  const descInput = document.getElementById("price-updates-desc-input");
+  if (descInput) descInput.focus();
+}
+
 function fillAllPrices() {
   const newPrice = document.getElementById("price-fill-all-price").value;
   const newCost = document.getElementById("price-fill-all-cost").value;
@@ -5989,6 +6009,9 @@ document
 document
   .getElementById("price-updates-search-btn")
   ?.addEventListener("click", searchPriceUpdates);
+document
+  .getElementById("price-updates-reset-btn")
+  ?.addEventListener("click", resetPriceUpdates);
 document
   .getElementById("price-updates-upc-input")
   ?.addEventListener("keydown", (e) => {
