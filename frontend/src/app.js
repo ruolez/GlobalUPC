@@ -6260,8 +6260,13 @@ function displayPriceHistory(batches, total) {
       indentCell.textContent = "";
       detailRow.appendChild(indentCell);
 
-      const emptyTimestampCell = document.createElement("td");
-      detailRow.appendChild(emptyTimestampCell);
+      const descCell = document.createElement("td");
+      if (entry.product_description) {
+        descCell.style.color = "var(--text-secondary)";
+        descCell.style.fontSize = "0.75rem";
+        descCell.textContent = entry.product_description;
+      }
+      detailRow.appendChild(descCell);
 
       const storeCell = document.createElement("td");
       const storeBadge = document.createElement("span");
@@ -6276,13 +6281,6 @@ function displayPriceHistory(batches, total) {
       storeBadge.style.color = "var(--text-primary)";
       storeCell.appendChild(storeBadge);
       storeCell.appendChild(document.createTextNode(entry.store_name));
-      if (entry.product_description) {
-        const descSpan = document.createElement("span");
-        descSpan.style.color = "var(--text-secondary)";
-        descSpan.style.fontSize = "0.8125rem";
-        descSpan.textContent = ` — ${entry.product_description}`;
-        storeCell.appendChild(descSpan);
-      }
       if (entry.variant_title) {
         const variantSpan = document.createElement("span");
         variantSpan.style.color = "var(--text-tertiary)";
