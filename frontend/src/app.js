@@ -6276,6 +6276,13 @@ function displayPriceHistory(batches, total) {
       storeBadge.style.color = "var(--text-primary)";
       storeCell.appendChild(storeBadge);
       storeCell.appendChild(document.createTextNode(entry.store_name));
+      if (entry.product_description) {
+        const descSpan = document.createElement("span");
+        descSpan.style.color = "var(--text-secondary)";
+        descSpan.style.fontSize = "0.8125rem";
+        descSpan.textContent = ` — ${entry.product_description}`;
+        storeCell.appendChild(descSpan);
+      }
       if (entry.variant_title) {
         const variantSpan = document.createElement("span");
         variantSpan.style.color = "var(--text-tertiary)";
