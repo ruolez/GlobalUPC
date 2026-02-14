@@ -1222,11 +1222,7 @@ body {
   font-style: italic;
 }
 
-.variant-subrow td:first-child {
-  padding-left: 1.5rem;
-}
-
-.store-group-header td {
+.store-header-row td {
   background: var(--bg-secondary);
   font-weight: 600;
   font-size: 0.75rem;
@@ -1242,13 +1238,6 @@ body {
 
 .sibling-row {
   border-left: 3px solid var(--text-tertiary);
-}
-
-.sibling-header-row td {
-  background: var(--bg-tertiary);
-  font-style: italic;
-  font-size: 0.75rem;
-  color: var(--text-tertiary);
 }
 
 /* Store Filter Chips */

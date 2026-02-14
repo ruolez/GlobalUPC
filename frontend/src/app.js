@@ -5471,142 +5471,147 @@ function displayPriceResults(upc, prices, siblingPrices) {
     return `<td style="${m.color ? "color:" + m.color : ""}">${m.text}</td>`;
   }
 
+  // Build store-grouped data structure
+  const storeOrder = [];
+  const storeData = {};
+
   prices.forEach((p) => {
-    if (p.store_type === "mssql") {
-      if (!p.product_found) return;
-
-      const tr = document.createElement("tr");
-      tr.dataset.storeId = p.store_id;
-      tr.dataset.storeType = "mssql";
-      tr.dataset.barcode = upc;
-
-      const currentPrice =
-        p.unit_price != null ? parseFloat(p.unit_price).toFixed(2) : "-";
-      const currentCost =
-        p.unit_cost != null ? parseFloat(p.unit_cost).toFixed(2) : "-";
-
-      const mssqlDesc = p.product_description ? escapeHtml(p.product_description) : "-";
-      const mPrice = p.unit_price != null ? parseFloat(p.unit_price) : null;
-      const mCost = p.unit_cost != null ? parseFloat(p.unit_cost) : null;
-      const mMarkup = formatMarkup(mPrice, mCost);
-      const mCostMarkup = formatCostMarkup(mCost, primaryCost, p.store_id);
-      tr.innerHTML = `
-        <td>${escapeHtml(p.store_name)}</td>
-        <td style="font-size: 0.75rem; color: var(--text-secondary)">${mssqlDesc}</td>
-        <td><input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="${currentPrice}"></td>
-        <td><input type="number" class="dark-input price-input new-cost" step="0.01" min="0" placeholder="${currentCost}"></td>
-        ${markupTd(mMarkup)}
-        ${markupTd(mCostMarkup)}
-      `;
-      tbody.appendChild(tr);
-    } else if (p.store_type === "shopify") {
-      if (!p.product_found || !p.variants || p.variants.length === 0) {
-        return;
-      }
-
-      p.variants.forEach((v, idx) => {
-        const tr = document.createElement("tr");
-        tr.classList.add("variant-subrow");
-        if (v.is_searched) {
-          tr.classList.add("searched-variant");
-        }
-        tr.dataset.storeId = p.store_id;
-        tr.dataset.storeType = "shopify";
-        tr.dataset.variantId = v.variant_id;
-        tr.dataset.productId = v.product_id;
-        tr.dataset.barcode = v.barcode || "";
-
-        const vPrice =
-          v.price != null ? parseFloat(v.price).toFixed(2) : "-";
-        const vCost = v.cost != null ? parseFloat(v.cost).toFixed(2) : "-";
-
-        const variantLabel = escapeHtml(v.variant_title || "Default");
-        const barcodeLabel = v.barcode ? ` [${escapeHtml(v.barcode)}]` : "";
-        const searchedTag = v.is_searched ? ' <span style="color: var(--accent-primary); font-size: 0.625rem;">(searched)</span>' : "";
-
-        const vPriceNum = v.price != null ? parseFloat(v.price) : null;
-        const vCostNum = v.cost != null ? parseFloat(v.cost) : null;
-        const vMarkup = formatMarkup(vPriceNum, vCostNum);
-        const vCostMarkup = formatCostMarkup(vCostNum, primaryCost, p.store_id);
-        tr.innerHTML = `
-          <td>${idx === 0 ? escapeHtml(p.store_name) : ""}</td>
-          <td style="font-size: 0.75rem; color: var(--text-secondary)">${variantLabel}${barcodeLabel}${searchedTag}</td>
-          <td><input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="${vPrice}"></td>
-          <td><input type="number" class="dark-input price-input new-cost" step="0.01" min="0" placeholder="${vCost}"></td>
-          ${markupTd(vMarkup)}
-          ${markupTd(vCostMarkup)}
-        `;
-        tbody.appendChild(tr);
-      });
+    if (!storeData[p.store_id]) {
+      storeData[p.store_id] = {
+        storeName: p.store_name,
+        storeType: p.store_type,
+        found: p.product_found,
+        mainRows: [],
+        siblingRows: [],
+      };
+      storeOrder.push(p.store_id);
+    }
+    if (p.product_found) {
+      storeData[p.store_id].mainRows.push(p);
     }
   });
 
-  // Render sibling MSSQL rows grouped by barcode
-  if (siblingPrices && siblingPrices.length > 0) {
-    const grouped = {};
-    siblingPrices.forEach((sp) => {
-      const key = sp.sibling_barcode;
-      if (!grouped[key]) {
-        grouped[key] = { variant_title: sp.sibling_variant_title, rows: [] };
-      }
-      grouped[key].rows.push(sp);
-    });
-
-    for (const [barcode, group] of Object.entries(grouped)) {
-      const headerTr = document.createElement("tr");
-      headerTr.classList.add("sibling-header-row");
-      headerTr.innerHTML = `<td colspan="6">Sibling: ${escapeHtml(barcode)} (${escapeHtml(group.variant_title || "Unknown")})</td>`;
-      tbody.appendChild(headerTr);
-
-      group.rows.forEach((sp) => {
-        if (!sp.product_found) return;
-
-        const tr = document.createElement("tr");
-        tr.classList.add("sibling-row");
-        tr.dataset.storeId = sp.store_id;
-        tr.dataset.storeType = "mssql";
-        tr.dataset.barcode = sp.sibling_barcode;
-
-        const currentPrice = sp.unit_price != null ? parseFloat(sp.unit_price).toFixed(2) : "-";
-        const currentCost = sp.unit_cost != null ? parseFloat(sp.unit_cost).toFixed(2) : "-";
-        const spPrice = sp.unit_price != null ? parseFloat(sp.unit_price) : null;
-        const spCost = sp.unit_cost != null ? parseFloat(sp.unit_cost) : null;
-        const spMarkup = formatMarkup(spPrice, spCost);
-        const spCostMarkup = formatCostMarkup(spCost, primaryCost, sp.store_id);
-
-        tr.innerHTML = `
-          <td>${escapeHtml(sp.store_name)}</td>
-          <td style="color: var(--text-tertiary); font-size: 0.75rem">${escapeHtml(sp.product_description || "-")}</td>
-          <td><input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="${currentPrice}"></td>
-          <td><input type="number" class="dark-input price-input new-cost" step="0.01" min="0" placeholder="${currentCost}"></td>
-          ${markupTd(spMarkup)}
-          ${markupTd(spCostMarkup)}
-        `;
-        tbody.appendChild(tr);
-      });
-    }
-  }
-
-  // Build store filter chips
-  const storeMap = {};
-  prices.forEach((p) => {
-    storeMap[p.store_id] = { name: p.store_name, found: p.product_found };
-  });
   if (siblingPrices) {
     siblingPrices.forEach((sp) => {
-      if (!storeMap[sp.store_id]) {
-        storeMap[sp.store_id] = { name: sp.store_name, found: sp.product_found };
+      if (!storeData[sp.store_id]) {
+        storeData[sp.store_id] = {
+          storeName: sp.store_name,
+          storeType: "mssql",
+          found: sp.product_found,
+          mainRows: [],
+          siblingRows: [],
+        };
+        storeOrder.push(sp.store_id);
+      }
+      if (sp.product_found) {
+        storeData[sp.store_id].siblingRows.push(sp);
       }
     });
   }
 
+  // Render per store
+  storeOrder.forEach((storeId) => {
+    const sd = storeData[storeId];
+    if (sd.mainRows.length === 0 && sd.siblingRows.length === 0) return;
+
+    const headerTr = document.createElement("tr");
+    headerTr.classList.add("store-header-row");
+    headerTr.dataset.storeId = storeId;
+    headerTr.innerHTML = `<td colspan="5">${escapeHtml(sd.storeName)}</td>`;
+    tbody.appendChild(headerTr);
+
+    // Main rows
+    sd.mainRows.forEach((p) => {
+      if (p.store_type === "mssql") {
+        const tr = document.createElement("tr");
+        tr.dataset.storeId = p.store_id;
+        tr.dataset.storeType = "mssql";
+        tr.dataset.barcode = upc;
+
+        const currentPrice = p.unit_price != null ? parseFloat(p.unit_price).toFixed(2) : "-";
+        const currentCost = p.unit_cost != null ? parseFloat(p.unit_cost).toFixed(2) : "-";
+        const mssqlDesc = p.product_description ? escapeHtml(p.product_description) : "-";
+        const mPrice = p.unit_price != null ? parseFloat(p.unit_price) : null;
+        const mCost = p.unit_cost != null ? parseFloat(p.unit_cost) : null;
+        const mMarkup = formatMarkup(mPrice, mCost);
+        const mCostMarkup = formatCostMarkup(mCost, primaryCost, p.store_id);
+        tr.innerHTML = `
+          <td style="font-size: 0.75rem; color: var(--text-secondary)">${mssqlDesc}</td>
+          <td><input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="${currentPrice}"></td>
+          <td><input type="number" class="dark-input price-input new-cost" step="0.01" min="0" placeholder="${currentCost}"></td>
+          ${markupTd(mMarkup)}
+          ${markupTd(mCostMarkup)}
+        `;
+        tbody.appendChild(tr);
+      } else if (p.store_type === "shopify") {
+        p.variants.forEach((v) => {
+          const tr = document.createElement("tr");
+          tr.classList.add("variant-subrow");
+          if (v.is_searched) tr.classList.add("searched-variant");
+          tr.dataset.storeId = p.store_id;
+          tr.dataset.storeType = "shopify";
+          tr.dataset.variantId = v.variant_id;
+          tr.dataset.productId = v.product_id;
+          tr.dataset.barcode = v.barcode || "";
+
+          const vPrice = v.price != null ? parseFloat(v.price).toFixed(2) : "-";
+          const vCost = v.cost != null ? parseFloat(v.cost).toFixed(2) : "-";
+          const variantLabel = escapeHtml(v.variant_title || "Default");
+          const barcodeLabel = v.barcode ? ` [${escapeHtml(v.barcode)}]` : "";
+          const searchedTag = v.is_searched ? ' <span style="color: var(--accent-primary); font-size: 0.625rem;">(searched)</span>' : "";
+          const vPriceNum = v.price != null ? parseFloat(v.price) : null;
+          const vCostNum = v.cost != null ? parseFloat(v.cost) : null;
+          const vMarkup = formatMarkup(vPriceNum, vCostNum);
+          const vCostMarkup = formatCostMarkup(vCostNum, primaryCost, p.store_id);
+          tr.innerHTML = `
+            <td style="font-size: 0.75rem; color: var(--text-secondary)">${variantLabel}${barcodeLabel}${searchedTag}</td>
+            <td><input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="${vPrice}"></td>
+            <td><input type="number" class="dark-input price-input new-cost" step="0.01" min="0" placeholder="${vCost}"></td>
+            ${markupTd(vMarkup)}
+            ${markupTd(vCostMarkup)}
+          `;
+          tbody.appendChild(tr);
+        });
+      }
+    });
+
+    // Sibling rows
+    sd.siblingRows.forEach((sp) => {
+      const tr = document.createElement("tr");
+      tr.classList.add("sibling-row");
+      tr.dataset.storeId = sp.store_id;
+      tr.dataset.storeType = "mssql";
+      tr.dataset.barcode = sp.sibling_barcode;
+
+      const currentPrice = sp.unit_price != null ? parseFloat(sp.unit_price).toFixed(2) : "-";
+      const currentCost = sp.unit_cost != null ? parseFloat(sp.unit_cost).toFixed(2) : "-";
+      const spPrice = sp.unit_price != null ? parseFloat(sp.unit_price) : null;
+      const spCost = sp.unit_cost != null ? parseFloat(sp.unit_cost) : null;
+      const spMarkup = formatMarkup(spPrice, spCost);
+      const spCostMarkup = formatCostMarkup(spCost, primaryCost, sp.store_id);
+      const siblingLabel = `[${escapeHtml(sp.sibling_barcode)}] ${escapeHtml(sp.product_description || sp.sibling_variant_title || "-")}`;
+
+      tr.innerHTML = `
+        <td style="color: var(--text-tertiary); font-size: 0.75rem">${siblingLabel}</td>
+        <td><input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="${currentPrice}"></td>
+        <td><input type="number" class="dark-input price-input new-cost" step="0.01" min="0" placeholder="${currentCost}"></td>
+        ${markupTd(spMarkup)}
+        ${markupTd(spCostMarkup)}
+      `;
+      tbody.appendChild(tr);
+    });
+  });
+
+  // Build store filter chips
   const filtersEl = document.getElementById("price-store-filters");
   filtersEl.innerHTML = "";
-  for (const [storeId, info] of Object.entries(storeMap)) {
+  for (const storeId of storeOrder) {
+    const sd = storeData[storeId];
+    const hasRows = sd.mainRows.length > 0 || sd.siblingRows.length > 0;
     const chip = document.createElement("span");
-    chip.className = "store-filter-chip" + (info.found ? " active" : " not-found");
+    chip.className = "store-filter-chip" + (hasRows ? " active" : " not-found");
     chip.dataset.storeId = storeId;
-    chip.textContent = info.name;
+    chip.textContent = sd.storeName;
     chip.addEventListener("click", () => {
       chip.classList.toggle("active");
       chip.classList.toggle("not-found", !chip.classList.contains("active"));
@@ -5626,18 +5631,18 @@ function applyStoreFilters() {
   const rows = Array.from(tbody.children);
 
   rows.forEach((tr) => {
-    if (tr.classList.contains("sibling-header-row")) return;
+    if (tr.classList.contains("store-header-row")) return;
     if (tr.dataset.storeId) {
       tr.style.display = activeIds.has(tr.dataset.storeId) ? "" : "none";
     }
   });
 
-  // Hide sibling headers when all their child rows are hidden
+  // Hide store headers when all their child rows are hidden
   rows.forEach((tr, i) => {
-    if (!tr.classList.contains("sibling-header-row")) return;
+    if (!tr.classList.contains("store-header-row")) return;
     let anyVisible = false;
     for (let j = i + 1; j < rows.length; j++) {
-      if (rows[j].classList.contains("sibling-header-row")) break;
+      if (rows[j].classList.contains("store-header-row")) break;
       if (rows[j].style.display !== "none") {
         anyVisible = true;
         break;
@@ -5652,7 +5657,7 @@ function fillAllPrices() {
   const newCost = document.getElementById("price-fill-all-cost").value;
 
   document
-    .querySelectorAll('#price-updates-tbody tr:not(.sibling-header-row):not([style*="display: none"])')
+    .querySelectorAll('#price-updates-tbody tr:not(.store-header-row):not([style*="display: none"])')
     .forEach((tr) => {
       if (newPrice !== "") {
         const priceInput = tr.querySelector(".new-price");
@@ -5676,7 +5681,7 @@ async function updatePrices() {
   const rows = document.querySelectorAll("#price-updates-tbody tr");
 
   rows.forEach((tr) => {
-    if (tr.classList.contains("sibling-header-row")) return;
+    if (tr.classList.contains("store-header-row")) return;
     if (tr.style.display === "none") return;
 
     const storeId = parseInt(tr.dataset.storeId);
