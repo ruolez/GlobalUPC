@@ -5362,11 +5362,18 @@ async function searchPriceUpdates() {
   const resultsEl = document.getElementById("price-updates-results");
   const overlay = document.getElementById("price-loading-overlay");
   const overlayText = document.getElementById("price-loading-text");
+  const overlayFill = document.getElementById("price-loading-fill");
+  const overlayStatus = document.getElementById("price-loading-status");
 
   searchBtn.disabled = true;
   resultsEl.style.display = "none";
   overlayText.textContent = "Fetching prices...";
+  overlayFill.style.width = "0%";
+  overlayStatus.textContent = "";
   overlay.style.display = "flex";
+
+  const totalStores = config.storeIds.length;
+  let completedStores = 0;
 
   try {
     const response = await fetch(
@@ -5398,6 +5405,14 @@ async function searchPriceUpdates() {
         if (line.startsWith("event: ")) continue;
         if (line.startsWith("data: ")) {
           const data = JSON.parse(line.substring(6));
+
+          if (data.status === "searching" && data.message) {
+            overlayStatus.textContent = data.message;
+          } else if (data.status === "found" || data.status === "not_found" || data.status === "error") {
+            completedStores++;
+            overlayFill.style.width = `${(completedStores / totalStores) * 100}%`;
+            overlayStatus.textContent = `Store ${completedStores} of ${totalStores}`;
+          }
 
           if (data.prices) {
             priceUpdatesState.prices = data.prices;
@@ -5799,10 +5814,17 @@ async function updatePrices() {
   const updateBtn = document.getElementById("price-updates-update-btn");
   const overlay = document.getElementById("price-loading-overlay");
   const overlayText = document.getElementById("price-loading-text");
+  const overlayFill = document.getElementById("price-loading-fill");
+  const overlayStatus = document.getElementById("price-loading-status");
 
   updateBtn.disabled = true;
   overlayText.textContent = "Updating prices...";
+  overlayFill.style.width = "0%";
+  overlayStatus.textContent = "";
   overlay.style.display = "flex";
+
+  const totalUpdates = updates.length;
+  let completedUpdates = 0;
 
   try {
     const response = await fetch(`${API_BASE}/price-updates/update/stream`, {
@@ -5827,6 +5849,14 @@ async function updatePrices() {
         if (line.startsWith("event: ")) continue;
         if (line.startsWith("data: ")) {
           const data = JSON.parse(line.substring(6));
+
+          if (data.status === "updating" && data.message) {
+            overlayStatus.textContent = data.message;
+          } else if (data.status === "updated" || data.status === "error") {
+            completedUpdates++;
+            overlayFill.style.width = `${(completedUpdates / totalUpdates) * 100}%`;
+            overlayStatus.textContent = `Store ${completedUpdates} of ${totalUpdates}`;
+          }
 
           if (data.results) {
             const succeeded = data.results.filter((r) => r.success).length;
