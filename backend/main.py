@@ -3209,18 +3209,13 @@ async def fetch_prices_stream(request: PriceSearchRequest, db: Session = Depends
         if request.include_sibling_barcodes:
             sibling_barcodes = set()
             sibling_barcode_info = {}
-            source_store_ids = set()
             for p in prices:
                 if p["store_type"] == "shopify" and p.get("variants"):
-                    contributed = False
                     for v in p["variants"]:
                         bc = (v.get("barcode") or "").strip()
-                        if bc and not v.get("is_searched") and bc != upc:
+                        if bc and bc != upc:
                             sibling_barcodes.add(bc)
                             sibling_barcode_info[bc] = v.get("variant_title", "")
-                            contributed = True
-                    if contributed:
-                        source_store_ids.add(p["store_id"])
 
             if sibling_barcodes:
                 mssql_store_ids = [sid for sid in request.store_ids if sid in {p["store_id"] for p in prices if p["store_type"] == "mssql"}]
@@ -3277,13 +3272,14 @@ async def fetch_prices_stream(request: PriceSearchRequest, db: Session = Depends
                 # Enhancement C: Sibling Shopify lookups
                 target_shopify = [
                     p for p in prices
-                    if p["store_type"] == "shopify" and p["store_id"] not in source_store_ids
+                    if p["store_type"] == "shopify"
                 ]
                 for target_entry in target_shopify:
                     store = db.query(Store).filter(Store.id == target_entry["store_id"], Store.is_active == True).first()
                     if not store or not store.shopify_connection:
                         continue
                     conn = store.shopify_connection
+                    idx = prices.index(target_entry)
                     for bc in sorted(sibling_barcodes):
                         yield f"event: progress\ndata: {json.dumps({'status': 'searching', 'message': f'Searching sibling barcode {bc} in {store.name}...'})}\n\n"
                         try:
@@ -3319,12 +3315,6 @@ async def fetch_prices_stream(request: PriceSearchRequest, db: Session = Depends
                         if not all_variants:
                             continue
 
-                        searched_price = None
-                        for v in variants:
-                            if v.get("price") is not None:
-                                searched_price = str(v["price"])
-                                break
-
                         seen = set()
                         merged_variants = []
                         for v in all_variants:
@@ -3336,14 +3326,12 @@ async def fetch_prices_stream(request: PriceSearchRequest, db: Session = Depends
                             if v["is_searched"]:
                                 merged_variants.append(v)
                             elif v.get("barcode") and v["barcode"].strip():
-                                if searched_price is not None and str(v.get("price")) == searched_price:
-                                    merged_variants.append(v)
+                                merged_variants.append(v)
 
                         if not merged_variants:
                             continue
 
-                        idx = prices.index(target_entry)
-                        if not target_entry["product_found"]:
+                        if not prices[idx]["product_found"]:
                             prices[idx] = {
                                 "store_id": store.id,
                                 "store_name": store.name,
@@ -3355,9 +3343,8 @@ async def fetch_prices_stream(request: PriceSearchRequest, db: Session = Depends
                                 "variants": merged_variants,
                             }
                             yield f"event: progress\ndata: {json.dumps({'status': 'found', 'message': f'Found sibling match ({len(merged_variants)} variant(s)) in {store.name}'})}\n\n"
-                            break
                         else:
-                            existing_variant_ids = {v["variant_id"] for v in (target_entry.get("variants") or [])}
+                            existing_variant_ids = {v["variant_id"] for v in (prices[idx].get("variants") or [])}
                             new_variants = [v for v in merged_variants if v["variant_id"] not in existing_variant_ids]
                             if new_variants:
                                 prices[idx]["variants"] = (prices[idx].get("variants") or []) + new_variants
