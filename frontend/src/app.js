@@ -5067,6 +5067,119 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
+function getStoreBaseName(storeName) {
+  return storeName.replace(/\s+(BackOffice|Shopify)$/i, "").trim();
+}
+
+function buildStoreFilterChips(containerEl, stores, { localStorageKey, onToggle }) {
+  containerEl.innerHTML = "";
+
+  const grid = document.createElement("div");
+  grid.className = "store-filter-grid";
+
+  const controlsRow = document.createElement("div");
+  controlsRow.className = "store-filter-controls";
+
+  const selectAllBtn = document.createElement("span");
+  selectAllBtn.className = "store-filter-chip store-filter-control";
+  selectAllBtn.textContent = "\u2611 All";
+  selectAllBtn.title = "Select all stores";
+  selectAllBtn.addEventListener("click", () => {
+    containerEl.querySelectorAll(".store-filter-chip:not(.store-filter-control)").forEach((c) => {
+      c.classList.add("active");
+      c.classList.remove("not-found");
+    });
+    onToggle();
+  });
+  controlsRow.appendChild(selectAllBtn);
+
+  const deselectAllBtn = document.createElement("span");
+  deselectAllBtn.className = "store-filter-chip store-filter-control";
+  deselectAllBtn.textContent = "\u2610 None";
+  deselectAllBtn.title = "Deselect all stores";
+  deselectAllBtn.addEventListener("click", () => {
+    containerEl.querySelectorAll(".store-filter-chip:not(.store-filter-control)").forEach((c) => {
+      c.classList.remove("active");
+      c.classList.add("not-found");
+    });
+    onToggle();
+  });
+  controlsRow.appendChild(deselectAllBtn);
+
+  grid.appendChild(controlsRow);
+
+  const shopifyStores = stores.filter((s) => s.type === "shopify");
+  const mssqlStores = stores.filter((s) => s.type === "mssql");
+
+  const sortFn = (a, b) => getStoreBaseName(a.name).localeCompare(getStoreBaseName(b.name));
+  shopifyStores.sort(sortFn);
+  mssqlStores.sort(sortFn);
+
+  const savedStores = (() => {
+    try {
+      const raw = localStorage.getItem(localStorageKey);
+      return raw ? new Set(JSON.parse(raw)) : null;
+    } catch {
+      return null;
+    }
+  })();
+
+  function buildRow(label, cssClass, storeList) {
+    if (storeList.length === 0) return;
+
+    const row = document.createElement("div");
+    row.className = "store-filter-row";
+
+    const rowLabel = document.createElement("span");
+    rowLabel.className = "store-filter-row-label " + cssClass;
+    rowLabel.textContent = label;
+    rowLabel.title = "Toggle all " + label + " stores";
+    rowLabel.addEventListener("click", () => {
+      const chips = row.querySelectorAll(".store-filter-chip:not(.store-filter-control)");
+      const allActive = Array.from(chips).every((c) => c.classList.contains("active"));
+      chips.forEach((c) => {
+        if (allActive) {
+          c.classList.remove("active");
+          c.classList.add("not-found");
+        } else {
+          c.classList.add("active");
+          c.classList.remove("not-found");
+        }
+      });
+      onToggle();
+    });
+    row.appendChild(rowLabel);
+
+    const chipsContainer = document.createElement("div");
+    chipsContainer.className = "store-filter-row-chips";
+
+    storeList.forEach((store) => {
+      const isActive = savedStores ? savedStores.has(String(store.id)) : store.hasRows;
+      const chip = document.createElement("span");
+      chip.className = "store-filter-chip" + (isActive ? " active" : " not-found");
+      chip.dataset.storeId = store.id;
+      chip.textContent = getStoreBaseName(store.name);
+      chip.title = store.name;
+      chip.addEventListener("click", () => {
+        chip.classList.toggle("active");
+        chip.classList.toggle("not-found", !chip.classList.contains("active"));
+        onToggle();
+      });
+      chipsContainer.appendChild(chip);
+    });
+
+    row.appendChild(chipsContainer);
+    grid.appendChild(row);
+  }
+
+  buildRow("SHOPIFY", "shopify", shopifyStores);
+  buildRow("MSSQL", "mssql", mssqlStores);
+
+  containerEl.appendChild(grid);
+
+  if (savedStores) onToggle();
+}
+
 // Event listeners for Item Tracker
 document
   .getElementById("save-item-tracker-config-btn")
@@ -5613,61 +5726,16 @@ function displayPriceResults(upc, prices, siblingPrices) {
 
   // Build store filter chips
   const filtersEl = document.getElementById("price-store-filters");
-  filtersEl.innerHTML = "";
-
-  // Select All / Deselect All controls
-  const selectAllBtn = document.createElement("span");
-  selectAllBtn.className = "store-filter-chip store-filter-control";
-  selectAllBtn.textContent = "☑ All";
-  selectAllBtn.title = "Select all stores";
-  selectAllBtn.addEventListener("click", () => {
-    filtersEl.querySelectorAll(".store-filter-chip:not(.store-filter-control)").forEach((c) => {
-      c.classList.add("active");
-      c.classList.remove("not-found");
-    });
-    applyStoreFilters();
+  const chipStores = storeOrder.map((id) => ({
+    id: String(id),
+    name: storeData[id].storeName,
+    type: storeData[id].storeType,
+    hasRows: storeData[id].mainRows.length > 0 || storeData[id].siblingRows.length > 0,
+  }));
+  buildStoreFilterChips(filtersEl, chipStores, {
+    localStorageKey: "priceActiveStores",
+    onToggle: applyStoreFilters,
   });
-  filtersEl.appendChild(selectAllBtn);
-
-  const deselectAllBtn = document.createElement("span");
-  deselectAllBtn.className = "store-filter-chip store-filter-control";
-  deselectAllBtn.textContent = "☐ None";
-  deselectAllBtn.title = "Deselect all stores";
-  deselectAllBtn.addEventListener("click", () => {
-    filtersEl.querySelectorAll(".store-filter-chip:not(.store-filter-control)").forEach((c) => {
-      c.classList.remove("active");
-      c.classList.add("not-found");
-    });
-    applyStoreFilters();
-  });
-  filtersEl.appendChild(deselectAllBtn);
-
-  const savedStores = (() => {
-    try {
-      const raw = localStorage.getItem("priceActiveStores");
-      return raw ? new Set(JSON.parse(raw)) : null;
-    } catch {
-      return null;
-    }
-  })();
-
-  for (const storeId of storeOrder) {
-    const sd = storeData[storeId];
-    const hasRows = sd.mainRows.length > 0 || sd.siblingRows.length > 0;
-    const isActive = savedStores ? savedStores.has(String(storeId)) : hasRows;
-    const chip = document.createElement("span");
-    chip.className = "store-filter-chip" + (isActive ? " active" : " not-found");
-    chip.dataset.storeId = storeId;
-    chip.textContent = sd.storeName;
-    chip.addEventListener("click", () => {
-      chip.classList.toggle("active");
-      chip.classList.toggle("not-found", !chip.classList.contains("active"));
-      applyStoreFilters();
-    });
-    filtersEl.appendChild(chip);
-  }
-
-  if (savedStores) applyStoreFilters();
 }
 
 function applyStoreFilters() {
@@ -6189,55 +6257,15 @@ async function loadPriceHistoryStores() {
   try {
     const stores = await apiRequest("/stores");
     const filtersEl = document.getElementById("price-history-store-filters");
-    filtersEl.innerHTML = "";
-
-    const savedStores = (() => {
-      try {
-        const raw = localStorage.getItem("priceActiveStores");
-        return raw ? new Set(JSON.parse(raw)) : null;
-      } catch {
-        return null;
-      }
-    })();
-
-    const selectAllBtn = document.createElement("span");
-    selectAllBtn.className = "store-filter-chip store-filter-control";
-    selectAllBtn.textContent = "☑ All";
-    selectAllBtn.title = "Select all stores";
-    selectAllBtn.addEventListener("click", () => {
-      filtersEl.querySelectorAll(".store-filter-chip:not(.store-filter-control)").forEach((c) => {
-        c.classList.add("active");
-        c.classList.remove("not-found");
-      });
-      saveHistoryStoreSelections();
-    });
-    filtersEl.appendChild(selectAllBtn);
-
-    const deselectAllBtn = document.createElement("span");
-    deselectAllBtn.className = "store-filter-chip store-filter-control";
-    deselectAllBtn.textContent = "☐ None";
-    deselectAllBtn.title = "Deselect all stores";
-    deselectAllBtn.addEventListener("click", () => {
-      filtersEl.querySelectorAll(".store-filter-chip:not(.store-filter-control)").forEach((c) => {
-        c.classList.remove("active");
-        c.classList.add("not-found");
-      });
-      saveHistoryStoreSelections();
-    });
-    filtersEl.appendChild(deselectAllBtn);
-
-    stores.forEach((store) => {
-      const isActive = savedStores ? savedStores.has(String(store.id)) : true;
-      const chip = document.createElement("span");
-      chip.className = "store-filter-chip" + (isActive ? " active" : " not-found");
-      chip.dataset.storeId = store.id;
-      chip.textContent = `${store.name} (${store.store_type})`;
-      chip.addEventListener("click", () => {
-        chip.classList.toggle("active");
-        chip.classList.toggle("not-found", !chip.classList.contains("active"));
-        saveHistoryStoreSelections();
-      });
-      filtersEl.appendChild(chip);
+    const chipStores = stores.map((s) => ({
+      id: String(s.id),
+      name: s.name,
+      type: s.store_type,
+      hasRows: true,
+    }));
+    buildStoreFilterChips(filtersEl, chipStores, {
+      localStorageKey: "priceActiveStores",
+      onToggle: saveHistoryStoreSelections,
     });
   } catch (e) {
     // Silently fail

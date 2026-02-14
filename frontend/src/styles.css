@@ -1289,6 +1289,64 @@ body {
   color: var(--text-primary);
 }
 
+/* Store Filter Grid Layout */
+.store-filter-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.store-filter-controls {
+  display: flex;
+  gap: 0.375rem;
+}
+
+.store-filter-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.625rem;
+}
+
+.store-filter-row-label {
+  min-width: 60px;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.625rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  user-select: none;
+  flex-shrink: 0;
+  text-align: center;
+}
+
+.store-filter-row-label.shopify {
+  background: rgba(99, 102, 241, 0.1);
+  color: var(--accent-primary);
+  border: 1px solid rgba(99, 102, 241, 0.2);
+}
+
+.store-filter-row-label.mssql {
+  background: rgba(16, 185, 129, 0.1);
+  color: var(--success);
+  border: 1px solid rgba(16, 185, 129, 0.2);
+}
+
+.store-filter-row-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+}
+
+#price-store-filters {
+  margin-bottom: 0.75rem;
+}
+
+#price-history-store-filters {
+  margin-top: 0.25rem;
+}
+
 /* Price Loading Overlay */
 .price-loading-overlay {
   position: fixed;
