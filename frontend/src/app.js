@@ -5440,6 +5440,37 @@ function displayPriceResults(upc, prices, siblingPrices) {
   const tbody = document.getElementById("price-updates-tbody");
   tbody.innerHTML = "";
 
+  const primaryStoreId = priceUpdatesState.config?.primaryStoreId;
+  let primaryCost = null;
+  const primaryEntry = prices.find((p) => p.store_id === primaryStoreId);
+  if (primaryEntry) {
+    if (primaryEntry.store_type === "mssql" && primaryEntry.product_found) {
+      primaryCost = primaryEntry.unit_cost != null ? parseFloat(primaryEntry.unit_cost) : null;
+    } else if (primaryEntry.store_type === "shopify" && primaryEntry.variants) {
+      const searchedVariant = primaryEntry.variants.find((v) => v.is_searched);
+      if (searchedVariant) primaryCost = searchedVariant.cost != null ? parseFloat(searchedVariant.cost) : null;
+    }
+  }
+
+  function formatMarkup(price, cost) {
+    if (price == null || cost == null || cost === 0) return { text: "-", color: "" };
+    const val = ((price - cost) / cost) * 100;
+    const color = val > 0 ? "var(--success)" : val < 0 ? "var(--danger)" : "";
+    return { text: val.toFixed(1) + "%", color };
+  }
+
+  function formatCostMarkup(storeCost, pCost, storeId) {
+    if (storeId === primaryStoreId) return { text: "-", color: "" };
+    if (storeCost == null || pCost == null || pCost === 0) return { text: "-", color: "" };
+    const val = ((storeCost - pCost) / pCost) * 100;
+    const color = val > 0 ? "var(--danger)" : val < 0 ? "var(--success)" : "";
+    return { text: val.toFixed(1) + "%", color };
+  }
+
+  function markupTd(m) {
+    return `<td style="${m.color ? "color:" + m.color : ""}">${m.text}</td>`;
+  }
+
   prices.forEach((p) => {
     if (p.store_type === "mssql") {
       const tr = document.createElement("tr");
@@ -5455,11 +5486,17 @@ function displayPriceResults(upc, prices, siblingPrices) {
         p.unit_cost != null ? parseFloat(p.unit_cost).toFixed(2) : "-";
 
       const mssqlDesc = p.product_description ? escapeHtml(p.product_description) : "-";
+      const mPrice = p.unit_price != null ? parseFloat(p.unit_price) : null;
+      const mCost = p.unit_cost != null ? parseFloat(p.unit_cost) : null;
+      const mMarkup = p.product_found ? formatMarkup(mPrice, mCost) : { text: "-", color: "" };
+      const mCostMarkup = p.product_found ? formatCostMarkup(mCost, primaryCost, p.store_id) : { text: "-", color: "" };
       tr.innerHTML = `
         <td>${escapeHtml(p.store_name)}</td>
         <td style="font-size: 0.75rem; color: var(--text-secondary)">${p.product_found ? mssqlDesc : "Not Found"}</td>
         <td>${p.product_found ? '<input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="' + currentPrice + '">' : ""}</td>
         <td>${p.product_found ? '<input type="number" class="dark-input price-input new-cost" step="0.01" min="0" placeholder="' + currentCost + '">' : ""}</td>
+        ${markupTd(mMarkup)}
+        ${markupTd(mCostMarkup)}
       `;
       tbody.appendChild(tr);
     } else if (p.store_type === "shopify") {
@@ -5470,7 +5507,7 @@ function displayPriceResults(upc, prices, siblingPrices) {
         tr.innerHTML = `
           <td>${escapeHtml(p.store_name)}</td>
           <td style="color: var(--text-tertiary); font-size: 0.75rem">-</td>
-          <td colspan="2" style="color: var(--text-tertiary)">Not Found</td>
+          <td colspan="4" style="color: var(--text-tertiary)">Not Found</td>
         `;
         tbody.appendChild(tr);
         return;
@@ -5496,11 +5533,17 @@ function displayPriceResults(upc, prices, siblingPrices) {
         const barcodeLabel = v.barcode ? ` [${escapeHtml(v.barcode)}]` : "";
         const searchedTag = v.is_searched ? ' <span style="color: var(--accent-primary); font-size: 0.625rem;">(searched)</span>' : "";
 
+        const vPriceNum = v.price != null ? parseFloat(v.price) : null;
+        const vCostNum = v.cost != null ? parseFloat(v.cost) : null;
+        const vMarkup = formatMarkup(vPriceNum, vCostNum);
+        const vCostMarkup = formatCostMarkup(vCostNum, primaryCost, p.store_id);
         tr.innerHTML = `
           <td>${idx === 0 ? escapeHtml(p.store_name) : ""}</td>
           <td style="font-size: 0.75rem; color: var(--text-secondary)">${variantLabel}${barcodeLabel}${searchedTag}</td>
           <td><input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="${vPrice}"></td>
           <td><input type="number" class="dark-input price-input new-cost" step="0.01" min="0" placeholder="${vCost}"></td>
+          ${markupTd(vMarkup)}
+          ${markupTd(vCostMarkup)}
         `;
         tbody.appendChild(tr);
       });
@@ -5521,7 +5564,7 @@ function displayPriceResults(upc, prices, siblingPrices) {
     for (const [barcode, group] of Object.entries(grouped)) {
       const headerTr = document.createElement("tr");
       headerTr.classList.add("sibling-header-row");
-      headerTr.innerHTML = `<td colspan="4">Sibling: ${escapeHtml(barcode)} (${escapeHtml(group.variant_title || "Unknown")})</td>`;
+      headerTr.innerHTML = `<td colspan="6">Sibling: ${escapeHtml(barcode)} (${escapeHtml(group.variant_title || "Unknown")})</td>`;
       tbody.appendChild(headerTr);
 
       group.rows.forEach((sp) => {
@@ -5536,17 +5579,23 @@ function displayPriceResults(upc, prices, siblingPrices) {
           tr.innerHTML = `
             <td>${escapeHtml(sp.store_name)}</td>
             <td style="color: var(--text-tertiary); font-size: 0.75rem">-</td>
-            <td colspan="2" style="color: var(--text-tertiary)">Not Found</td>
+            <td colspan="4" style="color: var(--text-tertiary)">Not Found</td>
           `;
         } else {
           const currentPrice = sp.unit_price != null ? parseFloat(sp.unit_price).toFixed(2) : "-";
           const currentCost = sp.unit_cost != null ? parseFloat(sp.unit_cost).toFixed(2) : "-";
+          const spPrice = sp.unit_price != null ? parseFloat(sp.unit_price) : null;
+          const spCost = sp.unit_cost != null ? parseFloat(sp.unit_cost) : null;
+          const spMarkup = formatMarkup(spPrice, spCost);
+          const spCostMarkup = formatCostMarkup(spCost, primaryCost, sp.store_id);
 
           tr.innerHTML = `
             <td>${escapeHtml(sp.store_name)}</td>
             <td style="color: var(--text-tertiary); font-size: 0.75rem">${escapeHtml(sp.product_description || "-")}</td>
             <td><input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="${currentPrice}"></td>
             <td><input type="number" class="dark-input price-input new-cost" step="0.01" min="0" placeholder="${currentCost}"></td>
+            ${markupTd(spMarkup)}
+            ${markupTd(spCostMarkup)}
           `;
         }
         tbody.appendChild(tr);
