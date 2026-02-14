@@ -5359,18 +5359,14 @@ async function searchPriceUpdates() {
   priceUpdatesState.prices = [];
 
   const searchBtn = document.getElementById("price-updates-search-btn");
-  const loadingEl = document.getElementById("price-updates-loading");
-  const progressEl = document.getElementById("price-updates-progress");
-  const progressItems = document.getElementById(
-    "price-updates-progress-items",
-  );
   const resultsEl = document.getElementById("price-updates-results");
+  const overlay = document.getElementById("price-loading-overlay");
+  const overlayText = document.getElementById("price-loading-text");
 
   searchBtn.disabled = true;
-  loadingEl.style.display = "block";
-  progressEl.style.display = "block";
-  progressItems.innerHTML = "";
   resultsEl.style.display = "none";
+  overlayText.textContent = "Fetching prices...";
+  overlay.style.display = "flex";
 
   try {
     const response = await fetch(
@@ -5407,23 +5403,6 @@ async function searchPriceUpdates() {
             priceUpdatesState.prices = data.prices;
             priceUpdatesState.siblingPrices = data.sibling_prices || [];
             displayPriceResults(upc, data.prices, priceUpdatesState.siblingPrices);
-          } else if (data.status) {
-            const item = document.createElement("div");
-            item.style.fontSize = "0.875rem";
-            if (data.status === "found") {
-              item.style.color = "var(--success)";
-              item.textContent = `\u2713 ${data.message}`;
-            } else if (data.status === "not_found") {
-              item.style.color = "var(--text-tertiary)";
-              item.textContent = data.message;
-            } else if (data.status === "error") {
-              item.style.color = "var(--error)";
-              item.textContent = data.message;
-            } else {
-              item.style.color = "var(--text-secondary)";
-              item.textContent = data.message;
-            }
-            progressItems.appendChild(item);
           }
         }
       }
@@ -5434,8 +5413,7 @@ async function searchPriceUpdates() {
   } finally {
     priceUpdatesState.isSearching = false;
     searchBtn.disabled = false;
-    loadingEl.style.display = "none";
-    progressEl.style.display = "none";
+    overlay.style.display = "none";
   }
 }
 
@@ -5713,9 +5691,7 @@ function resetPriceUpdates() {
   document.getElementById("price-updates-upc-input").value = "";
   document.getElementById("price-updates-desc-input").value = "";
   document.getElementById("price-updates-results").style.display = "none";
-  document.getElementById("price-updates-progress").style.display = "none";
-  document.getElementById("price-updates-update-progress").style.display = "none";
-  document.getElementById("price-updates-loading").style.display = "none";
+  document.getElementById("price-loading-overlay").style.display = "none";
   document.getElementById("price-updates-tbody").innerHTML = "";
   document.getElementById("price-store-filters").innerHTML = "";
   document.getElementById("price-fill-all-price").value = "";
@@ -5821,16 +5797,12 @@ async function updatePrices() {
 
   priceUpdatesState.isUpdating = true;
   const updateBtn = document.getElementById("price-updates-update-btn");
-  const updateProgress = document.getElementById(
-    "price-updates-update-progress",
-  );
-  const updateProgressItems = document.getElementById(
-    "price-updates-update-progress-items",
-  );
+  const overlay = document.getElementById("price-loading-overlay");
+  const overlayText = document.getElementById("price-loading-text");
 
   updateBtn.disabled = true;
-  updateProgress.style.display = "block";
-  updateProgressItems.innerHTML = "";
+  overlayText.textContent = "Updating prices...";
+  overlay.style.display = "flex";
 
   try {
     const response = await fetch(`${API_BASE}/price-updates/update/stream`, {
@@ -5857,7 +5829,6 @@ async function updatePrices() {
           const data = JSON.parse(line.substring(6));
 
           if (data.results) {
-            // Final results
             const succeeded = data.results.filter((r) => r.success).length;
             const failed = data.results.filter((r) => !r.success).length;
             showToast(
@@ -5865,22 +5836,7 @@ async function updatePrices() {
               failed > 0 ? "error" : "success",
             );
 
-            // Re-fetch prices to show updated values
             searchPriceUpdates();
-          } else if (data.status) {
-            const item = document.createElement("div");
-            item.style.fontSize = "0.875rem";
-            if (data.status === "updated") {
-              item.style.color = "var(--success)";
-              item.textContent = `\u2713 ${data.message}`;
-            } else if (data.status === "error") {
-              item.style.color = "var(--error)";
-              item.textContent = data.message;
-            } else {
-              item.style.color = "var(--text-secondary)";
-              item.textContent = data.message;
-            }
-            updateProgressItems.appendChild(item);
           }
         }
       }
@@ -5891,6 +5847,7 @@ async function updatePrices() {
   } finally {
     priceUpdatesState.isUpdating = false;
     updateBtn.disabled = false;
+    overlay.style.display = "none";
   }
 }
 
