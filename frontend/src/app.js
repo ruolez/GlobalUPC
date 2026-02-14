@@ -5556,7 +5556,8 @@ function displayPriceResults(upc, prices, siblingPrices) {
 
           const vPrice = v.price != null ? parseFloat(v.price).toFixed(2) : "-";
           const vCost = v.cost != null ? parseFloat(v.cost).toFixed(2) : "-";
-          const variantLabel = escapeHtml(v.variant_title || "Default");
+          const isDefaultVariant = !v.variant_title || v.variant_title === "Default Title";
+          const variantLabel = escapeHtml(isDefaultVariant ? (v.product_title || v.variant_title || "Default") : v.variant_title);
           const barcodeLabel = v.barcode ? ` [${escapeHtml(v.barcode)}]` : "";
           const searchedTag = v.is_searched ? ' <span style="color: var(--accent-primary); font-size: 0.625rem;">(searched)</span>' : "";
           const vPriceNum = v.price != null ? parseFloat(v.price) : null;
