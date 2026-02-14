@@ -6357,6 +6357,16 @@ function displayPriceHistory(batches, total) {
       });
     });
 
+    const activeStoreIds = getActiveHistoryStoreIds();
+    if (activeStoreIds) {
+      const hasMatchingStore = batch.entries.some((entry) =>
+        activeStoreIds.has(String(entry.store_id))
+      );
+      if (!hasMatchingStore) {
+        batchRow.style.display = "none";
+      }
+    }
+
     tbody.appendChild(batchRow);
 
     batch.entries.forEach((entry) => {
