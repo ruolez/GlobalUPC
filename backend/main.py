@@ -3394,7 +3394,7 @@ async def update_prices_stream(request: PriceUpdateRequest, db: Session = Depend
             if update.store_type == "mssql" and store.mssql_connection:
                 conn = store.mssql_connection
                 effective_upc = update.upc or upc
-                success, error, rows = await update_item_prices_async(
+                success, error, rows, server_time = await update_item_prices_async(
                     host=conn.host,
                     port=conn.port,
                     database=conn.database_name,
@@ -3426,7 +3426,8 @@ async def update_prices_stream(request: PriceUpdateRequest, db: Session = Depend
                     new_cost=update.new_cost,
                     success=success,
                     rows_affected=rows or 0,
-                    error_message=error
+                    error_message=error,
+                    created_at=server_time
                 )
                 db.add(history_entry)
                 db.commit()

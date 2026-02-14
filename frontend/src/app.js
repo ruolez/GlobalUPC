@@ -5974,6 +5974,16 @@ document
   .getElementById("save-price-updates-config-btn")
   ?.addEventListener("click", savePriceUpdatesConfig);
 document
+  .getElementById("price-updates-select-all-btn")
+  ?.addEventListener("click", () => {
+    document.querySelectorAll('#price-updates-store-checkboxes input[type="checkbox"]').forEach((cb) => { cb.checked = true; });
+  });
+document
+  .getElementById("price-updates-deselect-all-btn")
+  ?.addEventListener("click", () => {
+    document.querySelectorAll('#price-updates-store-checkboxes input[type="checkbox"]').forEach((cb) => { cb.checked = false; });
+  });
+document
   .getElementById("edit-price-updates-config-btn")
   ?.addEventListener("click", showPriceUpdatesConfigSection);
 document

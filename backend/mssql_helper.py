@@ -2,7 +2,7 @@ import pyodbc
 from typing import Optional, List, Dict, Any
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date
+from datetime import date, datetime
 
 # Chunk size for processing large tables (prevents timeout)
 CHUNK_SIZE = 1000
@@ -2605,9 +2605,9 @@ def update_item_prices(
     unit_price: Optional[float] = None,
     unit_cost: Optional[float] = None,
     tds_version: str = "7.4"
-) -> tuple[bool, Optional[str], int]:
+) -> tuple[bool, Optional[str], int, Optional[datetime]]:
     if unit_price is None and unit_cost is None:
-        return True, None, 0
+        return True, None, 0, None
 
     conn_str = get_mssql_connection_string(host, port, database, username, password, tds_version)
 
@@ -2631,13 +2631,16 @@ def update_item_prices(
         rows_affected = cursor.rowcount
         conn.commit()
 
+        cursor.execute("SELECT GETDATE()")
+        server_time = cursor.fetchone()[0]
+
         cursor.close()
         conn.close()
 
-        return True, None, rows_affected
+        return True, None, rows_affected, server_time
 
     except Exception as e:
-        return False, str(e), 0
+        return False, str(e), 0, None
 
 
 async def update_item_prices_async(
