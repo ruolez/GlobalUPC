@@ -2544,11 +2544,9 @@
             <div class="settings-section">
               <div style="margin-bottom: 1.5rem">
                 <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin-bottom: 1rem;">
-                  <div class="form-group" style="margin: 0">
-                    <label for="price-history-store-filter">Store</label>
-                    <select id="price-history-store-filter" style="width: 100%">
-                      <option value="">All Stores</option>
-                    </select>
+                  <div class="form-group" style="margin: 0; grid-column: 1 / -1;">
+                    <label>Stores</label>
+                    <div id="price-history-store-filters" style="display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.25rem;"></div>
                   </div>
                   <div class="form-group" style="margin: 0">
                     <label for="price-history-upc-filter">UPC Search</label>

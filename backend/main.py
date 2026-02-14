@@ -3508,7 +3508,7 @@ async def update_prices_stream(request: PriceUpdateRequest, db: Session = Depend
 
 @app.get("/api/price-updates/history", response_model=PriceUpdateHistoryListResponse)
 def get_price_update_history(
-    store_id: Optional[int] = None,
+    store_ids: Optional[str] = None,
     upc_search: Optional[str] = None,
     description_search: Optional[str] = None,
     start_date: Optional[datetime] = None,
@@ -3520,8 +3520,10 @@ def get_price_update_history(
     from sqlalchemy import func
 
     base_filters = []
-    if store_id is not None:
-        base_filters.append(PriceUpdateHistory.store_id == store_id)
+    if store_ids:
+        id_list = [int(s.strip()) for s in store_ids.split(",") if s.strip()]
+        if id_list:
+            base_filters.append(PriceUpdateHistory.store_id.in_(id_list))
     if upc_search:
         base_filters.append(PriceUpdateHistory.upc.like(f"%{upc_search}%"))
     if description_search:

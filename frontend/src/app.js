@@ -5649,11 +5649,21 @@ function displayPriceResults(upc, prices, siblingPrices) {
   });
   filtersEl.appendChild(deselectAllBtn);
 
+  const savedStores = (() => {
+    try {
+      const raw = localStorage.getItem("priceActiveStores");
+      return raw ? new Set(JSON.parse(raw)) : null;
+    } catch {
+      return null;
+    }
+  })();
+
   for (const storeId of storeOrder) {
     const sd = storeData[storeId];
     const hasRows = sd.mainRows.length > 0 || sd.siblingRows.length > 0;
+    const isActive = savedStores ? savedStores.has(storeId) : hasRows;
     const chip = document.createElement("span");
-    chip.className = "store-filter-chip" + (hasRows ? " active" : " not-found");
+    chip.className = "store-filter-chip" + (isActive ? " active" : " not-found");
     chip.dataset.storeId = storeId;
     chip.textContent = sd.storeName;
     chip.addEventListener("click", () => {
@@ -5663,6 +5673,8 @@ function displayPriceResults(upc, prices, siblingPrices) {
     });
     filtersEl.appendChild(chip);
   }
+
+  if (savedStores) applyStoreFilters();
 }
 
 function applyStoreFilters() {
@@ -5670,6 +5682,7 @@ function applyStoreFilters() {
   document.querySelectorAll("#price-store-filters .store-filter-chip.active").forEach((chip) => {
     activeIds.add(chip.dataset.storeId);
   });
+  localStorage.setItem("priceActiveStores", JSON.stringify([...activeIds]));
 
   const tbody = document.getElementById("price-updates-tbody");
   const rows = Array.from(tbody.children);
@@ -6098,7 +6111,7 @@ let priceHistoryState = {
   pageSize: parseInt(localStorage.getItem("priceHistoryPageSize")) || 25,
   totalRecords: 0,
   filters: {
-    store_id: null,
+    store_ids: null,
     upc_search: null,
     description_search: null,
     start_date: null,
@@ -6152,8 +6165,8 @@ async function loadPriceHistory() {
     params.append("limit", priceHistoryState.pageSize);
     params.append("offset", priceHistoryState.currentPage * priceHistoryState.pageSize);
 
-    if (priceHistoryState.filters.store_id) {
-      params.append("store_id", priceHistoryState.filters.store_id);
+    if (priceHistoryState.filters.store_ids) {
+      params.append("store_ids", priceHistoryState.filters.store_ids);
     }
     if (priceHistoryState.filters.upc_search) {
       params.append("upc_search", priceHistoryState.filters.upc_search);
@@ -6188,17 +6201,68 @@ async function loadPriceHistory() {
 async function loadPriceHistoryStores() {
   try {
     const stores = await apiRequest("/stores");
-    const storeFilter = document.getElementById("price-history-store-filter");
-    storeFilter.innerHTML = '<option value="">All Stores</option>';
+    const filtersEl = document.getElementById("price-history-store-filters");
+    filtersEl.innerHTML = "";
+
+    const savedStores = (() => {
+      try {
+        const raw = localStorage.getItem("priceActiveStores");
+        return raw ? new Set(JSON.parse(raw)) : null;
+      } catch {
+        return null;
+      }
+    })();
+
+    const selectAllBtn = document.createElement("span");
+    selectAllBtn.className = "store-filter-chip store-filter-control";
+    selectAllBtn.textContent = "☑ All";
+    selectAllBtn.title = "Select all stores";
+    selectAllBtn.addEventListener("click", () => {
+      filtersEl.querySelectorAll(".store-filter-chip:not(.store-filter-control)").forEach((c) => {
+        c.classList.add("active");
+        c.classList.remove("not-found");
+      });
+      saveHistoryStoreSelections();
+    });
+    filtersEl.appendChild(selectAllBtn);
+
+    const deselectAllBtn = document.createElement("span");
+    deselectAllBtn.className = "store-filter-chip store-filter-control";
+    deselectAllBtn.textContent = "☐ None";
+    deselectAllBtn.title = "Deselect all stores";
+    deselectAllBtn.addEventListener("click", () => {
+      filtersEl.querySelectorAll(".store-filter-chip:not(.store-filter-control)").forEach((c) => {
+        c.classList.remove("active");
+        c.classList.add("not-found");
+      });
+      saveHistoryStoreSelections();
+    });
+    filtersEl.appendChild(deselectAllBtn);
+
     stores.forEach((store) => {
-      const option = document.createElement("option");
-      option.value = store.id;
-      option.textContent = `${store.name} (${store.store_type})`;
-      storeFilter.appendChild(option);
+      const isActive = savedStores ? savedStores.has(String(store.id)) : true;
+      const chip = document.createElement("span");
+      chip.className = "store-filter-chip" + (isActive ? " active" : " not-found");
+      chip.dataset.storeId = store.id;
+      chip.textContent = `${store.name} (${store.store_type})`;
+      chip.addEventListener("click", () => {
+        chip.classList.toggle("active");
+        chip.classList.toggle("not-found", !chip.classList.contains("active"));
+        saveHistoryStoreSelections();
+      });
+      filtersEl.appendChild(chip);
     });
   } catch (e) {
-    // Silently fail - filter will just show "All Stores"
+    // Silently fail
   }
+}
+
+function saveHistoryStoreSelections() {
+  const activeIds = [];
+  document.querySelectorAll("#price-history-store-filters .store-filter-chip.active").forEach((chip) => {
+    if (chip.dataset.storeId) activeIds.push(chip.dataset.storeId);
+  });
+  localStorage.setItem("priceActiveStores", JSON.stringify(activeIds));
 }
 
 function displayPriceHistory(batches, total) {
@@ -6377,14 +6441,18 @@ document
 document
   .getElementById("apply-price-history-filters-btn")
   ?.addEventListener("click", async () => {
-    const storeId = document.getElementById("price-history-store-filter").value;
+    const activeStoreIds = [];
+    document.querySelectorAll("#price-history-store-filters .store-filter-chip.active").forEach((chip) => {
+      if (chip.dataset.storeId) activeStoreIds.push(chip.dataset.storeId);
+    });
+    const totalChips = document.querySelectorAll("#price-history-store-filters .store-filter-chip:not(.store-filter-control)").length;
     const upcSearch = document.getElementById("price-history-upc-filter").value;
     const descSearch = document.getElementById("price-history-desc-filter").value;
     const startDate = document.getElementById("price-history-start-date").value;
     const endDate = document.getElementById("price-history-end-date").value;
 
     priceHistoryState.filters = {
-      store_id: storeId || null,
+      store_ids: activeStoreIds.length > 0 && activeStoreIds.length < totalChips ? activeStoreIds.join(",") : null,
       upc_search: upcSearch || null,
       description_search: descSearch || null,
       start_date: startDate ? `${startDate}T00:00:00` : null,
@@ -6397,14 +6465,18 @@ document
 document
   .getElementById("clear-price-history-filters-btn")
   ?.addEventListener("click", async () => {
-    document.getElementById("price-history-store-filter").value = "";
+    document.querySelectorAll("#price-history-store-filters .store-filter-chip:not(.store-filter-control)").forEach((c) => {
+      c.classList.add("active");
+      c.classList.remove("not-found");
+    });
+    saveHistoryStoreSelections();
     document.getElementById("price-history-upc-filter").value = "";
     document.getElementById("price-history-desc-filter").value = "";
     document.getElementById("price-history-start-date").value = "";
     document.getElementById("price-history-end-date").value = "";
 
     priceHistoryState.filters = {
-      store_id: null,
+      store_ids: null,
       upc_search: null,
       description_search: null,
       start_date: null,
