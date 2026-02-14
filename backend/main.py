@@ -3489,7 +3489,7 @@ async def price_updates_autocomplete(request: DescriptionAutocompleteRequest, st
         username=conn.username,
         password=conn.password,
         query=query,
-        limit=10
+        limit=50
     )
 
     if not success:
