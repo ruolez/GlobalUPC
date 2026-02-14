@@ -3268,6 +3268,88 @@ async def fetch_prices_stream(request: PriceSearchRequest, db: Session = Depends
                             })
                             yield f"event: progress\ndata: {json.dumps({'status': 'not_found', 'message': f'Sibling {bc} not found in {store.name}'})}\n\n"
 
+                # Enhancement C: Sibling Shopify lookups
+                notfound_shopify = [
+                    p for p in prices
+                    if p["store_type"] == "shopify" and not p["product_found"]
+                ]
+                for nf_entry in notfound_shopify:
+                    store = db.query(Store).filter(Store.id == nf_entry["store_id"], Store.is_active == True).first()
+                    if not store or not store.shopify_connection:
+                        continue
+                    conn = store.shopify_connection
+                    for bc in sorted(sibling_barcodes):
+                        yield f"event: progress\ndata: {json.dumps({'status': 'searching', 'message': f'Searching sibling barcode {bc} in {store.name}...'})}\n\n"
+                        try:
+                            success, error, variants = await search_product_prices_by_barcode(
+                                shop_domain=conn.shop_domain,
+                                admin_api_key=conn.admin_api_key,
+                                barcode=bc,
+                                api_version=conn.api_version
+                            )
+                        except Exception:
+                            continue
+
+                        if not (success and variants):
+                            continue
+
+                        searched_variant_ids = {v["variant_id"] for v in variants}
+                        product_ids = list({v["product_id"] for v in variants})
+
+                        all_variants = []
+                        for pid in product_ids:
+                            try:
+                                p_success, p_error, p_variants = await get_all_product_variant_prices(
+                                    shop_domain=conn.shop_domain,
+                                    admin_api_key=conn.admin_api_key,
+                                    product_id=pid,
+                                    api_version=conn.api_version
+                                )
+                                if p_success and p_variants:
+                                    all_variants.extend(p_variants)
+                            except Exception:
+                                pass
+
+                        if not all_variants:
+                            continue
+
+                        searched_price = None
+                        for v in variants:
+                            if v.get("price") is not None:
+                                searched_price = str(v["price"])
+                                break
+
+                        seen = set()
+                        merged_variants = []
+                        for v in all_variants:
+                            vid = v["variant_id"]
+                            if vid in seen:
+                                continue
+                            seen.add(vid)
+                            v["is_searched"] = vid in searched_variant_ids
+                            if v["is_searched"]:
+                                merged_variants.append(v)
+                            elif v.get("barcode") and v["barcode"].strip():
+                                if searched_price is not None and str(v.get("price")) == searched_price:
+                                    merged_variants.append(v)
+
+                        if not merged_variants:
+                            continue
+
+                        idx = prices.index(nf_entry)
+                        prices[idx] = {
+                            "store_id": store.id,
+                            "store_name": store.name,
+                            "store_type": "shopify",
+                            "product_found": True,
+                            "product_description": variants[0].get("product_title"),
+                            "unit_price": None,
+                            "unit_cost": None,
+                            "variants": merged_variants,
+                        }
+                        yield f"event: progress\ndata: {json.dumps({'status': 'found', 'message': f'Found sibling match ({len(merged_variants)} variant(s)) in {store.name}'})}\n\n"
+                        break
+
         yield f"event: complete\ndata: {json.dumps({'prices': prices, 'sibling_prices': sibling_prices})}\n\n"
 
     return StreamingResponse(
