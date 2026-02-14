@@ -3064,6 +3064,7 @@ async def fetch_prices_stream(request: PriceSearchRequest, db: Session = Depends
             return
 
         prices = []
+        phase1_product_ids = {}
 
         for store_id in request.store_ids:
             store = db.query(Store).filter(Store.id == store_id, Store.is_active == True).first()
@@ -3133,6 +3134,7 @@ async def fetch_prices_stream(request: PriceSearchRequest, db: Session = Depends
                     # Step 2: Fetch ALL variants of the parent product(s)
                     searched_variant_ids = {v["variant_id"] for v in variants}
                     product_ids = list({v["product_id"] for v in variants})
+                    phase1_product_ids.setdefault(store.id, set()).update(product_ids)
 
                     all_variants = []
                     for pid in product_ids:
@@ -3297,6 +3299,10 @@ async def fetch_prices_stream(request: PriceSearchRequest, db: Session = Depends
 
                         searched_variant_ids = {v["variant_id"] for v in variants}
                         product_ids = list({v["product_id"] for v in variants})
+                        known = phase1_product_ids.get(store.id, set())
+                        product_ids = [pid for pid in product_ids if pid not in known]
+                        if not product_ids:
+                            continue
 
                         all_variants = []
                         for pid in product_ids:
