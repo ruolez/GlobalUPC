@@ -2523,6 +2523,108 @@
             </div>
           </div>
 
+          <!-- View Toggle Buttons -->
+          <div id="price-updates-view-toggle" style="display: none; margin-bottom: 1rem;">
+            <div style="display: flex; gap: 0.5rem;">
+              <button type="button" class="btn btn-primary" id="price-updates-main-view-btn" style="font-size: 0.8125rem; padding: 0.375rem 0.75rem;">
+                Price Updates
+              </button>
+              <button type="button" class="btn btn-secondary" id="price-updates-history-view-btn" style="font-size: 0.8125rem; padding: 0.375rem 0.75rem;">
+                Update History
+              </button>
+            </div>
+          </div>
+
+          <!-- Price History Section (hidden by default) -->
+          <div id="price-history-section" style="display: none;">
+            <div class="settings-section">
+              <div style="margin-bottom: 1.5rem">
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin-bottom: 1rem;">
+                  <div class="form-group" style="margin: 0">
+                    <label for="price-history-store-filter">Store</label>
+                    <select id="price-history-store-filter" style="width: 100%">
+                      <option value="">All Stores</option>
+                    </select>
+                  </div>
+                  <div class="form-group" style="margin: 0">
+                    <label for="price-history-upc-filter">UPC Search</label>
+                    <input type="text" id="price-history-upc-filter" placeholder="Search UPC..." style="width: 100%" />
+                  </div>
+                  <div class="form-group" style="margin: 0">
+                    <label for="price-history-desc-filter">Description</label>
+                    <input type="text" id="price-history-desc-filter" placeholder="Search description..." style="width: 100%" />
+                  </div>
+                  <div class="form-group" style="margin: 0">
+                    <label for="price-history-start-date">Start Date</label>
+                    <input type="date" id="price-history-start-date" style="width: 100%" />
+                  </div>
+                  <div class="form-group" style="margin: 0">
+                    <label for="price-history-end-date">End Date</label>
+                    <input type="date" id="price-history-end-date" style="width: 100%" />
+                  </div>
+                </div>
+                <div style="display: flex; gap: 0.75rem">
+                  <button type="button" class="btn btn-primary" id="apply-price-history-filters-btn">Apply Filters</button>
+                  <button type="button" class="btn btn-secondary" id="clear-price-history-filters-btn">Clear Filters</button>
+                </div>
+              </div>
+
+              <!-- Loading State -->
+              <div id="price-history-loading" class="test-status" style="display: none; margin-top: 1.5rem">
+                <div class="loading">Loading history...</div>
+              </div>
+
+              <!-- Empty State -->
+              <div id="price-history-empty" style="display: none; text-align: center; padding: 3rem 1rem; color: var(--text-tertiary); margin-top: 1.5rem;">
+                <svg width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg" style="margin: 0 auto 1rem">
+                  <path d="M24 4L4 12V20C4 30 11 39 24 40C37 39 44 30 44 20V12L24 4Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+                </svg>
+                <p style="margin: 0; font-size: 0.875rem">No price update history found</p>
+                <p style="margin: 0.5rem 0 0; font-size: 0.75rem">History will appear here after you perform price updates</p>
+              </div>
+
+              <!-- Results Section -->
+              <div id="price-history-results" style="display: none; margin-top: 1.5rem">
+                <div style="margin-bottom: 1rem; display: flex; justify-content: space-between; align-items: center;">
+                  <p style="margin: 0; font-size: 0.875rem; color: var(--text-secondary);">
+                    <strong id="price-history-total-count">0</strong> records found
+                  </p>
+                  <div style="display: flex; gap: 0.5rem; align-items: center">
+                    <label for="price-history-page-size" style="font-size: 0.875rem; color: var(--text-secondary)">Show:</label>
+                    <select id="price-history-page-size" style="padding: 0.25rem 0.5rem">
+                      <option value="10">10</option>
+                      <option value="25" selected>25</option>
+                      <option value="50">50</option>
+                      <option value="100">100</option>
+                    </select>
+                  </div>
+                </div>
+                <div style="overflow-x: auto">
+                  <table class="data-table">
+                    <thead>
+                      <tr>
+                        <th style="width: 5%">#</th>
+                        <th style="width: 15%">Timestamp</th>
+                        <th style="width: 15%">UPC</th>
+                        <th style="width: 20%">Product</th>
+                        <th style="width: 10%">Stores</th>
+                        <th style="width: 12%">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody id="price-history-table-body"></tbody>
+                  </table>
+                </div>
+
+                <!-- Pagination Controls -->
+                <div style="margin-top: 1rem; display: flex; justify-content: space-between; align-items: center;">
+                  <button type="button" class="btn btn-secondary" id="price-history-prev-btn" disabled>Previous</button>
+                  <span id="price-history-page-info" style="font-size: 0.875rem; color: var(--text-secondary)">Page 1</span>
+                  <button type="button" class="btn btn-secondary" id="price-history-next-btn" disabled>Next</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
           <!-- Search Section (shown after configuration) -->
           <div
             id="price-updates-search-section"

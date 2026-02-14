@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Enum, Text
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Enum, Text, Numeric
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -112,6 +112,30 @@ class ItemTrackerConfig(Base):
 
     s2s_store = relationship("Store", foreign_keys=[s2s_store_id])
     inventory_store = relationship("Store", foreign_keys=[inventory_store_id])
+
+class PriceUpdateHistory(Base):
+    __tablename__ = "price_update_history"
+
+    id = Column(Integer, primary_key=True, index=True)
+    batch_id = Column(String(36), nullable=False, index=True)
+    store_id = Column(Integer, ForeignKey("stores.id", ondelete="CASCADE"), nullable=False, index=True)
+    store_name = Column(String(255), nullable=False)
+    store_type = Column(Enum(StoreType), nullable=False)
+    upc = Column(String(255), nullable=False, index=True)
+    product_description = Column(Text)
+    variant_id = Column(String(255))
+    variant_title = Column(String(255))
+    old_price = Column(Numeric(10, 2))
+    old_cost = Column(Numeric(10, 2))
+    new_price = Column(Numeric(10, 2))
+    new_cost = Column(Numeric(10, 2))
+    success = Column(Boolean, nullable=False)
+    rows_affected = Column(Integer, default=0)
+    error_message = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    store = relationship("Store")
+
 
 class ItemTrackerExclusion(Base):
     __tablename__ = "item_tracker_exclusions"

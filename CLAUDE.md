@@ -28,6 +28,7 @@ Docker-based multi-container application:
 **settings**: `key`, `value`, `description`
 **upc_update_history**: `batch_id`, `store_id`, `old_upc`, `new_upc`, `success`, `items_updated_count` - Tracks all UPC updates
 **upc_exclusions**: `store_id`, `upc`, `excluded_at`, `notes` - UPCs excluded from orphaned UPC audits (unique per store+UPC)
+**price_update_history**: `batch_id`, `store_id`, `store_name`, `store_type`, `upc`, `product_description`, `variant_id`, `variant_title`, `old_price`, `old_cost`, `new_price`, `new_cost`, `success`, `rows_affected`, `error_message` - Tracks all price/cost updates
 
 All tables have auto-updating `created_at` and `updated_at` timestamps.
 
@@ -55,6 +56,7 @@ All tables have auto-updating `created_at` and `updated_at` timestamps.
 - `POST /api/exclusions` - Add UPC exclusion
 - `GET /api/exclusions?store_id={id}` - List exclusions (optionally filtered by store)
 - `DELETE /api/exclusions/{id}` - Remove UPC exclusion
+- `GET /api/price-updates/history` - Price update history (batch-grouped, paginated)
 
 ## Critical Implementation Notes
 

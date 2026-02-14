@@ -5226,6 +5226,7 @@ async function loadPriceUpdatesPage() {
         updatePriceUpdatesConfigSummary(config);
         configSection.style.display = "none";
         searchSection.style.display = "block";
+        document.getElementById("price-updates-view-toggle").style.display = "block";
 
         setTimeout(() => {
           const descInput = document.getElementById("price-updates-desc-input");
@@ -5238,6 +5239,7 @@ async function loadPriceUpdatesPage() {
     // No valid config — show config section
     configSection.style.display = "block";
     searchSection.style.display = "none";
+    document.getElementById("price-updates-view-toggle").style.display = "block";
   } catch (error) {
     console.error("Error loading Price Updates page:", error);
     showToast(`Failed to load Price Updates: ${error.message}`, "error");
@@ -5293,10 +5295,13 @@ function savePriceUpdatesConfig() {
   priceUpdatesState.config = config;
   updatePriceUpdatesConfigSummary(config);
 
-  document.getElementById("price-updates-config-section").style.display =
-    "none";
-  document.getElementById("price-updates-search-section").style.display =
-    "block";
+  document.getElementById("price-updates-config-section").style.display = "none";
+  document.getElementById("price-updates-search-section").style.display = "block";
+  document.getElementById("price-history-section").style.display = "none";
+  document.getElementById("price-updates-view-toggle").style.display = "block";
+  document.getElementById("price-updates-main-view-btn").className = "btn btn-primary";
+  document.getElementById("price-updates-history-view-btn").className = "btn btn-secondary";
+  priceHistoryState.visible = false;
 
   showToast("Configuration saved", "success");
 
@@ -5307,10 +5312,12 @@ function savePriceUpdatesConfig() {
 }
 
 function showPriceUpdatesConfigSection() {
-  document.getElementById("price-updates-config-section").style.display =
-    "block";
-  document.getElementById("price-updates-search-section").style.display =
-    "none";
+  document.getElementById("price-updates-config-section").style.display = "block";
+  document.getElementById("price-updates-search-section").style.display = "none";
+  document.getElementById("price-history-section").style.display = "none";
+  document.getElementById("price-updates-main-view-btn").className = "btn btn-primary";
+  document.getElementById("price-updates-history-view-btn").className = "btn btn-secondary";
+  priceHistoryState.visible = false;
 }
 
 function togglePriceUpdatesConfig() {
@@ -5695,6 +5702,12 @@ async function updatePrices() {
 
     if (newPrice === null && newCost === null) return;
 
+    const oldPrice = priceInput?.placeholder && priceInput.placeholder !== "-"
+      ? parseFloat(priceInput.placeholder) : null;
+    const oldCost = costInput?.placeholder && costInput.placeholder !== "-"
+      ? parseFloat(costInput.placeholder) : null;
+    const productDesc = tr.querySelector("td:first-child")?.textContent?.trim() || null;
+
     if (storeType === "mssql") {
       updates.push({
         store_id: storeId,
@@ -5702,9 +5715,11 @@ async function updatePrices() {
         upc: tr.dataset.barcode || null,
         new_price: newPrice,
         new_cost: newCost,
+        old_price: oldPrice,
+        old_cost: oldCost,
+        product_description: productDesc,
       });
     } else if (storeType === "shopify") {
-      // Find or create Shopify update entry for this store
       let shopifyUpdate = updates.find(
         (u) => u.store_id === storeId && u.store_type === "shopify",
       );
@@ -5722,6 +5737,10 @@ async function updatePrices() {
         product_id: tr.dataset.productId,
         new_price: newPrice,
         new_cost: newCost,
+        old_price: oldPrice,
+        old_cost: oldCost,
+        variant_title: productDesc,
+        product_title: productDesc,
       });
     }
   });
@@ -5999,6 +6018,354 @@ document
     if (!e.target.closest("#edit-price-updates-config-btn")) {
       togglePriceUpdatesConfig();
     }
+  });
+
+// ==========================================
+// Price Update History
+// ==========================================
+
+let priceHistoryState = {
+  currentPage: 0,
+  pageSize: parseInt(localStorage.getItem("priceHistoryPageSize")) || 25,
+  totalRecords: 0,
+  filters: {
+    store_id: null,
+    upc_search: null,
+    description_search: null,
+    start_date: null,
+    end_date: null,
+  },
+  visible: false,
+};
+
+// Set saved page size on the select
+const phPageSizeEl = document.getElementById("price-history-page-size");
+if (phPageSizeEl) phPageSizeEl.value = priceHistoryState.pageSize;
+
+function togglePriceHistory(showHistory) {
+  priceHistoryState.visible = showHistory;
+  const historySection = document.getElementById("price-history-section");
+  const searchSection = document.getElementById("price-updates-search-section");
+  const configSection = document.getElementById("price-updates-config-section");
+  const mainBtn = document.getElementById("price-updates-main-view-btn");
+  const histBtn = document.getElementById("price-updates-history-view-btn");
+
+  if (showHistory) {
+    historySection.style.display = "block";
+    searchSection.style.display = "none";
+    configSection.style.display = "none";
+    mainBtn.className = "btn btn-secondary";
+    histBtn.className = "btn btn-primary";
+    loadPriceHistory();
+  } else {
+    historySection.style.display = "none";
+    if (priceUpdatesState.config) {
+      searchSection.style.display = "block";
+    } else {
+      configSection.style.display = "block";
+    }
+    mainBtn.className = "btn btn-primary";
+    histBtn.className = "btn btn-secondary";
+  }
+}
+
+async function loadPriceHistory() {
+  const loadingEl = document.getElementById("price-history-loading");
+  const emptyEl = document.getElementById("price-history-empty");
+  const resultsEl = document.getElementById("price-history-results");
+
+  loadingEl.style.display = "block";
+  emptyEl.style.display = "none";
+  resultsEl.style.display = "none";
+
+  try {
+    const params = new URLSearchParams();
+    params.append("limit", priceHistoryState.pageSize);
+    params.append("offset", priceHistoryState.currentPage * priceHistoryState.pageSize);
+
+    if (priceHistoryState.filters.store_id) {
+      params.append("store_id", priceHistoryState.filters.store_id);
+    }
+    if (priceHistoryState.filters.upc_search) {
+      params.append("upc_search", priceHistoryState.filters.upc_search);
+    }
+    if (priceHistoryState.filters.description_search) {
+      params.append("description_search", priceHistoryState.filters.description_search);
+    }
+    if (priceHistoryState.filters.start_date) {
+      params.append("start_date", priceHistoryState.filters.start_date);
+    }
+    if (priceHistoryState.filters.end_date) {
+      params.append("end_date", priceHistoryState.filters.end_date);
+    }
+
+    const data = await apiRequest(`/price-updates/history?${params.toString()}`);
+    priceHistoryState.totalRecords = data.total;
+
+    loadingEl.style.display = "none";
+
+    if (data.batches.length === 0) {
+      emptyEl.style.display = "block";
+    } else {
+      resultsEl.style.display = "block";
+      displayPriceHistory(data.batches, data.total);
+    }
+  } catch (error) {
+    loadingEl.style.display = "none";
+    showToast(`Error loading price history: ${error.message}`, "error");
+  }
+}
+
+async function loadPriceHistoryStores() {
+  try {
+    const stores = await apiRequest("/stores");
+    const storeFilter = document.getElementById("price-history-store-filter");
+    storeFilter.innerHTML = '<option value="">All Stores</option>';
+    stores.forEach((store) => {
+      const option = document.createElement("option");
+      option.value = store.id;
+      option.textContent = `${store.name} (${store.store_type})`;
+      storeFilter.appendChild(option);
+    });
+  } catch (e) {
+    // Silently fail - filter will just show "All Stores"
+  }
+}
+
+function displayPriceHistory(batches, total) {
+  document.getElementById("price-history-total-count").textContent = total;
+
+  const tbody = document.getElementById("price-history-table-body");
+  tbody.innerHTML = "";
+
+  batches.forEach((batch, index) => {
+    const recordNumber = priceHistoryState.currentPage * priceHistoryState.pageSize + index + 1;
+
+    const batchRow = document.createElement("tr");
+    batchRow.style.cursor = "pointer";
+    batchRow.style.backgroundColor = "var(--bg-secondary)";
+    batchRow.dataset.batchId = batch.batch_id;
+
+    const numCell = document.createElement("td");
+    numCell.style.color = "var(--text-tertiary)";
+    numCell.style.fontSize = "0.875rem";
+    const expandIcon = document.createElement("span");
+    expandIcon.textContent = "\u25B6 ";
+    expandIcon.style.display = "inline-block";
+    expandIcon.style.transition = "transform 0.2s";
+    numCell.appendChild(expandIcon);
+    numCell.appendChild(document.createTextNode(recordNumber.toString()));
+    batchRow.appendChild(numCell);
+
+    const timestampCell = document.createElement("td");
+    const date = new Date(batch.created_at);
+    timestampCell.textContent = date.toLocaleString("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    timestampCell.style.fontSize = "0.875rem";
+    batchRow.appendChild(timestampCell);
+
+    const upcCell = document.createElement("td");
+    upcCell.style.fontFamily = "monospace";
+    upcCell.style.fontSize = "0.875rem";
+    upcCell.textContent = batch.upc;
+    batchRow.appendChild(upcCell);
+
+    const productCell = document.createElement("td");
+    productCell.style.fontSize = "0.875rem";
+    productCell.style.color = "var(--text-secondary)";
+    productCell.textContent = batch.product_description || "-";
+    batchRow.appendChild(productCell);
+
+    const storesCell = document.createElement("td");
+    storesCell.textContent = `${batch.total_stores} store${batch.total_stores > 1 ? "s" : ""}`;
+    storesCell.style.fontWeight = "600";
+    batchRow.appendChild(storesCell);
+
+    const statusCell = document.createElement("td");
+    if (batch.failed_stores === 0) {
+      statusCell.innerHTML = '<span style="color: var(--success)">\u2713 All Success</span>';
+    } else if (batch.successful_stores === 0) {
+      statusCell.innerHTML = '<span style="color: var(--error)">\u2717 All Failed</span>';
+    } else {
+      statusCell.innerHTML = `<span style="color: var(--warning)">${batch.successful_stores} success, ${batch.failed_stores} failed</span>`;
+    }
+    statusCell.style.fontSize = "0.875rem";
+    batchRow.appendChild(statusCell);
+
+    let isExpanded = false;
+    batchRow.addEventListener("click", () => {
+      isExpanded = !isExpanded;
+      expandIcon.style.transform = isExpanded ? "rotate(90deg)" : "rotate(0deg)";
+      const detailRows = tbody.querySelectorAll(`[data-batch-detail="${batch.batch_id}"]`);
+      detailRows.forEach((row) => {
+        row.style.display = isExpanded ? "" : "none";
+      });
+    });
+
+    tbody.appendChild(batchRow);
+
+    batch.entries.forEach((entry) => {
+      const detailRow = document.createElement("tr");
+      detailRow.style.display = "none";
+      detailRow.style.backgroundColor = "var(--bg-tertiary)";
+      detailRow.dataset.batchDetail = batch.batch_id;
+
+      const indentCell = document.createElement("td");
+      indentCell.textContent = "";
+      detailRow.appendChild(indentCell);
+
+      const emptyTimestampCell = document.createElement("td");
+      detailRow.appendChild(emptyTimestampCell);
+
+      const storeCell = document.createElement("td");
+      const storeBadge = document.createElement("span");
+      storeBadge.textContent = entry.store_type.toUpperCase();
+      storeBadge.style.display = "inline-block";
+      storeBadge.style.padding = "0.125rem 0.375rem";
+      storeBadge.style.fontSize = "0.625rem";
+      storeBadge.style.fontWeight = "600";
+      storeBadge.style.borderRadius = "0.25rem";
+      storeBadge.style.marginRight = "0.5rem";
+      storeBadge.style.backgroundColor = entry.store_type === "shopify" ? "var(--accent-primary)" : "var(--info)";
+      storeBadge.style.color = "var(--text-primary)";
+      storeCell.appendChild(storeBadge);
+      storeCell.appendChild(document.createTextNode(entry.store_name));
+      if (entry.variant_title) {
+        const variantSpan = document.createElement("span");
+        variantSpan.style.color = "var(--text-tertiary)";
+        variantSpan.style.fontSize = "0.75rem";
+        variantSpan.style.marginLeft = "0.5rem";
+        variantSpan.textContent = `(${entry.variant_title})`;
+        storeCell.appendChild(variantSpan);
+      }
+      detailRow.appendChild(storeCell);
+
+      const changeCell = document.createElement("td");
+      changeCell.style.fontSize = "0.8125rem";
+      changeCell.colSpan = 2;
+      const parts = [];
+      if (entry.new_price != null) {
+        const oldP = entry.old_price != null ? `$${parseFloat(entry.old_price).toFixed(2)}` : "-";
+        const newP = `$${parseFloat(entry.new_price).toFixed(2)}`;
+        parts.push(`Price: ${oldP} \u2192 ${newP}`);
+      }
+      if (entry.new_cost != null) {
+        const oldC = entry.old_cost != null ? `$${parseFloat(entry.old_cost).toFixed(2)}` : "-";
+        const newC = `$${parseFloat(entry.new_cost).toFixed(2)}`;
+        parts.push(`Cost: ${oldC} \u2192 ${newC}`);
+      }
+      changeCell.textContent = parts.length > 0 ? parts.join("  |  ") : "-";
+      detailRow.appendChild(changeCell);
+
+      const detailStatusCell = document.createElement("td");
+      if (entry.success) {
+        detailStatusCell.innerHTML = `<span style="color: var(--success)">\u2713 ${entry.rows_affected} row(s)</span>`;
+      } else {
+        detailStatusCell.innerHTML = `<span style="color: var(--error)" title="${entry.error_message || 'Failed'}">\u2717 Failed</span>`;
+      }
+      detailStatusCell.style.fontSize = "0.875rem";
+      detailRow.appendChild(detailStatusCell);
+
+      tbody.appendChild(detailRow);
+    });
+  });
+
+  updatePriceHistoryPagination(total);
+}
+
+function updatePriceHistoryPagination(total) {
+  const totalPages = Math.ceil(total / priceHistoryState.pageSize);
+  const currentPage = priceHistoryState.currentPage + 1;
+
+  document.getElementById("price-history-page-info").textContent =
+    `Page ${currentPage} of ${totalPages || 1}`;
+
+  document.getElementById("price-history-prev-btn").disabled = priceHistoryState.currentPage === 0;
+  document.getElementById("price-history-next-btn").disabled = currentPage >= totalPages;
+}
+
+// Price History event listeners
+document
+  .getElementById("price-updates-main-view-btn")
+  ?.addEventListener("click", () => togglePriceHistory(false));
+document
+  .getElementById("price-updates-history-view-btn")
+  ?.addEventListener("click", () => {
+    loadPriceHistoryStores();
+    togglePriceHistory(true);
+  });
+
+document
+  .getElementById("apply-price-history-filters-btn")
+  ?.addEventListener("click", async () => {
+    const storeId = document.getElementById("price-history-store-filter").value;
+    const upcSearch = document.getElementById("price-history-upc-filter").value;
+    const descSearch = document.getElementById("price-history-desc-filter").value;
+    const startDate = document.getElementById("price-history-start-date").value;
+    const endDate = document.getElementById("price-history-end-date").value;
+
+    priceHistoryState.filters = {
+      store_id: storeId || null,
+      upc_search: upcSearch || null,
+      description_search: descSearch || null,
+      start_date: startDate ? `${startDate}T00:00:00` : null,
+      end_date: endDate ? `${endDate}T23:59:59` : null,
+    };
+    priceHistoryState.currentPage = 0;
+    await loadPriceHistory();
+  });
+
+document
+  .getElementById("clear-price-history-filters-btn")
+  ?.addEventListener("click", async () => {
+    document.getElementById("price-history-store-filter").value = "";
+    document.getElementById("price-history-upc-filter").value = "";
+    document.getElementById("price-history-desc-filter").value = "";
+    document.getElementById("price-history-start-date").value = "";
+    document.getElementById("price-history-end-date").value = "";
+
+    priceHistoryState.filters = {
+      store_id: null,
+      upc_search: null,
+      description_search: null,
+      start_date: null,
+      end_date: null,
+    };
+    priceHistoryState.currentPage = 0;
+    await loadPriceHistory();
+  });
+
+document
+  .getElementById("price-history-prev-btn")
+  ?.addEventListener("click", async () => {
+    if (priceHistoryState.currentPage > 0) {
+      priceHistoryState.currentPage--;
+      await loadPriceHistory();
+    }
+  });
+
+document
+  .getElementById("price-history-next-btn")
+  ?.addEventListener("click", async () => {
+    const totalPages = Math.ceil(priceHistoryState.totalRecords / priceHistoryState.pageSize);
+    if (priceHistoryState.currentPage < totalPages - 1) {
+      priceHistoryState.currentPage++;
+      await loadPriceHistory();
+    }
+  });
+
+document
+  .getElementById("price-history-page-size")
+  ?.addEventListener("change", async (e) => {
+    priceHistoryState.pageSize = parseInt(e.target.value, 10);
+    localStorage.setItem("priceHistoryPageSize", priceHistoryState.pageSize);
+    priceHistoryState.currentPage = 0;
+    await loadPriceHistory();
   });
 
 // Initialize

@@ -12,7 +12,7 @@ import uuid
 import os
 
 from database import get_db, engine
-from models import Store, MSSQLConnection, ShopifyConnection, Setting, StoreType, UPCUpdateHistory, UPCExclusion, ItemTrackerConfig, ItemTrackerExclusion
+from models import Store, MSSQLConnection, ShopifyConnection, Setting, StoreType, UPCUpdateHistory, UPCExclusion, ItemTrackerConfig, ItemTrackerExclusion, PriceUpdateHistory
 from schemas import (
     MSSQLStoreCreate, ShopifyStoreCreate, StoreResponse,
     SettingCreate, SettingUpdate, SettingResponse,
@@ -31,7 +31,8 @@ from schemas import (
     ItemInfo, ItemTrackerEvent, ItemTrackerSearchResponse,
     DescriptionAutocompleteRequest, DescriptionAutocompleteResult, DescriptionAutocompleteResponse,
     ItemTrackerExclusionCreate, ItemTrackerExclusionResponse, ItemTrackerExclusionListResponse,
-    PriceSearchRequest, StorePriceInfo, PriceUpdateItem, PriceUpdateRequest
+    PriceSearchRequest, StorePriceInfo, PriceUpdateItem, PriceUpdateRequest,
+    PriceUpdateHistoryResponse, PriceUpdateHistoryBatch, PriceUpdateHistoryListResponse
 )
 from mssql_helper import (
     test_mssql_connection, search_upc_across_mssql_stores, search_products_by_upc,
@@ -3379,6 +3380,7 @@ async def update_prices_stream(request: PriceUpdateRequest, db: Session = Depend
             yield f"event: error\ndata: {json.dumps({'message': 'UPC is required'})}\n\n"
             return
 
+        batch_id = str(uuid.uuid4())
         results = []
 
         for update in request.updates:
@@ -3411,6 +3413,24 @@ async def update_prices_stream(request: PriceUpdateRequest, db: Session = Depend
                     "error": error,
                 })
 
+                history_entry = PriceUpdateHistory(
+                    batch_id=batch_id,
+                    store_id=store.id,
+                    store_name=store.name,
+                    store_type=store.store_type,
+                    upc=effective_upc,
+                    product_description=update.product_description,
+                    old_price=update.old_price,
+                    old_cost=update.old_cost,
+                    new_price=update.new_price,
+                    new_cost=update.new_cost,
+                    success=success,
+                    rows_affected=rows or 0,
+                    error_message=error
+                )
+                db.add(history_entry)
+                db.commit()
+
                 if success:
                     yield f"event: progress\ndata: {json.dumps({'status': 'updated', 'message': f'Updated {store.name} ({rows} row(s))'})}\n\n"
                 else:
@@ -3418,7 +3438,6 @@ async def update_prices_stream(request: PriceUpdateRequest, db: Session = Depend
 
             elif update.store_type == "shopify" and store.shopify_connection and update.variant_updates:
                 conn = store.shopify_connection
-                # Group variants by product_id
                 products = {}
                 for vu in update.variant_updates:
                     pid = vu["product_id"]
@@ -3450,18 +3469,106 @@ async def update_prices_stream(request: PriceUpdateRequest, db: Session = Depend
                     "error": "; ".join(errors) if errors else None,
                 })
 
+                for vu in update.variant_updates:
+                    history_entry = PriceUpdateHistory(
+                        batch_id=batch_id,
+                        store_id=store.id,
+                        store_name=store.name,
+                        store_type=store.store_type,
+                        upc=upc,
+                        product_description=vu.get("product_title"),
+                        variant_id=str(vu.get("variant_id", "")),
+                        variant_title=vu.get("variant_title"),
+                        old_price=vu.get("old_price"),
+                        old_cost=vu.get("old_cost"),
+                        new_price=vu.get("new_price"),
+                        new_cost=vu.get("new_cost"),
+                        success=store_success,
+                        rows_affected=1 if store_success else 0,
+                        error_message="; ".join(errors) if errors else None
+                    )
+                    db.add(history_entry)
+                db.commit()
+
                 if store_success:
                     yield f"event: progress\ndata: {json.dumps({'status': 'updated', 'message': f'Updated {store.name} ({total_updated} variant(s))'})}\n\n"
                 else:
                     error_detail = '; '.join(errors)
                     yield f"event: progress\ndata: {json.dumps({'status': 'error', 'message': f'Failed to update {store.name}: {error_detail}'})}\n\n"
 
-        yield f"event: complete\ndata: {json.dumps({'results': results})}\n\n"
+        yield f"event: complete\ndata: {json.dumps({'results': results, 'batch_id': batch_id})}\n\n"
 
     return StreamingResponse(
         generate_events(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
+    )
+
+
+@app.get("/api/price-updates/history", response_model=PriceUpdateHistoryListResponse)
+def get_price_update_history(
+    store_id: Optional[int] = None,
+    upc_search: Optional[str] = None,
+    description_search: Optional[str] = None,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    limit: int = 25,
+    offset: int = 0,
+    db: Session = Depends(get_db)
+):
+    from sqlalchemy import func
+
+    base_filters = []
+    if store_id is not None:
+        base_filters.append(PriceUpdateHistory.store_id == store_id)
+    if upc_search:
+        base_filters.append(PriceUpdateHistory.upc.like(f"%{upc_search}%"))
+    if description_search:
+        base_filters.append(PriceUpdateHistory.product_description.ilike(f"%{description_search}%"))
+    if start_date:
+        base_filters.append(PriceUpdateHistory.created_at >= start_date)
+    if end_date:
+        base_filters.append(PriceUpdateHistory.created_at <= end_date)
+
+    batch_query = db.query(
+        PriceUpdateHistory.batch_id,
+        func.min(PriceUpdateHistory.created_at).label('created_at')
+    ).filter(*base_filters).group_by(PriceUpdateHistory.batch_id)
+
+    total = batch_query.count()
+    batch_ids = batch_query.order_by(
+        func.min(PriceUpdateHistory.created_at).desc()
+    ).offset(offset).limit(limit).all()
+
+    batch_id_list = [b.batch_id for b in batch_ids]
+
+    batches = []
+    for bid in batch_id_list:
+        entries = db.query(PriceUpdateHistory).filter(
+            PriceUpdateHistory.batch_id == bid
+        ).all()
+
+        if entries:
+            first = entries[0]
+            successful = sum(1 for e in entries if e.success)
+            failed = len(entries) - successful
+
+            batches.append(PriceUpdateHistoryBatch(
+                batch_id=bid,
+                upc=first.upc,
+                product_description=first.product_description,
+                created_at=first.created_at,
+                total_stores=len(entries),
+                successful_stores=successful,
+                failed_stores=failed,
+                entries=entries
+            ))
+
+    return PriceUpdateHistoryListResponse(
+        batches=batches,
+        total=total,
+        limit=limit,
+        offset=offset
     )
 
 

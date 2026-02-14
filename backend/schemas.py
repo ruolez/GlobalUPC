@@ -430,12 +430,57 @@ class PriceUpdateItem(BaseModel):
     upc: Optional[str] = None
     new_price: Optional[float] = None
     new_cost: Optional[float] = None
+    old_price: Optional[float] = None
+    old_cost: Optional[float] = None
+    product_description: Optional[str] = None
     variant_updates: Optional[List[dict]] = None
 
 
 class PriceUpdateRequest(BaseModel):
     upc: str
     updates: List[PriceUpdateItem]
+
+
+class PriceUpdateHistoryResponse(BaseModel):
+    id: int
+    batch_id: str
+    store_id: int
+    store_name: str
+    store_type: str
+    upc: str
+    product_description: Optional[str] = None
+    variant_id: Optional[str] = None
+    variant_title: Optional[str] = None
+    old_price: Optional[float] = None
+    old_cost: Optional[float] = None
+    new_price: Optional[float] = None
+    new_cost: Optional[float] = None
+    success: bool
+    rows_affected: int
+    error_message: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+        use_enum_values = True
+
+
+class PriceUpdateHistoryBatch(BaseModel):
+    batch_id: str
+    upc: str
+    product_description: Optional[str] = None
+    created_at: datetime
+    total_stores: int
+    successful_stores: int
+    failed_stores: int
+    entries: List[PriceUpdateHistoryResponse]
+
+
+class PriceUpdateHistoryListResponse(BaseModel):
+    batches: List[PriceUpdateHistoryBatch]
+    total: int
+    limit: int
+    offset: int
 
 
 class ItemTrackerExclusionCreate(BaseModel):
