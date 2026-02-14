@@ -5566,6 +5566,8 @@ function displayPriceResults(upc, prices, siblingPrices) {
           tr.dataset.variantId = v.variant_id;
           tr.dataset.productId = v.product_id;
           tr.dataset.barcode = v.barcode || "";
+          tr.dataset.productTitle = v.product_title || "";
+          tr.dataset.variantTitle = v.variant_title || "";
 
           const vPrice = v.price != null ? parseFloat(v.price).toFixed(2) : "-";
           const vCost = v.cost != null ? parseFloat(v.cost).toFixed(2) : "-";
@@ -5765,8 +5767,8 @@ async function updatePrices() {
         new_cost: newCost,
         old_price: oldPrice,
         old_cost: oldCost,
-        variant_title: productDesc,
-        product_title: productDesc,
+        variant_title: tr.dataset.variantTitle || null,
+        product_title: tr.dataset.productTitle || null,
       });
     }
   });
