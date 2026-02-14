@@ -5661,7 +5661,7 @@ function displayPriceResults(upc, prices, siblingPrices) {
   for (const storeId of storeOrder) {
     const sd = storeData[storeId];
     const hasRows = sd.mainRows.length > 0 || sd.siblingRows.length > 0;
-    const isActive = savedStores ? savedStores.has(storeId) : hasRows;
+    const isActive = savedStores ? savedStores.has(String(storeId)) : hasRows;
     const chip = document.createElement("span");
     chip.className = "store-filter-chip" + (isActive ? " active" : " not-found");
     chip.dataset.storeId = storeId;
