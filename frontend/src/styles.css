@@ -1270,3 +1270,17 @@ body {
 .store-filter-chip.not-found {
   opacity: 0.5;
 }
+
+.store-filter-chip.store-filter-control {
+  background: transparent;
+  border-style: dashed;
+  color: var(--text-secondary);
+  opacity: 0.85;
+  margin-right: 0.25rem;
+}
+
+.store-filter-chip.store-filter-control:hover {
+  opacity: 1;
+  border-color: var(--accent-primary);
+  color: var(--text-primary);
+}

@@ -5621,6 +5621,34 @@ function displayPriceResults(upc, prices, siblingPrices) {
   // Build store filter chips
   const filtersEl = document.getElementById("price-store-filters");
   filtersEl.innerHTML = "";
+
+  // Select All / Deselect All controls
+  const selectAllBtn = document.createElement("span");
+  selectAllBtn.className = "store-filter-chip store-filter-control";
+  selectAllBtn.textContent = "☑ All";
+  selectAllBtn.title = "Select all stores";
+  selectAllBtn.addEventListener("click", () => {
+    filtersEl.querySelectorAll(".store-filter-chip:not(.store-filter-control)").forEach((c) => {
+      c.classList.add("active");
+      c.classList.remove("not-found");
+    });
+    applyStoreFilters();
+  });
+  filtersEl.appendChild(selectAllBtn);
+
+  const deselectAllBtn = document.createElement("span");
+  deselectAllBtn.className = "store-filter-chip store-filter-control";
+  deselectAllBtn.textContent = "☐ None";
+  deselectAllBtn.title = "Deselect all stores";
+  deselectAllBtn.addEventListener("click", () => {
+    filtersEl.querySelectorAll(".store-filter-chip:not(.store-filter-control)").forEach((c) => {
+      c.classList.remove("active");
+      c.classList.add("not-found");
+    });
+    applyStoreFilters();
+  });
+  filtersEl.appendChild(deselectAllBtn);
+
   for (const storeId of storeOrder) {
     const sd = storeData[storeId];
     const hasRows = sd.mainRows.length > 0 || sd.siblingRows.length > 0;
