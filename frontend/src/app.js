@@ -6265,6 +6265,18 @@ function saveHistoryStoreSelections() {
   localStorage.setItem("priceActiveStores", JSON.stringify(activeIds));
 }
 
+function getActiveHistoryStoreIds() {
+  const chips = document.querySelectorAll("#price-history-store-filters .store-filter-chip:not(.store-filter-control)");
+  if (chips.length === 0) return null;
+  const activeChips = document.querySelectorAll("#price-history-store-filters .store-filter-chip.active");
+  if (activeChips.length === chips.length) return null;
+  const ids = new Set();
+  activeChips.forEach((chip) => {
+    if (chip.dataset.storeId) ids.add(String(chip.dataset.storeId));
+  });
+  return ids;
+}
+
 function displayPriceHistory(batches, total) {
   document.getElementById("price-history-total-count").textContent = total;
 
@@ -6335,8 +6347,13 @@ function displayPriceHistory(batches, total) {
       isExpanded = !isExpanded;
       expandIcon.style.transform = isExpanded ? "rotate(90deg)" : "rotate(0deg)";
       const detailRows = tbody.querySelectorAll(`[data-batch-detail="${batch.batch_id}"]`);
+      const activeStoreIds = getActiveHistoryStoreIds();
       detailRows.forEach((row) => {
-        row.style.display = isExpanded ? "" : "none";
+        if (!isExpanded) {
+          row.style.display = "none";
+        } else {
+          row.style.display = activeStoreIds ? (activeStoreIds.has(row.dataset.storeId) ? "" : "none") : "";
+        }
       });
     });
 
@@ -6347,6 +6364,7 @@ function displayPriceHistory(batches, total) {
       detailRow.style.display = "none";
       detailRow.style.backgroundColor = "var(--bg-tertiary)";
       detailRow.dataset.batchDetail = batch.batch_id;
+      detailRow.dataset.storeId = entry.store_id;
 
       const indentCell = document.createElement("td");
       indentCell.textContent = "";
