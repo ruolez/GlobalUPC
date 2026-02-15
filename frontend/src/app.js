@@ -5497,7 +5497,7 @@ async function searchPriceUpdates() {
   overlayStatus.textContent = "";
   overlay.style.display = "flex";
 
-  const totalStores = config.storeIds.length;
+  let totalSteps = config.storeIds.length;
   let completedStores = 0;
 
   try {
@@ -5531,12 +5531,14 @@ async function searchPriceUpdates() {
         if (line.startsWith("data: ")) {
           const data = JSON.parse(line.substring(6));
 
-          if (data.status === "searching" && data.message) {
+          if (data.status === "total_steps") {
+            totalSteps = data.total;
+          } else if (data.status === "searching" && data.message) {
             overlayStatus.textContent = data.message;
           } else if (data.status === "found" || data.status === "not_found" || data.status === "error") {
             completedStores++;
-            overlayFill.style.width = `${(completedStores / totalStores) * 100}%`;
-            overlayStatus.textContent = `Store ${completedStores} of ${totalStores}`;
+            overlayFill.style.width = `${Math.min((completedStores / totalSteps) * 100, 100)}%`;
+            overlayStatus.textContent = `Step ${completedStores} of ${totalSteps}`;
           }
 
           if (data.prices) {
@@ -6290,6 +6292,29 @@ function saveHistoryStoreSelections() {
     if (chip.dataset.storeId) activeIds.push(chip.dataset.storeId);
   });
   localStorage.setItem("priceActiveStores", JSON.stringify(activeIds));
+  if (priceHistoryState.visible) applyPriceHistoryFilters();
+}
+
+async function applyPriceHistoryFilters() {
+  const activeStoreIds = [];
+  document.querySelectorAll("#price-history-store-filters .store-filter-chip.active").forEach((chip) => {
+    if (chip.dataset.storeId) activeStoreIds.push(chip.dataset.storeId);
+  });
+  const totalChips = document.querySelectorAll("#price-history-store-filters .store-filter-chip:not(.store-filter-control)").length;
+  const upcSearch = document.getElementById("price-history-upc-filter").value;
+  const descSearch = document.getElementById("price-history-desc-filter").value;
+  const startDate = document.getElementById("price-history-start-date").value;
+  const endDate = document.getElementById("price-history-end-date").value;
+
+  priceHistoryState.filters = {
+    store_ids: activeStoreIds.length > 0 && activeStoreIds.length < totalChips ? activeStoreIds.join(",") : null,
+    upc_search: upcSearch || null,
+    description_search: descSearch || null,
+    start_date: startDate ? `${startDate}T00:00:00` : null,
+    end_date: endDate ? `${endDate}T23:59:59` : null,
+  };
+  priceHistoryState.currentPage = 0;
+  await loadPriceHistory();
 }
 
 function getActiveHistoryStoreIds() {
@@ -6495,27 +6520,7 @@ document
 
 document
   .getElementById("apply-price-history-filters-btn")
-  ?.addEventListener("click", async () => {
-    const activeStoreIds = [];
-    document.querySelectorAll("#price-history-store-filters .store-filter-chip.active").forEach((chip) => {
-      if (chip.dataset.storeId) activeStoreIds.push(chip.dataset.storeId);
-    });
-    const totalChips = document.querySelectorAll("#price-history-store-filters .store-filter-chip:not(.store-filter-control)").length;
-    const upcSearch = document.getElementById("price-history-upc-filter").value;
-    const descSearch = document.getElementById("price-history-desc-filter").value;
-    const startDate = document.getElementById("price-history-start-date").value;
-    const endDate = document.getElementById("price-history-end-date").value;
-
-    priceHistoryState.filters = {
-      store_ids: activeStoreIds.length > 0 && activeStoreIds.length < totalChips ? activeStoreIds.join(",") : null,
-      upc_search: upcSearch || null,
-      description_search: descSearch || null,
-      start_date: startDate ? `${startDate}T00:00:00` : null,
-      end_date: endDate ? `${endDate}T23:59:59` : null,
-    };
-    priceHistoryState.currentPage = 0;
-    await loadPriceHistory();
-  });
+  ?.addEventListener("click", () => applyPriceHistoryFilters());
 
 document
   .getElementById("clear-price-history-filters-btn")
@@ -6524,21 +6529,12 @@ document
       c.classList.add("active");
       c.classList.remove("not-found");
     });
-    saveHistoryStoreSelections();
+    localStorage.setItem("priceActiveStores", JSON.stringify([]));
     document.getElementById("price-history-upc-filter").value = "";
     document.getElementById("price-history-desc-filter").value = "";
     document.getElementById("price-history-start-date").value = "";
     document.getElementById("price-history-end-date").value = "";
-
-    priceHistoryState.filters = {
-      store_ids: null,
-      upc_search: null,
-      description_search: null,
-      start_date: null,
-      end_date: null,
-    };
-    priceHistoryState.currentPage = 0;
-    await loadPriceHistory();
+    await applyPriceHistoryFilters();
   });
 
 document

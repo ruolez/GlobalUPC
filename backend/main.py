@@ -3121,6 +3121,11 @@ async def fetch_prices_stream(request: PriceSearchRequest, db: Session = Depends
                 yield f"event: progress\ndata: {json.dumps({'status': 'searching', 'message': f'Found {len(all_barcodes) - 1} sibling barcode(s)'})}\n\n"
 
             # Step 2: Main phase — search all barcodes in all stores
+            mssql_count = sum(1 for s in stores_by_id.values() if s.store_type == StoreType.mssql and s.mssql_connection)
+            shopify_count = sum(1 for s in stores_by_id.values() if s.store_type == StoreType.shopify and s.shopify_connection)
+            total_steps = mssql_count * len(all_barcodes) + shopify_count
+            yield f"event: progress\ndata: {json.dumps({'status': 'total_steps', 'total': total_steps})}\n\n"
+
             for store_id, store in stores_by_id.items():
                 if store.store_type == StoreType.mssql and store.mssql_connection:
                     conn = store.mssql_connection
@@ -3260,6 +3265,9 @@ async def fetch_prices_stream(request: PriceSearchRequest, db: Session = Depends
 
         else:
             # ── PATH B: Siblings unchecked (original Phase 1) ──
+            total_steps = len(stores_by_id)
+            yield f"event: progress\ndata: {json.dumps({'status': 'total_steps', 'total': total_steps})}\n\n"
+
             for store_id in request.store_ids:
                 store = stores_by_id.get(store_id)
                 if not store:
