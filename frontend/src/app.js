@@ -5170,7 +5170,8 @@ function buildStoreFilterChips(containerEl, stores, { localStorageKey, onToggle 
       const chip = document.createElement("span");
       chip.className = "store-filter-chip" + (isActive ? " active" : " not-found");
       chip.dataset.storeId = store.id;
-      chip.textContent = getStoreBaseName(store.name);
+      const baseName = getStoreBaseName(store.name);
+      chip.textContent = store.rowCount > 0 ? `${baseName} (${store.rowCount})` : baseName;
       chip.title = store.name;
       chip.addEventListener("click", () => {
         chip.classList.toggle("active");
@@ -5740,12 +5741,20 @@ function displayPriceResults(upc, prices, siblingPrices) {
 
   // Build store filter chips
   const filtersEl = document.getElementById("price-store-filters");
-  const chipStores = storeOrder.map((id) => ({
-    id: String(id),
-    name: storeData[id].storeName,
-    type: storeData[id].storeType,
-    hasRows: storeData[id].mainRows.length > 0 || storeData[id].siblingRows.length > 0,
-  }));
+  const chipStores = storeOrder.map((id) => {
+    const sd = storeData[id];
+    let rowCount = sd.siblingRows.length;
+    sd.mainRows.forEach((p) => {
+      rowCount += p.store_type === "shopify" && p.variants ? p.variants.length : 1;
+    });
+    return {
+      id: String(id),
+      name: sd.storeName,
+      type: sd.storeType,
+      hasRows: sd.mainRows.length > 0 || sd.siblingRows.length > 0,
+      rowCount,
+    };
+  });
   buildStoreFilterChips(filtersEl, chipStores, {
     localStorageKey: "priceActiveStores",
     onToggle: applyStoreFilters,
