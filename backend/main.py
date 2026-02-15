@@ -3064,174 +3064,70 @@ async def fetch_prices_stream(request: PriceSearchRequest, db: Session = Depends
             return
 
         prices = []
-        phase1_product_ids = {}
+        sibling_prices = []
 
+        stores_by_id = {}
         for store_id in request.store_ids:
             store = db.query(Store).filter(Store.id == store_id, Store.is_active == True).first()
-            if not store:
-                continue
+            if store:
+                stores_by_id[store_id] = store
 
-            yield f"event: progress\ndata: {json.dumps({'status': 'searching', 'message': f'Searching {store.name}...'})}\n\n"
+        if request.include_sibling_barcodes:
+            # ── PATH A: Siblings checked ──
 
-            if store.store_type == StoreType.mssql and store.mssql_connection:
-                conn = store.mssql_connection
-                success, error, item_data = await get_item_prices_async(
-                    host=conn.host,
-                    port=conn.port,
-                    database=conn.database_name,
-                    username=conn.username,
-                    password=conn.password,
-                    upc=upc
-                )
+            # Step 1: Pre-phase — compile barcode list from Shopify stores
+            all_barcodes = {upc}
+            sibling_barcode_info = {}
 
-                if success and item_data:
-                    prices.append({
-                        "store_id": store.id,
-                        "store_name": store.name,
-                        "store_type": "mssql",
-                        "product_found": True,
-                        "product_description": item_data["description"],
-                        "unit_price": item_data["unit_price"],
-                        "unit_cost": item_data["unit_cost"],
-                        "variants": None,
-                    })
-                    yield f"event: progress\ndata: {json.dumps({'status': 'found', 'message': f'Found in {store.name}'})}\n\n"
-                elif success:
-                    prices.append({
-                        "store_id": store.id,
-                        "store_name": store.name,
-                        "store_type": "mssql",
-                        "product_found": False,
-                        "product_description": None,
-                        "unit_price": None,
-                        "unit_cost": None,
-                        "variants": None,
-                    })
-                    yield f"event: progress\ndata: {json.dumps({'status': 'not_found', 'message': f'Not found in {store.name}'})}\n\n"
-                else:
-                    prices.append({
-                        "store_id": store.id,
-                        "store_name": store.name,
-                        "store_type": "mssql",
-                        "product_found": False,
-                        "product_description": None,
-                        "unit_price": None,
-                        "unit_cost": None,
-                        "variants": None,
-                    })
-                    yield f"event: progress\ndata: {json.dumps({'status': 'error', 'message': f'Error searching {store.name}: {error}'})}\n\n"
-
-            elif store.store_type == StoreType.shopify and store.shopify_connection:
+            for store_id, store in stores_by_id.items():
+                if store.store_type != StoreType.shopify or not store.shopify_connection:
+                    continue
                 conn = store.shopify_connection
+
+                yield f"event: progress\ndata: {json.dumps({'status': 'searching', 'message': f'Discovering sibling barcodes in {store.name}...'})}\n\n"
+
                 success, error, variants = await search_product_prices_by_barcode(
                     shop_domain=conn.shop_domain,
                     admin_api_key=conn.admin_api_key,
                     barcode=upc,
                     api_version=conn.api_version
                 )
+                if not (success and variants):
+                    continue
 
-                if success and variants:
-                    # Step 2: Fetch ALL variants of the parent product(s)
-                    searched_variant_ids = {v["variant_id"] for v in variants}
-                    product_ids = list({v["product_id"] for v in variants})
-                    phase1_product_ids.setdefault(store.id, set()).update(product_ids)
+                products = {}
+                for v in variants:
+                    products.setdefault(v["product_id"], []).append(v)
 
-                    all_variants = []
-                    for pid in product_ids:
-                        p_success, p_error, p_variants = await get_all_product_variant_prices(
-                            shop_domain=conn.shop_domain,
-                            admin_api_key=conn.admin_api_key,
-                            product_id=pid,
-                            api_version=conn.api_version
-                        )
-                        if p_success and p_variants:
-                            all_variants.extend(p_variants)
+                for pid, prod_variants in products.items():
+                    p_success, p_error, all_product_variants = await get_all_product_variant_prices(
+                        shop_domain=conn.shop_domain,
+                        admin_api_key=conn.admin_api_key,
+                        product_id=pid,
+                        api_version=conn.api_version
+                    )
+                    if not (p_success and all_product_variants) or len(all_product_variants) <= 1:
+                        continue
 
-                    # Get searched variant price for filtering siblings
-                    searched_price = None
-                    for v in variants:
-                        if v.get("price") is not None:
-                            searched_price = str(v["price"])
-                            break
+                    searched_price = str(prod_variants[0]["price"])
 
-                    # Deduplicate by variant_id, mark searched vs sibling
-                    seen = set()
-                    merged_variants = []
-                    for v in all_variants:
-                        vid = v["variant_id"]
-                        if vid in seen:
-                            continue
-                        seen.add(vid)
-                        v["is_searched"] = vid in searched_variant_ids
-                        if v["is_searched"]:
-                            merged_variants.append(v)
-                        elif v.get("barcode") and v["barcode"].strip():
-                            # Only include siblings at the same price level
-                            if searched_price is not None and str(v.get("price")) == searched_price:
-                                merged_variants.append(v)
-
-                    prices.append({
-                        "store_id": store.id,
-                        "store_name": store.name,
-                        "store_type": "shopify",
-                        "product_found": True,
-                        "product_description": variants[0].get("product_title"),
-                        "unit_price": None,
-                        "unit_cost": None,
-                        "variants": merged_variants,
-                    })
-                    yield f"event: progress\ndata: {json.dumps({'status': 'found', 'message': f'Found {len(merged_variants)} variant(s) in {store.name}'})}\n\n"
-                elif success:
-                    prices.append({
-                        "store_id": store.id,
-                        "store_name": store.name,
-                        "store_type": "shopify",
-                        "product_found": False,
-                        "product_description": None,
-                        "unit_price": None,
-                        "unit_cost": None,
-                        "variants": None,
-                    })
-                    yield f"event: progress\ndata: {json.dumps({'status': 'not_found', 'message': f'Not found in {store.name}'})}\n\n"
-                else:
-                    prices.append({
-                        "store_id": store.id,
-                        "store_name": store.name,
-                        "store_type": "shopify",
-                        "product_found": False,
-                        "product_description": None,
-                        "unit_price": None,
-                        "unit_cost": None,
-                        "variants": None,
-                    })
-                    yield f"event: progress\ndata: {json.dumps({'status': 'error', 'message': f'Error searching {store.name}: {error}'})}\n\n"
-
-        # Enhancement B: Sibling MSSQL lookups
-        sibling_prices = []
-        if request.include_sibling_barcodes:
-            sibling_barcodes = set()
-            sibling_barcode_info = {}
-            for p in prices:
-                if p["store_type"] == "shopify" and p.get("variants"):
-                    for v in p["variants"]:
+                    for v in all_product_variants:
                         bc = (v.get("barcode") or "").strip()
-                        if bc and bc != upc:
-                            sibling_barcodes.add(bc)
+                        if bc and bc != upc and str(v.get("price")) == searched_price:
+                            all_barcodes.add(bc)
                             sibling_barcode_info[bc] = v.get("variant_title", "")
 
-            if sibling_barcodes:
-                mssql_store_ids = [sid for sid in request.store_ids if sid in {p["store_id"] for p in prices if p["store_type"] == "mssql"}]
-                mssql_stores = []
-                for sid in mssql_store_ids:
-                    s = db.query(Store).filter(Store.id == sid, Store.is_active == True).first()
-                    if s and s.mssql_connection:
-                        mssql_stores.append(s)
+            if len(all_barcodes) > 1:
+                yield f"event: progress\ndata: {json.dumps({'status': 'searching', 'message': f'Found {len(all_barcodes) - 1} sibling barcode(s)'})}\n\n"
 
-                for bc in sorted(sibling_barcodes):
-                    variant_title = sibling_barcode_info.get(bc, "")
-                    for store in mssql_stores:
-                        conn = store.mssql_connection
-                        yield f"event: progress\ndata: {json.dumps({'status': 'searching', 'message': f'Searching sibling barcode {bc} in {store.name}...'})}\n\n"
+            # Step 2: Main phase — search all barcodes in all stores
+            for store_id, store in stores_by_id.items():
+                if store.store_type == StoreType.mssql and store.mssql_connection:
+                    conn = store.mssql_connection
+                    for bc in sorted(all_barcodes):
+                        is_primary = bc == upc
+                        label = f"Searching {store.name}..." if is_primary else f"Searching sibling barcode {bc} in {store.name}..."
+                        yield f"event: progress\ndata: {json.dumps({'status': 'searching', 'message': label})}\n\n"
 
                         success, error, item_data = await get_item_prices_async(
                             host=conn.host,
@@ -3242,84 +3138,212 @@ async def fetch_prices_stream(request: PriceSearchRequest, db: Session = Depends
                             upc=bc
                         )
 
-                        if success and item_data:
-                            sibling_prices.append({
-                                "store_id": store.id,
-                                "store_name": store.name,
-                                "store_type": "mssql",
-                                "product_found": True,
-                                "product_description": item_data["description"],
-                                "unit_price": item_data["unit_price"],
-                                "unit_cost": item_data["unit_cost"],
-                                "variants": None,
-                                "sibling_barcode": bc,
-                                "sibling_variant_title": variant_title,
-                            })
-                            yield f"event: progress\ndata: {json.dumps({'status': 'found', 'message': f'Found sibling {bc} in {store.name}'})}\n\n"
-                        elif success:
-                            sibling_prices.append({
-                                "store_id": store.id,
-                                "store_name": store.name,
-                                "store_type": "mssql",
-                                "product_found": False,
-                                "product_description": None,
-                                "unit_price": None,
-                                "unit_cost": None,
-                                "variants": None,
-                                "sibling_barcode": bc,
-                                "sibling_variant_title": variant_title,
-                            })
-                            yield f"event: progress\ndata: {json.dumps({'status': 'not_found', 'message': f'Sibling {bc} not found in {store.name}'})}\n\n"
+                        if is_primary:
+                            if success and item_data:
+                                prices.append({
+                                    "store_id": store.id,
+                                    "store_name": store.name,
+                                    "store_type": "mssql",
+                                    "product_found": True,
+                                    "product_description": item_data["description"],
+                                    "unit_price": item_data["unit_price"],
+                                    "unit_cost": item_data["unit_cost"],
+                                    "variants": None,
+                                })
+                                yield f"event: progress\ndata: {json.dumps({'status': 'found', 'message': f'Found in {store.name}'})}\n\n"
+                            elif success:
+                                prices.append({
+                                    "store_id": store.id,
+                                    "store_name": store.name,
+                                    "store_type": "mssql",
+                                    "product_found": False,
+                                    "product_description": None,
+                                    "unit_price": None,
+                                    "unit_cost": None,
+                                    "variants": None,
+                                })
+                                yield f"event: progress\ndata: {json.dumps({'status': 'not_found', 'message': f'Not found in {store.name}'})}\n\n"
+                            else:
+                                prices.append({
+                                    "store_id": store.id,
+                                    "store_name": store.name,
+                                    "store_type": "mssql",
+                                    "product_found": False,
+                                    "product_description": None,
+                                    "unit_price": None,
+                                    "unit_cost": None,
+                                    "variants": None,
+                                })
+                                yield f"event: progress\ndata: {json.dumps({'status': 'error', 'message': f'Error searching {store.name}: {error}'})}\n\n"
+                        else:
+                            variant_title = sibling_barcode_info.get(bc, "")
+                            if success and item_data:
+                                sibling_prices.append({
+                                    "store_id": store.id,
+                                    "store_name": store.name,
+                                    "store_type": "mssql",
+                                    "product_found": True,
+                                    "product_description": item_data["description"],
+                                    "unit_price": item_data["unit_price"],
+                                    "unit_cost": item_data["unit_cost"],
+                                    "variants": None,
+                                    "sibling_barcode": bc,
+                                    "sibling_variant_title": variant_title,
+                                })
+                                yield f"event: progress\ndata: {json.dumps({'status': 'found', 'message': f'Found sibling {bc} in {store.name}'})}\n\n"
+                            elif success:
+                                sibling_prices.append({
+                                    "store_id": store.id,
+                                    "store_name": store.name,
+                                    "store_type": "mssql",
+                                    "product_found": False,
+                                    "product_description": None,
+                                    "unit_price": None,
+                                    "unit_cost": None,
+                                    "variants": None,
+                                    "sibling_barcode": bc,
+                                    "sibling_variant_title": variant_title,
+                                })
+                                yield f"event: progress\ndata: {json.dumps({'status': 'not_found', 'message': f'Sibling {bc} not found in {store.name}'})}\n\n"
 
-                # Enhancement C: Sibling Shopify lookups
-                target_shopify = [
-                    p for p in prices
-                    if p["store_type"] == "shopify"
-                ]
-                for target_entry in target_shopify:
-                    store = db.query(Store).filter(Store.id == target_entry["store_id"], Store.is_active == True).first()
-                    if not store or not store.shopify_connection:
-                        continue
+                elif store.store_type == StoreType.shopify and store.shopify_connection:
                     conn = store.shopify_connection
-                    idx = prices.index(target_entry)
-                    for bc in sorted(sibling_barcodes):
-                        yield f"event: progress\ndata: {json.dumps({'status': 'searching', 'message': f'Searching sibling barcode {bc} in {store.name}...'})}\n\n"
-                        try:
-                            success, error, variants = await search_product_prices_by_barcode(
-                                shop_domain=conn.shop_domain,
-                                admin_api_key=conn.admin_api_key,
-                                barcode=bc,
-                                api_version=conn.api_version
-                            )
-                        except Exception:
-                            continue
+                    found_variants = {}
 
-                        if not (success and variants):
-                            continue
+                    for bc in sorted(all_barcodes):
+                        is_primary = bc == upc
+                        label = f"Searching {store.name}..." if is_primary else f"Searching sibling barcode {bc} in {store.name}..."
+                        yield f"event: progress\ndata: {json.dumps({'status': 'searching', 'message': label})}\n\n"
 
+                        success, error, variants = await search_product_prices_by_barcode(
+                            shop_domain=conn.shop_domain,
+                            admin_api_key=conn.admin_api_key,
+                            barcode=bc,
+                            api_version=conn.api_version
+                        )
+
+                        if success and variants:
+                            for v in variants:
+                                if v["variant_id"] not in found_variants:
+                                    v["is_searched"] = is_primary
+                                    found_variants[v["variant_id"]] = v
+
+                    if found_variants:
+                        variant_list = list(found_variants.values())
+                        product_title = next(
+                            (v.get("product_title") for v in variant_list if v.get("is_searched")),
+                            variant_list[0].get("product_title")
+                        )
+                        prices.append({
+                            "store_id": store.id,
+                            "store_name": store.name,
+                            "store_type": "shopify",
+                            "product_found": True,
+                            "product_description": product_title,
+                            "unit_price": None,
+                            "unit_cost": None,
+                            "variants": variant_list,
+                        })
+                        yield f"event: progress\ndata: {json.dumps({'status': 'found', 'message': f'Found {len(variant_list)} variant(s) in {store.name}'})}\n\n"
+                    else:
+                        prices.append({
+                            "store_id": store.id,
+                            "store_name": store.name,
+                            "store_type": "shopify",
+                            "product_found": False,
+                            "product_description": None,
+                            "unit_price": None,
+                            "unit_cost": None,
+                            "variants": None,
+                        })
+                        yield f"event: progress\ndata: {json.dumps({'status': 'not_found', 'message': f'Not found in {store.name}'})}\n\n"
+
+        else:
+            # ── PATH B: Siblings unchecked (original Phase 1) ──
+            for store_id in request.store_ids:
+                store = stores_by_id.get(store_id)
+                if not store:
+                    continue
+
+                yield f"event: progress\ndata: {json.dumps({'status': 'searching', 'message': f'Searching {store.name}...'})}\n\n"
+
+                if store.store_type == StoreType.mssql and store.mssql_connection:
+                    conn = store.mssql_connection
+                    success, error, item_data = await get_item_prices_async(
+                        host=conn.host,
+                        port=conn.port,
+                        database=conn.database_name,
+                        username=conn.username,
+                        password=conn.password,
+                        upc=upc
+                    )
+
+                    if success and item_data:
+                        prices.append({
+                            "store_id": store.id,
+                            "store_name": store.name,
+                            "store_type": "mssql",
+                            "product_found": True,
+                            "product_description": item_data["description"],
+                            "unit_price": item_data["unit_price"],
+                            "unit_cost": item_data["unit_cost"],
+                            "variants": None,
+                        })
+                        yield f"event: progress\ndata: {json.dumps({'status': 'found', 'message': f'Found in {store.name}'})}\n\n"
+                    elif success:
+                        prices.append({
+                            "store_id": store.id,
+                            "store_name": store.name,
+                            "store_type": "mssql",
+                            "product_found": False,
+                            "product_description": None,
+                            "unit_price": None,
+                            "unit_cost": None,
+                            "variants": None,
+                        })
+                        yield f"event: progress\ndata: {json.dumps({'status': 'not_found', 'message': f'Not found in {store.name}'})}\n\n"
+                    else:
+                        prices.append({
+                            "store_id": store.id,
+                            "store_name": store.name,
+                            "store_type": "mssql",
+                            "product_found": False,
+                            "product_description": None,
+                            "unit_price": None,
+                            "unit_cost": None,
+                            "variants": None,
+                        })
+                        yield f"event: progress\ndata: {json.dumps({'status': 'error', 'message': f'Error searching {store.name}: {error}'})}\n\n"
+
+                elif store.store_type == StoreType.shopify and store.shopify_connection:
+                    conn = store.shopify_connection
+                    success, error, variants = await search_product_prices_by_barcode(
+                        shop_domain=conn.shop_domain,
+                        admin_api_key=conn.admin_api_key,
+                        barcode=upc,
+                        api_version=conn.api_version
+                    )
+
+                    if success and variants:
                         searched_variant_ids = {v["variant_id"] for v in variants}
                         product_ids = list({v["product_id"] for v in variants})
-                        known = phase1_product_ids.get(store.id, set())
-                        product_ids = [pid for pid in product_ids if pid not in known]
-                        if not product_ids:
-                            continue
 
                         all_variants = []
                         for pid in product_ids:
-                            try:
-                                p_success, p_error, p_variants = await get_all_product_variant_prices(
-                                    shop_domain=conn.shop_domain,
-                                    admin_api_key=conn.admin_api_key,
-                                    product_id=pid,
-                                    api_version=conn.api_version
-                                )
-                                if p_success and p_variants:
-                                    all_variants.extend(p_variants)
-                            except Exception:
-                                pass
+                            p_success, p_error, p_variants = await get_all_product_variant_prices(
+                                shop_domain=conn.shop_domain,
+                                admin_api_key=conn.admin_api_key,
+                                product_id=pid,
+                                api_version=conn.api_version
+                            )
+                            if p_success and p_variants:
+                                all_variants.extend(p_variants)
 
-                        if not all_variants:
-                            continue
+                        searched_price = None
+                        for v in variants:
+                            if v.get("price") is not None:
+                                searched_price = str(v["price"])
+                                break
 
                         seen = set()
                         merged_variants = []
@@ -3332,29 +3356,44 @@ async def fetch_prices_stream(request: PriceSearchRequest, db: Session = Depends
                             if v["is_searched"]:
                                 merged_variants.append(v)
                             elif v.get("barcode") and v["barcode"].strip():
-                                merged_variants.append(v)
+                                if searched_price is not None and str(v.get("price")) == searched_price:
+                                    merged_variants.append(v)
 
-                        if not merged_variants:
-                            continue
-
-                        if not prices[idx]["product_found"]:
-                            prices[idx] = {
-                                "store_id": store.id,
-                                "store_name": store.name,
-                                "store_type": "shopify",
-                                "product_found": True,
-                                "product_description": variants[0].get("product_title"),
-                                "unit_price": None,
-                                "unit_cost": None,
-                                "variants": merged_variants,
-                            }
-                            yield f"event: progress\ndata: {json.dumps({'status': 'found', 'message': f'Found sibling match ({len(merged_variants)} variant(s)) in {store.name}'})}\n\n"
-                        else:
-                            existing_variant_ids = {v["variant_id"] for v in (prices[idx].get("variants") or [])}
-                            new_variants = [v for v in merged_variants if v["variant_id"] not in existing_variant_ids]
-                            if new_variants:
-                                prices[idx]["variants"] = (prices[idx].get("variants") or []) + new_variants
-                                yield f"event: progress\ndata: {json.dumps({'status': 'found', 'message': f'Found sibling match ({len(new_variants)} new variant(s)) in {store.name}'})}\n\n"
+                        prices.append({
+                            "store_id": store.id,
+                            "store_name": store.name,
+                            "store_type": "shopify",
+                            "product_found": True,
+                            "product_description": variants[0].get("product_title"),
+                            "unit_price": None,
+                            "unit_cost": None,
+                            "variants": merged_variants,
+                        })
+                        yield f"event: progress\ndata: {json.dumps({'status': 'found', 'message': f'Found {len(merged_variants)} variant(s) in {store.name}'})}\n\n"
+                    elif success:
+                        prices.append({
+                            "store_id": store.id,
+                            "store_name": store.name,
+                            "store_type": "shopify",
+                            "product_found": False,
+                            "product_description": None,
+                            "unit_price": None,
+                            "unit_cost": None,
+                            "variants": None,
+                        })
+                        yield f"event: progress\ndata: {json.dumps({'status': 'not_found', 'message': f'Not found in {store.name}'})}\n\n"
+                    else:
+                        prices.append({
+                            "store_id": store.id,
+                            "store_name": store.name,
+                            "store_type": "shopify",
+                            "product_found": False,
+                            "product_description": None,
+                            "unit_price": None,
+                            "unit_cost": None,
+                            "variants": None,
+                        })
+                        yield f"event: progress\ndata: {json.dumps({'status': 'error', 'message': f'Error searching {store.name}: {error}'})}\n\n"
 
         yield f"event: complete\ndata: {json.dumps({'prices': prices, 'sibling_prices': sibling_prices})}\n\n"
 
