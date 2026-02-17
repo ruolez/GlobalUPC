@@ -1040,6 +1040,76 @@ body {
   transform: rotate(90deg);
 }
 
+/* Price History Chevron */
+.ph-chevron {
+  display: inline-block;
+  width: 0.5em;
+  height: 0.5em;
+  border-right: 2px solid var(--text-tertiary);
+  border-bottom: 2px solid var(--text-tertiary);
+  transform: rotate(-45deg);
+  transition: transform 0.25s ease;
+  margin-right: 0.5rem;
+  position: relative;
+  top: -1px;
+}
+
+.ph-chevron.expanded {
+  transform: rotate(45deg);
+}
+
+/* Price History Status Icons */
+.ph-status-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 50%;
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: default;
+}
+
+.ph-status-icon.success {
+  color: var(--success);
+  background: rgba(16, 185, 129, 0.1);
+}
+
+.ph-status-icon.error {
+  color: var(--danger);
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.ph-status-icon.partial {
+  color: var(--warning);
+  background: rgba(245, 158, 11, 0.1);
+}
+
+/* Price Change Display */
+.ph-change-label {
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  margin-right: 0.25rem;
+}
+
+.ph-change-old {
+  color: var(--text-tertiary);
+  font-size: 0.8125rem;
+}
+
+.ph-change-arrow {
+  color: var(--text-tertiary);
+  margin: 0 0.25rem;
+  font-size: 0.75rem;
+}
+
+.ph-change-new {
+  color: var(--success);
+  font-weight: 600;
+  font-size: 0.8125rem;
+}
+
 /* Product Detail Rows */
 .product-detail-row {
   transition: var(--transition);

@@ -6352,61 +6352,84 @@ function displayPriceHistory(batches, total) {
     batchRow.style.backgroundColor = "var(--bg-secondary)";
     batchRow.dataset.batchId = batch.batch_id;
 
+    // # cell with chevron
     const numCell = document.createElement("td");
     numCell.style.color = "var(--text-tertiary)";
     numCell.style.fontSize = "0.875rem";
-    const expandIcon = document.createElement("span");
-    expandIcon.textContent = "\u25B6 ";
-    expandIcon.style.display = "inline-block";
-    expandIcon.style.transition = "transform 0.2s";
-    numCell.appendChild(expandIcon);
+    const chevron = document.createElement("span");
+    chevron.className = "ph-chevron";
+    numCell.appendChild(chevron);
     numCell.appendChild(document.createTextNode(recordNumber.toString()));
     batchRow.appendChild(numCell);
 
+    // Timestamp — short date with full datetime tooltip
     const timestampCell = document.createElement("td");
     const date = new Date(batch.created_at);
-    timestampCell.textContent = date.toLocaleString("en-US", {
+    timestampCell.textContent = date.toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    });
+    timestampCell.title = date.toLocaleString("en-US", {
       month: "short",
       day: "numeric",
       year: "numeric",
       hour: "2-digit",
       minute: "2-digit",
+      second: "2-digit",
     });
     timestampCell.style.fontSize = "0.875rem";
     batchRow.appendChild(timestampCell);
 
+    // UPC
     const upcCell = document.createElement("td");
     upcCell.style.fontFamily = "monospace";
     upcCell.style.fontSize = "0.875rem";
     upcCell.textContent = batch.upc;
     batchRow.appendChild(upcCell);
 
+    // Product
     const productCell = document.createElement("td");
     productCell.style.fontSize = "0.875rem";
     productCell.style.color = "var(--text-secondary)";
     productCell.textContent = batch.product_description || "-";
     batchRow.appendChild(productCell);
 
-    const storesCell = document.createElement("td");
-    storesCell.textContent = `${batch.total_stores} store${batch.total_stores > 1 ? "s" : ""}`;
-    storesCell.style.fontWeight = "600";
-    batchRow.appendChild(storesCell);
+    // Updated — total rows_affected across all entries
+    const updatedCell = document.createElement("td");
+    const totalRowsAffected = batch.entries.reduce((sum, e) => sum + (e.rows_affected || 0), 0);
+    updatedCell.textContent = totalRowsAffected;
+    updatedCell.style.fontWeight = "600";
+    updatedCell.style.fontSize = "0.875rem";
+    updatedCell.title = `${totalRowsAffected} product${totalRowsAffected !== 1 ? "s" : ""} updated across ${batch.total_stores} store${batch.total_stores !== 1 ? "s" : ""}`;
+    batchRow.appendChild(updatedCell);
 
+    // Status — icon only with tooltip
     const statusCell = document.createElement("td");
+    statusCell.style.textAlign = "center";
+    const statusIcon = document.createElement("span");
+    statusIcon.className = "ph-status-icon";
     if (batch.failed_stores === 0) {
-      statusCell.innerHTML = '<span style="color: var(--success)">\u2713 All Success</span>';
+      statusIcon.classList.add("success");
+      statusIcon.textContent = "\u2713";
+      statusIcon.title = `${batch.successful_stores}/${batch.total_stores} succeeded`;
     } else if (batch.successful_stores === 0) {
-      statusCell.innerHTML = '<span style="color: var(--error)">\u2717 All Failed</span>';
+      statusIcon.classList.add("error");
+      statusIcon.textContent = "\u2717";
+      statusIcon.title = `0/${batch.total_stores} succeeded, ${batch.failed_stores} failed`;
     } else {
-      statusCell.innerHTML = `<span style="color: var(--warning)">${batch.successful_stores} success, ${batch.failed_stores} failed</span>`;
+      statusIcon.classList.add("partial");
+      statusIcon.textContent = "\u2713";
+      statusIcon.title = `${batch.successful_stores}/${batch.total_stores} succeeded, ${batch.failed_stores} failed`;
     }
-    statusCell.style.fontSize = "0.875rem";
+    statusCell.appendChild(statusIcon);
     batchRow.appendChild(statusCell);
 
+    // Expand/collapse
     let isExpanded = false;
     batchRow.addEventListener("click", () => {
       isExpanded = !isExpanded;
-      expandIcon.style.transform = isExpanded ? "rotate(90deg)" : "rotate(0deg)";
+      chevron.classList.toggle("expanded", isExpanded);
       const detailRows = tbody.querySelectorAll(`[data-batch-detail="${batch.batch_id}"]`);
       const activeStoreIds = getActiveHistoryStoreIds();
       detailRows.forEach((row) => {
@@ -6418,6 +6441,7 @@ function displayPriceHistory(batches, total) {
       });
     });
 
+    // Store filter visibility
     const activeStoreIds = getActiveHistoryStoreIds();
     if (activeStoreIds) {
       const hasMatchingStore = batch.entries.some((entry) =>
@@ -6430,6 +6454,7 @@ function displayPriceHistory(batches, total) {
 
     tbody.appendChild(batchRow);
 
+    // Detail rows
     batch.entries.forEach((entry) => {
       const detailRow = document.createElement("tr");
       detailRow.style.display = "none";
@@ -6437,65 +6462,83 @@ function displayPriceHistory(batches, total) {
       detailRow.dataset.batchDetail = batch.batch_id;
       detailRow.dataset.storeId = entry.store_id;
 
+      // Empty indent cell (under #)
       const indentCell = document.createElement("td");
-      indentCell.textContent = "";
       detailRow.appendChild(indentCell);
 
-      const descCell = document.createElement("td");
-      if (entry.product_description) {
-        descCell.style.color = "var(--text-secondary)";
-        descCell.style.fontSize = "0.75rem";
-        descCell.textContent = entry.product_description;
-      }
-      detailRow.appendChild(descCell);
-
-      const storeCell = document.createElement("td");
-      const storeBadge = document.createElement("span");
-      storeBadge.textContent = entry.store_type.toUpperCase();
-      storeBadge.style.display = "inline-block";
-      storeBadge.style.padding = "0.125rem 0.375rem";
-      storeBadge.style.fontSize = "0.625rem";
-      storeBadge.style.fontWeight = "600";
-      storeBadge.style.borderRadius = "0.25rem";
-      storeBadge.style.marginRight = "0.5rem";
-      storeBadge.style.backgroundColor = entry.store_type === "shopify" ? "var(--accent-primary)" : "var(--info)";
-      storeBadge.style.color = "var(--text-primary)";
-      storeCell.appendChild(storeBadge);
-      storeCell.appendChild(document.createTextNode(entry.store_name));
-      if (entry.variant_title) {
-        const variantSpan = document.createElement("span");
-        variantSpan.style.color = "var(--text-tertiary)";
-        variantSpan.style.fontSize = "0.75rem";
-        variantSpan.style.marginLeft = "0.5rem";
-        variantSpan.textContent = `(${entry.variant_title})`;
-        storeCell.appendChild(variantSpan);
-      }
-      detailRow.appendChild(storeCell);
-
+      // Price/cost changes with color coding (under Timestamp)
       const changeCell = document.createElement("td");
       changeCell.style.fontSize = "0.8125rem";
-      changeCell.colSpan = 2;
-      const parts = [];
+      const changeParts = [];
       if (entry.new_price != null) {
         const oldP = entry.old_price != null ? `$${parseFloat(entry.old_price).toFixed(2)}` : "-";
         const newP = `$${parseFloat(entry.new_price).toFixed(2)}`;
-        parts.push(`Price: ${oldP} \u2192 ${newP}`);
+        changeParts.push(
+          `<span class="ph-change-label">Price:</span>` +
+          `<span class="ph-change-old">${oldP}</span>` +
+          `<span class="ph-change-arrow">\u2192</span>` +
+          `<span class="ph-change-new">${newP}</span>`
+        );
       }
       if (entry.new_cost != null) {
         const oldC = entry.old_cost != null ? `$${parseFloat(entry.old_cost).toFixed(2)}` : "-";
         const newC = `$${parseFloat(entry.new_cost).toFixed(2)}`;
-        parts.push(`Cost: ${oldC} \u2192 ${newC}`);
+        changeParts.push(
+          `<span class="ph-change-label">Cost:</span>` +
+          `<span class="ph-change-old">${oldC}</span>` +
+          `<span class="ph-change-arrow">\u2192</span>` +
+          `<span class="ph-change-new">${newC}</span>`
+        );
       }
-      changeCell.textContent = parts.length > 0 ? parts.join("  |  ") : "-";
+      changeCell.innerHTML = changeParts.length > 0
+        ? changeParts.join('<span style="margin: 0 0.5rem; color: var(--text-tertiary)">|</span>')
+        : "-";
       detailRow.appendChild(changeCell);
 
-      const detailStatusCell = document.createElement("td");
-      if (entry.success) {
-        detailStatusCell.innerHTML = `<span style="color: var(--success)">\u2713 ${entry.rows_affected} row(s)</span>`;
-      } else {
-        detailStatusCell.innerHTML = `<span style="color: var(--error)" title="${entry.error_message || 'Failed'}">\u2717 Failed</span>`;
+      // Store name + UPC (under UPC column)
+      const storeCell = document.createElement("td");
+      storeCell.style.fontSize = "0.8125rem";
+      storeCell.textContent = entry.store_name;
+      detailRow.appendChild(storeCell);
+
+      // Product description + variant (under Product column)
+      const descCell = document.createElement("td");
+      descCell.style.fontSize = "0.8125rem";
+      descCell.style.color = "var(--text-secondary)";
+      if (entry.product_description) {
+        descCell.textContent = entry.product_description;
+        if (entry.variant_title) {
+          const variantSpan = document.createElement("span");
+          variantSpan.style.color = "var(--text-tertiary)";
+          variantSpan.style.fontSize = "0.75rem";
+          variantSpan.style.marginLeft = "0.375rem";
+          variantSpan.textContent = `(${entry.variant_title})`;
+          descCell.appendChild(variantSpan);
+        }
       }
-      detailStatusCell.style.fontSize = "0.875rem";
+      detailRow.appendChild(descCell);
+
+      // Rows affected (under Updated column)
+      const rowsCell = document.createElement("td");
+      rowsCell.style.fontSize = "0.8125rem";
+      rowsCell.textContent = entry.success ? (entry.rows_affected || 0) : "-";
+      detailRow.appendChild(rowsCell);
+
+      // Status icon (under Status column)
+      const detailStatusCell = document.createElement("td");
+      detailStatusCell.style.textAlign = "center";
+      const detailIcon = document.createElement("span");
+      detailIcon.className = "ph-status-icon";
+      if (entry.success) {
+        detailIcon.classList.add("success");
+        detailIcon.textContent = "\u2713";
+        detailIcon.title = `${entry.rows_affected || 0} row${(entry.rows_affected || 0) !== 1 ? "s" : ""} affected`;
+      } else {
+        detailIcon.classList.add("error");
+        detailIcon.textContent = "\u2717";
+        detailIcon.title = entry.error_message || "Failed";
+      }
+      detailStatusCell.appendChild(detailIcon);
       detailRow.appendChild(detailStatusCell);
 
       tbody.appendChild(detailRow);
