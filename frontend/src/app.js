@@ -6385,6 +6385,11 @@ function getActiveHistoryStoreIds() {
   return ids;
 }
 
+function getStoreColor(storeId) {
+  const hue = (storeId * 137.508) % 360;
+  return `hsl(${hue}, 60%, 55%)`;
+}
+
 function displayPriceHistory(batches, total) {
   document.getElementById("price-history-total-count").textContent = total;
 
@@ -6552,7 +6557,8 @@ function displayPriceHistory(batches, total) {
       descCell.style.fontSize = "0.8125rem";
       descCell.style.color = "var(--text-secondary)";
       const storeSpan = document.createElement("span");
-      storeSpan.style.color = "var(--text-primary)";
+      storeSpan.style.color = getStoreColor(entry.store_id);
+      storeSpan.style.fontWeight = "600";
       storeSpan.textContent = entry.store_name;
       descCell.appendChild(storeSpan);
       if (entry.product_description) {
