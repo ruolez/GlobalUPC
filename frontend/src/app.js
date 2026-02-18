@@ -26,6 +26,10 @@ document.querySelectorAll(".nav-item").forEach((item) => {
 });
 
 function navigateTo(page) {
+  teardownPriceCollapseObserver();
+  expandPriceHeader();
+  priceUpdatesState.headerCollapsed = false;
+
   // Update active nav item
   document.querySelectorAll(".nav-item").forEach((item) => {
     item.classList.remove("active");
@@ -5332,6 +5336,9 @@ let priceUpdatesState = {
   configExpanded: false,
   primaryCost: null,
   historyFilterTimeout: null,
+  headerCollapsed: false,
+  collapseObserver: null,
+  manualExpand: false,
 };
 
 async function loadPriceUpdatesPage() {
@@ -5492,6 +5499,9 @@ function savePriceUpdatesConfig() {
 }
 
 function showPriceUpdatesConfigSection() {
+  teardownPriceCollapseObserver();
+  expandPriceHeader();
+  priceUpdatesState.headerCollapsed = false;
   document.getElementById("price-updates-config-section").style.display = "block";
   document.getElementById("price-updates-search-section").style.display = "none";
   document.getElementById("price-history-section").style.display = "none";
@@ -5629,6 +5639,13 @@ function displayPriceResults(upc, prices, siblingPrices) {
 
   document.getElementById("price-info-upc").textContent = upc;
   document.getElementById("price-info-description").textContent = desc;
+
+  const stickyUpc = document.getElementById("price-sticky-upc");
+  const stickyDesc = document.getElementById("price-sticky-desc");
+  if (stickyUpc) stickyUpc.textContent = upc;
+  if (stickyDesc) stickyDesc.textContent = desc;
+
+  setupPriceCollapseObserver();
 
   const tbody = document.getElementById("price-updates-tbody");
   tbody.innerHTML = "";
@@ -5878,6 +5895,9 @@ function applyStoreFilters() {
 }
 
 function resetPriceUpdates() {
+  teardownPriceCollapseObserver();
+  expandPriceHeader();
+  priceUpdatesState.headerCollapsed = false;
   document.getElementById("price-updates-upc-input").value = "";
   document.getElementById("price-updates-desc-input").value = "";
   document.getElementById("price-updates-results").style.display = "none";
@@ -5896,6 +5916,78 @@ function resetPriceUpdates() {
   priceUpdatesState.isUpdating = false;
   const descInput = document.getElementById("price-updates-desc-input");
   if (descInput) descInput.focus();
+}
+
+function collapsePriceHeader() {
+  if (priceUpdatesState.headerCollapsed) return;
+  priceUpdatesState.headerCollapsed = true;
+
+  const pageHeader = document.querySelector("#price-updates-page .page-header");
+  const viewToggle = document.getElementById("price-updates-view-toggle");
+  const collapsible = document.getElementById("price-updates-collapsible");
+  const infoCard = document.getElementById("price-updates-info-card");
+  const stickyBar = document.getElementById("price-updates-sticky-bar");
+  const stickyWrapper = document.getElementById("price-updates-sticky-wrapper");
+  const tableScroll = document.querySelector(".price-table-scroll");
+
+  if (pageHeader) pageHeader.classList.add("collapsed");
+  if (viewToggle) viewToggle.classList.add("collapsed");
+  if (collapsible) collapsible.classList.add("collapsed");
+  if (infoCard) infoCard.classList.add("collapsed");
+  if (stickyBar) stickyBar.classList.add("visible");
+  if (stickyWrapper) stickyWrapper.classList.add("sticky");
+  if (tableScroll) tableScroll.classList.add("expanded");
+}
+
+function expandPriceHeader() {
+  if (!priceUpdatesState.headerCollapsed) return;
+  priceUpdatesState.headerCollapsed = false;
+
+  const pageHeader = document.querySelector("#price-updates-page .page-header");
+  const viewToggle = document.getElementById("price-updates-view-toggle");
+  const collapsible = document.getElementById("price-updates-collapsible");
+  const infoCard = document.getElementById("price-updates-info-card");
+  const stickyBar = document.getElementById("price-updates-sticky-bar");
+  const stickyWrapper = document.getElementById("price-updates-sticky-wrapper");
+  const tableScroll = document.querySelector(".price-table-scroll");
+
+  if (pageHeader) pageHeader.classList.remove("collapsed");
+  if (viewToggle) viewToggle.classList.remove("collapsed");
+  if (collapsible) collapsible.classList.remove("collapsed");
+  if (infoCard) infoCard.classList.remove("collapsed");
+  if (stickyBar) stickyBar.classList.remove("visible");
+  if (stickyWrapper) stickyWrapper.classList.remove("sticky");
+  if (tableScroll) tableScroll.classList.remove("expanded");
+}
+
+function setupPriceCollapseObserver() {
+  teardownPriceCollapseObserver();
+  const infoCard = document.getElementById("price-updates-info-card");
+  if (!infoCard) return;
+
+  priceUpdatesState.collapseObserver = new IntersectionObserver(
+    (entries) => {
+      const entry = entries[0];
+      if (!entry.isIntersecting) {
+        if (!priceUpdatesState.manualExpand) {
+          collapsePriceHeader();
+        }
+      } else {
+        priceUpdatesState.manualExpand = false;
+        expandPriceHeader();
+      }
+    },
+    { threshold: 0, rootMargin: "-1px 0px 0px 0px" }
+  );
+  priceUpdatesState.collapseObserver.observe(infoCard);
+}
+
+function teardownPriceCollapseObserver() {
+  if (priceUpdatesState.collapseObserver) {
+    priceUpdatesState.collapseObserver.disconnect();
+    priceUpdatesState.collapseObserver = null;
+  }
+  priceUpdatesState.manualExpand = false;
 }
 
 function fillAllPrices() {
@@ -6311,6 +6403,17 @@ document
   .getElementById("price-updates-reset-btn")
   ?.addEventListener("click", resetPriceUpdates);
 document
+  .getElementById("price-sticky-expand-btn")
+  ?.addEventListener("click", () => {
+    priceUpdatesState.manualExpand = true;
+    expandPriceHeader();
+    priceUpdatesState.headerCollapsed = false;
+    const infoCard = document.getElementById("price-updates-info-card");
+    if (infoCard) {
+      infoCard.scrollIntoView({ behavior: "smooth", block: "end" });
+    }
+  });
+document
   .getElementById("price-updates-upc-input")
   ?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") searchPriceUpdates();
@@ -6450,6 +6553,9 @@ const phPageSizeEl = document.getElementById("price-history-page-size");
 if (phPageSizeEl) phPageSizeEl.value = priceHistoryState.pageSize;
 
 function togglePriceHistory(showHistory) {
+  teardownPriceCollapseObserver();
+  expandPriceHeader();
+  priceUpdatesState.headerCollapsed = false;
   priceHistoryState.visible = showHistory;
   const historySection = document.getElementById("price-history-section");
   const searchSection = document.getElementById("price-updates-search-section");
