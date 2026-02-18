@@ -5938,6 +5938,41 @@ function exitPriceFullscreen() {
   document.body.classList.remove("no-scroll");
 }
 
+function confirmExitPriceFullscreen() {
+  const results = document.getElementById("price-updates-results");
+  if (!results || !results.classList.contains("results-fullscreen")) return;
+
+  if (document.getElementById("price-exit-confirm-overlay")) return;
+
+  const overlay = document.createElement("div");
+  overlay.id = "price-exit-confirm-overlay";
+  overlay.style.cssText = "position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:10000;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(4px);animation:fadeIn 0.15s ease";
+
+  const dialog = document.createElement("div");
+  dialog.style.cssText = "background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:var(--radius-lg);padding:1.5rem;max-width:360px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,0.4);animation:slideUp 0.15s ease";
+  dialog.innerHTML = `
+    <p style="margin:0 0 0.25rem;font-size:0.9375rem;font-weight:600;color:var(--text-primary)">Exit price updates?</p>
+    <p style="margin:0 0 1.25rem;font-size:0.8125rem;color:var(--text-secondary);line-height:1.5">Unsaved changes will be lost.</p>
+    <div style="display:flex;gap:0.5rem;justify-content:flex-end">
+      <button id="price-exit-stay-btn" class="btn btn-secondary" style="font-size:0.8125rem;padding:0.4375rem 1rem">Cancel</button>
+      <button id="price-exit-leave-btn" class="btn" style="font-size:0.8125rem;padding:0.4375rem 1rem;background:var(--danger);color:#fff;border:none;border-radius:var(--radius-md);cursor:pointer">Exit</button>
+    </div>
+  `;
+  overlay.appendChild(dialog);
+  document.body.appendChild(overlay);
+
+  const dismiss = () => overlay.remove();
+
+  document.getElementById("price-exit-stay-btn").addEventListener("click", dismiss);
+  document.getElementById("price-exit-leave-btn").addEventListener("click", () => {
+    dismiss();
+    resetPriceUpdates();
+  });
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) dismiss(); });
+  overlay.addEventListener("keydown", (e) => { if (e.key === "Escape") dismiss(); });
+  document.getElementById("price-exit-stay-btn").focus();
+}
+
 function fillAllPrices() {
   const newPrice = document.getElementById("price-fill-all-price").value;
   const newCost = document.getElementById("price-fill-all-cost").value;
@@ -6365,7 +6400,14 @@ document
   ?.addEventListener("click", searchPriceUpdates);
 document
   .getElementById("price-updates-reset-btn")
-  ?.addEventListener("click", resetPriceUpdates);
+  ?.addEventListener("click", () => {
+    const results = document.getElementById("price-updates-results");
+    if (results && results.classList.contains("results-fullscreen")) {
+      confirmExitPriceFullscreen();
+    } else {
+      resetPriceUpdates();
+    }
+  });
 document
   .getElementById("price-sticky-expand-btn")
   ?.addEventListener("click", () => {
@@ -6465,12 +6507,14 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-// ESC key exits fullscreen price results
+// ESC key exits fullscreen price results (with confirmation)
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
+    if (document.getElementById("price-exit-confirm-overlay")) return;
     const results = document.getElementById("price-updates-results");
     if (results && results.classList.contains("results-fullscreen")) {
-      resetPriceUpdates();
+      e.preventDefault();
+      confirmExitPriceFullscreen();
     }
   }
 });
