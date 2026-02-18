@@ -6020,14 +6020,32 @@ function fillAllPrices() {
   if (newCost) localStorage.setItem("priceFillAllCost", newCost);
   if (newDeliveryB) localStorage.setItem("priceFillAllDeliveryB", newDeliveryB);
 
+  const rowSelector = '#price-updates-tbody tr:not(.store-header-row):not([style*="display: none"]):not(.price-excluded)';
+
+  const primaryStoreId = priceUpdatesState.config?.primaryStoreId;
+  const primaryCost = priceUpdatesState.primaryCost;
+  let applyCostMarkup = false;
+  if (newCost !== "" && primaryStoreId && primaryCost && primaryCost > 0) {
+    applyCostMarkup = !!document.querySelector(
+      `${rowSelector}[data-store-id="${primaryStoreId}"]`
+    );
+  }
+
   document
-    .querySelectorAll('#price-updates-tbody tr:not(.store-header-row):not([style*="display: none"]):not(.price-excluded)')
+    .querySelectorAll(rowSelector)
     .forEach((tr) => {
       let filled = false;
+      let rowCost = newCost;
 
       if (newCost !== "") {
+        if (applyCostMarkup && String(tr.dataset.storeId) !== String(primaryStoreId)) {
+          const currentRowCost = parseFloat(tr.dataset.currentCost);
+          if (currentRowCost && !isNaN(currentRowCost) && currentRowCost > 0) {
+            rowCost = (parseFloat(newCost) * (currentRowCost / primaryCost)).toFixed(2);
+          }
+        }
         const costInput = tr.querySelector(".new-cost");
-        if (costInput) { costInput.value = newCost; filled = true; }
+        if (costInput) { costInput.value = rowCost; filled = true; }
       }
 
       if (newPrice !== "") {
@@ -6039,7 +6057,7 @@ function fillAllPrices() {
           filled = true;
         }
       } else if (newCost !== "") {
-        autoCalculateFromCost(tr, newCost);
+        autoCalculateFromCost(tr, rowCost);
       }
 
       if (newDeliveryB !== "") {
