@@ -7262,6 +7262,15 @@ function recallBatch(batch, storeFilterSelector) {
 
   document.getElementById("price-updates-upc-input").value = batch.upc;
 
+  const hasSiblings = batch.entries.some((e) => {
+    const barcode = e.variant_barcode || e.upc;
+    return barcode && barcode !== batch.upc;
+  });
+  if (hasSiblings) {
+    const siblingsCheckbox = document.getElementById("price-updates-include-siblings");
+    if (siblingsCheckbox) siblingsCheckbox.checked = true;
+  }
+
   localStorage.setItem("priceActiveStores", JSON.stringify(filteredIds));
 
   const savedStoreIds = config.storeIds;
