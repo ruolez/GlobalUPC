@@ -5697,7 +5697,11 @@ function displayPriceResults(upc, prices, siblingPrices) {
     const headerTr = document.createElement("tr");
     headerTr.classList.add("store-header-row");
     headerTr.dataset.storeId = storeId;
-    headerTr.innerHTML = `<td colspan="5">${escapeHtml(sd.storeName)}</td>`;
+    const headerTd = document.createElement("td");
+    headerTd.colSpan = 5;
+    headerTd.style.color = getStoreColor(parseInt(storeId));
+    headerTd.textContent = sd.storeName;
+    headerTr.appendChild(headerTd);
     tbody.appendChild(headerTr);
 
     // Main rows
@@ -6387,7 +6391,10 @@ function getActiveHistoryStoreIds() {
 
 function getStoreColor(storeId) {
   const hue = (storeId * 137.508) % 360;
-  return `hsl(${hue}, 60%, 55%)`;
+  const isLight = document.body.getAttribute("data-theme") === "author-light";
+  return isLight
+    ? `hsl(${hue}, 50%, 35%)`
+    : `hsl(${hue}, 60%, 55%)`;
 }
 
 function displayPriceHistory(batches, total) {
