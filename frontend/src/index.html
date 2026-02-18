@@ -2443,12 +2443,10 @@
 
         <!-- Price Updates Page -->
         <div id="price-updates-page" class="page" style="display: none">
-          <div id="price-loading-overlay" class="price-loading-overlay" style="display: none;">
-            <div class="overlay-spinner"></div>
-            <div class="overlay-text" id="price-loading-text">Fetching prices...</div>
-            <div class="overlay-progress-bar"><div class="overlay-progress-fill" id="price-loading-fill"></div></div>
-            <div class="overlay-status" id="price-loading-status"></div>
-          </div>
+          <header class="page-header">
+            <h2>Price Updates</h2>
+            <p class="subtitle">Manage product prices and costs across all configured stores</p>
+          </header>
 
           <!-- Configuration Section -->
           <div
@@ -2535,15 +2533,11 @@
             </div>
           </div>
 
-          <!-- View Toggle Buttons -->
-          <div id="price-updates-view-toggle" style="display: none; margin-bottom: 1rem;">
-            <div style="display: flex; gap: 0.5rem;">
-              <button type="button" class="btn btn-primary" id="price-updates-main-view-btn" style="font-size: 0.8125rem; padding: 0.375rem 0.75rem;">
-                Price Updates
-              </button>
-              <button type="button" class="btn btn-secondary" id="price-updates-history-view-btn" style="font-size: 0.8125rem; padding: 0.375rem 0.75rem;">
-                Update History
-              </button>
+          <!-- Tab Navigation -->
+          <div id="price-updates-view-toggle" style="display: none">
+            <div class="tab-bar">
+              <div class="tab-bar-item active" id="price-updates-main-view-btn">Price Updates</div>
+              <div class="tab-bar-item" id="price-updates-history-view-btn">Update History</div>
             </div>
           </div>
 
@@ -2574,8 +2568,7 @@
                   </div>
                 </div>
                 <div style="display: flex; gap: 0.75rem">
-                  <button type="button" class="btn btn-primary" id="apply-price-history-filters-btn">Apply Filters</button>
-                  <button type="button" class="btn btn-secondary" id="clear-price-history-filters-btn">Clear Filters</button>
+                  <button type="button" class="btn btn-secondary" id="clear-price-history-filters-btn" style="font-size: 0.75rem; padding: 0.375rem 0.75rem;">Clear Filters</button>
                 </div>
               </div>
 
@@ -2614,9 +2607,10 @@
                     <thead>
                       <tr>
                         <th style="width: 4%">#</th>
-                        <th style="width: 14%">Timestamp</th>
+                        <th style="width: 13%">Timestamp</th>
                         <th style="width: 8%">UPC</th>
-                        <th style="width: 36%">Product</th>
+                        <th style="width: 27%">Product</th>
+                        <th style="width: 14%">Change</th>
                         <th style="width: 4%">Updated</th>
                         <th style="width: 4%"></th>
                       </tr>
@@ -2920,7 +2914,7 @@
               </div>
 
               <!-- Price Table -->
-              <div class="table-container" style="margin-top: 0.75rem">
+              <div class="table-container price-table-scroll" style="margin-top: 0.75rem">
                 <table class="price-table" id="price-updates-table">
                   <thead>
                     <tr>
@@ -2936,20 +2930,19 @@
                 </table>
               </div>
 
+              <!-- Confirmation Panel -->
+              <div id="price-updates-confirm-panel" style="display: none; margin-top: 1rem; padding: 1rem; background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: var(--radius-md);">
+                <p style="margin: 0 0 0.75rem; font-size: 0.8125rem; font-weight: 600; color: var(--text-primary);">Review Changes</p>
+                <div id="price-updates-confirm-summary" style="font-size: 0.8125rem; color: var(--text-secondary); margin-bottom: 0.75rem; max-height: 200px; overflow-y: auto;"></div>
+                <div style="display: flex; gap: 0.5rem;">
+                  <button type="button" class="btn btn-primary" id="price-updates-confirm-btn" style="font-size: 0.8125rem;">Confirm Update</button>
+                  <button type="button" class="btn btn-secondary" id="price-updates-cancel-btn" style="font-size: 0.8125rem;">Cancel</button>
+                </div>
+              </div>
+
               <!-- Update Button -->
-              <div
-                style="
-                  display: flex;
-                  gap: 0.75rem;
-                  margin-top: 1rem;
-                  align-items: center;
-                "
-              >
-                <button
-                  type="button"
-                  class="btn btn-primary"
-                  id="price-updates-update-btn"
-                >
+              <div style="display: flex; gap: 0.75rem; margin-top: 1rem; align-items: center;">
+                <button type="button" class="btn btn-primary" id="price-updates-update-btn">
                   Update Prices
                 </button>
               </div>

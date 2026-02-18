@@ -5330,6 +5330,8 @@ let priceUpdatesState = {
   autocompleteSelectedIndex: -1,
   autocompleteResults: [],
   configExpanded: false,
+  primaryCost: null,
+  historyFilterTimeout: null,
 };
 
 async function loadPriceUpdatesPage() {
@@ -5477,8 +5479,8 @@ function savePriceUpdatesConfig() {
   document.getElementById("price-updates-search-section").style.display = "block";
   document.getElementById("price-history-section").style.display = "none";
   document.getElementById("price-updates-view-toggle").style.display = "block";
-  document.getElementById("price-updates-main-view-btn").className = "btn btn-primary";
-  document.getElementById("price-updates-history-view-btn").className = "btn btn-secondary";
+  document.getElementById("price-updates-main-view-btn").classList.add("active");
+  document.getElementById("price-updates-history-view-btn").classList.remove("active");
   priceHistoryState.visible = false;
 
   showToast("Configuration saved", "success");
@@ -5493,8 +5495,8 @@ function showPriceUpdatesConfigSection() {
   document.getElementById("price-updates-config-section").style.display = "block";
   document.getElementById("price-updates-search-section").style.display = "none";
   document.getElementById("price-history-section").style.display = "none";
-  document.getElementById("price-updates-main-view-btn").className = "btn btn-primary";
-  document.getElementById("price-updates-history-view-btn").className = "btn btn-secondary";
+  document.getElementById("price-updates-main-view-btn").classList.add("active");
+  document.getElementById("price-updates-history-view-btn").classList.remove("active");
   priceHistoryState.visible = false;
 }
 
@@ -5532,20 +5534,17 @@ async function searchPriceUpdates() {
 
   const searchBtn = document.getElementById("price-updates-search-btn");
   const resultsEl = document.getElementById("price-updates-results");
-  const overlay = document.getElementById("price-loading-overlay");
-  const overlayText = document.getElementById("price-loading-text");
-  const overlayFill = document.getElementById("price-loading-fill");
-  const overlayStatus = document.getElementById("price-loading-status");
+  const progressEl = document.getElementById("price-updates-progress");
+  const progressItems = document.getElementById("price-updates-progress-items");
 
   searchBtn.disabled = true;
   resultsEl.style.display = "none";
-  overlayText.textContent = "Fetching prices...";
-  overlayFill.style.width = "0%";
-  overlayStatus.textContent = "";
-  overlay.style.display = "flex";
+  document.getElementById("price-updates-confirm-panel").style.display = "none";
+  document.getElementById("price-updates-update-btn").parentElement.style.display = "";
+  progressItems.innerHTML = "";
+  progressEl.style.display = "block";
 
-  let totalSteps = config.storeIds.length;
-  let completedStores = 0;
+  let lastProgressItem = null;
 
   try {
     const response = await fetch(
@@ -5578,14 +5577,24 @@ async function searchPriceUpdates() {
         if (line.startsWith("data: ")) {
           const data = JSON.parse(line.substring(6));
 
-          if (data.status === "total_steps") {
-            totalSteps = data.total;
-          } else if (data.status === "searching" && data.message) {
-            overlayStatus.textContent = data.message;
-          } else if (data.status === "found" || data.status === "not_found" || data.status === "error") {
-            completedStores++;
-            overlayFill.style.width = `${Math.min((completedStores / totalSteps) * 100, 100)}%`;
-            overlayStatus.textContent = `Step ${completedStores} of ${totalSteps}`;
+          if (data.status === "searching" && data.message) {
+            const itemEl = document.createElement("div");
+            itemEl.className = "progress-store-item";
+            itemEl.innerHTML = `<div class="progress-spinner"></div><span>${escapeHtml(data.message)}</span>`;
+            progressItems.appendChild(itemEl);
+            lastProgressItem = itemEl;
+          } else if (data.status === "found" || data.status === "not_found") {
+            if (lastProgressItem) {
+              const spinner = lastProgressItem.querySelector(".progress-spinner");
+              if (spinner) spinner.outerHTML = '<span class="progress-icon success">\u2713</span>';
+              if (data.message) lastProgressItem.querySelector("span:last-child").textContent = data.message;
+            }
+          } else if (data.status === "error" && data.message) {
+            if (lastProgressItem) {
+              const spinner = lastProgressItem.querySelector(".progress-spinner");
+              if (spinner) spinner.outerHTML = '<span class="progress-icon error">\u2717</span>';
+              lastProgressItem.querySelector("span:last-child").textContent = data.message;
+            }
           }
 
           if (data.prices) {
@@ -5602,7 +5611,11 @@ async function searchPriceUpdates() {
   } finally {
     priceUpdatesState.isSearching = false;
     searchBtn.disabled = false;
-    overlay.style.display = "none";
+    // Resolve any remaining spinners
+    progressItems.querySelectorAll(".progress-spinner").forEach((s) => {
+      s.outerHTML = '<span class="progress-icon success">\u2713</span>';
+    });
+    setTimeout(() => { progressEl.style.display = "none"; }, 800);
   }
 }
 
@@ -5631,6 +5644,7 @@ function displayPriceResults(upc, prices, siblingPrices) {
       if (searchedVariant) primaryCost = searchedVariant.cost != null ? parseFloat(searchedVariant.cost) : null;
     }
   }
+  priceUpdatesState.primaryCost = primaryCost;
 
   function formatMarkup(price, cost) {
     if (price == null || cost == null || cost === 0) return { text: "-", color: "" };
@@ -5649,6 +5663,11 @@ function displayPriceResults(upc, prices, siblingPrices) {
 
   function markupTd(m) {
     return `<td style="${m.color ? "color:" + m.color : ""}">${m.text}</td>`;
+  }
+
+  function currentValueSpan(val) {
+    if (val === "-") return "";
+    return `<span class="current-value">$${val}</span>`;
   }
 
   // Build store-grouped data structure
@@ -5721,8 +5740,8 @@ function displayPriceResults(upc, prices, siblingPrices) {
         const mCostMarkup = formatCostMarkup(mCost, primaryCost, p.store_id);
         tr.innerHTML = `
           <td style="font-size: 0.75rem; color: var(--text-secondary)">${mssqlDesc}</td>
-          <td><input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="${currentPrice}"></td>
-          <td><input type="number" class="dark-input price-input new-cost" step="0.01" min="0" placeholder="${currentCost}"></td>
+          <td>${currentValueSpan(currentPrice)}<input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="${currentPrice}"></td>
+          <td>${currentValueSpan(currentCost)}<input type="number" class="dark-input price-input new-cost" step="0.01" min="0" placeholder="${currentCost}"></td>
           ${markupTd(mMarkup)}
           ${markupTd(mCostMarkup)}
         `;
@@ -5752,8 +5771,8 @@ function displayPriceResults(upc, prices, siblingPrices) {
           const vCostMarkup = formatCostMarkup(vCostNum, primaryCost, p.store_id);
           tr.innerHTML = `
             <td style="font-size: 0.75rem; color: var(--text-secondary)">${variantLabel}${barcodeLabel}${searchedTag}</td>
-            <td><input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="${vPrice}"></td>
-            <td><input type="number" class="dark-input price-input new-cost" step="0.01" min="0" placeholder="${vCost}"></td>
+            <td>${currentValueSpan(vPrice)}<input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="${vPrice}"></td>
+            <td>${currentValueSpan(vCost)}<input type="number" class="dark-input price-input new-cost" step="0.01" min="0" placeholder="${vCost}"></td>
             ${markupTd(vMarkup)}
             ${markupTd(vCostMarkup)}
           `;
@@ -5780,8 +5799,8 @@ function displayPriceResults(upc, prices, siblingPrices) {
 
       tr.innerHTML = `
         <td style="color: var(--text-tertiary); font-size: 0.75rem">${siblingLabel}</td>
-        <td><input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="${currentPrice}"></td>
-        <td><input type="number" class="dark-input price-input new-cost" step="0.01" min="0" placeholder="${currentCost}"></td>
+        <td>${currentValueSpan(currentPrice)}<input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="${currentPrice}"></td>
+        <td>${currentValueSpan(currentCost)}<input type="number" class="dark-input price-input new-cost" step="0.01" min="0" placeholder="${currentCost}"></td>
         ${markupTd(spMarkup)}
         ${markupTd(spCostMarkup)}
       `;
@@ -5809,6 +5828,24 @@ function displayPriceResults(upc, prices, siblingPrices) {
     localStorageKey: "priceActiveStores",
     onToggle: applyStoreFilters,
   });
+
+  // Restore fill-all placeholders from localStorage
+  const savedFillPrice = localStorage.getItem("priceFillAllPrice");
+  const savedFillCost = localStorage.getItem("priceFillAllCost");
+  if (savedFillPrice) document.getElementById("price-fill-all-price").placeholder = `Last: $${savedFillPrice}`;
+  if (savedFillCost) document.getElementById("price-fill-all-cost").placeholder = `Last: $${savedFillCost}`;
+
+  // Auto-focus: after update re-search, focus description for next item; otherwise first price input
+  setTimeout(() => {
+    if (priceUpdatesState._focusDescAfterSearch) {
+      priceUpdatesState._focusDescAfterSearch = false;
+      const descInput = document.getElementById("price-updates-desc-input");
+      if (descInput) descInput.focus();
+    } else {
+      const firstInput = tbody.querySelector(".new-price");
+      if (firstInput) firstInput.focus();
+    }
+  }, 100);
 }
 
 function applyStoreFilters() {
@@ -5847,14 +5884,17 @@ function resetPriceUpdates() {
   document.getElementById("price-updates-upc-input").value = "";
   document.getElementById("price-updates-desc-input").value = "";
   document.getElementById("price-updates-results").style.display = "none";
-  document.getElementById("price-loading-overlay").style.display = "none";
+  document.getElementById("price-updates-progress").style.display = "none";
   document.getElementById("price-updates-tbody").innerHTML = "";
   document.getElementById("price-store-filters").innerHTML = "";
   document.getElementById("price-fill-all-price").value = "";
   document.getElementById("price-fill-all-cost").value = "";
+  document.getElementById("price-updates-confirm-panel").style.display = "none";
+  document.getElementById("price-updates-update-btn").parentElement.style.display = "";
   hidePriceDescriptionDropdown();
   priceUpdatesState.prices = [];
   priceUpdatesState.siblingPrices = [];
+  priceUpdatesState.primaryCost = null;
   priceUpdatesState.isSearching = false;
   priceUpdatesState.isUpdating = false;
   const descInput = document.getElementById("price-updates-desc-input");
@@ -5865,27 +5905,30 @@ function fillAllPrices() {
   const newPrice = document.getElementById("price-fill-all-price").value;
   const newCost = document.getElementById("price-fill-all-cost").value;
 
+  if (newPrice) localStorage.setItem("priceFillAllPrice", newPrice);
+  if (newCost) localStorage.setItem("priceFillAllCost", newCost);
+
   document
     .querySelectorAll('#price-updates-tbody tr:not(.store-header-row):not([style*="display: none"])')
     .forEach((tr) => {
+      let filled = false;
       if (newPrice !== "") {
         const priceInput = tr.querySelector(".new-price");
-        if (priceInput) priceInput.value = newPrice;
+        if (priceInput) { priceInput.value = newPrice; filled = true; }
       }
       if (newCost !== "") {
         const costInput = tr.querySelector(".new-cost");
-        if (costInput) costInput.value = newCost;
+        if (costInput) { costInput.value = newCost; filled = true; }
+      }
+      if (filled) {
+        tr.dataset.filled = "true";
+        tr.classList.add("filled-row");
+        recalculateRowMarkup(tr);
       }
     });
 }
 
-async function updatePrices() {
-  if (priceUpdatesState.isUpdating) return;
-
-  const upc = document.getElementById("price-updates-upc-input").value.trim();
-  if (!upc) return;
-
-  // Collect updates from table rows
+function collectPriceUpdates() {
   const updates = [];
   const rows = document.querySelectorAll("#price-updates-tbody tr");
 
@@ -5919,6 +5962,7 @@ async function updatePrices() {
         old_price: oldPrice,
         old_cost: oldCost,
         product_description: productDesc,
+        _store_name: tr.closest("tbody")?.querySelector(`.store-header-row[data-store-id="${storeId}"] td`)?.textContent || `Store ${storeId}`,
       });
     } else if (storeType === "shopify") {
       let shopifyUpdate = updates.find(
@@ -5929,6 +5973,7 @@ async function updatePrices() {
           store_id: storeId,
           store_type: "shopify",
           variant_updates: [],
+          _store_name: tr.closest("tbody")?.querySelector(`.store-header-row[data-store-id="${storeId}"] td`)?.textContent || `Store ${storeId}`,
         };
         updates.push(shopifyUpdate);
       }
@@ -5947,32 +5992,94 @@ async function updatePrices() {
     }
   });
 
+  return updates;
+}
+
+function showUpdateConfirmation() {
+  if (priceUpdatesState.isUpdating) return;
+
+  const updates = collectPriceUpdates();
   if (updates.length === 0) {
     showToast("No price changes to update", "error");
     return;
   }
 
+  const summaryEl = document.getElementById("price-updates-confirm-summary");
+  const lines = [];
+
+  updates.forEach((u) => {
+    const storeName = escapeHtml(u._store_name);
+    if (u.store_type === "mssql") {
+      const parts = [];
+      if (u.new_price != null) {
+        const old = u.old_price != null ? `$${u.old_price.toFixed(2)}` : "-";
+        parts.push(`Price ${old} \u2192 $${u.new_price.toFixed(2)}`);
+      }
+      if (u.new_cost != null) {
+        const old = u.old_cost != null ? `$${u.old_cost.toFixed(2)}` : "-";
+        parts.push(`Cost ${old} \u2192 $${u.new_cost.toFixed(2)}`);
+      }
+      lines.push(`<div style="margin-bottom: 0.375rem;"><strong style="color: var(--text-primary);">${storeName}:</strong> ${parts.join(", ")}</div>`);
+    } else if (u.store_type === "shopify") {
+      u.variant_updates.forEach((v) => {
+        const parts = [];
+        const label = v.variant_title && v.variant_title !== "Default Title"
+          ? `"${escapeHtml(v.variant_title)}"` : "";
+        if (v.new_price != null) {
+          const old = v.old_price != null ? `$${v.old_price.toFixed(2)}` : "-";
+          parts.push(`Price ${old} \u2192 $${v.new_price.toFixed(2)}`);
+        }
+        if (v.new_cost != null) {
+          const old = v.old_cost != null ? `$${v.old_cost.toFixed(2)}` : "-";
+          parts.push(`Cost ${old} \u2192 $${v.new_cost.toFixed(2)}`);
+        }
+        lines.push(`<div style="margin-bottom: 0.375rem;"><strong style="color: var(--text-primary);">${storeName}${label ? " " + label : ""}:</strong> ${parts.join(", ")}</div>`);
+      });
+    }
+  });
+
+  summaryEl.innerHTML = lines.join("");
+  document.getElementById("price-updates-confirm-panel").style.display = "block";
+  document.getElementById("price-updates-update-btn").parentElement.style.display = "none";
+}
+
+function hideUpdateConfirmation() {
+  document.getElementById("price-updates-confirm-panel").style.display = "none";
+  document.getElementById("price-updates-update-btn").parentElement.style.display = "";
+}
+
+async function executeUpdate() {
+  if (priceUpdatesState.isUpdating) return;
+
+  const upc = document.getElementById("price-updates-upc-input").value.trim();
+  if (!upc) return;
+
+  const updates = collectPriceUpdates();
+  if (updates.length === 0) return;
+
+  // Strip internal _store_name before sending to API
+  const cleanUpdates = updates.map((u) => {
+    const { _store_name, ...rest } = u;
+    return rest;
+  });
+
   priceUpdatesState.isUpdating = true;
   const updateBtn = document.getElementById("price-updates-update-btn");
-  const overlay = document.getElementById("price-loading-overlay");
-  const overlayText = document.getElementById("price-loading-text");
-  const overlayFill = document.getElementById("price-loading-fill");
-  const overlayStatus = document.getElementById("price-loading-status");
+  const progressEl = document.getElementById("price-updates-update-progress");
+  const progressItems = document.getElementById("price-updates-update-progress-items");
 
   updateBtn.disabled = true;
-  overlayText.textContent = "Updating prices...";
-  overlayFill.style.width = "0%";
-  overlayStatus.textContent = "";
-  overlay.style.display = "flex";
+  hideUpdateConfirmation();
+  progressItems.innerHTML = "";
+  progressEl.style.display = "block";
 
-  const totalUpdates = updates.length;
-  let completedUpdates = 0;
+  let lastUpdateItem = null;
 
   try {
     const response = await fetch(`${API_BASE}/price-updates/update/stream`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ upc, updates }),
+      body: JSON.stringify({ upc, updates: cleanUpdates }),
     });
 
     const reader = response.body.getReader();
@@ -5993,11 +6100,23 @@ async function updatePrices() {
           const data = JSON.parse(line.substring(6));
 
           if (data.status === "updating" && data.message) {
-            overlayStatus.textContent = data.message;
-          } else if (data.status === "updated" || data.status === "error") {
-            completedUpdates++;
-            overlayFill.style.width = `${(completedUpdates / totalUpdates) * 100}%`;
-            overlayStatus.textContent = `Store ${completedUpdates} of ${totalUpdates}`;
+            const itemEl = document.createElement("div");
+            itemEl.className = "progress-store-item";
+            itemEl.innerHTML = `<div class="progress-spinner"></div><span>${escapeHtml(data.message)}</span>`;
+            progressItems.appendChild(itemEl);
+            lastUpdateItem = itemEl;
+          } else if (data.status === "updated") {
+            if (lastUpdateItem) {
+              const spinner = lastUpdateItem.querySelector(".progress-spinner");
+              if (spinner) spinner.outerHTML = '<span class="progress-icon success">\u2713</span>';
+              if (data.message) lastUpdateItem.querySelector("span:last-child").textContent = data.message;
+            }
+          } else if (data.status === "error") {
+            if (lastUpdateItem) {
+              const spinner = lastUpdateItem.querySelector(".progress-spinner");
+              if (spinner) spinner.outerHTML = '<span class="progress-icon error">\u2717</span>';
+              if (data.message) lastUpdateItem.querySelector("span:last-child").textContent = data.message;
+            }
           }
 
           if (data.results) {
@@ -6008,6 +6127,7 @@ async function updatePrices() {
               failed > 0 ? "error" : "success",
             );
 
+            priceUpdatesState._focusDescAfterSearch = true;
             searchPriceUpdates();
           }
         }
@@ -6019,7 +6139,10 @@ async function updatePrices() {
   } finally {
     priceUpdatesState.isUpdating = false;
     updateBtn.disabled = false;
-    overlay.style.display = "none";
+    progressItems.querySelectorAll(".progress-spinner").forEach((s) => {
+      s.outerHTML = '<span class="progress-icon success">\u2713</span>';
+    });
+    setTimeout(() => { progressEl.style.display = "none"; }, 800);
   }
 }
 
@@ -6200,13 +6323,89 @@ document
   ?.addEventListener("click", fillAllPrices);
 document
   .getElementById("price-updates-update-btn")
-  ?.addEventListener("click", updatePrices);
+  ?.addEventListener("click", showUpdateConfirmation);
+document
+  .getElementById("price-updates-confirm-btn")
+  ?.addEventListener("click", executeUpdate);
+document
+  .getElementById("price-updates-cancel-btn")
+  ?.addEventListener("click", hideUpdateConfirmation);
 document
   .getElementById("price-updates-desc-input")
   ?.addEventListener("input", handlePriceDescriptionInput);
 document
   .getElementById("price-updates-desc-input")
   ?.addEventListener("keydown", handlePriceAutocompleteKeydown);
+
+// Real-time markup recalculation (Improvement 1)
+function recalculateRowMarkup(tr) {
+  const priceInput = tr.querySelector(".new-price");
+  const costInput = tr.querySelector(".new-cost");
+  if (!priceInput || !costInput) return;
+
+  const price = priceInput.value ? parseFloat(priceInput.value) :
+    (priceInput.placeholder && priceInput.placeholder !== "-" ? parseFloat(priceInput.placeholder) : null);
+  const cost = costInput.value ? parseFloat(costInput.value) :
+    (costInput.placeholder && costInput.placeholder !== "-" ? parseFloat(costInput.placeholder) : null);
+
+  const tds = tr.querySelectorAll("td");
+  const hasTyped = priceInput.value || costInput.value;
+
+  // Markup (4th td)
+  if (price != null && cost != null && cost !== 0) {
+    const val = ((price - cost) / cost) * 100;
+    const color = val > 0 ? "var(--success)" : val < 0 ? "var(--danger)" : "";
+    tds[3].textContent = val.toFixed(1) + "%";
+    tds[3].style.color = hasTyped ? (color || "var(--accent-primary)") : color;
+  } else {
+    tds[3].textContent = "-";
+    tds[3].style.color = "";
+  }
+
+  // Cost markup (5th td)
+  const pCost = priceUpdatesState.primaryCost;
+  const storeId = parseInt(tr.dataset.storeId);
+  const primaryStoreId = priceUpdatesState.config?.primaryStoreId;
+  if (storeId === primaryStoreId) {
+    tds[4].textContent = "-";
+    tds[4].style.color = "";
+  } else if (cost != null && pCost != null && pCost !== 0) {
+    const val = ((cost - pCost) / pCost) * 100;
+    const color = val > 0 ? "var(--danger)" : val < 0 ? "var(--success)" : "";
+    tds[4].textContent = val.toFixed(1) + "%";
+    tds[4].style.color = hasTyped ? (color || "var(--accent-primary)") : color;
+  } else {
+    tds[4].textContent = "-";
+    tds[4].style.color = "";
+  }
+}
+
+document.getElementById("price-updates-tbody")?.addEventListener("input", (e) => {
+  if (!e.target.matches(".new-price, .new-cost")) return;
+  const tr = e.target.closest("tr");
+  if (tr) {
+    tr.dataset.filled = "";
+    tr.classList.remove("filled-row");
+    recalculateRowMarkup(tr);
+  }
+});
+
+// Keyboard shortcut: Ctrl+Enter / Cmd+Enter to trigger update
+document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+    const page = document.getElementById("price-updates-page");
+    const results = document.getElementById("price-updates-results");
+    if (page && page.style.display !== "none" && results && results.style.display !== "none") {
+      e.preventDefault();
+      const confirmPanel = document.getElementById("price-updates-confirm-panel");
+      if (confirmPanel && confirmPanel.style.display !== "none") {
+        executeUpdate();
+      } else {
+        showUpdateConfirmation();
+      }
+    }
+  }
+});
 
 // Hide price description dropdown when clicking outside
 document.addEventListener("click", (e) => {
@@ -6265,8 +6464,8 @@ function togglePriceHistory(showHistory) {
     historySection.style.display = "block";
     searchSection.style.display = "none";
     configSection.style.display = "none";
-    mainBtn.className = "btn btn-secondary";
-    histBtn.className = "btn btn-primary";
+    mainBtn.classList.remove("active");
+    histBtn.classList.add("active");
     loadPriceHistory();
   } else {
     historySection.style.display = "none";
@@ -6275,8 +6474,8 @@ function togglePriceHistory(showHistory) {
     } else {
       configSection.style.display = "block";
     }
-    mainBtn.className = "btn btn-primary";
-    histBtn.className = "btn btn-secondary";
+    mainBtn.classList.add("active");
+    histBtn.classList.remove("active");
   }
 }
 
@@ -6483,6 +6682,34 @@ function displayPriceHistory(batches, total) {
     productCell.textContent = batch.product_description || "-";
     batchRow.appendChild(productCell);
 
+    // Change — net price direction badge
+    const changeCell = document.createElement("td");
+    const priceChanges = batch.entries
+      .filter((e) => e.new_price != null && e.old_price != null)
+      .map((e) => parseFloat(e.new_price) - parseFloat(e.old_price));
+    if (priceChanges.length > 0) {
+      const allPositive = priceChanges.every((c) => c > 0);
+      const allNegative = priceChanges.every((c) => c < 0);
+      const avgChange = priceChanges.reduce((a, b) => a + b, 0) / priceChanges.length;
+      const badge = document.createElement("span");
+      badge.className = "price-change-badge";
+      if (allPositive) {
+        badge.classList.add("increase");
+        badge.textContent = `\u2191 +$${Math.abs(avgChange).toFixed(2)}`;
+      } else if (allNegative) {
+        badge.classList.add("decrease");
+        badge.textContent = `\u2193 -$${Math.abs(avgChange).toFixed(2)}`;
+      } else {
+        badge.classList.add("mixed");
+        badge.textContent = "\u2014";
+      }
+      changeCell.appendChild(badge);
+    } else {
+      changeCell.style.color = "var(--text-tertiary)";
+      changeCell.textContent = "\u2014";
+    }
+    batchRow.appendChild(changeCell);
+
     // Updated — total rows_affected across all entries
     const updatedCell = document.createElement("td");
     const totalRowsAffected = batch.entries.reduce((sum, e) => sum + (e.rows_affected || 0), 0);
@@ -6611,6 +6838,26 @@ function displayPriceHistory(batches, total) {
       }
       detailRow.appendChild(descCell);
 
+      // Detail change cell (under Change column)
+      const detailChangeCell = document.createElement("td");
+      if (entry.new_price != null && entry.old_price != null) {
+        const diff = parseFloat(entry.new_price) - parseFloat(entry.old_price);
+        const detailBadge = document.createElement("span");
+        detailBadge.className = "price-change-badge";
+        if (diff > 0) {
+          detailBadge.classList.add("increase");
+          detailBadge.textContent = `+$${diff.toFixed(2)}`;
+        } else if (diff < 0) {
+          detailBadge.classList.add("decrease");
+          detailBadge.textContent = `-$${Math.abs(diff).toFixed(2)}`;
+        } else {
+          detailBadge.classList.add("mixed");
+          detailBadge.textContent = "$0.00";
+        }
+        detailChangeCell.appendChild(detailBadge);
+      }
+      detailRow.appendChild(detailChangeCell);
+
       // Rows affected (under Updated column)
       const rowsCell = document.createElement("td");
       rowsCell.style.fontSize = "0.8125rem";
@@ -6663,9 +6910,30 @@ document
     togglePriceHistory(true);
   });
 
+// Auto-apply filters with debounce for text inputs
+function debouncedHistoryFilter() {
+  clearTimeout(priceUpdatesState.historyFilterTimeout);
+  priceUpdatesState.historyFilterTimeout = setTimeout(() => {
+    if (priceHistoryState.visible) applyPriceHistoryFilters();
+  }, 400);
+}
+
 document
-  .getElementById("apply-price-history-filters-btn")
-  ?.addEventListener("click", () => applyPriceHistoryFilters());
+  .getElementById("price-history-upc-filter")
+  ?.addEventListener("input", debouncedHistoryFilter);
+document
+  .getElementById("price-history-desc-filter")
+  ?.addEventListener("input", debouncedHistoryFilter);
+document
+  .getElementById("price-history-start-date")
+  ?.addEventListener("change", () => {
+    if (priceHistoryState.visible) applyPriceHistoryFilters();
+  });
+document
+  .getElementById("price-history-end-date")
+  ?.addEventListener("change", () => {
+    if (priceHistoryState.visible) applyPriceHistoryFilters();
+  });
 
 document
   .getElementById("clear-price-history-filters-btn")
