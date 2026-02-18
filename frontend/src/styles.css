@@ -1552,8 +1552,8 @@ body {
 }
 
 /* Filled Row Indicator */
-.filled-row {
-  border-top: 2px solid var(--accent-primary);
+.filled-row td:first-child {
+  box-shadow: inset 3px 0 0 var(--accent-primary);
 }
 
 /* Price Updates Fullscreen Mode */

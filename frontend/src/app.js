@@ -5939,6 +5939,8 @@ function enterPriceFullscreen() {
   const results = document.getElementById("price-updates-results");
   if (results) results.classList.add("results-fullscreen");
   document.body.classList.add("no-scroll");
+  const costFill = document.getElementById("price-fill-all-cost");
+  if (costFill) setTimeout(() => costFill.focus(), 100);
 }
 
 function exitPriceFullscreen() {
