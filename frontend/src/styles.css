@@ -1585,6 +1585,7 @@ body.no-scroll {
   display: none;
   gap: 0;
   flex-shrink: 0;
+  margin-left: auto;
 }
 
 .results-fullscreen .price-fs-tabs {
