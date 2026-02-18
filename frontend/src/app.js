@@ -5806,17 +5806,22 @@ function displayPriceResults(upc, prices, siblingPrices) {
 
       const currentPrice = sp.unit_price != null ? parseFloat(sp.unit_price).toFixed(2) : "-";
       const currentCost = sp.unit_cost != null ? parseFloat(sp.unit_cost).toFixed(2) : "-";
+      const currentDeliveryB = sp.unit_delivery_b != null ? parseFloat(sp.unit_delivery_b).toFixed(2) : "-";
       const spPrice = sp.unit_price != null ? parseFloat(sp.unit_price) : null;
       const spCost = sp.unit_cost != null ? parseFloat(sp.unit_cost) : null;
       const spMarkup = formatMarkup(spPrice, spCost);
       const spCostMarkup = formatCostMarkup(spCost, primaryCost, sp.store_id);
       const siblingLabel = `${escapeHtml(sp.product_description || sp.sibling_variant_title || "-")} [${escapeHtml(sp.sibling_barcode)}]`;
+      const isPrimarySibling = sp.store_id === primaryStoreId;
+      const siblingDeliveryBCell = isPrimarySibling
+        ? `<td>${currentValueSpan(currentDeliveryB)}<input type="number" class="dark-input price-input new-delivery-b" step="0.01" min="0" placeholder="${currentDeliveryB}"></td>`
+        : `<td style="color: var(--text-tertiary)">-</td>`;
 
       tr.innerHTML = `
         <td style="color: var(--text-tertiary); font-size: 0.75rem">${siblingLabel}</td>
         <td>${currentValueSpan(currentPrice)}<input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="${currentPrice}"></td>
         <td>${currentValueSpan(currentCost)}<input type="number" class="dark-input price-input new-cost" step="0.01" min="0" placeholder="${currentCost}"></td>
-        <td style="color: var(--text-tertiary)">-</td>
+        ${siblingDeliveryBCell}
         ${markupTd(spMarkup)}
         ${markupTd(spCostMarkup)}
       `;
