@@ -6389,12 +6389,41 @@ function getActiveHistoryStoreIds() {
   return ids;
 }
 
+const STORE_PALETTE_DARK = [
+  "#4fc3f7", // sky blue
+  "#ff8a65", // coral
+  "#81c784", // green
+  "#ce93d8", // lavender
+  "#fff176", // yellow
+  "#f48fb1", // pink
+  "#4dd0e1", // teal
+  "#a1887f", // taupe
+  "#aed581", // lime
+  "#ffb74d", // amber
+  "#9fa8da", // periwinkle
+  "#80cbc4", // mint
+];
+
+const STORE_PALETTE_LIGHT = [
+  "#0277bd", // blue
+  "#c62828", // red
+  "#2e7d32", // green
+  "#6a1b9a", // purple
+  "#e65100", // orange
+  "#00695c", // teal
+  "#ad1457", // pink
+  "#827717", // olive
+  "#4527a0", // deep purple
+  "#00838f", // cyan
+  "#4e342e", // brown
+  "#1565c0", // steel blue
+];
+
 function getStoreColor(storeId) {
-  const hue = (storeId * 137.508) % 360;
   const isLight = document.body.getAttribute("data-theme") === "author-light";
-  return isLight
-    ? `hsl(${hue}, 50%, 35%)`
-    : `hsl(${hue}, 60%, 55%)`;
+  const palette = isLight ? STORE_PALETTE_LIGHT : STORE_PALETTE_DARK;
+  const idx = ((storeId - 1) % palette.length + palette.length) % palette.length;
+  return palette[idx];
 }
 
 function displayPriceHistory(batches, total) {
