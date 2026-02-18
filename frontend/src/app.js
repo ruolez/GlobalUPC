@@ -6988,6 +6988,10 @@ function displayPriceHistory(batches, total) {
       const changeCell = document.createElement("td");
       changeCell.colSpan = 2;
       changeCell.style.fontSize = "0.8125rem";
+      changeCell.style.overflow = "hidden";
+      changeCell.style.textOverflow = "ellipsis";
+      changeCell.style.whiteSpace = "nowrap";
+      changeCell.style.maxWidth = "0";
       const changeParts = [];
       if (entry.new_price != null) {
         const oldP = entry.old_price != null ? `$${parseFloat(entry.old_price).toFixed(2)}` : "-";
