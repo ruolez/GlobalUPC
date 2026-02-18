@@ -6508,12 +6508,9 @@ function displayPriceHistory(batches, total) {
       detailRow.dataset.batchDetail = batch.batch_id;
       detailRow.dataset.storeId = entry.store_id;
 
-      // Empty indent cell (under #)
-      const indentCell = document.createElement("td");
-      detailRow.appendChild(indentCell);
-
-      // Price/cost changes with color coding (under Timestamp)
+      // Price/cost changes spanning # + Timestamp columns
       const changeCell = document.createElement("td");
+      changeCell.colSpan = 2;
       changeCell.style.fontSize = "0.8125rem";
       const changeParts = [];
       if (entry.new_price != null) {
@@ -6541,24 +6538,31 @@ function displayPriceHistory(batches, total) {
         : "-";
       detailRow.appendChild(changeCell);
 
-      // Store name + UPC (under UPC column)
-      const storeCell = document.createElement("td");
-      storeCell.style.fontSize = "0.8125rem";
-      storeCell.textContent = entry.store_name;
-      detailRow.appendChild(storeCell);
+      // Barcode (under UPC column)
+      const upcCell = document.createElement("td");
+      upcCell.style.fontFamily = "monospace";
+      upcCell.style.fontSize = "0.75rem";
+      upcCell.style.color = "var(--text-tertiary)";
+      upcCell.textContent = entry.upc || "";
+      detailRow.appendChild(upcCell);
 
-      // Product description + variant (under Product column)
+      // Store name + product description + variant (under Product column)
       const descCell = document.createElement("td");
       descCell.style.fontSize = "0.8125rem";
       descCell.style.color = "var(--text-secondary)";
+      const storeSpan = document.createElement("span");
+      storeSpan.style.color = "var(--text-primary)";
+      storeSpan.textContent = entry.store_name;
+      descCell.appendChild(storeSpan);
       if (entry.product_description) {
-        descCell.textContent = entry.product_description;
-        if (entry.variant_title) {
+        descCell.appendChild(document.createTextNode(" \u2014 " + entry.product_description));
+        const variantTitle = entry.variant_title;
+        if (variantTitle && variantTitle.toLowerCase() !== "default title") {
           const variantSpan = document.createElement("span");
           variantSpan.style.color = "var(--text-tertiary)";
           variantSpan.style.fontSize = "0.75rem";
           variantSpan.style.marginLeft = "0.375rem";
-          variantSpan.textContent = `(${entry.variant_title})`;
+          variantSpan.textContent = `(${variantTitle})`;
           descCell.appendChild(variantSpan);
         }
       }
