@@ -2634,8 +2634,6 @@
             id="price-updates-search-section"
             style="display: none"
           >
-            <!-- Collapsible Zone (collapses when scrolled past results) -->
-            <div id="price-updates-collapsible" class="price-collapsible-zone">
             <!-- Config Summary (Collapsible) -->
             <div
               id="price-updates-config-summary"
@@ -2789,7 +2787,6 @@
               <input type="checkbox" id="price-updates-include-siblings" checked style="accent-color: var(--accent-primary);" />
               Include sibling barcodes in MSSQL
             </label>
-            </div><!-- /price-updates-collapsible -->
 
             <!-- Loading State -->
             <div
@@ -2820,9 +2817,6 @@
                 style="display: flex; flex-direction: column; gap: 0.5rem"
               ></div>
             </div>
-
-            <!-- Collapse Sentinel (observed by IntersectionObserver, always in flow) -->
-            <div id="price-updates-collapse-sentinel" style="height: 0; overflow: hidden;"></div>
 
             <!-- Results Section -->
             <div id="price-updates-results" style="display: none">
@@ -2896,9 +2890,10 @@
                     <span class="price-sticky-bar-sep">&mdash;</span>
                     <span class="price-sticky-bar-desc" id="price-sticky-desc"></span>
                   </div>
-                  <button type="button" class="price-sticky-bar-expand" id="price-sticky-expand-btn" title="Show search">
+                  <button type="button" class="price-sticky-bar-expand" id="price-sticky-expand-btn" title="Close">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                      <polyline points="18 15 12 9 6 15"></polyline>
+                      <line x1="18" y1="6" x2="6" y2="18"></line>
+                      <line x1="6" y1="6" x2="18" y2="18"></line>
                     </svg>
                   </button>
                 </div>
@@ -2963,7 +2958,7 @@
               </div>
 
               <!-- Update Button -->
-              <div style="display: flex; gap: 0.75rem; margin-top: 1rem; align-items: center;">
+              <div class="price-update-btn-row" style="display: flex; gap: 0.75rem; margin-top: 1rem; align-items: center;">
                 <button type="button" class="btn btn-primary" id="price-updates-update-btn">
                   Update Prices
                 </button>
