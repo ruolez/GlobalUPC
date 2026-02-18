@@ -1788,6 +1788,26 @@ body.no-scroll {
   pointer-events: none;
 }
 
+.ph-recall-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  padding: 0.25rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  transition: color 0.15s, background 0.15s, opacity 0.15s;
+  opacity: 0.5;
+}
+
+.ph-recall-btn:hover {
+  color: var(--accent-primary);
+  background: var(--bg-tertiary);
+  opacity: 1;
+}
+
 /* Update button pinned at bottom in fullscreen */
 .results-fullscreen .price-update-btn-row {
   flex-shrink: 0;

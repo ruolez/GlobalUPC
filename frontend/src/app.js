@@ -5334,6 +5334,7 @@ let priceUpdatesState = {
   configExpanded: false,
   primaryCost: null,
   historyFilterTimeout: null,
+  recallData: null,
 };
 
 async function loadPriceUpdatesPage() {
@@ -5881,6 +5882,10 @@ function displayPriceResults(upc, prices, siblingPrices) {
       if (firstInput) firstInput.focus();
     }
   }, 100);
+
+  if (priceUpdatesState.recallData) {
+    setTimeout(() => applyRecallData(), 150);
+  }
 }
 
 function applyStoreFilters() {
@@ -5916,6 +5921,7 @@ function applyStoreFilters() {
 }
 
 function resetPriceUpdates() {
+  priceUpdatesState.recallData = null;
   exitPriceFullscreen();
 
   // Reset fullscreen history tab state
@@ -6982,6 +6988,21 @@ function displayPriceHistory(batches, total, targetConfig = null) {
     updatedCell.title = `${totalRowsAffected} product${totalRowsAffected !== 1 ? "s" : ""} updated across ${batch.total_stores} store${batch.total_stores !== 1 ? "s" : ""}`;
     batchRow.appendChild(updatedCell);
 
+    // Recall button
+    const recallCell = document.createElement("td");
+    recallCell.style.textAlign = "center";
+    const recallBtn = document.createElement("button");
+    recallBtn.type = "button";
+    recallBtn.className = "ph-recall-btn";
+    recallBtn.title = "Recall this update";
+    recallBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>';
+    recallBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      recallBatch(batch, cfg.storeFilterSelector);
+    });
+    recallCell.appendChild(recallBtn);
+    batchRow.appendChild(recallCell);
+
     // Status — icon only with tooltip
     const statusCell = document.createElement("td");
     statusCell.style.textAlign = "center";
@@ -7141,6 +7162,9 @@ function displayPriceHistory(batches, total, targetConfig = null) {
       rowsCell.textContent = entry.success ? (entry.rows_affected || 0) : "-";
       detailRow.appendChild(rowsCell);
 
+      // Empty recall column placeholder
+      detailRow.appendChild(document.createElement("td"));
+
       // Status icon (under Status column)
       const detailStatusCell = document.createElement("td");
       detailStatusCell.style.textAlign = "center";
@@ -7185,6 +7209,84 @@ function updatePriceHistoryPagination(total, targetConfig = null) {
 
   document.getElementById(prevBtnId).disabled = state.currentPage === 0;
   document.getElementById(nextBtnId).disabled = currentPage >= totalPages;
+}
+
+function recallBatch(batch, storeFilterSelector) {
+  const config = priceUpdatesState.config;
+  if (!config || !config.storeIds || config.storeIds.length === 0) {
+    showToast("Configure stores before recalling", "error");
+    return;
+  }
+  if (priceUpdatesState.isSearching || priceUpdatesState.isUpdating) return;
+
+  const historyActiveIds = getActiveStoreIdsFromContainer(storeFilterSelector);
+  const configStoreSet = new Set(config.storeIds.map(String));
+  const batchStoreIds = new Set(batch.entries.map((e) => String(e.store_id)));
+
+  const filteredIds = [...batchStoreIds].filter((id) => {
+    if (!configStoreSet.has(id)) return false;
+    if (historyActiveIds && !historyActiveIds.has(id)) return false;
+    return true;
+  });
+
+  if (filteredIds.length === 0) {
+    showToast("No matching stores between history and configured stores", "error");
+    return;
+  }
+
+  priceUpdatesState.recallData = {
+    upc: batch.upc,
+    entries: batch.entries,
+    storeIds: filteredIds,
+  };
+
+  const isFullscreen = priceFsHistoryState.active;
+  if (isFullscreen) {
+    switchFullscreenTab("prices");
+  } else {
+    togglePriceHistory(false);
+  }
+
+  document.getElementById("price-updates-upc-input").value = batch.upc;
+
+  const savedStoreIds = config.storeIds;
+  config.storeIds = filteredIds.map(Number);
+  searchPriceUpdates().finally(() => {
+    config.storeIds = savedStoreIds;
+  });
+}
+
+function applyRecallData() {
+  if (!priceUpdatesState.recallData) return;
+  const { entries } = priceUpdatesState.recallData;
+  const rows = document.querySelectorAll("#price-updates-tbody tr:not(.store-header-row)");
+
+  entries.forEach((entry) => {
+    let matchedRow = null;
+    rows.forEach((tr) => {
+      if (matchedRow) return;
+      if (String(tr.dataset.storeId) !== String(entry.store_id)) return;
+      if (entry.variant_id && tr.dataset.variantId) {
+        if (String(tr.dataset.variantId) === String(entry.variant_id)) matchedRow = tr;
+      } else if (!entry.variant_id && !tr.dataset.variantId) {
+        matchedRow = tr;
+      }
+    });
+    if (!matchedRow) return;
+
+    const priceInput = matchedRow.querySelector(".new-price");
+    const costInput = matchedRow.querySelector(".new-cost");
+    const deliveryBInput = matchedRow.querySelector(".new-delivery-b");
+
+    if (priceInput && entry.new_price != null) priceInput.value = parseFloat(entry.new_price).toFixed(2);
+    if (costInput && entry.new_cost != null) costInput.value = parseFloat(entry.new_cost).toFixed(2);
+    if (deliveryBInput && entry.new_delivery_b != null) deliveryBInput.value = parseFloat(entry.new_delivery_b).toFixed(2);
+
+    matchedRow.classList.add("filled-row");
+    recalculateRowMarkup(matchedRow);
+  });
+
+  priceUpdatesState.recallData = null;
 }
 
 // Price History event listeners
@@ -7322,7 +7424,7 @@ function switchFullscreenTab(tab) {
 
 async function loadFullscreenHistory() {
   const tbody = document.getElementById("price-fs-history-tbody");
-  if (tbody) tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:2rem;color:var(--text-tertiary)">Loading...</td></tr>';
+  if (tbody) tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:2rem;color:var(--text-tertiary)">Loading...</td></tr>';
 
   try {
     const params = new URLSearchParams();
@@ -7337,13 +7439,13 @@ async function loadFullscreenHistory() {
     priceFsHistoryState.totalRecords = data.total;
 
     if (data.batches.length === 0) {
-      if (tbody) tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:2rem;color:var(--text-tertiary)">No history found</td></tr>';
+      if (tbody) tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:2rem;color:var(--text-tertiary)">No history found</td></tr>';
       updatePriceHistoryPagination(0, FS_HISTORY_CONFIG);
     } else {
       displayPriceHistory(data.batches, data.total, FS_HISTORY_CONFIG);
     }
   } catch (error) {
-    if (tbody) tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:2rem;color:var(--danger)">Error loading history</td></tr>';
+    if (tbody) tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:2rem;color:var(--danger)">Error loading history</td></tr>';
     showToast(`Error loading history: ${error.message}`, "error");
   }
 }
