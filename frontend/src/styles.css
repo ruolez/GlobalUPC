@@ -1580,6 +1580,85 @@ body.no-scroll {
   display: flex !important;
 }
 
+/* Fullscreen Tab Switcher */
+.price-fs-tabs {
+  display: none;
+  gap: 0;
+  flex-shrink: 0;
+}
+
+.results-fullscreen .price-fs-tabs {
+  display: flex;
+}
+
+.price-fs-tab {
+  padding: 0.375rem 0.875rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.price-fs-tab:hover {
+  color: var(--text-primary);
+}
+
+.price-fs-tab.active {
+  color: var(--accent-primary);
+  border-bottom-color: var(--accent-primary);
+}
+
+/* Hide price-specific elements when on history tab */
+.price-fs-hidden {
+  display: none !important;
+}
+
+/* Fullscreen History Panel */
+#price-fs-history-panel {
+  display: none;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+#price-fs-history-panel.price-fs-visible {
+  display: flex;
+}
+
+#price-fs-history-store-filters {
+  flex-shrink: 0;
+  padding: 0.5rem 0;
+}
+
+.price-fs-history-scroll {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.price-fs-history-scroll thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg-primary);
+}
+
+.price-fs-history-pagination {
+  flex-shrink: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border-color);
+  margin-top: 0.5rem;
+}
+
 .results-fullscreen .price-sticky-wrapper {
   flex-shrink: 0;
   border-bottom: 1px solid var(--border-color);
@@ -1622,6 +1701,7 @@ body.no-scroll {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+  flex: 1;
   min-width: 0;
   overflow: hidden;
 }

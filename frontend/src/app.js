@@ -5914,6 +5914,20 @@ function applyStoreFilters() {
 
 function resetPriceUpdates() {
   exitPriceFullscreen();
+
+  // Reset fullscreen history tab state
+  const historyPanel = document.getElementById("price-fs-history-panel");
+  if (historyPanel) historyPanel.classList.remove("price-fs-visible");
+  const pricesTab = document.getElementById("price-fs-tab-prices");
+  if (pricesTab) pricesTab.classList.add("active");
+  const historyTab = document.getElementById("price-fs-tab-history");
+  if (historyTab) historyTab.classList.remove("active");
+  const stickyBarInfo = document.getElementById("price-sticky-bar-info");
+  if (stickyBarInfo) stickyBarInfo.classList.remove("price-fs-hidden");
+  document.querySelectorAll(".price-fs-hidden").forEach((el) => el.classList.remove("price-fs-hidden"));
+  priceFsHistoryState.active = false;
+  priceFsHistoryState.currentPage = 0;
+
   document.getElementById("price-updates-upc-input").value = "";
   document.getElementById("price-updates-desc-input").value = "";
   document.getElementById("price-updates-results").style.display = "none";
@@ -6601,14 +6615,18 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-// ESC key exits fullscreen price results (with confirmation)
+// ESC key: history tab → switch to prices; prices tab → exit confirmation
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     if (document.getElementById("price-exit-confirm-overlay")) return;
     const results = document.getElementById("price-updates-results");
     if (results && results.classList.contains("results-fullscreen")) {
       e.preventDefault();
-      confirmExitPriceFullscreen();
+      if (priceFsHistoryState.active) {
+        switchFullscreenTab("prices");
+      } else {
+        confirmExitPriceFullscreen();
+      }
     }
   }
 });
@@ -6783,16 +6801,20 @@ async function applyPriceHistoryFilters() {
   await loadPriceHistory();
 }
 
-function getActiveHistoryStoreIds() {
-  const chips = document.querySelectorAll("#price-history-store-filters .store-filter-chip:not(.store-filter-control)");
+function getActiveStoreIdsFromContainer(containerSelector) {
+  const chips = document.querySelectorAll(`${containerSelector} .store-filter-chip:not(.store-filter-control)`);
   if (chips.length === 0) return null;
-  const activeChips = document.querySelectorAll("#price-history-store-filters .store-filter-chip.active");
+  const activeChips = document.querySelectorAll(`${containerSelector} .store-filter-chip.active`);
   if (activeChips.length === chips.length) return null;
   const ids = new Set();
   activeChips.forEach((chip) => {
     if (chip.dataset.storeId) ids.add(String(chip.dataset.storeId));
   });
   return ids;
+}
+
+function getActiveHistoryStoreIds() {
+  return getActiveStoreIdsFromContainer("#price-history-store-filters");
 }
 
 const STORE_PALETTE_DARK = [
@@ -6832,14 +6854,24 @@ function getStoreColor(storeId) {
   return palette[idx];
 }
 
-function displayPriceHistory(batches, total) {
-  document.getElementById("price-history-total-count").textContent = total;
+function displayPriceHistory(batches, total, targetConfig = null) {
+  const cfg = targetConfig || {
+    tbodyId: "price-history-table-body",
+    totalCountId: "price-history-total-count",
+    storeFilterSelector: "#price-history-store-filters",
+    state: priceHistoryState,
+  };
 
-  const tbody = document.getElementById("price-history-table-body");
+  const totalCountEl = cfg.totalCountId ? document.getElementById(cfg.totalCountId) : null;
+  if (totalCountEl) totalCountEl.textContent = total;
+
+  const tbody = document.getElementById(cfg.tbodyId);
   tbody.innerHTML = "";
 
+  const activeStoreIdsFn = () => getActiveStoreIdsFromContainer(cfg.storeFilterSelector);
+
   batches.forEach((batch, index) => {
-    const recordNumber = priceHistoryState.currentPage * priceHistoryState.pageSize + index + 1;
+    const recordNumber = cfg.state.currentPage * cfg.state.pageSize + index + 1;
 
     const batchRow = document.createElement("tr");
     batchRow.style.cursor = "pointer";
@@ -6953,18 +6985,18 @@ function displayPriceHistory(batches, total) {
       isExpanded = !isExpanded;
       chevron.classList.toggle("expanded", isExpanded);
       const detailRows = tbody.querySelectorAll(`[data-batch-detail="${batch.batch_id}"]`);
-      const activeStoreIds = getActiveHistoryStoreIds();
+      const storeIds = activeStoreIdsFn();
       detailRows.forEach((row) => {
         if (!isExpanded) {
           row.style.display = "none";
         } else {
-          row.style.display = activeStoreIds ? (activeStoreIds.has(row.dataset.storeId) ? "" : "none") : "";
+          row.style.display = storeIds ? (storeIds.has(row.dataset.storeId) ? "" : "none") : "";
         }
       });
     });
 
     // Store filter visibility
-    const activeStoreIds = getActiveHistoryStoreIds();
+    const activeStoreIds = activeStoreIdsFn();
     if (activeStoreIds) {
       const hasMatchingStore = batch.entries.some((entry) =>
         activeStoreIds.has(String(entry.store_id))
@@ -7106,18 +7138,29 @@ function displayPriceHistory(batches, total) {
     });
   });
 
-  updatePriceHistoryPagination(total);
+  updatePriceHistoryPagination(total, targetConfig);
 }
 
-function updatePriceHistoryPagination(total) {
-  const totalPages = Math.ceil(total / priceHistoryState.pageSize);
-  const currentPage = priceHistoryState.currentPage + 1;
+function updatePriceHistoryPagination(total, targetConfig = null) {
+  const cfg = targetConfig || {
+    state: priceHistoryState,
+    pageInfoId: "price-history-page-info",
+    prevBtnId: "price-history-prev-btn",
+    nextBtnId: "price-history-next-btn",
+  };
+  const pageInfoId = cfg.pageInfoId || "price-history-page-info";
+  const prevBtnId = cfg.prevBtnId || "price-history-prev-btn";
+  const nextBtnId = cfg.nextBtnId || "price-history-next-btn";
+  const state = cfg.state || priceHistoryState;
 
-  document.getElementById("price-history-page-info").textContent =
+  const totalPages = Math.ceil(total / state.pageSize);
+  const currentPage = state.currentPage + 1;
+
+  document.getElementById(pageInfoId).textContent =
     `Page ${currentPage} of ${totalPages || 1}`;
 
-  document.getElementById("price-history-prev-btn").disabled = priceHistoryState.currentPage === 0;
-  document.getElementById("price-history-next-btn").disabled = currentPage >= totalPages;
+  document.getElementById(prevBtnId).disabled = state.currentPage === 0;
+  document.getElementById(nextBtnId).disabled = currentPage >= totalPages;
 }
 
 // Price History event listeners
@@ -7197,6 +7240,166 @@ document
     localStorage.setItem("priceHistoryPageSize", priceHistoryState.pageSize);
     priceHistoryState.currentPage = 0;
     await loadPriceHistory();
+  });
+
+// ==========================================
+// Fullscreen History Tab
+// ==========================================
+
+let priceFsHistoryState = {
+  currentPage: 0,
+  pageSize: parseInt(localStorage.getItem("priceFsHistoryPageSize")) || 25,
+  totalRecords: 0,
+  filters: { store_ids: null },
+  active: false,
+};
+
+const fsHistPageSizeEl = document.getElementById("price-fs-history-page-size");
+if (fsHistPageSizeEl) fsHistPageSizeEl.value = priceFsHistoryState.pageSize;
+
+const FS_HISTORY_CONFIG = {
+  tbodyId: "price-fs-history-tbody",
+  totalCountId: null,
+  storeFilterSelector: "#price-fs-history-store-filters",
+  state: priceFsHistoryState,
+  pageInfoId: "price-fs-history-page-info",
+  prevBtnId: "price-fs-history-prev-btn",
+  nextBtnId: "price-fs-history-next-btn",
+};
+
+function switchFullscreenTab(tab) {
+  const pricesTab = document.getElementById("price-fs-tab-prices");
+  const historyTab = document.getElementById("price-fs-tab-history");
+  const historyPanel = document.getElementById("price-fs-history-panel");
+  const stickyBarInfo = document.getElementById("price-sticky-bar-info");
+
+  const priceElements = document.querySelectorAll(
+    ".fill-all-row, .price-table-scroll, .price-update-btn-row, #price-updates-confirm-panel, #price-updates-update-progress, #price-store-filters"
+  );
+
+  if (tab === "history") {
+    priceFsHistoryState.active = true;
+    priceElements.forEach((el) => el.classList.add("price-fs-hidden"));
+    if (stickyBarInfo) stickyBarInfo.classList.add("price-fs-hidden");
+    if (historyPanel) historyPanel.classList.add("price-fs-visible");
+    if (pricesTab) pricesTab.classList.remove("active");
+    if (historyTab) historyTab.classList.add("active");
+    loadFullscreenHistoryStores();
+    loadFullscreenHistory();
+  } else {
+    priceFsHistoryState.active = false;
+    priceElements.forEach((el) => el.classList.remove("price-fs-hidden"));
+    if (stickyBarInfo) stickyBarInfo.classList.remove("price-fs-hidden");
+    if (historyPanel) historyPanel.classList.remove("price-fs-visible");
+    if (pricesTab) pricesTab.classList.add("active");
+    if (historyTab) historyTab.classList.remove("active");
+  }
+}
+
+async function loadFullscreenHistory() {
+  const tbody = document.getElementById("price-fs-history-tbody");
+  if (tbody) tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:2rem;color:var(--text-tertiary)">Loading...</td></tr>';
+
+  try {
+    const params = new URLSearchParams();
+    params.append("limit", priceFsHistoryState.pageSize);
+    params.append("offset", priceFsHistoryState.currentPage * priceFsHistoryState.pageSize);
+
+    if (priceFsHistoryState.filters.store_ids) {
+      params.append("store_ids", priceFsHistoryState.filters.store_ids);
+    }
+
+    const data = await apiRequest(`/price-updates/history?${params.toString()}`);
+    priceFsHistoryState.totalRecords = data.total;
+
+    if (data.batches.length === 0) {
+      if (tbody) tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:2rem;color:var(--text-tertiary)">No history found</td></tr>';
+      updatePriceHistoryPagination(0, FS_HISTORY_CONFIG);
+    } else {
+      displayPriceHistory(data.batches, data.total, FS_HISTORY_CONFIG);
+    }
+  } catch (error) {
+    if (tbody) tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:2rem;color:var(--danger)">Error loading history</td></tr>';
+    showToast(`Error loading history: ${error.message}`, "error");
+  }
+}
+
+async function loadFullscreenHistoryStores() {
+  try {
+    const stores = await apiRequest("/stores");
+    const filtersEl = document.getElementById("price-fs-history-store-filters");
+    const chipStores = stores.map((s) => ({
+      id: String(s.id),
+      name: s.name,
+      type: s.store_type,
+      hasRows: true,
+    }));
+    buildStoreFilterChips(filtersEl, chipStores, {
+      localStorageKey: "priceFsActiveStores",
+      onToggle: saveFsHistoryStoreSelections,
+    });
+  } catch (e) {
+    // Silently fail
+  }
+}
+
+function saveFsHistoryStoreSelections() {
+  const activeIds = [];
+  document.querySelectorAll("#price-fs-history-store-filters .store-filter-chip.active").forEach((chip) => {
+    if (chip.dataset.storeId) activeIds.push(chip.dataset.storeId);
+  });
+  localStorage.setItem("priceFsActiveStores", JSON.stringify(activeIds));
+  applyFsHistoryFilters();
+}
+
+async function applyFsHistoryFilters() {
+  const activeStoreIds = [];
+  document.querySelectorAll("#price-fs-history-store-filters .store-filter-chip.active").forEach((chip) => {
+    if (chip.dataset.storeId) activeStoreIds.push(chip.dataset.storeId);
+  });
+  const totalChips = document.querySelectorAll("#price-fs-history-store-filters .store-filter-chip:not(.store-filter-control)").length;
+
+  priceFsHistoryState.filters = {
+    store_ids: activeStoreIds.length > 0 && activeStoreIds.length < totalChips ? activeStoreIds.join(",") : null,
+  };
+  priceFsHistoryState.currentPage = 0;
+  await loadFullscreenHistory();
+}
+
+// Fullscreen tab event listeners
+document
+  .getElementById("price-fs-tab-prices")
+  ?.addEventListener("click", () => switchFullscreenTab("prices"));
+document
+  .getElementById("price-fs-tab-history")
+  ?.addEventListener("click", () => switchFullscreenTab("history"));
+
+document
+  .getElementById("price-fs-history-prev-btn")
+  ?.addEventListener("click", async () => {
+    if (priceFsHistoryState.currentPage > 0) {
+      priceFsHistoryState.currentPage--;
+      await loadFullscreenHistory();
+    }
+  });
+
+document
+  .getElementById("price-fs-history-next-btn")
+  ?.addEventListener("click", async () => {
+    const totalPages = Math.ceil(priceFsHistoryState.totalRecords / priceFsHistoryState.pageSize);
+    if (priceFsHistoryState.currentPage < totalPages - 1) {
+      priceFsHistoryState.currentPage++;
+      await loadFullscreenHistory();
+    }
+  });
+
+document
+  .getElementById("price-fs-history-page-size")
+  ?.addEventListener("change", async (e) => {
+    priceFsHistoryState.pageSize = parseInt(e.target.value, 10);
+    localStorage.setItem("priceFsHistoryPageSize", priceFsHistoryState.pageSize);
+    priceFsHistoryState.currentPage = 0;
+    await loadFullscreenHistory();
   });
 
 // Initialize

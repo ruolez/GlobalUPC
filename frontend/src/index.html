@@ -2866,7 +2866,11 @@
               <div id="price-updates-sticky-wrapper" class="price-sticky-wrapper">
                 <!-- Compact Bar (visible only when header collapsed) -->
                 <div id="price-updates-sticky-bar" class="price-sticky-bar">
-                  <div class="price-sticky-bar-info">
+                  <div class="price-fs-tabs">
+                    <button type="button" class="price-fs-tab active" id="price-fs-tab-prices">Price Updates</button>
+                    <button type="button" class="price-fs-tab" id="price-fs-tab-history">Update History</button>
+                  </div>
+                  <div class="price-sticky-bar-info" id="price-sticky-bar-info">
                     <span class="price-sticky-bar-upc" id="price-sticky-upc"></span>
                     <span class="price-sticky-bar-sep">&mdash;</span>
                     <span class="price-sticky-bar-desc" id="price-sticky-desc"></span>
@@ -2971,6 +2975,41 @@
                   id="price-updates-update-progress-items"
                   style="display: flex; flex-direction: column; gap: 0.5rem"
                 ></div>
+              </div>
+
+              <!-- Fullscreen History Panel -->
+              <div id="price-fs-history-panel">
+                <div id="price-fs-history-store-filters"></div>
+                <div class="price-fs-history-scroll">
+                  <table class="data-table">
+                    <thead>
+                      <tr>
+                        <th style="width: 4%">#</th>
+                        <th style="width: 14%">Timestamp</th>
+                        <th style="width: 10%">UPC</th>
+                        <th style="width: 30%">Product</th>
+                        <th style="width: 8%">Change</th>
+                        <th style="width: 4%">Updated</th>
+                        <th style="width: 4%"></th>
+                      </tr>
+                    </thead>
+                    <tbody id="price-fs-history-tbody"></tbody>
+                  </table>
+                </div>
+                <div class="price-fs-history-pagination">
+                  <button type="button" class="btn btn-secondary" id="price-fs-history-prev-btn" disabled>Previous</button>
+                  <span id="price-fs-history-page-info" style="font-size: 0.875rem; color: var(--text-secondary)">Page 1</span>
+                  <div style="display: flex; gap: 0.5rem; align-items: center">
+                    <label for="price-fs-history-page-size" style="font-size: 0.875rem; color: var(--text-secondary)">Show:</label>
+                    <select id="price-fs-history-page-size" style="padding: 0.25rem 0.5rem">
+                      <option value="10">10</option>
+                      <option value="25" selected>25</option>
+                      <option value="50">50</option>
+                      <option value="100">100</option>
+                    </select>
+                  </div>
+                  <button type="button" class="btn btn-secondary" id="price-fs-history-next-btn" disabled>Next</button>
+                </div>
               </div>
             </div>
           </div>
