@@ -5728,7 +5728,7 @@ function displayPriceResults(upc, prices, siblingPrices) {
     headerTr.classList.add("store-header-row");
     headerTr.dataset.storeId = storeId;
     const headerTd = document.createElement("td");
-    headerTd.colSpan = 6;
+    headerTd.colSpan = 7;
     headerTd.style.color = getStoreColor(parseInt(storeId));
     headerTd.textContent = sd.storeName;
     headerTr.appendChild(headerTd);
@@ -5764,6 +5764,7 @@ function displayPriceResults(upc, prices, siblingPrices) {
           ${deliveryBCell}
           ${markupTd(mMarkup)}
           ${markupTd(mCostMarkup)}
+          <td class="price-exclude-cell"><button type="button" class="price-exclude-btn" title="Exclude from update"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></td>
         `;
         tbody.appendChild(tr);
       } else if (p.store_type === "shopify") {
@@ -5797,6 +5798,7 @@ function displayPriceResults(upc, prices, siblingPrices) {
             <td style="color: var(--text-tertiary)">-</td>
             ${markupTd(vMarkup)}
             ${markupTd(vCostMarkup)}
+            <td class="price-exclude-cell"><button type="button" class="price-exclude-btn" title="Exclude from update"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></td>
           `;
           tbody.appendChild(tr);
         });
@@ -5833,6 +5835,7 @@ function displayPriceResults(upc, prices, siblingPrices) {
         ${siblingDeliveryBCell}
         ${markupTd(spMarkup)}
         ${markupTd(spCostMarkup)}
+        <td class="price-exclude-cell"><button type="button" class="price-exclude-btn" title="Exclude from update"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></td>
       `;
       tbody.appendChild(tr);
     });
@@ -6008,7 +6011,7 @@ function fillAllPrices() {
   if (newDeliveryB) localStorage.setItem("priceFillAllDeliveryB", newDeliveryB);
 
   document
-    .querySelectorAll('#price-updates-tbody tr:not(.store-header-row):not([style*="display: none"])')
+    .querySelectorAll('#price-updates-tbody tr:not(.store-header-row):not([style*="display: none"]):not(.price-excluded)')
     .forEach((tr) => {
       let filled = false;
 
@@ -6054,6 +6057,7 @@ function collectPriceUpdates() {
   rows.forEach((tr) => {
     if (tr.classList.contains("store-header-row")) return;
     if (tr.style.display === "none") return;
+    if (tr.classList.contains("price-excluded")) return;
 
     const storeId = parseInt(tr.dataset.storeId);
     const storeType = tr.dataset.storeType;
@@ -6564,6 +6568,26 @@ function recalculateRowMarkup(tr) {
     tds[5].style.color = "";
   }
 }
+
+document.getElementById("price-updates-tbody")?.addEventListener("click", (e) => {
+  const btn = e.target.closest(".price-exclude-btn");
+  if (!btn) return;
+  const tr = btn.closest("tr");
+  if (!tr) return;
+  const isExcluded = tr.classList.toggle("price-excluded");
+  if (isExcluded) {
+    tr.querySelectorAll(".price-input").forEach((inp) => { inp.value = ""; inp.disabled = true; });
+    tr.classList.remove("filled-row");
+    tr.dataset.filled = "";
+    btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h18"/><path d="M12 3v18"/></svg>';
+    btn.title = "Restore row";
+  } else {
+    tr.querySelectorAll(".price-input").forEach((inp) => { inp.disabled = false; });
+    btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+    btn.title = "Exclude from update";
+  }
+  recalculateRowMarkup(tr);
+});
 
 document.getElementById("price-updates-tbody")?.addEventListener("input", (e) => {
   if (!e.target.matches(".new-price, .new-cost, .new-delivery-b")) return;

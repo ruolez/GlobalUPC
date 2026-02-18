@@ -2866,14 +2866,14 @@
               <div id="price-updates-sticky-wrapper" class="price-sticky-wrapper">
                 <!-- Compact Bar (visible only when header collapsed) -->
                 <div id="price-updates-sticky-bar" class="price-sticky-bar">
-                  <div class="price-fs-tabs">
-                    <button type="button" class="price-fs-tab active" id="price-fs-tab-prices">Price Updates</button>
-                    <button type="button" class="price-fs-tab" id="price-fs-tab-history">Update History</button>
-                  </div>
                   <div class="price-sticky-bar-info" id="price-sticky-bar-info">
                     <span class="price-sticky-bar-upc" id="price-sticky-upc"></span>
                     <span class="price-sticky-bar-sep">&mdash;</span>
                     <span class="price-sticky-bar-desc" id="price-sticky-desc"></span>
+                  </div>
+                  <div class="price-fs-tabs">
+                    <button type="button" class="price-fs-tab active" id="price-fs-tab-prices">Price Updates</button>
+                    <button type="button" class="price-fs-tab" id="price-fs-tab-history">Update History</button>
                   </div>
                   <button type="button" class="price-sticky-bar-expand" id="price-sticky-expand-btn" title="Close">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
@@ -2934,6 +2934,7 @@
                       <th>Delivery B</th>
                       <th>Markup</th>
                       <th>Cost Markup</th>
+                      <th style="width: 2rem"></th>
                     </tr>
                   </thead>
                   <tbody id="price-updates-tbody">

@@ -1747,6 +1747,46 @@ body.no-scroll {
   background: var(--bg-secondary);
 }
 
+/* Per-row exclude toggle */
+.price-exclude-cell {
+  text-align: center;
+  padding: 0 !important;
+  width: 2rem;
+}
+
+.price-exclude-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  padding: 0.25rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  transition: color 0.15s, background 0.15s;
+  opacity: 0.5;
+}
+
+.price-exclude-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
+  opacity: 1;
+}
+
+.price-excluded .price-exclude-btn {
+  opacity: 1;
+  color: var(--accent-primary);
+}
+
+.price-excluded {
+  opacity: 0.35;
+}
+
+.price-excluded .price-input {
+  pointer-events: none;
+}
+
 /* Update button pinned at bottom in fullscreen */
 .results-fullscreen .price-update-btn-row {
   flex-shrink: 0;
