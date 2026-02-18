@@ -1281,6 +1281,15 @@ body {
   text-align: right;
 }
 
+.price-input.auto-calculated {
+  border-color: var(--accent-primary);
+  color: var(--accent-primary);
+}
+
+.price-input.auto-calculated:focus {
+  color: var(--text-primary);
+}
+
 .fill-all-row {
   display: flex;
   align-items: center;

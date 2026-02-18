@@ -5745,6 +5745,9 @@ function displayPriceResults(upc, prices, siblingPrices) {
         const currentPrice = p.unit_price != null ? parseFloat(p.unit_price).toFixed(2) : "-";
         const currentCost = p.unit_cost != null ? parseFloat(p.unit_cost).toFixed(2) : "-";
         const currentDeliveryB = p.unit_delivery_b != null ? parseFloat(p.unit_delivery_b).toFixed(2) : "-";
+        tr.dataset.currentPrice = currentPrice;
+        tr.dataset.currentCost = currentCost;
+        tr.dataset.currentDeliveryB = currentDeliveryB;
         const mssqlDesc = p.product_description ? escapeHtml(p.product_description) : "-";
         const mPrice = p.unit_price != null ? parseFloat(p.unit_price) : null;
         const mCost = p.unit_cost != null ? parseFloat(p.unit_cost) : null;
@@ -5777,6 +5780,9 @@ function displayPriceResults(upc, prices, siblingPrices) {
 
           const vPrice = v.price != null ? parseFloat(v.price).toFixed(2) : "-";
           const vCost = v.cost != null ? parseFloat(v.cost).toFixed(2) : "-";
+          tr.dataset.currentPrice = vPrice;
+          tr.dataset.currentCost = vCost;
+          tr.dataset.currentDeliveryB = "-";
           const isDefaultVariant = !v.variant_title || v.variant_title === "Default Title";
           const variantLabel = escapeHtml(isDefaultVariant ? (v.product_title || "Default") : (v.product_title ? `${v.product_title} / ${v.variant_title}` : v.variant_title));
           const barcodeLabel = v.barcode ? ` [${escapeHtml(v.barcode)}]` : "";
@@ -5807,6 +5813,9 @@ function displayPriceResults(upc, prices, siblingPrices) {
       const currentPrice = sp.unit_price != null ? parseFloat(sp.unit_price).toFixed(2) : "-";
       const currentCost = sp.unit_cost != null ? parseFloat(sp.unit_cost).toFixed(2) : "-";
       const currentDeliveryB = sp.unit_delivery_b != null ? parseFloat(sp.unit_delivery_b).toFixed(2) : "-";
+      tr.dataset.currentPrice = currentPrice;
+      tr.dataset.currentCost = currentCost;
+      tr.dataset.currentDeliveryB = currentDeliveryB;
       const spPrice = sp.unit_price != null ? parseFloat(sp.unit_price) : null;
       const spCost = sp.unit_cost != null ? parseFloat(sp.unit_cost) : null;
       const spMarkup = formatMarkup(spPrice, spCost);
@@ -5986,18 +5995,34 @@ function fillAllPrices() {
     .querySelectorAll('#price-updates-tbody tr:not(.store-header-row):not([style*="display: none"])')
     .forEach((tr) => {
       let filled = false;
-      if (newPrice !== "") {
-        const priceInput = tr.querySelector(".new-price");
-        if (priceInput) { priceInput.value = newPrice; filled = true; }
-      }
+
       if (newCost !== "") {
         const costInput = tr.querySelector(".new-cost");
         if (costInput) { costInput.value = newCost; filled = true; }
       }
+
+      if (newPrice !== "") {
+        const priceInput = tr.querySelector(".new-price");
+        if (priceInput) {
+          priceInput.value = newPrice;
+          priceInput.dataset.autoCalculated = "";
+          priceInput.classList.remove("auto-calculated");
+          filled = true;
+        }
+      } else if (newCost !== "") {
+        autoCalculateFromCost(tr, newCost);
+      }
+
       if (newDeliveryB !== "") {
         const deliveryBInput = tr.querySelector(".new-delivery-b");
-        if (deliveryBInput) { deliveryBInput.value = newDeliveryB; filled = true; }
+        if (deliveryBInput) {
+          deliveryBInput.value = newDeliveryB;
+          deliveryBInput.dataset.autoCalculated = "";
+          deliveryBInput.classList.remove("auto-calculated");
+          filled = true;
+        }
       }
+
       if (filled) {
         tr.dataset.filled = "true";
         tr.classList.add("filled-row");
@@ -6437,6 +6462,50 @@ document
   .getElementById("price-updates-desc-input")
   ?.addEventListener("keydown", handlePriceAutocompleteKeydown);
 
+function roundPriceTo5or9(value) {
+  const cents = Math.round(value * 100);
+  const lastDigit = cents % 10;
+  if (lastDigit <= 5) {
+    return (cents + (5 - lastDigit)) / 100;
+  }
+  return (cents + (9 - lastDigit)) / 100;
+}
+
+function roundUpTo5Cents(value) {
+  return Math.ceil(value * 20) / 20;
+}
+
+function autoCalculateFromCost(tr, newCostValue) {
+  const curCost = parseFloat(tr.dataset.currentCost);
+  const curPrice = parseFloat(tr.dataset.currentPrice);
+  const curDeliveryB = parseFloat(tr.dataset.currentDeliveryB);
+  const newCost = parseFloat(newCostValue);
+
+  if (!newCost || isNaN(newCost) || !curCost || isNaN(curCost) || curCost === 0) return;
+
+  if (curPrice && !isNaN(curPrice)) {
+    const markupRatio = (curPrice - curCost) / curCost;
+    const rawPrice = newCost * (1 + markupRatio);
+    const newPrice = roundPriceTo5or9(rawPrice);
+    const priceInput = tr.querySelector(".new-price");
+    if (priceInput) {
+      priceInput.value = newPrice.toFixed(2);
+      priceInput.dataset.autoCalculated = "true";
+      priceInput.classList.add("auto-calculated");
+    }
+  }
+
+  const deliveryBInput = tr.querySelector(".new-delivery-b");
+  if (deliveryBInput && curDeliveryB && !isNaN(curDeliveryB) && curDeliveryB > 0) {
+    const deliveryBRatio = curDeliveryB / curCost;
+    const rawDeliveryB = newCost * deliveryBRatio;
+    const newDeliveryB = roundUpTo5Cents(rawDeliveryB);
+    deliveryBInput.value = newDeliveryB.toFixed(2);
+    deliveryBInput.dataset.autoCalculated = "true";
+    deliveryBInput.classList.add("auto-calculated");
+  }
+}
+
 // Real-time markup recalculation (Improvement 1)
 function recalculateRowMarkup(tr) {
   const priceInput = tr.querySelector(".new-price");
@@ -6483,11 +6552,34 @@ function recalculateRowMarkup(tr) {
 document.getElementById("price-updates-tbody")?.addEventListener("input", (e) => {
   if (!e.target.matches(".new-price, .new-cost, .new-delivery-b")) return;
   const tr = e.target.closest("tr");
-  if (tr) {
-    tr.dataset.filled = "";
-    tr.classList.remove("filled-row");
-    recalculateRowMarkup(tr);
+  if (!tr) return;
+
+  tr.dataset.filled = "";
+  tr.classList.remove("filled-row");
+
+  if (e.target.matches(".new-cost")) {
+    if (e.target.value) {
+      autoCalculateFromCost(tr, e.target.value);
+    } else {
+      const priceInput = tr.querySelector(".new-price");
+      if (priceInput && priceInput.dataset.autoCalculated === "true") {
+        priceInput.value = "";
+        priceInput.dataset.autoCalculated = "";
+        priceInput.classList.remove("auto-calculated");
+      }
+      const deliveryBInput = tr.querySelector(".new-delivery-b");
+      if (deliveryBInput && deliveryBInput.dataset.autoCalculated === "true") {
+        deliveryBInput.value = "";
+        deliveryBInput.dataset.autoCalculated = "";
+        deliveryBInput.classList.remove("auto-calculated");
+      }
+    }
+  } else if (e.target.matches(".new-price") || e.target.matches(".new-delivery-b")) {
+    e.target.dataset.autoCalculated = "";
+    e.target.classList.remove("auto-calculated");
   }
+
+  recalculateRowMarkup(tr);
 });
 
 // Keyboard shortcut: Ctrl+Enter / Cmd+Enter to trigger update
