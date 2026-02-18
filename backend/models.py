@@ -125,6 +125,7 @@ class PriceUpdateHistory(Base):
     product_description = Column(Text)
     variant_id = Column(String(255))
     variant_title = Column(String(255))
+    variant_barcode = Column(String(255))
     old_price = Column(Numeric(10, 2))
     old_cost = Column(Numeric(10, 2))
     new_price = Column(Numeric(10, 2))

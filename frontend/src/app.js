@@ -5938,6 +5938,7 @@ async function updatePrices() {
         old_cost: oldCost,
         variant_title: tr.dataset.variantTitle || null,
         product_title: tr.dataset.productTitle || null,
+        barcode: tr.dataset.barcode || null,
       });
     }
   });
@@ -6543,7 +6544,7 @@ function displayPriceHistory(batches, total) {
       upcCell.style.fontFamily = "monospace";
       upcCell.style.fontSize = "0.75rem";
       upcCell.style.color = "var(--text-tertiary)";
-      upcCell.textContent = entry.upc || "";
+      upcCell.textContent = entry.variant_barcode || entry.upc || "";
       detailRow.appendChild(upcCell);
 
       // Store name + product description + variant (under Product column)

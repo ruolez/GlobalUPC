@@ -451,6 +451,7 @@ class PriceUpdateHistoryResponse(BaseModel):
     product_description: Optional[str] = None
     variant_id: Optional[str] = None
     variant_title: Optional[str] = None
+    variant_barcode: Optional[str] = None
     old_price: Optional[float] = None
     old_cost: Optional[float] = None
     new_price: Optional[float] = None

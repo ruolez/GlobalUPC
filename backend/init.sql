@@ -168,6 +168,7 @@ CREATE TABLE price_update_history (
     product_description TEXT,
     variant_id VARCHAR(255),
     variant_title VARCHAR(255),
+    variant_barcode VARCHAR(255),
     old_price NUMERIC(10,2),
     old_cost NUMERIC(10,2),
     new_price NUMERIC(10,2),
