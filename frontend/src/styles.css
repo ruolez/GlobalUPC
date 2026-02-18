@@ -1699,3 +1699,38 @@ body.no-scroll {
 .progress-store-item .progress-icon.error {
   color: var(--danger);
 }
+
+/* Price Search Progress Overlay */
+.price-search-progress {
+  display: flex;
+  justify-content: center;
+  padding: 2rem 0;
+}
+
+.price-search-progress-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 1.25rem 1.5rem;
+  min-width: 320px;
+  max-width: 480px;
+  width: 100%;
+}
+
+.price-search-progress-header {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  margin-bottom: 1rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.price-search-progress-items {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-height: 300px;
+  overflow-y: auto;
+}

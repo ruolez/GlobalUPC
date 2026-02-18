@@ -5585,6 +5585,7 @@ async function searchPriceUpdates() {
             itemEl.className = "progress-store-item";
             itemEl.innerHTML = `<div class="progress-spinner"></div><span>${escapeHtml(data.message)}</span>`;
             progressItems.appendChild(itemEl);
+            progressItems.scrollTop = progressItems.scrollHeight;
             lastProgressItem = itemEl;
           } else if (data.status === "found" || data.status === "not_found") {
             if (lastProgressItem) {
@@ -6336,7 +6337,7 @@ document
 document
   .getElementById("price-sticky-expand-btn")
   ?.addEventListener("click", () => {
-    exitPriceFullscreen();
+    resetPriceUpdates();
   });
 document
   .getElementById("price-updates-upc-input")
@@ -6437,7 +6438,7 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     const results = document.getElementById("price-updates-results");
     if (results && results.classList.contains("results-fullscreen")) {
-      exitPriceFullscreen();
+      resetPriceUpdates();
     }
   }
 });

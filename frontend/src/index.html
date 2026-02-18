@@ -2788,34 +2788,15 @@
               Include sibling barcodes in MSSQL
             </label>
 
-            <!-- Loading State -->
-            <div
-              id="price-updates-loading"
-              class="loading-state"
-              style="display: none"
-            >
-              <div class="spinner"></div>
-              <p>Fetching prices...</p>
-            </div>
-
-            <!-- Progress Container -->
-            <div
-              id="price-updates-progress"
-              style="
-                margin-top: 0.5rem;
-                margin-bottom: 1rem;
-                padding: 1rem;
-                background: var(--bg-tertiary);
-                border-radius: var(--radius-md);
-                display: none;
-                max-height: 200px;
-                overflow-y: auto;
-              "
-            >
-              <div
-                id="price-updates-progress-items"
-                style="display: flex; flex-direction: column; gap: 0.5rem"
-              ></div>
+            <!-- Search Progress Overlay -->
+            <div id="price-updates-progress" class="price-search-progress" style="display: none">
+              <div class="price-search-progress-card">
+                <div class="price-search-progress-header">
+                  <div class="spinner" style="width: 18px; height: 18px;"></div>
+                  <span>Searching stores...</span>
+                </div>
+                <div id="price-updates-progress-items" class="price-search-progress-items"></div>
+              </div>
             </div>
 
             <!-- Results Section -->
