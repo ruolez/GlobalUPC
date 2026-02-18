@@ -4728,11 +4728,18 @@ function renderItemTrackerTable(events) {
     netText = net.toLocaleString();
   }
 
-  // Top: inline span next to event count
+  // Top: positioned to align with QTY column
   const topEl = document.getElementById("item-tracker-net-qty-top");
   topEl.style.display = events.length > 0 ? "inline" : "none";
   topEl.style.color = netColor;
-  topEl.textContent = ` · ${netText}`;
+  topEl.textContent = netText;
+  const qtyHeader = table.querySelector('th[data-sort="quantity"]');
+  if (qtyHeader) {
+    const tableRect = table.closest("div").getBoundingClientRect();
+    const thRect = qtyHeader.getBoundingClientRect();
+    topEl.style.left = (thRect.left - tableRect.left) + "px";
+    topEl.style.width = thRect.width + "px";
+  }
 
   // Bottom: tfoot row
   let tfoot = table.querySelector("tfoot");
