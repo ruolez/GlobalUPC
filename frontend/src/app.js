@@ -5962,8 +5962,8 @@ function expandPriceHeader() {
 
 function setupPriceCollapseObserver() {
   teardownPriceCollapseObserver();
-  const infoCard = document.getElementById("price-updates-info-card");
-  if (!infoCard) return;
+  const sentinel = document.getElementById("price-updates-collapse-sentinel");
+  if (!sentinel) return;
 
   priceUpdatesState.collapseObserver = new IntersectionObserver(
     (entries) => {
@@ -5977,9 +5977,9 @@ function setupPriceCollapseObserver() {
         expandPriceHeader();
       }
     },
-    { threshold: 0, rootMargin: "-1px 0px 0px 0px" }
+    { threshold: 0, rootMargin: "0px 0px 0px 0px" }
   );
-  priceUpdatesState.collapseObserver.observe(infoCard);
+  priceUpdatesState.collapseObserver.observe(sentinel);
 }
 
 function teardownPriceCollapseObserver() {
@@ -6408,9 +6408,9 @@ document
     priceUpdatesState.manualExpand = true;
     expandPriceHeader();
     priceUpdatesState.headerCollapsed = false;
-    const infoCard = document.getElementById("price-updates-info-card");
-    if (infoCard) {
-      infoCard.scrollIntoView({ behavior: "smooth", block: "end" });
+    const sentinel = document.getElementById("price-updates-collapse-sentinel");
+    if (sentinel) {
+      sentinel.scrollIntoView({ behavior: "smooth", block: "end" });
     }
   });
 document
