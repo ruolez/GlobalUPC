@@ -2554,7 +2554,7 @@ def get_item_prices(
         cursor = conn.cursor()
 
         cursor.execute(
-            "SELECT ProductID, ProductUPC, ProductDescription, UnitPrice, UnitCost "
+            "SELECT ProductID, ProductUPC, ProductDescription, UnitPrice, UnitCost, UnitPriceC "
             "FROM Items_tbl WHERE ProductUPC = ? AND Discontinued = 0",
             (upc,)
         )
@@ -2572,6 +2572,7 @@ def get_item_prices(
             "description": row[2],
             "unit_price": float(row[3]) if row[3] is not None else None,
             "unit_cost": float(row[4]) if row[4] is not None else None,
+            "unit_delivery_b": float(row[5]) if row[5] is not None else None,
         }
 
     except Exception as e:
@@ -2604,9 +2605,10 @@ def update_item_prices(
     upc: str,
     unit_price: Optional[float] = None,
     unit_cost: Optional[float] = None,
+    unit_delivery_b: Optional[float] = None,
     tds_version: str = "7.4"
 ) -> tuple[bool, Optional[str], int, Optional[datetime]]:
-    if unit_price is None and unit_cost is None:
+    if unit_price is None and unit_cost is None and unit_delivery_b is None:
         return True, None, 0, None
 
     conn_str = get_mssql_connection_string(host, port, database, username, password, tds_version)
@@ -2623,6 +2625,9 @@ def update_item_prices(
         if unit_cost is not None:
             set_clauses.append("UnitCost = ?")
             params.append(unit_cost)
+        if unit_delivery_b is not None:
+            set_clauses.append("UnitPriceC = ?")
+            params.append(unit_delivery_b)
 
         params.append(upc)
         query = f"UPDATE Items_tbl SET {', '.join(set_clauses)} WHERE ProductUPC = ? AND Discontinued = 0"
@@ -2652,11 +2657,12 @@ async def update_item_prices_async(
     upc: str,
     unit_price: Optional[float] = None,
     unit_cost: Optional[float] = None,
+    unit_delivery_b: Optional[float] = None,
     tds_version: str = "7.4"
 ) -> tuple[bool, Optional[str], int]:
     loop = asyncio.get_event_loop()
     with ThreadPoolExecutor() as executor:
         return await loop.run_in_executor(
             executor,
-            lambda: update_item_prices(host, port, database, username, password, upc, unit_price, unit_cost, tds_version)
+            lambda: update_item_prices(host, port, database, username, password, upc, unit_price, unit_cost, unit_delivery_b, tds_version)
         )

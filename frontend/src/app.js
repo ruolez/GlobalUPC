@@ -5728,7 +5728,7 @@ function displayPriceResults(upc, prices, siblingPrices) {
     headerTr.classList.add("store-header-row");
     headerTr.dataset.storeId = storeId;
     const headerTd = document.createElement("td");
-    headerTd.colSpan = 5;
+    headerTd.colSpan = 6;
     headerTd.style.color = getStoreColor(parseInt(storeId));
     headerTd.textContent = sd.storeName;
     headerTr.appendChild(headerTd);
@@ -5744,15 +5744,21 @@ function displayPriceResults(upc, prices, siblingPrices) {
 
         const currentPrice = p.unit_price != null ? parseFloat(p.unit_price).toFixed(2) : "-";
         const currentCost = p.unit_cost != null ? parseFloat(p.unit_cost).toFixed(2) : "-";
+        const currentDeliveryB = p.unit_delivery_b != null ? parseFloat(p.unit_delivery_b).toFixed(2) : "-";
         const mssqlDesc = p.product_description ? escapeHtml(p.product_description) : "-";
         const mPrice = p.unit_price != null ? parseFloat(p.unit_price) : null;
         const mCost = p.unit_cost != null ? parseFloat(p.unit_cost) : null;
         const mMarkup = formatMarkup(mPrice, mCost);
         const mCostMarkup = formatCostMarkup(mCost, primaryCost, p.store_id);
+        const isPrimary = p.store_id === primaryStoreId;
+        const deliveryBCell = isPrimary
+          ? `<td>${currentValueSpan(currentDeliveryB)}<input type="number" class="dark-input price-input new-delivery-b" step="0.01" min="0" placeholder="${currentDeliveryB}"></td>`
+          : `<td style="color: var(--text-tertiary)">-</td>`;
         tr.innerHTML = `
           <td style="font-size: 0.75rem; color: var(--text-secondary)">${mssqlDesc} [${escapeHtml(upc)}]</td>
           <td>${currentValueSpan(currentPrice)}<input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="${currentPrice}"></td>
           <td>${currentValueSpan(currentCost)}<input type="number" class="dark-input price-input new-cost" step="0.01" min="0" placeholder="${currentCost}"></td>
+          ${deliveryBCell}
           ${markupTd(mMarkup)}
           ${markupTd(mCostMarkup)}
         `;
@@ -5782,6 +5788,7 @@ function displayPriceResults(upc, prices, siblingPrices) {
             <td style="font-size: 0.75rem; color: var(--text-secondary)">${variantLabel}${barcodeLabel}</td>
             <td>${currentValueSpan(vPrice)}<input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="${vPrice}"></td>
             <td>${currentValueSpan(vCost)}<input type="number" class="dark-input price-input new-cost" step="0.01" min="0" placeholder="${vCost}"></td>
+            <td style="color: var(--text-tertiary)">-</td>
             ${markupTd(vMarkup)}
             ${markupTd(vCostMarkup)}
           `;
@@ -5809,6 +5816,7 @@ function displayPriceResults(upc, prices, siblingPrices) {
         <td style="color: var(--text-tertiary); font-size: 0.75rem">${siblingLabel}</td>
         <td>${currentValueSpan(currentPrice)}<input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="${currentPrice}"></td>
         <td>${currentValueSpan(currentCost)}<input type="number" class="dark-input price-input new-cost" step="0.01" min="0" placeholder="${currentCost}"></td>
+        <td style="color: var(--text-tertiary)">-</td>
         ${markupTd(spMarkup)}
         ${markupTd(spCostMarkup)}
       `;
@@ -5840,8 +5848,10 @@ function displayPriceResults(upc, prices, siblingPrices) {
   // Restore fill-all placeholders from localStorage
   const savedFillPrice = localStorage.getItem("priceFillAllPrice");
   const savedFillCost = localStorage.getItem("priceFillAllCost");
+  const savedFillDeliveryB = localStorage.getItem("priceFillAllDeliveryB");
   if (savedFillPrice) document.getElementById("price-fill-all-price").placeholder = `Last: $${savedFillPrice}`;
   if (savedFillCost) document.getElementById("price-fill-all-cost").placeholder = `Last: $${savedFillCost}`;
+  if (savedFillDeliveryB) document.getElementById("price-fill-all-delivery-b").placeholder = `Last: $${savedFillDeliveryB}`;
 
   // Auto-focus: after update re-search, focus description for next item; otherwise first price input
   setTimeout(() => {
@@ -5898,6 +5908,7 @@ function resetPriceUpdates() {
   document.getElementById("price-store-filters").innerHTML = "";
   document.getElementById("price-fill-all-price").value = "";
   document.getElementById("price-fill-all-cost").value = "";
+  document.getElementById("price-fill-all-delivery-b").value = "";
   document.getElementById("price-updates-confirm-panel").style.display = "none";
   document.getElementById("price-updates-update-btn").parentElement.style.display = "";
   hidePriceDescriptionDropdown();
@@ -5925,9 +5936,11 @@ function exitPriceFullscreen() {
 function fillAllPrices() {
   const newPrice = document.getElementById("price-fill-all-price").value;
   const newCost = document.getElementById("price-fill-all-cost").value;
+  const newDeliveryB = document.getElementById("price-fill-all-delivery-b").value;
 
   if (newPrice) localStorage.setItem("priceFillAllPrice", newPrice);
   if (newCost) localStorage.setItem("priceFillAllCost", newCost);
+  if (newDeliveryB) localStorage.setItem("priceFillAllDeliveryB", newDeliveryB);
 
   document
     .querySelectorAll('#price-updates-tbody tr:not(.store-header-row):not([style*="display: none"])')
@@ -5940,6 +5953,10 @@ function fillAllPrices() {
       if (newCost !== "") {
         const costInput = tr.querySelector(".new-cost");
         if (costInput) { costInput.value = newCost; filled = true; }
+      }
+      if (newDeliveryB !== "") {
+        const deliveryBInput = tr.querySelector(".new-delivery-b");
+        if (deliveryBInput) { deliveryBInput.value = newDeliveryB; filled = true; }
       }
       if (filled) {
         tr.dataset.filled = "true";
@@ -5961,16 +5978,20 @@ function collectPriceUpdates() {
     const storeType = tr.dataset.storeType;
     const priceInput = tr.querySelector(".new-price");
     const costInput = tr.querySelector(".new-cost");
+    const deliveryBInput = tr.querySelector(".new-delivery-b");
 
     const newPrice = priceInput?.value ? parseFloat(priceInput.value) : null;
     const newCost = costInput?.value ? parseFloat(costInput.value) : null;
+    const newDeliveryB = deliveryBInput?.value ? parseFloat(deliveryBInput.value) : null;
 
-    if (newPrice === null && newCost === null) return;
+    if (newPrice === null && newCost === null && newDeliveryB === null) return;
 
     const oldPrice = priceInput?.placeholder && priceInput.placeholder !== "-"
       ? parseFloat(priceInput.placeholder) : null;
     const oldCost = costInput?.placeholder && costInput.placeholder !== "-"
       ? parseFloat(costInput.placeholder) : null;
+    const oldDeliveryB = deliveryBInput?.placeholder && deliveryBInput.placeholder !== "-"
+      ? parseFloat(deliveryBInput.placeholder) : null;
     const productDesc = tr.querySelector("td:first-child")?.textContent?.trim() || null;
 
     if (storeType === "mssql") {
@@ -5980,8 +6001,10 @@ function collectPriceUpdates() {
         upc: tr.dataset.barcode || null,
         new_price: newPrice,
         new_cost: newCost,
+        new_delivery_b: newDeliveryB,
         old_price: oldPrice,
         old_cost: oldCost,
+        old_delivery_b: oldDeliveryB,
         product_description: productDesc,
         _store_name: tr.closest("tbody")?.querySelector(`.store-header-row[data-store-id="${storeId}"] td`)?.textContent || `Store ${storeId}`,
       });
@@ -6039,6 +6062,10 @@ function showUpdateConfirmation() {
       if (u.new_cost != null) {
         const old = u.old_cost != null ? `$${u.old_cost.toFixed(2)}` : "-";
         parts.push(`Cost ${old} \u2192 $${u.new_cost.toFixed(2)}`);
+      }
+      if (u.new_delivery_b != null) {
+        const old = u.old_delivery_b != null ? `$${u.old_delivery_b.toFixed(2)}` : "-";
+        parts.push(`Delivery B ${old} \u2192 $${u.new_delivery_b.toFixed(2)}`);
       }
       lines.push(`<div style="margin-bottom: 0.375rem;"><strong style="color: var(--text-primary);">${storeName}:</strong> ${parts.join(", ")}</div>`);
     } else if (u.store_type === "shopify") {
@@ -6377,37 +6404,37 @@ function recalculateRowMarkup(tr) {
   const tds = tr.querySelectorAll("td");
   const hasTyped = priceInput.value || costInput.value;
 
-  // Markup (4th td)
+  // Markup (5th td, index 4)
   if (price != null && cost != null && cost !== 0) {
     const val = ((price - cost) / cost) * 100;
     const color = val > 0 ? "var(--success)" : val < 0 ? "var(--danger)" : "";
-    tds[3].textContent = val.toFixed(1) + "%";
-    tds[3].style.color = hasTyped ? (color || "var(--accent-primary)") : color;
-  } else {
-    tds[3].textContent = "-";
-    tds[3].style.color = "";
-  }
-
-  // Cost markup (5th td)
-  const pCost = priceUpdatesState.primaryCost;
-  const storeId = parseInt(tr.dataset.storeId);
-  const primaryStoreId = priceUpdatesState.config?.primaryStoreId;
-  if (storeId === primaryStoreId) {
-    tds[4].textContent = "-";
-    tds[4].style.color = "";
-  } else if (cost != null && pCost != null && pCost !== 0) {
-    const val = ((cost - pCost) / pCost) * 100;
-    const color = val > 0 ? "var(--danger)" : val < 0 ? "var(--success)" : "";
     tds[4].textContent = val.toFixed(1) + "%";
     tds[4].style.color = hasTyped ? (color || "var(--accent-primary)") : color;
   } else {
     tds[4].textContent = "-";
     tds[4].style.color = "";
   }
+
+  // Cost markup (6th td, index 5)
+  const pCost = priceUpdatesState.primaryCost;
+  const storeId = parseInt(tr.dataset.storeId);
+  const primaryStoreId = priceUpdatesState.config?.primaryStoreId;
+  if (storeId === primaryStoreId) {
+    tds[5].textContent = "-";
+    tds[5].style.color = "";
+  } else if (cost != null && pCost != null && pCost !== 0) {
+    const val = ((cost - pCost) / pCost) * 100;
+    const color = val > 0 ? "var(--danger)" : val < 0 ? "var(--success)" : "";
+    tds[5].textContent = val.toFixed(1) + "%";
+    tds[5].style.color = hasTyped ? (color || "var(--accent-primary)") : color;
+  } else {
+    tds[5].textContent = "-";
+    tds[5].style.color = "";
+  }
 }
 
 document.getElementById("price-updates-tbody")?.addEventListener("input", (e) => {
-  if (!e.target.matches(".new-price, .new-cost")) return;
+  if (!e.target.matches(".new-price, .new-cost, .new-delivery-b")) return;
   const tr = e.target.closest("tr");
   if (tr) {
     tr.dataset.filled = "";
@@ -6837,6 +6864,16 @@ function displayPriceHistory(batches, total) {
           `<span class="ph-change-old">${oldC}</span>` +
           `<span class="ph-change-arrow">\u2192</span>` +
           `<span class="ph-change-new">${newC}</span>`
+        );
+      }
+      if (entry.new_delivery_b != null) {
+        const oldD = entry.old_delivery_b != null ? `$${parseFloat(entry.old_delivery_b).toFixed(2)}` : "-";
+        const newD = `$${parseFloat(entry.new_delivery_b).toFixed(2)}`;
+        changeParts.push(
+          `<span class="ph-change-label">Delivery B:</span>` +
+          `<span class="ph-change-old">${oldD}</span>` +
+          `<span class="ph-change-arrow">\u2192</span>` +
+          `<span class="ph-change-new">${newD}</span>`
         );
       }
       changeCell.innerHTML = changeParts.length > 0

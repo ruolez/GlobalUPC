@@ -3153,6 +3153,7 @@ async def fetch_prices_stream(request: PriceSearchRequest, db: Session = Depends
                                     "product_description": item_data["description"],
                                     "unit_price": item_data["unit_price"],
                                     "unit_cost": item_data["unit_cost"],
+                                    "unit_delivery_b": item_data["unit_delivery_b"],
                                     "variants": None,
                                 })
                                 yield f"event: progress\ndata: {json.dumps({'status': 'found', 'message': f'Found in {store.name}'})}\n\n"
@@ -3165,6 +3166,7 @@ async def fetch_prices_stream(request: PriceSearchRequest, db: Session = Depends
                                     "product_description": None,
                                     "unit_price": None,
                                     "unit_cost": None,
+                                    "unit_delivery_b": None,
                                     "variants": None,
                                 })
                                 yield f"event: progress\ndata: {json.dumps({'status': 'not_found', 'message': f'Not found in {store.name}'})}\n\n"
@@ -3177,6 +3179,7 @@ async def fetch_prices_stream(request: PriceSearchRequest, db: Session = Depends
                                     "product_description": None,
                                     "unit_price": None,
                                     "unit_cost": None,
+                                    "unit_delivery_b": None,
                                     "variants": None,
                                 })
                                 yield f"event: progress\ndata: {json.dumps({'status': 'error', 'message': f'Error searching {store.name}: {error}'})}\n\n"
@@ -3191,6 +3194,7 @@ async def fetch_prices_stream(request: PriceSearchRequest, db: Session = Depends
                                     "product_description": item_data["description"],
                                     "unit_price": item_data["unit_price"],
                                     "unit_cost": item_data["unit_cost"],
+                                    "unit_delivery_b": item_data["unit_delivery_b"],
                                     "variants": None,
                                     "sibling_barcode": bc,
                                     "sibling_variant_title": variant_title,
@@ -3205,6 +3209,7 @@ async def fetch_prices_stream(request: PriceSearchRequest, db: Session = Depends
                                     "product_description": None,
                                     "unit_price": None,
                                     "unit_cost": None,
+                                    "unit_delivery_b": None,
                                     "variants": None,
                                     "sibling_barcode": bc,
                                     "sibling_variant_title": variant_title,
@@ -3247,6 +3252,7 @@ async def fetch_prices_stream(request: PriceSearchRequest, db: Session = Depends
                             "product_description": product_title,
                             "unit_price": None,
                             "unit_cost": None,
+                            "unit_delivery_b": None,
                             "variants": variant_list,
                         })
                         yield f"event: progress\ndata: {json.dumps({'status': 'found', 'message': f'Found {len(variant_list)} variant(s) in {store.name}'})}\n\n"
@@ -3259,6 +3265,7 @@ async def fetch_prices_stream(request: PriceSearchRequest, db: Session = Depends
                             "product_description": None,
                             "unit_price": None,
                             "unit_cost": None,
+                            "unit_delivery_b": None,
                             "variants": None,
                         })
                         yield f"event: progress\ndata: {json.dumps({'status': 'not_found', 'message': f'Not found in {store.name}'})}\n\n"
@@ -3295,6 +3302,7 @@ async def fetch_prices_stream(request: PriceSearchRequest, db: Session = Depends
                             "product_description": item_data["description"],
                             "unit_price": item_data["unit_price"],
                             "unit_cost": item_data["unit_cost"],
+                            "unit_delivery_b": item_data["unit_delivery_b"],
                             "variants": None,
                         })
                         yield f"event: progress\ndata: {json.dumps({'status': 'found', 'message': f'Found in {store.name}'})}\n\n"
@@ -3307,6 +3315,7 @@ async def fetch_prices_stream(request: PriceSearchRequest, db: Session = Depends
                             "product_description": None,
                             "unit_price": None,
                             "unit_cost": None,
+                            "unit_delivery_b": None,
                             "variants": None,
                         })
                         yield f"event: progress\ndata: {json.dumps({'status': 'not_found', 'message': f'Not found in {store.name}'})}\n\n"
@@ -3319,6 +3328,7 @@ async def fetch_prices_stream(request: PriceSearchRequest, db: Session = Depends
                             "product_description": None,
                             "unit_price": None,
                             "unit_cost": None,
+                            "unit_delivery_b": None,
                             "variants": None,
                         })
                         yield f"event: progress\ndata: {json.dumps({'status': 'error', 'message': f'Error searching {store.name}: {error}'})}\n\n"
@@ -3375,6 +3385,7 @@ async def fetch_prices_stream(request: PriceSearchRequest, db: Session = Depends
                             "product_description": variants[0].get("product_title"),
                             "unit_price": None,
                             "unit_cost": None,
+                            "unit_delivery_b": None,
                             "variants": merged_variants,
                         })
                         yield f"event: progress\ndata: {json.dumps({'status': 'found', 'message': f'Found {len(merged_variants)} variant(s) in {store.name}'})}\n\n"
@@ -3387,6 +3398,7 @@ async def fetch_prices_stream(request: PriceSearchRequest, db: Session = Depends
                             "product_description": None,
                             "unit_price": None,
                             "unit_cost": None,
+                            "unit_delivery_b": None,
                             "variants": None,
                         })
                         yield f"event: progress\ndata: {json.dumps({'status': 'not_found', 'message': f'Not found in {store.name}'})}\n\n"
@@ -3399,6 +3411,7 @@ async def fetch_prices_stream(request: PriceSearchRequest, db: Session = Depends
                             "product_description": None,
                             "unit_price": None,
                             "unit_cost": None,
+                            "unit_delivery_b": None,
                             "variants": None,
                         })
                         yield f"event: progress\ndata: {json.dumps({'status': 'error', 'message': f'Error searching {store.name}: {error}'})}\n\n"
@@ -3442,7 +3455,8 @@ async def update_prices_stream(request: PriceUpdateRequest, db: Session = Depend
                     password=conn.password,
                     upc=effective_upc,
                     unit_price=update.new_price,
-                    unit_cost=update.new_cost
+                    unit_cost=update.new_cost,
+                    unit_delivery_b=update.new_delivery_b
                 )
 
                 results.append({
@@ -3465,6 +3479,8 @@ async def update_prices_stream(request: PriceUpdateRequest, db: Session = Depend
                     old_cost=update.old_cost,
                     new_price=update.new_price,
                     new_cost=update.new_cost,
+                    old_delivery_b=update.old_delivery_b,
+                    new_delivery_b=update.new_delivery_b,
                     success=success,
                     rows_affected=rows or 0,
                     error_message=error,
