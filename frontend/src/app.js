@@ -4400,23 +4400,6 @@ function computeNetQuantity(events) {
   }, 0);
 }
 
-function updateNetQtyDisplay(events) {
-  const net = computeNetQuantity(events);
-  const wrapper = document.getElementById("item-tracker-net-qty");
-  const valueEl = document.getElementById("item-tracker-net-qty-value");
-  wrapper.style.display = events.length > 0 ? "inline" : "none";
-  if (net > 0) {
-    valueEl.textContent = `+${net.toLocaleString()}`;
-    valueEl.style.color = "var(--success, #22c55e)";
-  } else if (net < 0) {
-    valueEl.textContent = net.toLocaleString();
-    valueEl.style.color = "var(--error, #ef4444)";
-  } else {
-    valueEl.textContent = "0";
-    valueEl.style.color = "var(--text-secondary)";
-  }
-}
-
 function displayItemTrackerResults(data) {
   const emptyEl = document.getElementById("item-tracker-empty");
   const resultsEl = document.getElementById("item-tracker-results");
@@ -4503,9 +4486,6 @@ function displayItemTrackerResults(data) {
 
   // Reset filter
   document.getElementById("item-tracker-filter").value = "";
-
-  // Update net QTY display
-  updateNetQtyDisplay(itemTrackerState.events);
 
   // Render table
   renderItemTrackerTable(itemTrackerState.events);
@@ -4735,11 +4715,8 @@ function renderItemTrackerTable(events) {
     });
   });
 
-  // Add tfoot with net quantity total
+  // Add net quantity total to thead and tfoot
   const table = document.getElementById("item-tracker-table");
-  let tfoot = table.querySelector("tfoot");
-  if (tfoot) tfoot.remove();
-  tfoot = document.createElement("tfoot");
   const net = computeNetQuantity(events);
   let netColor = "var(--text-secondary)";
   let netText = "0";
@@ -4750,13 +4727,22 @@ function renderItemTrackerTable(events) {
     netColor = "var(--error, #ef4444)";
     netText = net.toLocaleString();
   }
-  tfoot.innerHTML = `
-    <tr>
-      <td colspan="5" style="text-align: right; font-weight: 600; font-size: 0.8125rem; color: var(--text-secondary); border-top: 2px solid var(--border-color);">Net QTY</td>
-      <td style="text-align: center; font-weight: 700; font-family: monospace; font-size: 0.875rem; color: ${netColor}; border-top: 2px solid var(--border-color);">${netText}</td>
-      <td colspan="3" style="border-top: 2px solid var(--border-color);"></td>
-    </tr>
-  `;
+  const netCellHtml = `<td style="text-align: center; font-weight: 700; font-family: monospace; font-size: 0.875rem; color: ${netColor};">${netText}</td>`;
+
+  // Top row in thead
+  const thead = table.querySelector("thead");
+  const existingTopRow = thead.querySelector(".net-qty-row");
+  if (existingTopRow) existingTopRow.remove();
+  const topRow = document.createElement("tr");
+  topRow.className = "net-qty-row";
+  topRow.innerHTML = `<td colspan="5"></td>${netCellHtml}<td colspan="3"></td>`;
+  thead.appendChild(topRow);
+
+  // Bottom row in tfoot
+  let tfoot = table.querySelector("tfoot");
+  if (tfoot) tfoot.remove();
+  tfoot = document.createElement("tfoot");
+  tfoot.innerHTML = `<tr><td colspan="5" style="border-top: 2px solid var(--border-color);"></td><td style="text-align: center; font-weight: 700; font-family: monospace; font-size: 0.875rem; color: ${netColor}; border-top: 2px solid var(--border-color);">${netText}</td><td colspan="3" style="border-top: 2px solid var(--border-color);"></td></tr>`;
   table.appendChild(tfoot);
 }
 
@@ -4841,7 +4827,6 @@ function sortItemTrackerEvents(column, direction = null, toggle = true) {
   renderItemTrackerTable(itemTrackerState.filteredEvents);
   document.getElementById("item-tracker-event-count").textContent =
     itemTrackerState.filteredEvents.length;
-  updateNetQtyDisplay(itemTrackerState.filteredEvents);
 }
 
 function updateSortIndicators() {
