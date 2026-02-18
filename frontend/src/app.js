@@ -4387,6 +4387,36 @@ function handleItemTrackerEvent(data, progressItems) {
   }
 }
 
+function computeNetQuantity(events) {
+  return events.reduce((sum, event) => {
+    if (event.quantity == null) return sum;
+    if (event.event_type === "inventory_recount") return sum + event.quantity;
+    if (
+      event.event_type === "purchase" ||
+      event.event_type === "customer_return"
+    )
+      return sum + Math.abs(event.quantity);
+    return sum - Math.abs(event.quantity);
+  }, 0);
+}
+
+function updateNetQtyDisplay(events) {
+  const net = computeNetQuantity(events);
+  const wrapper = document.getElementById("item-tracker-net-qty");
+  const valueEl = document.getElementById("item-tracker-net-qty-value");
+  wrapper.style.display = events.length > 0 ? "inline" : "none";
+  if (net > 0) {
+    valueEl.textContent = `+${net.toLocaleString()}`;
+    valueEl.style.color = "var(--success, #22c55e)";
+  } else if (net < 0) {
+    valueEl.textContent = net.toLocaleString();
+    valueEl.style.color = "var(--error, #ef4444)";
+  } else {
+    valueEl.textContent = "0";
+    valueEl.style.color = "var(--text-secondary)";
+  }
+}
+
 function displayItemTrackerResults(data) {
   const emptyEl = document.getElementById("item-tracker-empty");
   const resultsEl = document.getElementById("item-tracker-results");
@@ -4473,6 +4503,9 @@ function displayItemTrackerResults(data) {
 
   // Reset filter
   document.getElementById("item-tracker-filter").value = "";
+
+  // Update net QTY display
+  updateNetQtyDisplay(itemTrackerState.events);
 
   // Render table
   renderItemTrackerTable(itemTrackerState.events);
@@ -4701,6 +4734,30 @@ function renderItemTrackerTable(events) {
       document.body.appendChild(menu);
     });
   });
+
+  // Add tfoot with net quantity total
+  const table = document.getElementById("item-tracker-table");
+  let tfoot = table.querySelector("tfoot");
+  if (tfoot) tfoot.remove();
+  tfoot = document.createElement("tfoot");
+  const net = computeNetQuantity(events);
+  let netColor = "var(--text-secondary)";
+  let netText = "0";
+  if (net > 0) {
+    netColor = "var(--success, #22c55e)";
+    netText = `+${net.toLocaleString()}`;
+  } else if (net < 0) {
+    netColor = "var(--error, #ef4444)";
+    netText = net.toLocaleString();
+  }
+  tfoot.innerHTML = `
+    <tr>
+      <td colspan="5" style="text-align: right; font-weight: 600; font-size: 0.8125rem; color: var(--text-secondary); border-top: 2px solid var(--border-color);">Net QTY</td>
+      <td style="text-align: center; font-weight: 700; font-family: monospace; font-size: 0.875rem; color: ${netColor}; border-top: 2px solid var(--border-color);">${netText}</td>
+      <td colspan="3" style="border-top: 2px solid var(--border-color);"></td>
+    </tr>
+  `;
+  table.appendChild(tfoot);
 }
 
 function closeExcludeMenu() {
@@ -4784,6 +4841,7 @@ function sortItemTrackerEvents(column, direction = null, toggle = true) {
   renderItemTrackerTable(itemTrackerState.filteredEvents);
   document.getElementById("item-tracker-event-count").textContent =
     itemTrackerState.filteredEvents.length;
+  updateNetQtyDisplay(itemTrackerState.filteredEvents);
 }
 
 function updateSortIndicators() {
