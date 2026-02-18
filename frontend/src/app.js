@@ -4715,7 +4715,7 @@ function renderItemTrackerTable(events) {
     });
   });
 
-  // Add net quantity total to thead and tfoot
+  // Net quantity total
   const table = document.getElementById("item-tracker-table");
   const net = computeNetQuantity(events);
   let netColor = "var(--text-secondary)";
@@ -4727,18 +4727,14 @@ function renderItemTrackerTable(events) {
     netColor = "var(--error, #ef4444)";
     netText = net.toLocaleString();
   }
-  const netCellHtml = `<td style="text-align: center; font-weight: 700; font-family: monospace; font-size: 0.875rem; color: ${netColor};">${netText}</td>`;
 
-  // Top row in thead
-  const thead = table.querySelector("thead");
-  const existingTopRow = thead.querySelector(".net-qty-row");
-  if (existingTopRow) existingTopRow.remove();
-  const topRow = document.createElement("tr");
-  topRow.className = "net-qty-row";
-  topRow.innerHTML = `<td colspan="5"></td>${netCellHtml}<td colspan="3"></td>`;
-  thead.appendChild(topRow);
+  // Top: inline span next to event count
+  const topEl = document.getElementById("item-tracker-net-qty-top");
+  topEl.style.display = events.length > 0 ? "inline" : "none";
+  topEl.style.color = netColor;
+  topEl.textContent = ` · ${netText}`;
 
-  // Bottom row in tfoot
+  // Bottom: tfoot row
   let tfoot = table.querySelector("tfoot");
   if (tfoot) tfoot.remove();
   tfoot = document.createElement("tfoot");
