@@ -3607,7 +3607,7 @@ def get_price_update_history(
     for bid in batch_id_list:
         entries = db.query(PriceUpdateHistory).filter(
             PriceUpdateHistory.batch_id == bid
-        ).all()
+        ).order_by(PriceUpdateHistory.id.asc()).all()
 
         if entries:
             first = entries[0]

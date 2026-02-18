@@ -5937,7 +5937,9 @@ function resetPriceUpdates() {
   priceFsHistoryState.active = false;
   priceFsHistoryState.currentPage = 0;
   priceFsHistoryState.preserveState = false;
+  priceFsHistoryState.expandedBatches.clear();
   priceHistoryState.preserveState = false;
+  priceHistoryState.expandedBatches.clear();
 
   document.getElementById("price-updates-upc-input").value = "";
   document.getElementById("price-updates-desc-input").value = "";
@@ -6702,6 +6704,7 @@ let priceHistoryState = {
     end_date: null,
   },
   visible: false,
+  expandedBatches: new Set(),
 };
 
 // Set saved page size on the select
@@ -6901,6 +6904,7 @@ function displayPriceHistory(batches, total, targetConfig = null) {
     totalCountId: "price-history-total-count",
     storeFilterSelector: "#price-history-store-filters",
     state: priceHistoryState,
+    expandedBatches: priceHistoryState.expandedBatches,
   };
 
   const totalCountEl = cfg.totalCountId ? document.getElementById(cfg.totalCountId) : null;
@@ -7036,9 +7040,15 @@ function displayPriceHistory(batches, total, targetConfig = null) {
     batchRow.appendChild(statusCell);
 
     // Expand/collapse
-    let isExpanded = false;
+    let isExpanded = cfg.expandedBatches?.has(batch.batch_id) || false;
+    if (isExpanded) chevron.classList.add("expanded");
     batchRow.addEventListener("click", () => {
       isExpanded = !isExpanded;
+      if (isExpanded) {
+        cfg.expandedBatches?.add(batch.batch_id);
+      } else {
+        cfg.expandedBatches?.delete(batch.batch_id);
+      }
       chevron.classList.toggle("expanded", isExpanded);
       const detailRows = tbody.querySelectorAll(`[data-batch-detail="${batch.batch_id}"]`);
       const storeIds = activeStoreIdsFn();
@@ -7067,7 +7077,12 @@ function displayPriceHistory(batches, total, targetConfig = null) {
     // Detail rows
     batch.entries.forEach((entry) => {
       const detailRow = document.createElement("tr");
-      detailRow.style.display = "none";
+      if (isExpanded) {
+        const storeIds = activeStoreIdsFn();
+        detailRow.style.display = storeIds ? (storeIds.has(String(entry.store_id)) ? "" : "none") : "";
+      } else {
+        detailRow.style.display = "none";
+      }
       detailRow.style.backgroundColor = "var(--bg-tertiary)";
       detailRow.dataset.batchDetail = batch.batch_id;
       detailRow.dataset.storeId = entry.store_id;
@@ -7262,10 +7277,10 @@ function recallBatch(batch, storeFilterSelector) {
 
   document.getElementById("price-updates-upc-input").value = batch.upc;
 
-  const hasSiblings = batch.entries.some((e) => {
-    const barcode = e.variant_barcode || e.upc;
-    return barcode && barcode !== batch.upc;
-  });
+  const distinctBarcodes = new Set(
+    batch.entries.map((e) => e.variant_barcode || e.upc).filter(Boolean)
+  );
+  const hasSiblings = distinctBarcodes.size > 1;
   if (hasSiblings) {
     const siblingsCheckbox = document.getElementById("price-updates-include-siblings");
     if (siblingsCheckbox) siblingsCheckbox.checked = true;
@@ -7403,6 +7418,7 @@ let priceFsHistoryState = {
   totalRecords: 0,
   filters: { store_ids: null },
   active: false,
+  expandedBatches: new Set(),
 };
 
 const fsHistPageSizeEl = document.getElementById("price-fs-history-page-size");
@@ -7416,6 +7432,7 @@ const FS_HISTORY_CONFIG = {
   pageInfoId: "price-fs-history-page-info",
   prevBtnId: "price-fs-history-prev-btn",
   nextBtnId: "price-fs-history-next-btn",
+  expandedBatches: priceFsHistoryState.expandedBatches,
 };
 
 function switchFullscreenTab(tab) {
