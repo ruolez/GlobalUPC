@@ -5739,7 +5739,7 @@ function displayPriceResults(upc, prices, siblingPrices) {
         const mMarkup = formatMarkup(mPrice, mCost);
         const mCostMarkup = formatCostMarkup(mCost, primaryCost, p.store_id);
         tr.innerHTML = `
-          <td style="font-size: 0.75rem; color: var(--text-secondary)">${mssqlDesc}</td>
+          <td style="font-size: 0.75rem; color: var(--text-secondary)">${mssqlDesc} [${escapeHtml(upc)}]</td>
           <td>${currentValueSpan(currentPrice)}<input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="${currentPrice}"></td>
           <td>${currentValueSpan(currentCost)}<input type="number" class="dark-input price-input new-cost" step="0.01" min="0" placeholder="${currentCost}"></td>
           ${markupTd(mMarkup)}
@@ -5750,7 +5750,6 @@ function displayPriceResults(upc, prices, siblingPrices) {
         p.variants.forEach((v) => {
           const tr = document.createElement("tr");
           tr.classList.add("variant-subrow");
-          if (v.is_searched) tr.classList.add("searched-variant");
           tr.dataset.storeId = p.store_id;
           tr.dataset.storeType = "shopify";
           tr.dataset.variantId = v.variant_id;
@@ -5764,13 +5763,12 @@ function displayPriceResults(upc, prices, siblingPrices) {
           const isDefaultVariant = !v.variant_title || v.variant_title === "Default Title";
           const variantLabel = escapeHtml(isDefaultVariant ? (v.product_title || "Default") : (v.product_title ? `${v.product_title} / ${v.variant_title}` : v.variant_title));
           const barcodeLabel = v.barcode ? ` [${escapeHtml(v.barcode)}]` : "";
-          const searchedTag = v.is_searched ? ' <span style="color: var(--accent-primary); font-size: 0.625rem;">(searched)</span>' : "";
           const vPriceNum = v.price != null ? parseFloat(v.price) : null;
           const vCostNum = v.cost != null ? parseFloat(v.cost) : null;
           const vMarkup = formatMarkup(vPriceNum, vCostNum);
           const vCostMarkup = formatCostMarkup(vCostNum, primaryCost, p.store_id);
           tr.innerHTML = `
-            <td style="font-size: 0.75rem; color: var(--text-secondary)">${variantLabel}${barcodeLabel}${searchedTag}</td>
+            <td style="font-size: 0.75rem; color: var(--text-secondary)">${variantLabel}${barcodeLabel}</td>
             <td>${currentValueSpan(vPrice)}<input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="${vPrice}"></td>
             <td>${currentValueSpan(vCost)}<input type="number" class="dark-input price-input new-cost" step="0.01" min="0" placeholder="${vCost}"></td>
             ${markupTd(vMarkup)}
@@ -5784,7 +5782,6 @@ function displayPriceResults(upc, prices, siblingPrices) {
     // Sibling rows
     sd.siblingRows.forEach((sp) => {
       const tr = document.createElement("tr");
-      tr.classList.add("sibling-row");
       tr.dataset.storeId = sp.store_id;
       tr.dataset.storeType = "mssql";
       tr.dataset.barcode = sp.sibling_barcode;
@@ -5795,7 +5792,7 @@ function displayPriceResults(upc, prices, siblingPrices) {
       const spCost = sp.unit_cost != null ? parseFloat(sp.unit_cost) : null;
       const spMarkup = formatMarkup(spPrice, spCost);
       const spCostMarkup = formatCostMarkup(spCost, primaryCost, sp.store_id);
-      const siblingLabel = `[${escapeHtml(sp.sibling_barcode)}] ${escapeHtml(sp.product_description || sp.sibling_variant_title || "-")}`;
+      const siblingLabel = `${escapeHtml(sp.product_description || sp.sibling_variant_title || "-")} [${escapeHtml(sp.sibling_barcode)}]`;
 
       tr.innerHTML = `
         <td style="color: var(--text-tertiary); font-size: 0.75rem">${siblingLabel}</td>

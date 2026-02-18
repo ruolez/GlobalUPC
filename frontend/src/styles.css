@@ -1306,13 +1306,6 @@ body {
   padding: 0.375rem 0.75rem;
 }
 
-.searched-variant {
-  border-left: 3px solid var(--accent-primary);
-}
-
-.sibling-row {
-  border-left: 3px solid var(--text-tertiary);
-}
 
 /* Store Filter Chips */
 .store-filter-chip {
