@@ -5936,6 +5936,8 @@ function resetPriceUpdates() {
   document.querySelectorAll(".price-fs-hidden").forEach((el) => el.classList.remove("price-fs-hidden"));
   priceFsHistoryState.active = false;
   priceFsHistoryState.currentPage = 0;
+  priceFsHistoryState.preserveState = false;
+  priceHistoryState.preserveState = false;
 
   document.getElementById("price-updates-upc-input").value = "";
   document.getElementById("price-updates-desc-input").value = "";
@@ -6735,6 +6737,13 @@ function togglePriceHistory(showHistory) {
 }
 
 async function loadPriceHistory() {
+  if (priceHistoryState.preserveState) {
+    priceHistoryState.preserveState = false;
+    const resultsEl = document.getElementById("price-history-results");
+    if (resultsEl) resultsEl.style.display = "block";
+    return;
+  }
+
   const loadingEl = document.getElementById("price-history-loading");
   const emptyEl = document.getElementById("price-history-empty");
   const resultsEl = document.getElementById("price-history-results");
@@ -6782,6 +6791,8 @@ async function loadPriceHistory() {
 }
 
 async function loadPriceHistoryStores() {
+  if (priceHistoryState.preserveState) return;
+
   try {
     const stores = await apiRequest("/stores");
     const filtersEl = document.getElementById("price-history-store-filters");
@@ -7242,12 +7253,16 @@ function recallBatch(batch, storeFilterSelector) {
 
   const isFullscreen = priceFsHistoryState.active;
   if (isFullscreen) {
+    priceFsHistoryState.preserveState = true;
     switchFullscreenTab("prices");
   } else {
+    priceHistoryState.preserveState = true;
     togglePriceHistory(false);
   }
 
   document.getElementById("price-updates-upc-input").value = batch.upc;
+
+  localStorage.setItem("priceActiveStores", JSON.stringify(filteredIds));
 
   const savedStoreIds = config.storeIds;
   config.storeIds = filteredIds.map(Number);
@@ -7263,13 +7278,14 @@ function applyRecallData() {
 
   entries.forEach((entry) => {
     let matchedRow = null;
+    const entryBarcode = entry.variant_barcode || entry.upc || "";
     rows.forEach((tr) => {
       if (matchedRow) return;
       if (String(tr.dataset.storeId) !== String(entry.store_id)) return;
       if (entry.variant_id && tr.dataset.variantId) {
         if (String(tr.dataset.variantId) === String(entry.variant_id)) matchedRow = tr;
-      } else if (!entry.variant_id && !tr.dataset.variantId) {
-        matchedRow = tr;
+      } else if (tr.dataset.barcode && entryBarcode) {
+        if (tr.dataset.barcode === entryBarcode) matchedRow = tr;
       }
     });
     if (!matchedRow) return;
@@ -7423,6 +7439,11 @@ function switchFullscreenTab(tab) {
 }
 
 async function loadFullscreenHistory() {
+  if (priceFsHistoryState.preserveState) {
+    priceFsHistoryState.preserveState = false;
+    return;
+  }
+
   const tbody = document.getElementById("price-fs-history-tbody");
   if (tbody) tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:2rem;color:var(--text-tertiary)">Loading...</td></tr>';
 
@@ -7451,6 +7472,8 @@ async function loadFullscreenHistory() {
 }
 
 async function loadFullscreenHistoryStores() {
+  if (priceFsHistoryState.preserveState) return;
+
   try {
     const stores = await apiRequest("/stores");
     const filtersEl = document.getElementById("price-fs-history-store-filters");
