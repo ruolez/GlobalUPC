@@ -5335,6 +5335,9 @@ let priceUpdatesState = {
   primaryCost: null,
   historyFilterTimeout: null,
   recallData: null,
+  fsDescSearchTimeout: null,
+  fsAutocompleteResults: [],
+  fsAutocompleteSelectedIndex: -1,
 };
 
 async function loadPriceUpdatesPage() {
@@ -5518,10 +5521,12 @@ function togglePriceUpdatesConfig() {
   }
 }
 
-async function searchPriceUpdates() {
+async function searchPriceUpdates(overrideUpc, overrideIncludeSiblings) {
   if (priceUpdatesState.isSearching) return;
 
-  const upc = document.getElementById("price-updates-upc-input").value.trim();
+  const upc = overrideUpc !== undefined
+    ? overrideUpc
+    : document.getElementById("price-updates-upc-input").value.trim();
   if (!upc) {
     showToast("Please enter a UPC to search", "error");
     return;
@@ -5537,11 +5542,13 @@ async function searchPriceUpdates() {
   priceUpdatesState.prices = [];
 
   const searchBtn = document.getElementById("price-updates-search-btn");
+  const fsSearchBtn = document.getElementById("price-fs-search-btn");
   const resultsEl = document.getElementById("price-updates-results");
   const progressEl = document.getElementById("price-updates-progress");
   const progressItems = document.getElementById("price-updates-progress-items");
 
   searchBtn.disabled = true;
+  if (fsSearchBtn) fsSearchBtn.disabled = true;
   resultsEl.style.display = "none";
   document.getElementById("price-updates-confirm-panel").style.display = "none";
   document.getElementById("price-updates-update-btn").parentElement.style.display = "";
@@ -5559,7 +5566,9 @@ async function searchPriceUpdates() {
         body: JSON.stringify({
           upc,
           store_ids: config.storeIds,
-          include_sibling_barcodes: document.getElementById("price-updates-include-siblings")?.checked || false
+          include_sibling_barcodes: overrideIncludeSiblings !== undefined
+            ? overrideIncludeSiblings
+            : (document.getElementById("price-updates-include-siblings")?.checked || false)
         }),
       },
     );
@@ -5616,6 +5625,7 @@ async function searchPriceUpdates() {
   } finally {
     priceUpdatesState.isSearching = false;
     searchBtn.disabled = false;
+    if (fsSearchBtn) fsSearchBtn.disabled = false;
     // Resolve any remaining spinners
     progressItems.querySelectorAll(".progress-spinner").forEach((s) => {
       s.outerHTML = '<span class="progress-icon success">\u2713</span>';
@@ -5966,6 +5976,11 @@ function resetPriceUpdates() {
   document.getElementById("price-updates-confirm-panel").style.display = "none";
   document.getElementById("price-updates-update-btn").parentElement.style.display = "";
   hidePriceDescriptionDropdown();
+  hideFsDescriptionDropdown();
+  const fsUpcInput = document.getElementById("price-fs-upc-input");
+  const fsDescInput = document.getElementById("price-fs-desc-input");
+  if (fsUpcInput) fsUpcInput.value = "";
+  if (fsDescInput) fsDescInput.value = "";
   priceUpdatesState.prices = [];
   priceUpdatesState.siblingPrices = [];
   priceUpdatesState.primaryCost = null;
@@ -5981,6 +5996,12 @@ function enterPriceFullscreen() {
   document.body.classList.add("no-scroll");
   const costFill = document.getElementById("price-fill-all-cost");
   if (costFill) setTimeout(() => costFill.focus(), 100);
+
+  // Sync original inputs to fullscreen search
+  const fsUpc = document.getElementById("price-fs-upc-input");
+  const fsSiblings = document.getElementById("price-fs-include-siblings");
+  if (fsUpc) fsUpc.value = document.getElementById("price-updates-upc-input").value;
+  if (fsSiblings) fsSiblings.checked = document.getElementById("price-updates-include-siblings")?.checked || false;
 }
 
 function exitPriceFullscreen() {
@@ -6483,6 +6504,176 @@ function handlePriceAutocompleteKeydown(e) {
   }
 }
 
+// Fullscreen compact search
+function searchFromFullscreen() {
+  if (priceUpdatesState.isSearching || priceUpdatesState.isUpdating) return;
+
+  const upc = document.getElementById("price-fs-upc-input").value.trim();
+  if (!upc) {
+    showToast("Please enter a UPC to search", "error");
+    return;
+  }
+
+  const includeSiblings = document.getElementById("price-fs-include-siblings")?.checked || false;
+
+  // Sync to original inputs
+  document.getElementById("price-updates-upc-input").value = upc;
+  document.getElementById("price-updates-include-siblings").checked = includeSiblings;
+
+  // Clear table and show loading
+  const tbody = document.getElementById("price-updates-tbody");
+  if (tbody) tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:2rem;color:var(--text-tertiary)">Searching...</td></tr>';
+
+  hideFsDescriptionDropdown();
+  searchPriceUpdates(upc, includeSiblings);
+}
+
+function handleFsDescriptionInput(e) {
+  const query = e.target.value.trim();
+  clearTimeout(priceUpdatesState.fsDescSearchTimeout);
+
+  if (query.length < 2) {
+    hideFsDescriptionDropdown();
+    return;
+  }
+
+  priceUpdatesState.fsDescSearchTimeout = setTimeout(() => {
+    fetchFsDescriptionSuggestions(query);
+  }, 300);
+}
+
+async function fetchFsDescriptionSuggestions(query) {
+  const dropdown = document.getElementById("price-fs-desc-dropdown");
+  const config = priceUpdatesState.config;
+
+  if (!config || !config.primaryStoreId) return;
+
+  dropdown.innerHTML = '<div class="autocomplete-loading">Searching...</div>';
+  dropdown.classList.add("show");
+
+  try {
+    const response = await fetch(
+      `${API_BASE}/price-updates/description/autocomplete?store_id=${config.primaryStoreId}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query }),
+      },
+    );
+
+    if (!response.ok) throw new Error("Failed to fetch suggestions");
+
+    const data = await response.json();
+    showFsDescriptionDropdown(data.results);
+  } catch (error) {
+    console.error("FS autocomplete error:", error);
+    dropdown.innerHTML = '<div class="autocomplete-empty">Error fetching suggestions</div>';
+  }
+}
+
+function showFsDescriptionDropdown(results) {
+  const dropdown = document.getElementById("price-fs-desc-dropdown");
+  priceUpdatesState.fsAutocompleteResults = results;
+  priceUpdatesState.fsAutocompleteSelectedIndex = -1;
+
+  if (results.length === 0) {
+    dropdown.innerHTML = '<div class="autocomplete-empty">No products found</div>';
+    dropdown.classList.add("show");
+    return;
+  }
+
+  dropdown.innerHTML = results
+    .map(
+      (result, index) => `
+    <div class="autocomplete-item" data-index="${index}" data-upc="${result.product_upc}" data-desc="${result.product_description}">
+      <div class="autocomplete-item-description">${escapeHtml(result.product_description)}</div>
+      <div class="autocomplete-item-upc">UPC: ${result.product_upc || "N/A"} \u00b7 Qty: ${result.quant_on_hand?.toLocaleString() ?? 0}</div>
+    </div>
+  `,
+    )
+    .join("");
+
+  dropdown.classList.add("show");
+
+  dropdown.querySelectorAll(".autocomplete-item").forEach((item) => {
+    item.addEventListener("click", () => {
+      selectFsDescriptionResult(item.dataset.upc, item.dataset.desc);
+    });
+  });
+}
+
+function hideFsDescriptionDropdown() {
+  const dropdown = document.getElementById("price-fs-desc-dropdown");
+  if (dropdown) {
+    dropdown.classList.remove("show");
+    dropdown.innerHTML = "";
+  }
+}
+
+function selectFsDescriptionResult(upc, description) {
+  document.getElementById("price-fs-upc-input").value = upc || "";
+  document.getElementById("price-fs-desc-input").value = description || "";
+  hideFsDescriptionDropdown();
+
+  if (upc) {
+    // Sync to original inputs
+    document.getElementById("price-updates-upc-input").value = upc;
+    document.getElementById("price-updates-desc-input").value = description || "";
+    const includeSiblings = document.getElementById("price-fs-include-siblings")?.checked || false;
+    document.getElementById("price-updates-include-siblings").checked = includeSiblings;
+
+    const tbody = document.getElementById("price-updates-tbody");
+    if (tbody) tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:2rem;color:var(--text-tertiary)">Searching...</td></tr>';
+
+    searchPriceUpdates(upc, includeSiblings);
+  }
+}
+
+function updateFsAutocompleteSelection() {
+  const dropdown = document.getElementById("price-fs-desc-dropdown");
+  const items = dropdown.querySelectorAll(".autocomplete-item");
+
+  items.forEach((item, index) => {
+    if (index === priceUpdatesState.fsAutocompleteSelectedIndex) {
+      item.classList.add("selected");
+      item.scrollIntoView({ block: "nearest" });
+    } else {
+      item.classList.remove("selected");
+    }
+  });
+}
+
+function handleFsAutocompleteKeydown(e) {
+  const results = priceUpdatesState.fsAutocompleteResults;
+  if (!results || results.length === 0) return;
+
+  if (e.key === "ArrowDown") {
+    e.preventDefault();
+    priceUpdatesState.fsAutocompleteSelectedIndex = Math.min(
+      priceUpdatesState.fsAutocompleteSelectedIndex + 1,
+      results.length - 1,
+    );
+    updateFsAutocompleteSelection();
+  } else if (e.key === "ArrowUp") {
+    e.preventDefault();
+    priceUpdatesState.fsAutocompleteSelectedIndex = Math.max(
+      priceUpdatesState.fsAutocompleteSelectedIndex - 1,
+      0,
+    );
+    updateFsAutocompleteSelection();
+  } else if (e.key === "Enter") {
+    e.preventDefault();
+    if (priceUpdatesState.fsAutocompleteSelectedIndex >= 0) {
+      const selected = results[priceUpdatesState.fsAutocompleteSelectedIndex];
+      selectFsDescriptionResult(selected.product_upc, selected.product_description);
+    } else {
+      searchFromFullscreen();
+    }
+  } else if (e.key === "Escape") {
+    hideFsDescriptionDropdown();
+  }
+}
+
 // Price Updates event listeners
 document
   .getElementById("save-price-updates-config-btn")
@@ -6544,6 +6735,20 @@ document
 document
   .getElementById("price-updates-desc-input")
   ?.addEventListener("keydown", handlePriceAutocompleteKeydown);
+document
+  .getElementById("price-fs-search-btn")
+  ?.addEventListener("click", searchFromFullscreen);
+document
+  .getElementById("price-fs-upc-input")
+  ?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") searchFromFullscreen();
+  });
+document
+  .getElementById("price-fs-desc-input")
+  ?.addEventListener("input", handleFsDescriptionInput);
+document
+  .getElementById("price-fs-desc-input")
+  ?.addEventListener("keydown", handleFsAutocompleteKeydown);
 
 function roundPriceTo5or9(value) {
   const cents = Math.round(value * 100);
@@ -6729,6 +6934,17 @@ document.addEventListener("click", (e) => {
     !dropdown.contains(e.target)
   ) {
     hidePriceDescriptionDropdown();
+  }
+
+  const fsDescInput = document.getElementById("price-fs-desc-input");
+  const fsDropdown = document.getElementById("price-fs-desc-dropdown");
+  if (
+    fsDescInput &&
+    fsDropdown &&
+    !fsDescInput.contains(e.target) &&
+    !fsDropdown.contains(e.target)
+  ) {
+    hideFsDescriptionDropdown();
   }
 });
 
@@ -7503,6 +7719,7 @@ function switchFullscreenTab(tab) {
   const historyTab = document.getElementById("price-fs-tab-history");
   const historyPanel = document.getElementById("price-fs-history-panel");
   const stickyBarInfo = document.getElementById("price-sticky-bar-info");
+  const fsSearch = document.getElementById("price-fs-search");
 
   const priceElements = document.querySelectorAll(
     ".fill-all-row, .price-table-scroll, .price-update-btn-row, #price-updates-confirm-panel, #price-updates-update-progress, #price-store-filters"
@@ -7512,6 +7729,7 @@ function switchFullscreenTab(tab) {
     priceFsHistoryState.active = true;
     priceElements.forEach((el) => el.classList.add("price-fs-hidden"));
     if (stickyBarInfo) stickyBarInfo.classList.add("price-fs-hidden");
+    if (fsSearch) fsSearch.classList.add("price-fs-hidden");
     if (historyPanel) historyPanel.classList.add("price-fs-visible");
     if (pricesTab) pricesTab.classList.remove("active");
     if (historyTab) historyTab.classList.add("active");
@@ -7521,6 +7739,7 @@ function switchFullscreenTab(tab) {
     priceFsHistoryState.active = false;
     priceElements.forEach((el) => el.classList.remove("price-fs-hidden"));
     if (stickyBarInfo) stickyBarInfo.classList.remove("price-fs-hidden");
+    if (fsSearch) fsSearch.classList.remove("price-fs-hidden");
     if (historyPanel) historyPanel.classList.remove("price-fs-visible");
     if (pricesTab) pricesTab.classList.add("active");
     if (historyTab) historyTab.classList.remove("active");
