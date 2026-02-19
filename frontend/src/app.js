@@ -6374,10 +6374,14 @@ function showUpdateConfirmation() {
   }
 
   const summaryEl = document.getElementById("price-update-modal-summary");
-  const lines = [];
 
+  // Group updates by store name
+  const storeGroups = new Map();
   updates.forEach((u) => {
     const storeName = escapeHtml(u._store_name);
+    if (!storeGroups.has(storeName)) storeGroups.set(storeName, []);
+    const group = storeGroups.get(storeName);
+
     if (u.store_type === "mssql") {
       const parts = [];
       if (u.new_price != null) {
@@ -6392,12 +6396,11 @@ function showUpdateConfirmation() {
         const old = u.old_delivery_b != null ? `$${u.old_delivery_b.toFixed(2)}` : "-";
         parts.push(`Delivery B ${old} \u2192 $${u.new_delivery_b.toFixed(2)}`);
       }
-      lines.push(`<div style="margin-bottom: 0.375rem;"><strong style="color: var(--text-primary);">${storeName}:</strong> ${parts.join(", ")}</div>`);
+      const desc = u.product_description ? escapeHtml(u.product_description) : null;
+      group.push({ desc, changes: parts.join(", ") });
     } else if (u.store_type === "shopify") {
       u.variant_updates.forEach((v) => {
         const parts = [];
-        const label = v.variant_title && v.variant_title !== "Default Title"
-          ? `"${escapeHtml(v.variant_title)}"` : "";
         if (v.new_price != null) {
           const old = v.old_price != null ? `$${v.old_price.toFixed(2)}` : "-";
           parts.push(`Price ${old} \u2192 $${v.new_price.toFixed(2)}`);
@@ -6406,12 +6409,29 @@ function showUpdateConfirmation() {
           const old = v.old_cost != null ? `$${v.old_cost.toFixed(2)}` : "-";
           parts.push(`Cost ${old} \u2192 $${v.new_cost.toFixed(2)}`);
         }
-        lines.push(`<div style="margin-bottom: 0.375rem;"><strong style="color: var(--text-primary);">${storeName}${label ? " " + label : ""}:</strong> ${parts.join(", ")}</div>`);
+        let desc = v.product_title ? escapeHtml(v.product_title) : null;
+        if (v.variant_title && v.variant_title !== "Default Title") {
+          desc = desc ? `${desc} / ${escapeHtml(v.variant_title)}` : escapeHtml(v.variant_title);
+        }
+        group.push({ desc, changes: parts.join(", ") });
       });
     }
   });
 
-  summaryEl.innerHTML = lines.join("");
+  let html = "";
+  storeGroups.forEach((items, storeName) => {
+    html += `<div style="margin-bottom: 0.75rem;">`;
+    html += `<div style="font-weight: 600; color: var(--text-primary); margin-bottom: 0.25rem;">${storeName}</div>`;
+    items.forEach((item) => {
+      html += `<div style="padding-left: 0.75rem; margin-bottom: 0.25rem;">`;
+      if (item.desc) html += `<div style="color: var(--text-tertiary); font-size: 0.75rem;">${item.desc}</div>`;
+      html += `<div>${item.changes}</div>`;
+      html += `</div>`;
+    });
+    html += `</div>`;
+  });
+
+  summaryEl.innerHTML = html;
   document.getElementById("price-update-modal-title").textContent = "Review Changes";
   document.getElementById("price-update-modal-summary").style.display = "";
   document.getElementById("price-update-modal-progress").style.display = "none";
