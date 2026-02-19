@@ -6078,6 +6078,25 @@ function fillAllPrices() {
     });
 }
 
+function clearAllPrices() {
+  document.getElementById("price-fill-all-price").value = "";
+  document.getElementById("price-fill-all-cost").value = "";
+  document.getElementById("price-fill-all-delivery-b").value = "";
+
+  document
+    .querySelectorAll("#price-updates-tbody tr:not(.store-header-row)")
+    .forEach((tr) => {
+      tr.querySelectorAll(".price-input").forEach((inp) => {
+        inp.value = "";
+        inp.dataset.autoCalculated = "";
+        inp.classList.remove("auto-calculated");
+      });
+      tr.dataset.filled = "";
+      tr.classList.remove("filled-row");
+      recalculateRowMarkup(tr);
+    });
+}
+
 function collectPriceUpdates() {
   const updates = [];
   const rows = document.querySelectorAll("#price-updates-tbody tr");
@@ -6494,6 +6513,9 @@ document
 document
   .getElementById("price-fill-all-btn")
   ?.addEventListener("click", fillAllPrices);
+document
+  .getElementById("price-clear-all-btn")
+  ?.addEventListener("click", clearAllPrices);
 document
   .getElementById("price-updates-update-btn")
   ?.addEventListener("click", showUpdateConfirmation);
