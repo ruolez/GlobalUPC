@@ -6041,7 +6041,7 @@ function fillAllPrices() {
         if (applyCostMarkup && String(tr.dataset.storeId) !== String(primaryStoreId)) {
           const currentRowCost = parseFloat(tr.dataset.currentCost);
           if (currentRowCost && !isNaN(currentRowCost) && currentRowCost > 0) {
-            rowCost = (parseFloat(newCost) * (currentRowCost / primaryCost)).toFixed(2);
+            rowCost = roundUpTo5Cents(parseFloat(newCost) * (currentRowCost / primaryCost)).toFixed(2);
           }
         }
         const costInput = tr.querySelector(".new-cost");
