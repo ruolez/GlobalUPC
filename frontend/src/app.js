@@ -5768,7 +5768,7 @@ function displayPriceResults(upc, prices, siblingPrices) {
           ? `<td>${currentValueSpan(currentDeliveryB)}<input type="number" class="dark-input price-input new-delivery-b" step="0.01" min="0" placeholder="${currentDeliveryB}"></td>`
           : `<td style="color: var(--text-tertiary)">-</td>`;
         tr.innerHTML = `
-          <td style="font-size: 0.75rem; color: var(--text-secondary)">${mssqlDesc} [${escapeHtml(upc)}]</td>
+          <td style="font-size: 0.8125rem; color: var(--text-secondary)">${mssqlDesc} [${escapeHtml(upc)}]</td>
           <td>${currentValueSpan(currentPrice)}<input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="${currentPrice}"></td>
           <td>${currentValueSpan(currentCost)}<input type="number" class="dark-input price-input new-cost" step="0.01" min="0" placeholder="${currentCost}"></td>
           ${deliveryBCell}
@@ -5804,7 +5804,7 @@ function displayPriceResults(upc, prices, siblingPrices) {
           const vMarkup = formatMarkup(vPriceNum, vCostNum);
           const vCostMarkup = formatCostMarkup(vCostNum, primaryCost, p.store_id);
           tr.innerHTML = `
-            <td style="font-size: 0.75rem; color: var(--text-secondary)">${variantLabel}${barcodeLabel}</td>
+            <td style="font-size: 0.8125rem; color: var(--text-secondary)">${variantLabel}${barcodeLabel}</td>
             <td>${currentValueSpan(vPrice)}<input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="${vPrice}"></td>
             <td>${currentValueSpan(vCost)}<input type="number" class="dark-input price-input new-cost" step="0.01" min="0" placeholder="${vCost}"></td>
             <td style="color: var(--text-tertiary)">-</td>
@@ -5843,7 +5843,7 @@ function displayPriceResults(upc, prices, siblingPrices) {
         : `<td style="color: var(--text-tertiary)">-</td>`;
 
       tr.innerHTML = `
-        <td style="color: var(--text-tertiary); font-size: 0.75rem">${siblingLabel}</td>
+        <td style="color: var(--text-tertiary); font-size: 0.8125rem">${siblingLabel}</td>
         <td>${currentValueSpan(currentPrice)}<input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="${currentPrice}"></td>
         <td>${currentValueSpan(currentCost)}<input type="number" class="dark-input price-input new-cost" step="0.01" min="0" placeholder="${currentCost}"></td>
         ${siblingDeliveryBCell}
