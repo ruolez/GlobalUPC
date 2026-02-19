@@ -5915,8 +5915,8 @@ function displayPriceResults(upc, prices, siblingPrices) {
       const descInput = document.getElementById("price-updates-desc-input");
       if (descInput) descInput.focus();
     } else {
-      const firstInput = tbody.querySelector(".new-price");
-      if (firstInput) firstInput.focus();
+      const costFill = document.getElementById("price-fill-all-cost");
+      if (costFill) costFill.focus();
     }
   }, 100);
 
@@ -6008,8 +6008,6 @@ function enterPriceFullscreen() {
   const results = document.getElementById("price-updates-results");
   if (results) results.classList.add("results-fullscreen");
   document.body.classList.add("no-scroll");
-  const costFill = document.getElementById("price-fill-all-cost");
-  if (costFill) setTimeout(() => costFill.focus(), 100);
 
   // Sync original inputs to fullscreen search
   const fsUpc = document.getElementById("price-fs-upc-input");
