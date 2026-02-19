@@ -5733,7 +5733,7 @@ function displayPriceResults(upc, prices, siblingPrices) {
     const headerTr = document.createElement("tr");
     headerTr.classList.add("store-header-row");
     headerTr.dataset.storeId = storeId;
-    headerTr.style.borderLeft = `3px solid ${storeColor}`;
+    headerTr.style.setProperty("--store-border-color", storeColor);
     const headerTd = document.createElement("td");
     headerTd.colSpan = 7;
     headerTd.style.color = storeColor;
@@ -5747,7 +5747,7 @@ function displayPriceResults(upc, prices, siblingPrices) {
       if (p.store_type === "mssql") {
         const tr = document.createElement("tr");
         tr.style.backgroundColor = storeBg;
-        tr.style.borderLeft = `3px solid ${storeColor}`;
+        tr.style.setProperty("--store-border-color", storeColor);
         tr.dataset.storeId = p.store_id;
         tr.dataset.storeType = "mssql";
         tr.dataset.barcode = upc;
@@ -5782,7 +5782,7 @@ function displayPriceResults(upc, prices, siblingPrices) {
           const tr = document.createElement("tr");
           tr.classList.add("variant-subrow");
           tr.style.backgroundColor = storeBg;
-          tr.style.borderLeft = `3px solid ${storeColor}`;
+          tr.style.setProperty("--store-border-color", storeColor);
           tr.dataset.storeId = p.store_id;
           tr.dataset.storeType = "shopify";
           tr.dataset.variantId = v.variant_id;
@@ -5821,7 +5821,7 @@ function displayPriceResults(upc, prices, siblingPrices) {
     sd.siblingRows.forEach((sp) => {
       const tr = document.createElement("tr");
       tr.style.backgroundColor = storeBg;
-      tr.style.borderLeft = `3px solid ${storeColor}`;
+      tr.style.setProperty("--store-border-color", storeColor);
       tr.dataset.storeId = sp.store_id;
       tr.dataset.storeType = "mssql";
       tr.dataset.barcode = sp.sibling_barcode;

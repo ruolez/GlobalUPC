@@ -1305,8 +1305,8 @@ body {
   font-style: italic;
 }
 
-.price-table tbody tr {
-  border-left: 3px solid transparent;
+.price-table tbody tr td:first-child {
+  border-left: 3px solid var(--store-border-color, transparent);
 }
 
 .store-header-row td {
