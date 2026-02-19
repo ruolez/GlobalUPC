@@ -3128,6 +3128,18 @@ async def fetch_prices_stream(request: PriceSearchRequest, db: Session = Depends
             if len(all_barcodes) > 1:
                 yield f"event: progress\ndata: {json.dumps({'status': 'searching', 'message': f'Found {len(all_barcodes) - 1} sibling barcode(s)'})}\n\n"
 
+                sibling_barcodes = all_barcodes - {upc}
+                for store_id in list(shopify_cache.keys()):
+                    _, _, variants_by_pid = shopify_cache[store_id]
+                    cached_barcodes = set()
+                    for prod_variants in variants_by_pid.values():
+                        for v in prod_variants:
+                            bc = (v.get("barcode") or "").strip()
+                            if bc:
+                                cached_barcodes.add(bc)
+                    if not sibling_barcodes.issubset(cached_barcodes):
+                        del shopify_cache[store_id]
+
             # Phase 2: Parallel search across all stores
             mssql_stores_p2 = [
                 (sid, s) for sid, s in stores_by_id.items()
