@@ -1889,6 +1889,7 @@ body.no-scroll {
   gap: 0.375rem;
   flex: 1;
   min-width: 0;
+  max-width: 560px;
 }
 
 .results-fullscreen .price-fs-search {
@@ -2088,7 +2089,7 @@ body.no-scroll {
 .price-exclude-btn {
   background: transparent;
   border: none;
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
   cursor: pointer;
   padding: 0.25rem;
   display: inline-flex;
@@ -2096,7 +2097,7 @@ body.no-scroll {
   justify-content: center;
   border-radius: var(--radius-sm);
   transition: color 0.15s, background 0.15s;
-  opacity: 0.5;
+  opacity: 0.7;
 }
 
 .price-exclude-btn:hover {
@@ -2110,8 +2111,10 @@ body.no-scroll {
   color: var(--accent-primary);
 }
 
-.price-excluded {
-  opacity: 0.45;
+.price-excluded td:not(.price-exclude-cell) {
+  opacity: 0.3;
+  text-decoration: line-through;
+  text-decoration-color: var(--text-tertiary);
 }
 
 .price-excluded .price-input {
