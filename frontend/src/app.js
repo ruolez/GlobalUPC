@@ -6239,19 +6239,13 @@ function updatePriceFilterZoneSummary() {
   }
 }
 
-function initPriceFilterZoneCollapse() {
-  const header = document.getElementById("price-filter-zone-header");
-  const body = document.getElementById("price-filter-zone-body");
-  const toggle = document.getElementById("price-filter-zone-toggle");
-  if (!header || !body || !toggle) return;
+document
+  .getElementById("price-filter-zone-header")
+  ?.addEventListener("click", () => {
+    const body = document.getElementById("price-filter-zone-body");
+    const toggle = document.getElementById("price-filter-zone-toggle");
+    if (!body || !toggle) return;
 
-  const collapsed = localStorage.getItem("priceFilterZoneCollapsed") === "true";
-  if (collapsed) {
-    body.classList.add("collapsed");
-    toggle.classList.remove("expanded");
-  }
-
-  header.addEventListener("click", () => {
     const isCollapsed = body.classList.contains("collapsed");
     if (isCollapsed) {
       body.classList.remove("collapsed");
@@ -6263,6 +6257,20 @@ function initPriceFilterZoneCollapse() {
       localStorage.setItem("priceFilterZoneCollapsed", "true");
     }
   });
+
+function initPriceFilterZoneCollapse() {
+  const body = document.getElementById("price-filter-zone-body");
+  const toggle = document.getElementById("price-filter-zone-toggle");
+  if (!body || !toggle) return;
+
+  const collapsed = localStorage.getItem("priceFilterZoneCollapsed") === "true";
+  if (collapsed) {
+    body.classList.add("collapsed");
+    toggle.classList.remove("expanded");
+  } else {
+    body.classList.remove("collapsed");
+    toggle.classList.add("expanded");
+  }
 }
 
 function collectPriceUpdates() {
