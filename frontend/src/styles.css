@@ -1925,6 +1925,15 @@ body.no-scroll {
   flex-shrink: 0;
 }
 
+.price-fs-search-input-wrap:has(.price-fs-search-input[placeholder="Description"]) {
+  flex: 1;
+  min-width: 0;
+}
+
+.price-fs-search-input-wrap:has(.price-fs-search-input[placeholder="Description"]) .price-fs-search-input {
+  width: 100%;
+}
+
 .price-fs-search-btn {
   height: 30px;
   padding: 0 0.5rem;
