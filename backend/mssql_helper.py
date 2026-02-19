@@ -2629,6 +2629,8 @@ def update_item_prices(
             set_clauses.append("UnitPriceC = ?")
             params.append(unit_delivery_b)
 
+        set_clauses.append("ExpDate = CAST(GETDATE() AS DATE)")
+
         params.append(upc)
         query = f"UPDATE Items_tbl SET {', '.join(set_clauses)} WHERE ProductUPC = ? AND Discontinued = 0"
 
