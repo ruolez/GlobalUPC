@@ -5650,6 +5650,14 @@ function displayPriceResults(upc, prices, siblingPrices) {
   if (stickyUpc) stickyUpc.textContent = upc;
   if (stickyDesc) stickyDesc.textContent = desc;
 
+  // Flash product info to confirm search complete
+  const stickyBarInfo = document.getElementById("price-sticky-bar-info");
+  if (stickyBarInfo) {
+    stickyBarInfo.classList.remove("search-complete-flash");
+    void stickyBarInfo.offsetWidth;
+    stickyBarInfo.classList.add("search-complete-flash");
+  }
+
   enterPriceFullscreen();
 
   const tbody = document.getElementById("price-updates-tbody");
@@ -5883,16 +5891,22 @@ function displayPriceResults(upc, prices, siblingPrices) {
   });
   buildStoreFilterChips(filtersEl, chipStores, {
     localStorageKey: "priceActiveStores",
-    onToggle: applyStoreFilters,
+    onToggle: () => { applyStoreFilters(); updatePriceFilterZoneSummary(); updateFillAllCount(); },
   });
+  updatePriceFilterZoneSummary();
+  initPriceFilterZoneCollapse();
 
-  // Restore fill-all placeholders from localStorage
+  // Restore fill-all last-value labels from localStorage
   const savedFillPrice = localStorage.getItem("priceFillAllPrice");
   const savedFillCost = localStorage.getItem("priceFillAllCost");
   const savedFillDeliveryB = localStorage.getItem("priceFillAllDeliveryB");
-  if (savedFillPrice) document.getElementById("price-fill-all-price").placeholder = `Last: $${savedFillPrice}`;
-  if (savedFillCost) document.getElementById("price-fill-all-cost").placeholder = `Last: $${savedFillCost}`;
-  if (savedFillDeliveryB) document.getElementById("price-fill-all-delivery-b").placeholder = `Last: $${savedFillDeliveryB}`;
+  const lastPriceEl = document.getElementById("price-fill-last-price");
+  const lastCostEl = document.getElementById("price-fill-last-cost");
+  const lastDeliveryBEl = document.getElementById("price-fill-last-delivery-b");
+  if (lastPriceEl) lastPriceEl.textContent = savedFillPrice ? `Last: $${savedFillPrice}` : "";
+  if (lastCostEl) lastCostEl.textContent = savedFillCost ? `Last: $${savedFillCost}` : "";
+  if (lastDeliveryBEl) lastDeliveryBEl.textContent = savedFillDeliveryB ? `Last: $${savedFillDeliveryB}` : "";
+  updateFillAllCount();
 
   // Auto-focus: after update re-search, focus description for next item; otherwise first price input
   setTimeout(() => {
@@ -6050,9 +6064,21 @@ function fillAllPrices() {
   const newCost = document.getElementById("price-fill-all-cost").value;
   const newDeliveryB = document.getElementById("price-fill-all-delivery-b").value;
 
-  if (newPrice) localStorage.setItem("priceFillAllPrice", newPrice);
-  if (newCost) localStorage.setItem("priceFillAllCost", newCost);
-  if (newDeliveryB) localStorage.setItem("priceFillAllDeliveryB", newDeliveryB);
+  if (newPrice) {
+    localStorage.setItem("priceFillAllPrice", newPrice);
+    const lbl = document.getElementById("price-fill-last-price");
+    if (lbl) lbl.textContent = `Last: $${newPrice}`;
+  }
+  if (newCost) {
+    localStorage.setItem("priceFillAllCost", newCost);
+    const lbl = document.getElementById("price-fill-last-cost");
+    if (lbl) lbl.textContent = `Last: $${newCost}`;
+  }
+  if (newDeliveryB) {
+    localStorage.setItem("priceFillAllDeliveryB", newDeliveryB);
+    const lbl = document.getElementById("price-fill-last-delivery-b");
+    if (lbl) lbl.textContent = `Last: $${newDeliveryB}`;
+  }
 
   const rowSelector = '#price-updates-tbody tr:not(.store-header-row):not([style*="display: none"]):not(.price-excluded)';
 
@@ -6065,6 +6091,7 @@ function fillAllPrices() {
     );
   }
 
+  let filledCount = 0;
   document
     .querySelectorAll(rowSelector)
     .forEach((tr) => {
@@ -6108,8 +6135,22 @@ function fillAllPrices() {
         tr.dataset.filled = "true";
         tr.classList.add("filled-row");
         recalculateRowMarkup(tr);
+        filledCount++;
       }
     });
+
+  // Flash feedback on Fill All button
+  const fillBtn = document.getElementById("price-fill-all-btn");
+  if (fillBtn && filledCount > 0) {
+    fillBtn.classList.remove("fill-all-flash");
+    void fillBtn.offsetWidth;
+    fillBtn.innerHTML = `Filled ${filledCount}`;
+    fillBtn.classList.add("fill-all-flash");
+    setTimeout(() => {
+      fillBtn.classList.remove("fill-all-flash");
+      updateFillAllCount();
+    }, 1500);
+  }
 }
 
 function clearAllPrices() {
@@ -6129,6 +6170,101 @@ function clearAllPrices() {
       tr.classList.remove("filled-row");
       recalculateRowMarkup(tr);
     });
+}
+
+// Count visible, non-excluded rows for Fill All badge
+function getVisibleRowCount() {
+  return document.querySelectorAll(
+    '#price-updates-tbody tr:not(.store-header-row):not([style*="display: none"]):not(.price-excluded)'
+  ).length;
+}
+
+function updateFillAllCount() {
+  const count = getVisibleRowCount();
+  const scopeEl = document.getElementById("price-fill-all-scope");
+  if (scopeEl) scopeEl.textContent = count > 0 ? ` (${count} rows)` : "";
+  const fillBtn = document.getElementById("price-fill-all-btn");
+  if (fillBtn && !fillBtn.classList.contains("fill-all-flash")) {
+    fillBtn.innerHTML = count > 0
+      ? `Fill All<span class="fill-all-count" id="price-fill-all-count"> (${count})</span>`
+      : `Fill All<span class="fill-all-count" id="price-fill-all-count"></span>`;
+  }
+}
+
+// Collapsible store filter zone
+function updatePriceFilterZoneSummary() {
+  const summaryEl = document.getElementById("price-filter-zone-summary");
+  const badgesEl = document.getElementById("price-filter-zone-badges");
+  if (!summaryEl) return;
+
+  const allChips = document.querySelectorAll("#price-store-filters .store-filter-chip:not(.store-filter-control)");
+  const activeChips = document.querySelectorAll("#price-store-filters .store-filter-chip.active:not(.store-filter-control)");
+  const total = allChips.length;
+  const active = activeChips.length;
+  summaryEl.textContent = `Stores: ${active} of ${total} selected`;
+
+  if (badgesEl) {
+    let shopifyCount = 0, mssqlCount = 0;
+    activeChips.forEach((c) => {
+      const row = c.closest(".store-filter-row");
+      if (row) {
+        const label = row.querySelector(".store-filter-row-label");
+        if (label && label.classList.contains("shopify")) shopifyCount++;
+        else if (label && label.classList.contains("mssql")) mssqlCount++;
+      }
+    });
+    badgesEl.innerHTML = "";
+    if (shopifyCount > 0) {
+      const badge = document.createElement("span");
+      badge.className = "price-filter-zone-badge shopify";
+      badge.textContent = `SHOPIFY: ${shopifyCount}`;
+      badge.title = "Toggle all Shopify stores";
+      badge.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const shopifyLabel = document.querySelector("#price-store-filters .store-filter-row-label.shopify");
+        if (shopifyLabel) shopifyLabel.click();
+      });
+      badgesEl.appendChild(badge);
+    }
+    if (mssqlCount > 0) {
+      const badge = document.createElement("span");
+      badge.className = "price-filter-zone-badge mssql";
+      badge.textContent = `MSSQL: ${mssqlCount}`;
+      badge.title = "Toggle all MSSQL stores";
+      badge.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const mssqlLabel = document.querySelector("#price-store-filters .store-filter-row-label.mssql");
+        if (mssqlLabel) mssqlLabel.click();
+      });
+      badgesEl.appendChild(badge);
+    }
+  }
+}
+
+function initPriceFilterZoneCollapse() {
+  const header = document.getElementById("price-filter-zone-header");
+  const body = document.getElementById("price-filter-zone-body");
+  const toggle = document.getElementById("price-filter-zone-toggle");
+  if (!header || !body || !toggle) return;
+
+  const collapsed = localStorage.getItem("priceFilterZoneCollapsed") === "true";
+  if (collapsed) {
+    body.classList.add("collapsed");
+    toggle.classList.remove("expanded");
+  }
+
+  header.addEventListener("click", () => {
+    const isCollapsed = body.classList.contains("collapsed");
+    if (isCollapsed) {
+      body.classList.remove("collapsed");
+      toggle.classList.add("expanded");
+      localStorage.setItem("priceFilterZoneCollapsed", "false");
+    } else {
+      body.classList.add("collapsed");
+      toggle.classList.remove("expanded");
+      localStorage.setItem("priceFilterZoneCollapsed", "true");
+    }
+  });
 }
 
 function collectPriceUpdates() {
@@ -6707,7 +6843,7 @@ document
 document
   .getElementById("price-sticky-expand-btn")
   ?.addEventListener("click", () => {
-    resetPriceUpdates();
+    confirmExitPriceFullscreen();
   });
 document
   .getElementById("price-updates-upc-input")
@@ -6749,6 +6885,83 @@ document
 document
   .getElementById("price-fs-desc-input")
   ?.addEventListener("keydown", handleFsAutocompleteKeydown);
+
+// Clear buttons for fullscreen search inputs
+document.querySelectorAll(".price-fs-input-clear").forEach((btn) => {
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const targetId = btn.dataset.target;
+    const input = document.getElementById(targetId);
+    if (input) {
+      input.value = "";
+      input.focus();
+      input.dispatchEvent(new Event("input"));
+    }
+  });
+});
+
+// Keyboard shortcuts for fullscreen mode
+document.addEventListener("keydown", (e) => {
+  const results = document.getElementById("price-updates-results");
+  if (!results || !results.classList.contains("results-fullscreen")) return;
+
+  // Don't intercept when typing in inputs (except for specific combos)
+  const inInput = document.activeElement && (document.activeElement.tagName === "INPUT" || document.activeElement.tagName === "TEXTAREA" || document.activeElement.tagName === "SELECT");
+
+  // Escape - exit fullscreen
+  if (e.key === "Escape" && !document.getElementById("price-exit-confirm-overlay")) {
+    e.preventDefault();
+    confirmExitPriceFullscreen();
+    return;
+  }
+
+  // "/" - focus UPC search
+  if (e.key === "/" && !inInput) {
+    e.preventDefault();
+    const upcInput = document.getElementById("price-fs-upc-input");
+    if (upcInput) upcInput.focus();
+    return;
+  }
+
+  // Ctrl+A - select all stores
+  if (e.ctrlKey && !e.shiftKey && e.key === "a" && !inInput) {
+    e.preventDefault();
+    const allBtn = document.querySelector("#price-store-filters .store-filter-chip.store-filter-control");
+    if (allBtn) allBtn.click();
+    return;
+  }
+
+  // Ctrl+Shift+A - deselect all stores
+  if (e.ctrlKey && e.shiftKey && (e.key === "A" || e.key === "a")) {
+    e.preventDefault();
+    const noneBtn = document.querySelectorAll("#price-store-filters .store-filter-chip.store-filter-control")[1];
+    if (noneBtn) noneBtn.click();
+    return;
+  }
+
+  // Ctrl+F - focus price fill input
+  if (e.ctrlKey && !e.shiftKey && e.key === "f") {
+    e.preventDefault();
+    const priceInput = document.getElementById("price-fill-all-price");
+    if (priceInput) priceInput.focus();
+    return;
+  }
+
+  // Ctrl+Enter - fill all
+  if (e.ctrlKey && e.key === "Enter") {
+    e.preventDefault();
+    fillAllPrices();
+    return;
+  }
+});
+
+// Exclude button toggling - update count
+document.getElementById("price-updates-tbody")?.addEventListener("click", (e) => {
+  const excludeBtn = e.target.closest(".price-exclude-btn");
+  if (excludeBtn) {
+    setTimeout(() => updateFillAllCount(), 0);
+  }
+});
 
 function roundPriceTo5or9(value) {
   const cents = Math.round(value * 100);
@@ -7722,7 +7935,7 @@ function switchFullscreenTab(tab) {
   const fsSearch = document.getElementById("price-fs-search");
 
   const priceElements = document.querySelectorAll(
-    ".fill-all-row, .price-table-scroll, .price-update-btn-row, #price-updates-confirm-panel, #price-updates-update-progress, #price-store-filters"
+    ".fill-all-row, .price-table-scroll, .price-update-btn-row, #price-updates-confirm-panel, #price-updates-update-progress, #price-filter-zone"
   );
 
   if (tab === "history") {

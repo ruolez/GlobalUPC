@@ -2955,9 +2955,15 @@
                     <span class="price-sticky-bar-desc" id="price-sticky-desc"></span>
                   </div>
                   <div class="price-fs-search" id="price-fs-search">
-                    <input type="text" id="price-fs-upc-input" class="dark-input price-fs-search-input" placeholder="UPC" autocomplete="off" />
+                    <div class="price-fs-search-input-wrap">
+                      <input type="text" id="price-fs-upc-input" class="dark-input price-fs-search-input" placeholder="UPC" autocomplete="off" />
+                      <button type="button" class="price-fs-input-clear" data-target="price-fs-upc-input" title="Clear">&times;</button>
+                    </div>
                     <div style="position: relative; flex: 1; min-width: 0;">
-                      <input type="text" id="price-fs-desc-input" class="dark-input price-fs-search-input" placeholder="Description" autocomplete="off" />
+                      <div class="price-fs-search-input-wrap">
+                        <input type="text" id="price-fs-desc-input" class="dark-input price-fs-search-input" placeholder="Description" autocomplete="off" />
+                        <button type="button" class="price-fs-input-clear" data-target="price-fs-desc-input" title="Clear">&times;</button>
+                      </div>
                       <div id="price-fs-desc-dropdown" class="autocomplete-dropdown"></div>
                     </div>
                     <button type="button" class="price-fs-search-btn" id="price-fs-search-btn" title="Search">
@@ -2975,6 +2981,18 @@
                     <button type="button" class="price-fs-tab active" id="price-fs-tab-prices">Price Updates</button>
                     <button type="button" class="price-fs-tab" id="price-fs-tab-history">Update History</button>
                   </div>
+                  <div class="price-shortcuts-btn" tabindex="0" title="Keyboard shortcuts">?
+                    <div class="price-shortcuts-tooltip">
+                      <table>
+                        <tr><td>/</td><td>Focus UPC search</td></tr>
+                        <tr><td>Ctrl+A</td><td>Select all stores</td></tr>
+                        <tr><td>Ctrl+Shift+A</td><td>Deselect all stores</td></tr>
+                        <tr><td>Ctrl+F</td><td>Focus price input</td></tr>
+                        <tr><td>Ctrl+Enter</td><td>Fill All</td></tr>
+                        <tr><td>Esc</td><td>Exit fullscreen</td></tr>
+                      </table>
+                    </div>
+                  </div>
                   <button type="button" class="price-sticky-bar-expand" id="price-sticky-expand-btn" title="Close">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                       <line x1="18" y1="6" x2="6" y2="18"></line>
@@ -2982,44 +3000,63 @@
                     </svg>
                   </button>
                 </div>
-                <!-- Store Filter Chips -->
-                <div id="price-store-filters"></div>
+                <!-- Store Filter Chips (Zone 2) -->
+                <div class="price-filter-zone" id="price-filter-zone">
+                  <div class="price-filter-zone-header" id="price-filter-zone-header">
+                    <span class="price-filter-zone-toggle expanded" id="price-filter-zone-toggle">&#9654;</span>
+                    <span class="price-filter-zone-summary" id="price-filter-zone-summary"></span>
+                    <div class="price-filter-zone-badges" id="price-filter-zone-badges"></div>
+                    <div class="price-filter-zone-controls" id="price-filter-zone-controls"></div>
+                  </div>
+                  <div class="price-filter-zone-body" id="price-filter-zone-body">
+                    <div id="price-store-filters"></div>
+                  </div>
+                </div>
               </div>
 
-              <!-- Fill All Row -->
+              <!-- Fill All Row (Zone 3: Bulk Edit) -->
               <div class="fill-all-row">
-                <span style="font-size: 0.875rem; font-weight: 500; color: var(--text-secondary)">Apply to All:</span>
-                <input
-                  type="number"
-                  id="price-fill-all-price"
-                  placeholder="New Price"
-                  class="dark-input price-input"
-                  step="0.01"
-                  min="0"
-                />
-                <input
-                  type="number"
-                  id="price-fill-all-cost"
-                  placeholder="New Cost"
-                  class="dark-input price-input"
-                  step="0.01"
-                  min="0"
-                />
-                <input
-                  type="number"
-                  id="price-fill-all-delivery-b"
-                  placeholder="Delivery B"
-                  class="dark-input price-input"
-                  step="0.01"
-                  min="0"
-                />
+                <span style="font-size: 0.875rem; font-weight: 500; color: var(--text-secondary)">Apply to All<span id="price-fill-all-scope" style="font-size: 0.75rem; color: var(--text-tertiary)"></span>:</span>
+                <div class="fill-all-input-group">
+                  <span class="fill-all-last-label" id="price-fill-last-price"></span>
+                  <input
+                    type="number"
+                    id="price-fill-all-price"
+                    placeholder="New Price"
+                    class="dark-input price-input"
+                    step="0.01"
+                    min="0"
+                  />
+                </div>
+                <div class="fill-all-input-group">
+                  <span class="fill-all-last-label" id="price-fill-last-cost"></span>
+                  <input
+                    type="number"
+                    id="price-fill-all-cost"
+                    placeholder="New Cost"
+                    class="dark-input price-input"
+                    step="0.01"
+                    min="0"
+                  />
+                </div>
+                <div class="fill-all-input-group">
+                  <span class="fill-all-last-label" id="price-fill-last-delivery-b"></span>
+                  <input
+                    type="number"
+                    id="price-fill-all-delivery-b"
+                    placeholder="Delivery B"
+                    class="dark-input price-input"
+                    step="0.01"
+                    min="0"
+                  />
+                </div>
                 <button
                   type="button"
                   class="btn btn-secondary"
                   id="price-fill-all-btn"
                   style="font-size: 0.75rem; padding: 0.375rem 0.75rem"
                 >
-                  Fill All
+                  Fill All<span class="fill-all-count" id="price-fill-all-count"></span>
                 </button>
                 <button
                   type="button"
