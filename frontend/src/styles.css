@@ -1554,10 +1554,7 @@ body {
   color: var(--text-tertiary);
 }
 
-/* Filled Row Indicator */
-.filled-row td:first-child {
-  box-shadow: inset 3px 0 0 var(--accent-primary);
-}
+/* Filled Row Indicator - store border-left now provides visual grouping */
 
 /* Price Updates Fullscreen Mode */
 body.no-scroll {
