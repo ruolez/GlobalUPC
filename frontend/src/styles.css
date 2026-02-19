@@ -2106,15 +2106,28 @@ body.no-scroll {
   opacity: 1;
 }
 
-.price-excluded .price-exclude-btn {
-  opacity: 1;
-  color: var(--accent-primary);
+.price-excluded {
+  position: relative;
 }
 
 .price-excluded td:not(.price-exclude-cell) {
-  opacity: 0.3;
-  text-decoration: line-through;
-  text-decoration-color: var(--text-tertiary);
+  opacity: 0.25;
+}
+
+.price-excluded::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 2rem;
+  top: 50%;
+  height: 1.5px;
+  background: var(--text-tertiary);
+  pointer-events: none;
+}
+
+.price-excluded .price-exclude-btn {
+  opacity: 1;
+  color: var(--accent-primary);
 }
 
 .price-excluded .price-input {
