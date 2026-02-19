@@ -5328,6 +5328,7 @@ let priceUpdatesState = {
   siblingPrices: [],
   isSearching: false,
   isUpdating: false,
+  searchAbortController: null,
   descriptionSearchTimeout: null,
   autocompleteSelectedIndex: -1,
   autocompleteResults: [],
@@ -5522,7 +5523,10 @@ function togglePriceUpdatesConfig() {
 }
 
 async function searchPriceUpdates(overrideUpc, overrideIncludeSiblings) {
-  if (priceUpdatesState.isSearching) return;
+  if (priceUpdatesState.searchAbortController) {
+    priceUpdatesState.searchAbortController.abort();
+    priceUpdatesState.searchAbortController = null;
+  }
 
   const upc = overrideUpc !== undefined
     ? overrideUpc
@@ -5539,6 +5543,8 @@ async function searchPriceUpdates(overrideUpc, overrideIncludeSiblings) {
   }
 
   priceUpdatesState.isSearching = true;
+  const controller = new AbortController();
+  priceUpdatesState.searchAbortController = controller;
   priceUpdatesState.prices = [];
 
   const searchBtn = document.getElementById("price-updates-search-btn");
@@ -5570,6 +5576,7 @@ async function searchPriceUpdates(overrideUpc, overrideIncludeSiblings) {
             ? overrideIncludeSiblings
             : (document.getElementById("price-updates-include-siblings")?.checked || false)
         }),
+        signal: controller.signal,
       },
     );
 
@@ -5620,17 +5627,21 @@ async function searchPriceUpdates(overrideUpc, overrideIncludeSiblings) {
       }
     }
   } catch (error) {
+    if (error.name === "AbortError") return;
     console.error("Error searching prices:", error);
     showToast(`Search failed: ${error.message}`, "error");
   } finally {
-    priceUpdatesState.isSearching = false;
-    searchBtn.disabled = false;
-    if (fsSearchBtn) fsSearchBtn.disabled = false;
-    // Resolve any remaining spinners
-    progressItems.querySelectorAll(".progress-spinner").forEach((s) => {
-      s.outerHTML = '<span class="progress-icon success">\u2713</span>';
-    });
-    setTimeout(() => { progressEl.style.display = "none"; }, 800);
+    if (priceUpdatesState.searchAbortController === controller) {
+      priceUpdatesState.searchAbortController = null;
+      priceUpdatesState.isSearching = false;
+      searchBtn.disabled = false;
+      if (fsSearchBtn) fsSearchBtn.disabled = false;
+      // Resolve any remaining spinners
+      progressItems.querySelectorAll(".progress-spinner").forEach((s) => {
+        s.outerHTML = '<span class="progress-icon success">\u2713</span>';
+      });
+      setTimeout(() => { progressEl.style.display = "none"; }, 800);
+    }
   }
 }
 
@@ -6000,6 +6011,7 @@ function resetPriceUpdates() {
   priceUpdatesState.primaryCost = null;
   priceUpdatesState.isSearching = false;
   priceUpdatesState.isUpdating = false;
+  priceUpdatesState.searchAbortController = null;
   const descInput = document.getElementById("price-updates-desc-input");
   if (descInput) descInput.focus();
 }
@@ -6483,8 +6495,81 @@ async function executeUpdate() {
               failed > 0 ? "error" : "success",
             );
 
-            priceUpdatesState._focusDescAfterSearch = true;
-            searchPriceUpdates();
+            const primaryStoreId = priceUpdatesState.config?.primaryStoreId;
+            const updTbody = document.getElementById("price-updates-tbody");
+
+            data.results.forEach((result) => {
+              if (!result.success) return;
+              const sid = String(result.store_id);
+              const rows = updTbody.querySelectorAll(`tr[data-store-id="${sid}"]:not(.store-header-row)`);
+
+              rows.forEach((tr) => {
+                const priceInput = tr.querySelector(".new-price");
+                const costInput = tr.querySelector(".new-cost");
+                const deliveryBInput = tr.querySelector(".new-delivery-b");
+                let costUpdated = false;
+
+                [
+                  { input: priceInput, dataKey: "currentPrice" },
+                  { input: costInput, dataKey: "currentCost" },
+                  { input: deliveryBInput, dataKey: "currentDeliveryB" },
+                ].forEach(({ input, dataKey }) => {
+                  if (!input || !input.value) return;
+                  const newVal = parseFloat(input.value).toFixed(2);
+                  input.placeholder = newVal;
+                  tr.dataset[dataKey] = newVal;
+                  const td = input.closest("td");
+                  let span = td.querySelector(".current-value");
+                  if (span) {
+                    span.textContent = `$${newVal}`;
+                  } else {
+                    span = document.createElement("span");
+                    span.className = "current-value";
+                    span.textContent = `$${newVal}`;
+                    td.insertBefore(span, input);
+                  }
+                  input.value = "";
+                  if (dataKey === "currentCost") costUpdated = true;
+                });
+
+                if (costUpdated && parseInt(sid) === primaryStoreId) {
+                  const newCostVal = parseFloat(tr.dataset.currentCost);
+                  if (!isNaN(newCostVal)) priceUpdatesState.primaryCost = newCostVal;
+                }
+
+                const tds = tr.querySelectorAll("td");
+                const effPrice = tr.dataset.currentPrice !== "-" ? parseFloat(tr.dataset.currentPrice) : null;
+                const effCost = tr.dataset.currentCost !== "-" ? parseFloat(tr.dataset.currentCost) : null;
+
+                if (tds[4]) {
+                  if (effPrice != null && effCost != null && effCost !== 0) {
+                    const markup = ((effPrice - effCost) / effCost) * 100;
+                    tds[4].textContent = markup.toFixed(1) + "%";
+                    tds[4].style.color = markup > 0 ? "var(--success)" : markup < 0 ? "var(--danger)" : "";
+                  } else {
+                    tds[4].textContent = "-";
+                    tds[4].style.color = "";
+                  }
+                }
+
+                if (tds[5]) {
+                  const pCost = priceUpdatesState.primaryCost;
+                  if (parseInt(sid) === primaryStoreId || effCost == null || pCost == null || pCost === 0) {
+                    tds[5].textContent = "-";
+                    tds[5].style.color = "";
+                  } else {
+                    const costMarkup = ((effCost - pCost) / pCost) * 100;
+                    tds[5].textContent = costMarkup.toFixed(1) + "%";
+                    tds[5].style.color = costMarkup > 0 ? "var(--danger)" : costMarkup < 0 ? "var(--success)" : "";
+                  }
+                }
+              });
+            });
+
+            setTimeout(() => {
+              const descInput = document.getElementById("price-fs-desc-input");
+              if (descInput) descInput.focus();
+            }, 100);
           }
         }
       }
@@ -6648,7 +6733,7 @@ function handlePriceAutocompleteKeydown(e) {
 
 // Fullscreen compact search
 function searchFromFullscreen() {
-  if (priceUpdatesState.isSearching || priceUpdatesState.isUpdating) return;
+  if (priceUpdatesState.isUpdating) return;
 
   const upc = document.getElementById("price-fs-upc-input").value.trim();
   if (!upc) {
