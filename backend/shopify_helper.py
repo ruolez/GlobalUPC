@@ -714,8 +714,9 @@ async def search_product_prices_with_siblings(
     try:
         shop_domain = validate_shop_domain(shop_domain)
 
-        query = """
-        query searchPricesWithSiblings($query: String!) {
+        # Call 1: Search variants by barcode (lightweight — no nested product.variants)
+        search_query = """
+        query searchPricesByBarcodes($query: String!) {
           productVariants(first: 100, query: $query) {
             edges {
               node {
@@ -733,22 +734,6 @@ async def search_product_prices_with_siblings(
                   id
                   title
                   status
-                  variants(first: 100) {
-                    edges {
-                      node {
-                        id
-                        barcode
-                        sku
-                        displayName
-                        title
-                        price
-                        inventoryItem {
-                          id
-                          unitCost { amount currencyCode }
-                        }
-                      }
-                    }
-                  }
                 }
               }
             }
@@ -758,29 +743,29 @@ async def search_product_prices_with_siblings(
 
         BATCH_SIZE = 50
         all_matched_variants = []
-        variants_by_product_id: Dict[str, List[Dict[str, Any]]] = {}
+        unique_product_ids = {}
+
+        url = f"https://{shop_domain}/admin/api/{api_version}/graphql.json"
+        headers = {
+            "X-Shopify-Access-Token": admin_api_key,
+            "Content-Type": "application/json"
+        }
 
         for batch_start in range(0, len(barcodes), BATCH_SIZE):
             batch = barcodes[batch_start:batch_start + BATCH_SIZE]
 
             if len(batch) == 1:
-                query_str = f"barcode:{batch[0]} product_status:ACTIVE"
+                query_str = f"barcode:{batch[0]}"
             else:
                 or_parts = " OR ".join(f"barcode:{bc}" for bc in batch)
-                query_str = f"({or_parts}) product_status:ACTIVE"
+                query_str = f"({or_parts})"
 
             variables = {"query": query_str}
-
-            url = f"https://{shop_domain}/admin/api/{api_version}/graphql.json"
-            headers = {
-                "X-Shopify-Access-Token": admin_api_key,
-                "Content-Type": "application/json"
-            }
 
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     url,
-                    json={"query": query, "variables": variables},
+                    json={"query": search_query, "variables": variables},
                     headers=headers,
                     timeout=aiohttp.ClientTimeout(total=30)
                 ) as response:
@@ -822,26 +807,92 @@ async def search_product_prices_with_siblings(
                         }
                         all_matched_variants.append(matched_variant)
 
-                        if product_id and product_id not in variants_by_product_id:
-                            product_variants = []
-                            prod_edges = product.get("variants", {}).get("edges", [])
-                            for prod_edge in prod_edges:
-                                pv_node = prod_edge.get("node", {})
-                                pv_inv = pv_node.get("inventoryItem") or {}
-                                pv_cost = pv_inv.get("unitCost") or {}
-                                product_variants.append({
-                                    "variant_id": pv_node.get("id"),
-                                    "product_id": product_id,
-                                    "product_title": product.get("title"),
-                                    "variant_title": pv_node.get("title") or "Default",
-                                    "display_name": pv_node.get("displayName"),
-                                    "barcode": pv_node.get("barcode"),
-                                    "sku": pv_node.get("sku"),
-                                    "price": pv_node.get("price"),
-                                    "cost": pv_cost.get("amount"),
-                                    "inventory_item_id": pv_inv.get("id"),
-                                })
-                            variants_by_product_id[product_id] = product_variants
+                        if product_id:
+                            unique_product_ids[product_id] = product.get("title")
+
+        if not all_matched_variants:
+            return True, None, [], {}
+
+        # Call 2: Batch-fetch all variants for each unique product using aliases
+        variants_by_product_id: Dict[str, List[Dict[str, Any]]] = {}
+        product_id_list = list(unique_product_ids.keys())
+        PRODUCTS_PER_QUERY = 8
+
+        for chunk_start in range(0, len(product_id_list), PRODUCTS_PER_QUERY):
+            chunk = product_id_list[chunk_start:chunk_start + PRODUCTS_PER_QUERY]
+
+            alias_parts = []
+            for i, pid in enumerate(chunk):
+                alias_parts.append(f"""
+                    p{i}: product(id: "{pid}") {{
+                        id
+                        title
+                        status
+                        variants(first: 100) {{
+                            edges {{
+                                node {{
+                                    id
+                                    barcode
+                                    sku
+                                    displayName
+                                    title
+                                    price
+                                    inventoryItem {{
+                                        id
+                                        unitCost {{ amount currencyCode }}
+                                    }}
+                                }}
+                            }}
+                        }}
+                    }}
+                """)
+
+            alias_query = "query {\n" + "\n".join(alias_parts) + "\n}"
+
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    url,
+                    json={"query": alias_query},
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=30)
+                ) as response:
+                    if response.status != 200:
+                        continue
+
+                    data = await response.json()
+
+                    if "errors" in data:
+                        continue
+
+                    query_data = data.get("data", {})
+
+                    for i, pid in enumerate(chunk):
+                        product = query_data.get(f"p{i}")
+                        if not product or product.get("status") != "ACTIVE":
+                            continue
+
+                        product_title = product.get("title")
+                        product_variants = []
+                        prod_edges = product.get("variants", {}).get("edges", [])
+
+                        for prod_edge in prod_edges:
+                            pv_node = prod_edge.get("node", {})
+                            pv_inv = pv_node.get("inventoryItem") or {}
+                            pv_cost = pv_inv.get("unitCost") or {}
+                            product_variants.append({
+                                "variant_id": pv_node.get("id"),
+                                "product_id": pid,
+                                "product_title": product_title,
+                                "variant_title": pv_node.get("title") or "Default",
+                                "display_name": pv_node.get("displayName"),
+                                "barcode": pv_node.get("barcode"),
+                                "sku": pv_node.get("sku"),
+                                "price": pv_node.get("price"),
+                                "cost": pv_cost.get("amount"),
+                                "inventory_item_id": pv_inv.get("id"),
+                            })
+
+                        variants_by_product_id[pid] = product_variants
 
         return True, None, all_matched_variants, variants_by_product_id
 
