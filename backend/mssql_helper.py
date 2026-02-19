@@ -2596,6 +2596,69 @@ async def get_item_prices_async(
         )
 
 
+def get_item_prices_batch(
+    host: str,
+    port: int,
+    database: str,
+    username: str,
+    password: str,
+    upcs: list[str],
+    tds_version: str = "7.4"
+) -> tuple[bool, Optional[str], Dict[str, Dict[str, Any]]]:
+    conn_str = get_mssql_connection_string(host, port, database, username, password, tds_version)
+
+    try:
+        conn = pyodbc.connect(conn_str, timeout=30)
+        cursor = conn.cursor()
+
+        results: Dict[str, Dict[str, Any]] = {}
+        MAX_PARAMS = 2000
+
+        for batch_start in range(0, len(upcs), MAX_PARAMS):
+            batch = upcs[batch_start:batch_start + MAX_PARAMS]
+            placeholders = ",".join(["?"] * len(batch))
+            cursor.execute(
+                f"SELECT ProductID, ProductUPC, ProductDescription, UnitPrice, UnitCost, UnitPriceC "
+                f"FROM Items_tbl WHERE ProductUPC IN ({placeholders}) AND Discontinued = 0",
+                batch
+            )
+            for row in cursor.fetchall():
+                upc_val = str(row[1]).strip() if row[1] else ""
+                results[upc_val] = {
+                    "product_id": row[0],
+                    "product_upc": row[1],
+                    "description": row[2],
+                    "unit_price": float(row[3]) if row[3] is not None else None,
+                    "unit_cost": float(row[4]) if row[4] is not None else None,
+                    "unit_delivery_b": float(row[5]) if row[5] is not None else None,
+                }
+
+        cursor.close()
+        conn.close()
+
+        return True, None, results
+
+    except Exception as e:
+        return False, str(e), {}
+
+
+async def get_item_prices_batch_async(
+    host: str,
+    port: int,
+    database: str,
+    username: str,
+    password: str,
+    upcs: list[str],
+    tds_version: str = "7.4"
+) -> tuple[bool, Optional[str], Dict[str, Dict[str, Any]]]:
+    loop = asyncio.get_event_loop()
+    with ThreadPoolExecutor() as executor:
+        return await loop.run_in_executor(
+            executor,
+            lambda: get_item_prices_batch(host, port, database, username, password, upcs, tds_version)
+        )
+
+
 def update_item_prices(
     host: str,
     port: int,

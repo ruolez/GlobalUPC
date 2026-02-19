@@ -705,6 +705,152 @@ async def get_all_product_variant_prices(
         return False, f"Unexpected error: {str(e)}", []
 
 
+async def search_product_prices_with_siblings(
+    shop_domain: str,
+    admin_api_key: str,
+    barcodes: list[str],
+    api_version: str = "2025-01"
+) -> tuple[bool, Optional[str], List[Dict[str, Any]], Dict[str, List[Dict[str, Any]]]]:
+    try:
+        shop_domain = validate_shop_domain(shop_domain)
+
+        query = """
+        query searchPricesWithSiblings($query: String!) {
+          productVariants(first: 100, query: $query) {
+            edges {
+              node {
+                id
+                barcode
+                sku
+                displayName
+                title
+                price
+                inventoryItem {
+                  id
+                  unitCost { amount currencyCode }
+                }
+                product {
+                  id
+                  title
+                  status
+                  variants(first: 100) {
+                    edges {
+                      node {
+                        id
+                        barcode
+                        sku
+                        displayName
+                        title
+                        price
+                        inventoryItem {
+                          id
+                          unitCost { amount currencyCode }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        """
+
+        BATCH_SIZE = 50
+        all_matched_variants = []
+        variants_by_product_id: Dict[str, List[Dict[str, Any]]] = {}
+
+        for batch_start in range(0, len(barcodes), BATCH_SIZE):
+            batch = barcodes[batch_start:batch_start + BATCH_SIZE]
+
+            if len(batch) == 1:
+                query_str = f"barcode:{batch[0]} product_status:ACTIVE"
+            else:
+                or_parts = " OR ".join(f"barcode:{bc}" for bc in batch)
+                query_str = f"({or_parts}) product_status:ACTIVE"
+
+            variables = {"query": query_str}
+
+            url = f"https://{shop_domain}/admin/api/{api_version}/graphql.json"
+            headers = {
+                "X-Shopify-Access-Token": admin_api_key,
+                "Content-Type": "application/json"
+            }
+
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    url,
+                    json={"query": query, "variables": variables},
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=30)
+                ) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        return False, f"HTTP {response.status}: {error_text}", [], {}
+
+                    data = await response.json()
+
+                    if "errors" in data:
+                        errors = data["errors"]
+                        error_msg = "; ".join([e.get("message", str(e)) for e in errors])
+                        return False, f"GraphQL errors: {error_msg}", [], {}
+
+                    edges = data.get("data", {}).get("productVariants", {}).get("edges", [])
+
+                    for edge in edges:
+                        node = edge.get("node", {})
+                        product = node.get("product", {})
+
+                        if product.get("status") != "ACTIVE":
+                            continue
+
+                        inventory_item = node.get("inventoryItem") or {}
+                        unit_cost = inventory_item.get("unitCost") or {}
+                        product_id = product.get("id")
+
+                        matched_variant = {
+                            "variant_id": node.get("id"),
+                            "product_id": product_id,
+                            "product_title": product.get("title"),
+                            "variant_title": node.get("title") or "Default",
+                            "display_name": node.get("displayName"),
+                            "barcode": node.get("barcode"),
+                            "sku": node.get("sku"),
+                            "price": node.get("price"),
+                            "cost": unit_cost.get("amount"),
+                            "inventory_item_id": inventory_item.get("id"),
+                        }
+                        all_matched_variants.append(matched_variant)
+
+                        if product_id and product_id not in variants_by_product_id:
+                            product_variants = []
+                            prod_edges = product.get("variants", {}).get("edges", [])
+                            for prod_edge in prod_edges:
+                                pv_node = prod_edge.get("node", {})
+                                pv_inv = pv_node.get("inventoryItem") or {}
+                                pv_cost = pv_inv.get("unitCost") or {}
+                                product_variants.append({
+                                    "variant_id": pv_node.get("id"),
+                                    "product_id": product_id,
+                                    "product_title": product.get("title"),
+                                    "variant_title": pv_node.get("title") or "Default",
+                                    "display_name": pv_node.get("displayName"),
+                                    "barcode": pv_node.get("barcode"),
+                                    "sku": pv_node.get("sku"),
+                                    "price": pv_node.get("price"),
+                                    "cost": pv_cost.get("amount"),
+                                    "inventory_item_id": pv_inv.get("id"),
+                                })
+                            variants_by_product_id[product_id] = product_variants
+
+        return True, None, all_matched_variants, variants_by_product_id
+
+    except aiohttp.ClientError as e:
+        return False, f"Network error: {str(e)}", [], {}
+    except Exception as e:
+        return False, f"Unexpected error: {str(e)}", [], {}
+
+
 async def update_variant_prices(
     shop_domain: str,
     admin_api_key: str,
