@@ -676,6 +676,13 @@ document.querySelectorAll(".modal").forEach((modal) => {
   });
 });
 
+// Prevent backdrop close on price-update-modal during updates
+document.getElementById("price-update-modal")?.addEventListener("click", (e) => {
+  if (priceUpdatesState.isUpdating && e.target.id === "price-update-modal") {
+    e.stopImmediatePropagation();
+  }
+}, true);
+
 // Test MSSQL Connection
 async function testMSSQLConnection() {
   const statusEl = document.getElementById("mssql-test-status");
@@ -5556,8 +5563,7 @@ async function searchPriceUpdates(overrideUpc, overrideIncludeSiblings) {
   searchBtn.disabled = true;
   if (fsSearchBtn) fsSearchBtn.disabled = true;
   resultsEl.style.display = "none";
-  document.getElementById("price-updates-confirm-panel").style.display = "none";
-  document.getElementById("price-updates-update-btn").parentElement.style.display = "";
+  closeModal("price-update-modal");
   progressItems.innerHTML = "";
   progressEl.style.display = "block";
 
@@ -5998,8 +6004,7 @@ function resetPriceUpdates() {
   document.getElementById("price-fill-all-price").value = "";
   document.getElementById("price-fill-all-cost").value = "";
   document.getElementById("price-fill-all-delivery-b").value = "";
-  document.getElementById("price-updates-confirm-panel").style.display = "none";
-  document.getElementById("price-updates-update-btn").parentElement.style.display = "";
+  closeModal("price-update-modal");
   hidePriceDescriptionDropdown();
   hideFsDescriptionDropdown();
   const fsUpcInput = document.getElementById("price-fs-upc-input");
@@ -6368,7 +6373,7 @@ function showUpdateConfirmation() {
     return;
   }
 
-  const summaryEl = document.getElementById("price-updates-confirm-summary");
+  const summaryEl = document.getElementById("price-update-modal-summary");
   const lines = [];
 
   updates.forEach((u) => {
@@ -6407,13 +6412,19 @@ function showUpdateConfirmation() {
   });
 
   summaryEl.innerHTML = lines.join("");
-  document.getElementById("price-updates-confirm-panel").style.display = "block";
-  document.getElementById("price-updates-update-btn").parentElement.style.display = "none";
+  document.getElementById("price-update-modal-title").textContent = "Review Changes";
+  document.getElementById("price-update-modal-summary").style.display = "";
+  document.getElementById("price-update-modal-progress").style.display = "none";
+  document.getElementById("price-update-modal-result").style.display = "none";
+  document.getElementById("price-update-modal-cancel-btn").style.display = "";
+  document.getElementById("price-update-modal-confirm-btn").style.display = "";
+  document.getElementById("price-update-modal-close-btn").style.display = "none";
+  document.getElementById("price-update-modal-x").style.display = "";
+  openModal("price-update-modal");
 }
 
 function hideUpdateConfirmation() {
-  document.getElementById("price-updates-confirm-panel").style.display = "none";
-  document.getElementById("price-updates-update-btn").parentElement.style.display = "";
+  closeModal("price-update-modal");
 }
 
 async function executeUpdate() {
@@ -6425,7 +6436,6 @@ async function executeUpdate() {
   const updates = collectPriceUpdates();
   if (updates.length === 0) return;
 
-  // Strip internal _store_name before sending to API
   const cleanUpdates = updates.map((u) => {
     const { _store_name, ...rest } = u;
     return rest;
@@ -6433,13 +6443,22 @@ async function executeUpdate() {
 
   priceUpdatesState.isUpdating = true;
   const updateBtn = document.getElementById("price-updates-update-btn");
-  const progressEl = document.getElementById("price-updates-update-progress");
-  const progressItems = document.getElementById("price-updates-update-progress-items");
+  const progressEl = document.getElementById("price-update-modal-progress");
+  const progressItems = document.getElementById("price-update-modal-progress-items");
+  const resultEl = document.getElementById("price-update-modal-result");
 
   updateBtn.disabled = true;
-  hideUpdateConfirmation();
+
+  // Transition modal to updating state
+  document.getElementById("price-update-modal-summary").style.display = "none";
   progressItems.innerHTML = "";
-  progressEl.style.display = "block";
+  progressEl.style.display = "";
+  resultEl.style.display = "none";
+  document.getElementById("price-update-modal-cancel-btn").style.display = "none";
+  document.getElementById("price-update-modal-confirm-btn").style.display = "none";
+  document.getElementById("price-update-modal-close-btn").style.display = "none";
+  document.getElementById("price-update-modal-x").style.display = "none";
+  document.getElementById("price-update-modal-title").textContent = "Updating...";
 
   let lastUpdateItem = null;
 
@@ -6490,10 +6509,16 @@ async function executeUpdate() {
           if (data.results) {
             const succeeded = data.results.filter((r) => r.success).length;
             const failed = data.results.filter((r) => !r.success).length;
-            showToast(
-              `Update complete: ${succeeded} succeeded, ${failed} failed`,
-              failed > 0 ? "error" : "success",
-            );
+
+            resultEl.textContent = `Update complete: ${succeeded} succeeded, ${failed} failed`;
+            resultEl.style.display = "";
+            if (failed > 0) {
+              resultEl.style.background = "color-mix(in srgb, var(--danger) 15%, transparent)";
+              resultEl.style.color = "var(--danger)";
+            } else {
+              resultEl.style.background = "color-mix(in srgb, var(--success) 15%, transparent)";
+              resultEl.style.color = "var(--success)";
+            }
 
             const primaryStoreId = priceUpdatesState.config?.primaryStoreId;
             const updTbody = document.getElementById("price-updates-tbody");
@@ -6576,14 +6601,19 @@ async function executeUpdate() {
     }
   } catch (error) {
     console.error("Error updating prices:", error);
-    showToast(`Update failed: ${error.message}`, "error");
+    resultEl.textContent = `Update failed: ${error.message}`;
+    resultEl.style.display = "";
+    resultEl.style.background = "color-mix(in srgb, var(--danger) 15%, transparent)";
+    resultEl.style.color = "var(--danger)";
   } finally {
     priceUpdatesState.isUpdating = false;
     updateBtn.disabled = false;
     progressItems.querySelectorAll(".progress-spinner").forEach((s) => {
       s.outerHTML = '<span class="progress-icon success">\u2713</span>';
     });
-    setTimeout(() => { progressEl.style.display = "none"; }, 800);
+    document.getElementById("price-update-modal-title").textContent = "Update Complete";
+    document.getElementById("price-update-modal-close-btn").style.display = "";
+    document.getElementById("price-update-modal-x").style.display = "";
   }
 }
 
@@ -6951,10 +6981,13 @@ document
   .getElementById("price-updates-update-btn")
   ?.addEventListener("click", showUpdateConfirmation);
 document
-  .getElementById("price-updates-confirm-btn")
+  .getElementById("price-update-modal-confirm-btn")
   ?.addEventListener("click", executeUpdate);
 document
-  .getElementById("price-updates-cancel-btn")
+  .getElementById("price-update-modal-cancel-btn")
+  ?.addEventListener("click", hideUpdateConfirmation);
+document
+  .getElementById("price-update-modal-close-btn")
   ?.addEventListener("click", hideUpdateConfirmation);
 document
   .getElementById("price-updates-desc-input")
@@ -7201,8 +7234,8 @@ document.addEventListener("keydown", (e) => {
     const results = document.getElementById("price-updates-results");
     if (page && page.style.display !== "none" && results && results.style.display !== "none") {
       e.preventDefault();
-      const confirmPanel = document.getElementById("price-updates-confirm-panel");
-      if (confirmPanel && confirmPanel.style.display !== "none") {
+      const modal = document.getElementById("price-update-modal");
+      if (modal && modal.classList.contains("active")) {
         executeUpdate();
       } else {
         showUpdateConfirmation();
@@ -7211,9 +7244,17 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-// ESC key: history tab → switch to prices; prices tab → exit confirmation
+// ESC key: close price update modal, or handle fullscreen tabs
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
+    const priceModal = document.getElementById("price-update-modal");
+    if (priceModal && priceModal.classList.contains("active")) {
+      if (!priceUpdatesState.isUpdating) {
+        e.preventDefault();
+        hideUpdateConfirmation();
+      }
+      return;
+    }
     if (document.getElementById("price-exit-confirm-overlay")) return;
     const results = document.getElementById("price-updates-results");
     if (results && results.classList.contains("results-fullscreen")) {
@@ -8032,7 +8073,7 @@ function switchFullscreenTab(tab) {
   const fsSearch = document.getElementById("price-fs-search");
 
   const priceElements = document.querySelectorAll(
-    ".fill-all-row, .price-table-scroll, .price-update-btn-row, #price-updates-confirm-panel, #price-updates-update-progress, #price-filter-zone"
+    ".fill-all-row, .price-table-scroll, .price-update-btn-row, #price-filter-zone"
   );
 
   if (tab === "history") {

@@ -1811,13 +1811,6 @@ body.no-scroll {
   flex-shrink: 0;
 }
 
-.results-fullscreen #price-updates-confirm-panel {
-  flex-shrink: 0;
-}
-
-.results-fullscreen #price-updates-update-progress {
-  flex-shrink: 0;
-}
 
 .price-sticky-wrapper {
   position: relative;
