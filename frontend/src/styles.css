@@ -970,9 +970,9 @@ body {
 
 .data-table th {
   background: var(--bg-tertiary);
-  color: var(--text-secondary);
+  color: var(--text-primary);
   font-weight: 600;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
@@ -1094,7 +1094,7 @@ body {
 }
 
 .ph-change-old {
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
   font-size: 0.8125rem;
 }
 
@@ -1255,9 +1255,9 @@ body {
   background: var(--bg-tertiary);
   padding: 0.5rem 0.875rem;
   text-align: left;
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
   font-weight: 700;
-  color: var(--text-secondary);
+  color: var(--text-primary);
   text-transform: uppercase;
   letter-spacing: 0.025em;
   border-bottom: 1px solid var(--border-color);
@@ -1308,9 +1308,9 @@ body {
 }
 
 .fill-all-last-label {
-  font-size: 0.625rem;
-  color: var(--text-tertiary);
-  font-weight: 500;
+  font-size: 0.6875rem;
+  color: var(--text-secondary);
+  font-weight: 600;
   white-space: nowrap;
   min-height: 0.75rem;
 }
@@ -1333,7 +1333,7 @@ body {
 }
 
 .not-found-row td {
-  opacity: 0.4;
+  opacity: 0.5;
   font-style: italic;
 }
 
@@ -1343,7 +1343,7 @@ body {
 
 .store-header-row td {
   font-weight: 600;
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
   text-transform: uppercase;
   letter-spacing: 0.025em;
   color: var(--text-secondary);
@@ -1357,8 +1357,8 @@ body {
   align-items: center;
   gap: 0.375rem;
   padding: 0.25rem 0.625rem;
-  font-size: 0.75rem;
-  font-weight: 500;
+  font-size: 0.8125rem;
+  font-weight: 600;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-color);
   background: var(--bg-tertiary);
@@ -1417,7 +1417,7 @@ body {
 .store-filter-row-label {
   min-width: 60px;
   padding: 0.25rem 0.5rem;
-  font-size: 0.625rem;
+  font-size: 0.6875rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -1481,7 +1481,7 @@ body {
 }
 
 .price-filter-zone-summary {
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--text-secondary);
   font-weight: 500;
 }
@@ -1493,7 +1493,7 @@ body {
 }
 
 .price-filter-zone-badge {
-  font-size: 0.625rem;
+  font-size: 0.6875rem;
   font-weight: 600;
   padding: 0.125rem 0.375rem;
   border-radius: var(--radius-sm);
@@ -1587,7 +1587,7 @@ body {
 }
 
 .price-loading-overlay .overlay-status {
-  color: rgba(255, 255, 255, 0.7);
+  color: rgba(255, 255, 255, 0.85);
   font-size: 0.8rem;
 }
 
@@ -1607,7 +1607,7 @@ body {
 .tab-bar-item {
   padding: 0.625rem 1.25rem;
   font-size: 0.875rem;
-  font-weight: 500;
+  font-weight: 600;
   color: var(--text-secondary);
   border-bottom: 2px solid transparent;
   cursor: pointer;
@@ -1627,8 +1627,8 @@ body {
 /* Current Value Display */
 .current-value {
   display: block;
-  font-size: 0.75rem;
-  color: var(--text-secondary);
+  font-size: 0.8125rem;
+  color: var(--text-primary);
   font-weight: 500;
   margin-bottom: 0.125rem;
   white-space: nowrap;
@@ -1670,7 +1670,7 @@ body {
 }
 
 .price-change-badge.mixed {
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
 }
 
 /* Filled Row Indicator - store border-left now provides visual grouping */
@@ -1713,7 +1713,7 @@ body.no-scroll {
 
 .price-fs-tab {
   padding: 0.375rem 0.875rem;
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
   font-weight: 500;
   color: var(--text-secondary);
   background: transparent;
@@ -1850,13 +1850,13 @@ body.no-scroll {
 }
 
 .price-sticky-bar-sep {
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
   flex-shrink: 0;
 }
 
 .price-sticky-bar-desc {
   font-size: 0.875rem;
-  color: var(--text-secondary);
+  color: var(--text-primary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1962,7 +1962,7 @@ body.no-scroll {
   display: flex;
   align-items: center;
   gap: 0.25rem;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--text-secondary);
   white-space: nowrap;
   cursor: pointer;
@@ -2021,9 +2021,9 @@ body.no-scroll {
 
 .price-shortcuts-tooltip td {
   padding: 0.25rem 0;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--text-secondary);
-  font-weight: 400;
+  font-weight: 500;
 }
 
 .price-shortcuts-tooltip td:first-child {
@@ -2111,7 +2111,7 @@ body.no-scroll {
 }
 
 .price-excluded {
-  opacity: 0.35;
+  opacity: 0.45;
 }
 
 .price-excluded .price-input {
@@ -2151,7 +2151,7 @@ body.no-scroll {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
   color: var(--text-secondary);
 }
 

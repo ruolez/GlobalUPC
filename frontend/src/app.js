@@ -5786,7 +5786,7 @@ function displayPriceResults(upc, prices, siblingPrices) {
           ? `<td>${currentValueSpan(currentDeliveryB)}<input type="number" class="dark-input price-input new-delivery-b" step="0.01" min="0" placeholder="${currentDeliveryB}"></td>`
           : `<td style="color: var(--text-tertiary)">-</td>`;
         tr.innerHTML = `
-          <td style="font-size: 0.8125rem; color: var(--text-secondary)">${mssqlDesc} [${escapeHtml(upc)}]</td>
+          <td style="font-size: 0.875rem; color: var(--text-primary)">${mssqlDesc} [${escapeHtml(upc)}]</td>
           <td>${currentValueSpan(currentPrice)}<input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="${currentPrice}"></td>
           <td>${currentValueSpan(currentCost)}<input type="number" class="dark-input price-input new-cost" step="0.01" min="0" placeholder="${currentCost}"></td>
           ${deliveryBCell}
@@ -5822,7 +5822,7 @@ function displayPriceResults(upc, prices, siblingPrices) {
           const vMarkup = formatMarkup(vPriceNum, vCostNum);
           const vCostMarkup = formatCostMarkup(vCostNum, primaryCost, p.store_id);
           tr.innerHTML = `
-            <td style="font-size: 0.8125rem; color: var(--text-secondary)">${variantLabel}${barcodeLabel}</td>
+            <td style="font-size: 0.875rem; color: var(--text-primary)">${variantLabel}${barcodeLabel}</td>
             <td>${currentValueSpan(vPrice)}<input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="${vPrice}"></td>
             <td>${currentValueSpan(vCost)}<input type="number" class="dark-input price-input new-cost" step="0.01" min="0" placeholder="${vCost}"></td>
             <td style="color: var(--text-tertiary)">-</td>
@@ -5861,7 +5861,7 @@ function displayPriceResults(upc, prices, siblingPrices) {
         : `<td style="color: var(--text-tertiary)">-</td>`;
 
       tr.innerHTML = `
-        <td style="color: var(--text-tertiary); font-size: 0.8125rem">${siblingLabel}</td>
+        <td style="color: var(--text-secondary); font-size: 0.875rem">${siblingLabel}</td>
         <td>${currentValueSpan(currentPrice)}<input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="${currentPrice}"></td>
         <td>${currentValueSpan(currentCost)}<input type="number" class="dark-input price-input new-cost" step="0.01" min="0" placeholder="${currentCost}"></td>
         ${siblingDeliveryBCell}
@@ -7454,7 +7454,7 @@ function displayPriceHistory(batches, total, targetConfig = null) {
     // Product
     const productCell = document.createElement("td");
     productCell.style.fontSize = "0.875rem";
-    productCell.style.color = "var(--text-secondary)";
+    productCell.style.color = "var(--text-primary)";
     productCell.textContent = batch.product_description || "-";
     batchRow.appendChild(productCell);
 
@@ -7626,15 +7626,15 @@ function displayPriceHistory(batches, total, targetConfig = null) {
       // Barcode (under UPC column)
       const upcCell = document.createElement("td");
       upcCell.style.fontFamily = "monospace";
-      upcCell.style.fontSize = "0.75rem";
-      upcCell.style.color = "var(--text-tertiary)";
+      upcCell.style.fontSize = "0.8125rem";
+      upcCell.style.color = "var(--text-secondary)";
       upcCell.textContent = entry.variant_barcode || entry.upc || "";
       detailRow.appendChild(upcCell);
 
       // Store name + product description + variant (under Product column)
       const descCell = document.createElement("td");
-      descCell.style.fontSize = "0.8125rem";
-      descCell.style.color = "var(--text-secondary)";
+      descCell.style.fontSize = "0.875rem";
+      descCell.style.color = "var(--text-primary)";
       const storeSpan = document.createElement("span");
       storeSpan.style.color = getStoreColor(entry.store_id);
       storeSpan.style.fontWeight = "600";
