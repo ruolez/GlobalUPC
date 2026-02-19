@@ -5725,12 +5725,19 @@ function displayPriceResults(upc, prices, siblingPrices) {
     const sd = storeData[storeId];
     if (sd.mainRows.length === 0 && sd.siblingRows.length === 0) return;
 
+    const sid = parseInt(storeId);
+    const storeColor = getStoreColor(sid);
+    const storeBg = getStoreBgColor(sid);
+    const storeBgStrong = getStoreBgColor(sid, "strong");
+
     const headerTr = document.createElement("tr");
     headerTr.classList.add("store-header-row");
     headerTr.dataset.storeId = storeId;
+    headerTr.style.borderLeft = `3px solid ${storeColor}`;
     const headerTd = document.createElement("td");
     headerTd.colSpan = 7;
-    headerTd.style.color = getStoreColor(parseInt(storeId));
+    headerTd.style.color = storeColor;
+    headerTd.style.background = storeBgStrong;
     headerTd.textContent = sd.storeName;
     headerTr.appendChild(headerTd);
     tbody.appendChild(headerTr);
@@ -5739,6 +5746,8 @@ function displayPriceResults(upc, prices, siblingPrices) {
     sd.mainRows.forEach((p) => {
       if (p.store_type === "mssql") {
         const tr = document.createElement("tr");
+        tr.style.backgroundColor = storeBg;
+        tr.style.borderLeft = `3px solid ${storeColor}`;
         tr.dataset.storeId = p.store_id;
         tr.dataset.storeType = "mssql";
         tr.dataset.barcode = upc;
@@ -5772,6 +5781,8 @@ function displayPriceResults(upc, prices, siblingPrices) {
         p.variants.forEach((v) => {
           const tr = document.createElement("tr");
           tr.classList.add("variant-subrow");
+          tr.style.backgroundColor = storeBg;
+          tr.style.borderLeft = `3px solid ${storeColor}`;
           tr.dataset.storeId = p.store_id;
           tr.dataset.storeType = "shopify";
           tr.dataset.variantId = v.variant_id;
@@ -5809,6 +5820,8 @@ function displayPriceResults(upc, prices, siblingPrices) {
     // Sibling rows
     sd.siblingRows.forEach((sp) => {
       const tr = document.createElement("tr");
+      tr.style.backgroundColor = storeBg;
+      tr.style.borderLeft = `3px solid ${storeColor}`;
       tr.dataset.storeId = sp.store_id;
       tr.dataset.storeType = "mssql";
       tr.dataset.barcode = sp.sibling_barcode;
@@ -6936,6 +6949,16 @@ function getStoreColor(storeId) {
   const palette = isLight ? STORE_PALETTE_LIGHT : STORE_PALETTE_DARK;
   const idx = ((storeId - 1) % palette.length + palette.length) % palette.length;
   return palette[idx];
+}
+
+function getStoreBgColor(storeId, intensity = "normal") {
+  const hex = getStoreColor(storeId);
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  const isLight = document.body.getAttribute("data-theme") === "author-light";
+  const alpha = intensity === "strong" ? (isLight ? 0.12 : 0.1) : (isLight ? 0.07 : 0.05);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
 function displayPriceHistory(batches, total, targetConfig = null) {

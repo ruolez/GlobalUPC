@@ -1305,8 +1305,11 @@ body {
   font-style: italic;
 }
 
+.price-table tbody tr {
+  border-left: 3px solid transparent;
+}
+
 .store-header-row td {
-  background: var(--bg-secondary);
   font-weight: 600;
   font-size: 0.75rem;
   text-transform: uppercase;
