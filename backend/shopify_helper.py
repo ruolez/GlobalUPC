@@ -944,33 +944,46 @@ async def update_variant_prices(
             "Content-Type": "application/json"
         }
 
+        max_retries = 3
+        backoff_seconds = [1, 2, 4]
+
         async with aiohttp.ClientSession() as session:
-            async with session.post(
-                url,
-                json={"query": mutation, "variables": variables},
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=30)
-            ) as response:
-                if response.status != 200:
-                    error_text = await response.text()
-                    return False, f"HTTP {response.status}: {error_text}", 0
+            for attempt in range(max_retries + 1):
+                async with session.post(
+                    url,
+                    json={"query": mutation, "variables": variables},
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=30)
+                ) as response:
+                    if response.status == 429:
+                        if attempt < max_retries:
+                            await asyncio.sleep(backoff_seconds[attempt])
+                            continue
+                        return False, "Shopify rate limit exceeded after retries", 0
 
-                data = await response.json()
+                    if response.status != 200:
+                        error_text = await response.text()
+                        return False, f"HTTP {response.status}: {error_text}", 0
 
-                if "errors" in data:
-                    errors = data["errors"]
-                    error_msg = "; ".join([e.get("message", str(e)) for e in errors])
-                    return False, f"GraphQL errors: {error_msg}", 0
+                    data = await response.json()
 
-                result = data.get("data", {}).get("productVariantsBulkUpdate", {})
-                user_errors = result.get("userErrors", [])
+                    if "errors" in data:
+                        errors = data["errors"]
+                        error_msg = "; ".join([e.get("message", str(e)) for e in errors])
+                        if "throttl" in error_msg.lower() and attempt < max_retries:
+                            await asyncio.sleep(backoff_seconds[attempt])
+                            continue
+                        return False, f"GraphQL errors: {error_msg}", 0
 
-                if user_errors:
-                    error_msg = "; ".join([e.get("message", str(e)) for e in user_errors])
-                    return False, f"Update errors: {error_msg}", 0
+                    result = data.get("data", {}).get("productVariantsBulkUpdate", {})
+                    user_errors = result.get("userErrors", [])
 
-                updated_variants = result.get("productVariants", [])
-                return True, None, len(updated_variants)
+                    if user_errors:
+                        error_msg = "; ".join([e.get("message", str(e)) for e in user_errors])
+                        return False, f"Update errors: {error_msg}", 0
+
+                    updated_variants = result.get("productVariants", [])
+                    return True, None, len(updated_variants)
 
     except aiohttp.ClientError as e:
         return False, f"Network error: {str(e)}", 0

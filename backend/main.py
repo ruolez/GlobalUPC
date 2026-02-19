@@ -3549,28 +3549,107 @@ async def update_prices_stream(request: PriceUpdateRequest, db: Session = Depend
         batch_id = str(uuid.uuid4())
         results = []
 
+        valid_updates = []
         for update in request.updates:
             store = db.query(Store).filter(Store.id == update.store_id, Store.is_active == True).first()
             if not store:
                 results.append({"store_id": update.store_id, "store_name": "Unknown", "success": False, "error": "Store not found"})
                 continue
+            valid_updates.append((update, store))
 
-            yield f"event: progress\ndata: {json.dumps({'status': 'updating', 'message': f'Updating {store.name}...'})}\n\n"
+        if not valid_updates:
+            yield f"event: complete\ndata: {json.dumps({'results': results, 'batch_id': batch_id})}\n\n"
+            return
 
+        yield f"event: progress\ndata: {json.dumps({'status': 'updating', 'message': f'Updating {len(valid_updates)} store(s) in parallel...'})}\n\n"
+
+        async def update_mssql_store(update, store):
+            conn = store.mssql_connection
+            effective_upc = update.upc or upc
+            success, error, rows, server_time = await update_item_prices_async(
+                host=conn.host,
+                port=conn.port,
+                database=conn.database_name,
+                username=conn.username,
+                password=conn.password,
+                upc=effective_upc,
+                unit_price=update.new_price,
+                unit_cost=update.new_cost,
+                unit_delivery_b=update.new_delivery_b
+            )
+            return {
+                "type": "mssql",
+                "update": update,
+                "store": store,
+                "effective_upc": effective_upc,
+                "success": success,
+                "error": error,
+                "rows": rows,
+                "server_time": server_time,
+            }
+
+        async def update_shopify_store(update, store):
+            conn = store.shopify_connection
+            products = {}
+            for vu in update.variant_updates:
+                pid = vu["product_id"]
+                if pid not in products:
+                    products[pid] = []
+                products[pid].append(vu)
+
+            sem = asyncio.Semaphore(4)
+
+            async def update_product(product_id, variants):
+                async with sem:
+                    return await update_variant_prices(
+                        shop_domain=conn.shop_domain,
+                        admin_api_key=conn.admin_api_key,
+                        product_id=product_id,
+                        variant_updates=variants,
+                        api_version=conn.api_version
+                    )
+
+            product_results = await asyncio.gather(
+                *(update_product(pid, variants) for pid, variants in products.items())
+            )
+
+            total_updated = 0
+            errors = []
+            for success, error, count in product_results:
+                if success:
+                    total_updated += count
+                else:
+                    errors.append(error)
+
+            return {
+                "type": "shopify",
+                "update": update,
+                "store": store,
+                "success": len(errors) == 0,
+                "total_updated": total_updated,
+                "errors": errors,
+            }
+
+        tasks = {}
+        for update, store in valid_updates:
             if update.store_type == "mssql" and store.mssql_connection:
-                conn = store.mssql_connection
-                effective_upc = update.upc or upc
-                success, error, rows, server_time = await update_item_prices_async(
-                    host=conn.host,
-                    port=conn.port,
-                    database=conn.database_name,
-                    username=conn.username,
-                    password=conn.password,
-                    upc=effective_upc,
-                    unit_price=update.new_price,
-                    unit_cost=update.new_cost,
-                    unit_delivery_b=update.new_delivery_b
-                )
+                task = asyncio.create_task(update_mssql_store(update, store))
+                tasks[task] = store.name
+            elif update.store_type == "shopify" and store.shopify_connection and update.variant_updates:
+                task = asyncio.create_task(update_shopify_store(update, store))
+                tasks[task] = store.name
+
+        for coro in asyncio.as_completed(list(tasks.keys())):
+            result = await coro
+
+            if result["type"] == "mssql":
+                store = result["store"]
+                update = result["update"]
+                success = result["success"]
+                error = result["error"]
+                rows = result["rows"]
+                server_time = result["server_time"]
+                effective_upc = result["effective_upc"]
 
                 results.append({
                     "store_id": store.id,
@@ -3607,31 +3686,13 @@ async def update_prices_stream(request: PriceUpdateRequest, db: Session = Depend
                 else:
                     yield f"event: progress\ndata: {json.dumps({'status': 'error', 'message': f'Failed to update {store.name}: {error}'})}\n\n"
 
-            elif update.store_type == "shopify" and store.shopify_connection and update.variant_updates:
-                conn = store.shopify_connection
-                products = {}
-                for vu in update.variant_updates:
-                    pid = vu["product_id"]
-                    if pid not in products:
-                        products[pid] = []
-                    products[pid].append(vu)
+            elif result["type"] == "shopify":
+                store = result["store"]
+                update = result["update"]
+                store_success = result["success"]
+                total_updated = result["total_updated"]
+                errors = result["errors"]
 
-                total_updated = 0
-                errors = []
-                for product_id, variants in products.items():
-                    success, error, count = await update_variant_prices(
-                        shop_domain=conn.shop_domain,
-                        admin_api_key=conn.admin_api_key,
-                        product_id=product_id,
-                        variant_updates=variants,
-                        api_version=conn.api_version
-                    )
-                    if success:
-                        total_updated += count
-                    else:
-                        errors.append(error)
-
-                store_success = len(errors) == 0
                 results.append({
                     "store_id": store.id,
                     "store_name": store.name,
