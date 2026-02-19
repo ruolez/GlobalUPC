@@ -7647,6 +7647,6 @@ document.addEventListener("DOMContentLoaded", () => {
   navigateTo(defaultPage);
 
   // Load saved theme
-  const savedTheme = localStorage.getItem("selectedTheme") || "current";
+  const savedTheme = localStorage.getItem("selectedTheme") || "author-light";
   setTheme(savedTheme);
 });
