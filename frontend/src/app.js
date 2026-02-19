@@ -7549,9 +7549,15 @@ function displayPriceHistory(batches, total, targetConfig = null) {
     productCell.textContent = batch.product_description || "-";
     batchRow.appendChild(productCell);
 
-    // Change — net price direction badge
+    // Filter entries by active store chips for summary calculations
+    const activeStoreIds = activeStoreIdsFn();
+    const filteredEntries = activeStoreIds
+      ? batch.entries.filter((e) => activeStoreIds.has(String(e.store_id)))
+      : batch.entries;
+
+    // Change — net price direction badge (filtered by active stores)
     const changeCell = document.createElement("td");
-    const priceChanges = batch.entries
+    const priceChanges = filteredEntries
       .filter((e) => e.new_price != null && e.old_price != null)
       .map((e) => parseFloat(e.new_price) - parseFloat(e.old_price));
     if (priceChanges.length > 0) {
@@ -7577,13 +7583,14 @@ function displayPriceHistory(batches, total, targetConfig = null) {
     }
     batchRow.appendChild(changeCell);
 
-    // Updated — total rows_affected across all entries
+    // Updated — total rows_affected across filtered entries
     const updatedCell = document.createElement("td");
-    const totalRowsAffected = batch.entries.reduce((sum, e) => sum + (e.rows_affected || 0), 0);
+    const totalRowsAffected = filteredEntries.reduce((sum, e) => sum + (e.rows_affected || 0), 0);
     updatedCell.textContent = totalRowsAffected;
     updatedCell.style.fontWeight = "600";
     updatedCell.style.fontSize = "0.875rem";
-    updatedCell.title = `${totalRowsAffected} product${totalRowsAffected !== 1 ? "s" : ""} updated across ${batch.total_stores} store${batch.total_stores !== 1 ? "s" : ""}`;
+    const filteredStoreCount = filteredEntries.length;
+    updatedCell.title = `${totalRowsAffected} product${totalRowsAffected !== 1 ? "s" : ""} updated across ${filteredStoreCount} store${filteredStoreCount !== 1 ? "s" : ""}`;
     batchRow.appendChild(updatedCell);
 
     // Recall button
@@ -7645,7 +7652,6 @@ function displayPriceHistory(batches, total, targetConfig = null) {
     });
 
     // Store filter visibility
-    const activeStoreIds = activeStoreIdsFn();
     if (activeStoreIds) {
       const hasMatchingStore = batch.entries.some((entry) =>
         activeStoreIds.has(String(entry.store_id))
