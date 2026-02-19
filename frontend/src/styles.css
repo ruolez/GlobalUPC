@@ -1901,7 +1901,12 @@ body.no-scroll {
 
 .results-fullscreen .price-sticky-bar-info {
   flex: 0 1 auto;
-  max-width: 280px;
+}
+
+.results-fullscreen .price-sticky-bar-desc {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: unset;
 }
 
 .price-fs-search-input {
