@@ -5755,6 +5755,16 @@ function displayPriceResults(upc, prices, siblingPrices) {
     });
   }
 
+  // Ensure primary store appears first
+  const primaryId = priceUpdatesState.config?.primaryStoreId;
+  if (primaryId) {
+    const idx = storeOrder.indexOf(primaryId);
+    if (idx > 0) {
+      storeOrder.splice(idx, 1);
+      storeOrder.unshift(primaryId);
+    }
+  }
+
   // Render per store
   storeOrder.forEach((storeId) => {
     const sd = storeData[storeId];
