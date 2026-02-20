@@ -5241,7 +5241,7 @@ function buildStoreFilterChips(containerEl, stores, { localStorageKey, onToggle 
   }
 
   buildRow("SHOPIFY", "shopify", shopifyStores);
-  buildRow("MSSQL", "mssql", mssqlStores);
+  buildRow("BACKOFFICE", "mssql", mssqlStores);
 
   containerEl.appendChild(grid);
 
@@ -5392,7 +5392,7 @@ async function loadPriceUpdatesPage() {
       checkbox.style.margin = "0";
 
       const span = document.createElement("span");
-      span.textContent = `${store.name} (${store.store_type.toUpperCase()})`;
+      span.textContent = `${store.name} (${store.store_type === "mssql" ? "BACKOFFICE" : store.store_type.toUpperCase()})`;
 
       label.appendChild(checkbox);
       label.appendChild(span);
@@ -5908,9 +5908,10 @@ function displayPriceResults(upc, prices, siblingPrices) {
   });
   buildStoreFilterChips(filtersEl, chipStores, {
     localStorageKey: "priceActiveStores",
-    onToggle: () => { applyStoreFilters(); updatePriceFilterZoneSummary(); updateFillAllCount(); },
+    onToggle: () => { applyStoreFilters(); updateDeliveryBColumnVisibility(); updatePriceFilterZoneSummary(); updateFillAllCount(); },
   });
   updatePriceFilterZoneSummary();
+  updateDeliveryBColumnVisibility();
   initPriceFilterZoneCollapse();
 
   // Restore fill-all last-value labels from localStorage
@@ -5971,6 +5972,26 @@ function applyStoreFilters() {
       }
     }
     tr.style.display = anyVisible ? "" : "none";
+  });
+}
+
+function updateDeliveryBColumnVisibility() {
+  const primaryStoreId = priceUpdatesState.config?.primaryStoreId;
+  if (!primaryStoreId) return;
+
+  const primaryChip = document.querySelector(`#price-store-filters .store-filter-chip[data-store-id="${primaryStoreId}"]`);
+  const isActive = primaryChip && primaryChip.classList.contains("active");
+  const display = isActive ? "" : "none";
+
+  const th = document.getElementById("price-delivery-b-th");
+  if (th) th.style.display = display;
+
+  const fillGroup = document.getElementById("price-delivery-b-fill-group");
+  if (fillGroup) fillGroup.style.display = display;
+
+  document.querySelectorAll("#price-updates-tbody tr").forEach((tr) => {
+    const cells = tr.children;
+    if (cells.length >= 4) cells[3].style.display = display;
   });
 }
 
@@ -6244,8 +6265,8 @@ function updatePriceFilterZoneSummary() {
     if (mssqlCount > 0) {
       const badge = document.createElement("span");
       badge.className = "price-filter-zone-badge mssql";
-      badge.textContent = `MSSQL: ${mssqlCount}`;
-      badge.title = "Toggle all MSSQL stores";
+      badge.textContent = `BACKOFFICE: ${mssqlCount}`;
+      badge.title = "Toggle all BackOffice stores";
       badge.addEventListener("click", (e) => {
         e.stopPropagation();
         const mssqlLabel = document.querySelector("#price-store-filters .store-filter-row-label.mssql");

@@ -2541,13 +2541,13 @@
                 color: var(--text-secondary);
               "
             >
-              Select a primary MSSQL store for search and choose which stores to
+              Select a primary BackOffice store for search and choose which stores to
               include in price updates.
             </p>
 
             <div class="form-group">
               <label for="price-updates-primary-store"
-                >Primary MSSQL Store (for search)</label
+                >Primary BackOffice Store (for search)</label
               >
               <select
                 id="price-updates-primary-store"
@@ -2594,7 +2594,7 @@
                   display: block;
                 "
               >
-                Select MSSQL and Shopify stores where prices should be fetched
+                Select BackOffice and Shopify stores where prices should be fetched
                 and updated.
               </small>
             </div>
@@ -2863,7 +2863,7 @@
 
             <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.8125rem; color: var(--text-secondary); margin-bottom: 1rem; cursor: pointer; user-select: none;">
               <input type="checkbox" id="price-updates-include-siblings" checked style="accent-color: var(--accent-primary);" />
-              Include sibling barcodes in MSSQL
+              Include sibling barcodes in BackOffice
             </label>
 
             <!-- Search Progress Overlay -->
@@ -3034,7 +3034,7 @@
                     min="0"
                   />
                 </div>
-                <div class="fill-all-input-group">
+                <div class="fill-all-input-group" id="price-delivery-b-fill-group">
                   <span class="fill-all-last-label" id="price-fill-last-delivery-b"></span>
                   <input
                     type="number"
@@ -3071,7 +3071,7 @@
                       <th>Product</th>
                       <th>New Price</th>
                       <th>New Cost</th>
-                      <th>Delivery B</th>
+                      <th id="price-delivery-b-th">Delivery B</th>
                       <th>Markup</th>
                       <th>Cost Markup</th>
                       <th style="width: 2rem"></th>
