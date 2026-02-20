@@ -7099,14 +7099,6 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-// Exclude button toggling - update count
-document.getElementById("price-updates-tbody")?.addEventListener("click", (e) => {
-  const excludeBtn = e.target.closest(".price-exclude-btn");
-  if (excludeBtn) {
-    setTimeout(() => updateFillAllCount(), 0);
-  }
-});
-
 function roundPriceTo5or9(value) {
   const cents = Math.round(value * 100);
   const lastDigit = cents % 10;
@@ -7194,24 +7186,97 @@ function recalculateRowMarkup(tr) {
   }
 }
 
+const xIcon = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+const plusIcon = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h18"/><path d="M12 3v18"/></svg>';
+
+function excludePriceRow(tr) {
+  if (tr.classList.contains("price-excluded")) return;
+  tr.classList.add("price-excluded");
+  tr.querySelectorAll(".price-input").forEach((inp) => { inp.value = ""; inp.disabled = true; });
+  tr.classList.remove("filled-row");
+  tr.dataset.filled = "";
+  const btn = tr.querySelector(".price-exclude-btn");
+  if (btn) { btn.innerHTML = plusIcon; btn.title = "Restore row"; }
+  recalculateRowMarkup(tr);
+}
+
+function restorePriceRow(tr) {
+  if (!tr.classList.contains("price-excluded")) return;
+  tr.classList.remove("price-excluded");
+  tr.querySelectorAll(".price-input").forEach((inp) => { inp.disabled = false; });
+  const btn = tr.querySelector(".price-exclude-btn");
+  if (btn) { btn.innerHTML = xIcon; btn.title = "Exclude from update"; }
+  recalculateRowMarkup(tr);
+}
+
+let activeExcludePopover = null;
+
+function dismissExcludePopover() {
+  if (activeExcludePopover) {
+    activeExcludePopover.remove();
+    activeExcludePopover = null;
+  }
+}
+
+function getMatchingBarcodeRows(barcode) {
+  if (!barcode) return [];
+  return Array.from(document.querySelectorAll(`#price-updates-tbody tr:not(.store-header-row)[data-barcode="${CSS.escape(barcode)}"]`));
+}
+
+function showExcludePopover(btn, tr) {
+  dismissExcludePopover();
+  const isExcluded = tr.classList.contains("price-excluded");
+  const barcode = tr.dataset.barcode || "";
+  const matchingRows = getMatchingBarcodeRows(barcode);
+  const matchCount = matchingRows.length;
+
+  const popover = document.createElement("div");
+  popover.className = "price-exclude-popover";
+
+  const singleBtn = document.createElement("button");
+  singleBtn.className = "price-exclude-popover-item";
+  singleBtn.textContent = isExcluded ? "Restore this item" : "Exclude this item";
+  singleBtn.addEventListener("click", () => {
+    if (isExcluded) restorePriceRow(tr); else excludePriceRow(tr);
+    updateFillAllCount();
+    dismissExcludePopover();
+  });
+  popover.appendChild(singleBtn);
+
+  if (barcode && matchCount > 1) {
+    const allBtn = document.createElement("button");
+    allBtn.className = "price-exclude-popover-item";
+    const label = isExcluded ? "Restore in all stores" : "Exclude in all stores";
+    allBtn.innerHTML = `${label} <span class="popover-count">(${matchCount})</span>`;
+    allBtn.addEventListener("click", () => {
+      matchingRows.forEach((r) => { if (isExcluded) restorePriceRow(r); else excludePriceRow(r); });
+      updateFillAllCount();
+      dismissExcludePopover();
+    });
+    popover.appendChild(allBtn);
+  }
+
+  document.body.appendChild(popover);
+  activeExcludePopover = popover;
+
+  const rect = btn.getBoundingClientRect();
+  const popRect = popover.getBoundingClientRect();
+  let top = rect.top - popRect.height - 4;
+  let left = rect.right - popRect.width;
+  if (top < 4) top = rect.bottom + 4;
+  if (left < 4) left = 4;
+  if (left + popRect.width > window.innerWidth - 4) left = window.innerWidth - popRect.width - 4;
+  popover.style.top = top + "px";
+  popover.style.left = left + "px";
+}
+
 document.getElementById("price-updates-tbody")?.addEventListener("click", (e) => {
   const btn = e.target.closest(".price-exclude-btn");
   if (!btn) return;
+  e.stopPropagation();
   const tr = btn.closest("tr");
   if (!tr) return;
-  const isExcluded = tr.classList.toggle("price-excluded");
-  if (isExcluded) {
-    tr.querySelectorAll(".price-input").forEach((inp) => { inp.value = ""; inp.disabled = true; });
-    tr.classList.remove("filled-row");
-    tr.dataset.filled = "";
-    btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h18"/><path d="M12 3v18"/></svg>';
-    btn.title = "Restore row";
-  } else {
-    tr.querySelectorAll(".price-input").forEach((inp) => { inp.disabled = false; });
-    btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
-    btn.title = "Exclude from update";
-  }
-  recalculateRowMarkup(tr);
+  showExcludePopover(btn, tr);
 });
 
 document.getElementById("price-updates-tbody")?.addEventListener("input", (e) => {
@@ -7264,8 +7329,12 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-// ESC key: close price update modal, or handle fullscreen tabs
+// ESC key: dismiss exclude popover, close price update modal, or handle fullscreen tabs
 document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && activeExcludePopover) {
+    dismissExcludePopover();
+    return;
+  }
   if (e.key === "Escape") {
     const priceModal = document.getElementById("price-update-modal");
     if (priceModal && priceModal.classList.contains("active")) {
@@ -7288,8 +7357,12 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-// Hide price description dropdown when clicking outside
+// Hide price description dropdown and exclude popover when clicking outside
 document.addEventListener("click", (e) => {
+  if (activeExcludePopover && !activeExcludePopover.contains(e.target) && !e.target.closest(".price-exclude-btn")) {
+    dismissExcludePopover();
+  }
+
   const descInput = document.getElementById("price-updates-desc-input");
   const dropdown = document.getElementById("price-updates-desc-dropdown");
   if (
@@ -7312,6 +7385,9 @@ document.addEventListener("click", (e) => {
     hideFsDescriptionDropdown();
   }
 });
+
+// Dismiss exclude popover on scroll (fixed positioning detaches from button)
+window.addEventListener("scroll", dismissExcludePopover, { capture: true });
 
 // Price Updates config summary toggle
 document

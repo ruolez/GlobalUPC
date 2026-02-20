@@ -2127,6 +2127,45 @@ body.no-scroll {
   pointer-events: none;
 }
 
+.price-exclude-popover {
+  position: fixed;
+  z-index: 200;
+  min-width: 180px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  padding: 0.25rem;
+  display: flex;
+  flex-direction: column;
+}
+
+.price-exclude-popover-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  background: none;
+  border: none;
+  color: var(--text-primary);
+  font-size: 0.8125rem;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.price-exclude-popover-item:hover {
+  background: var(--bg-hover);
+}
+
+.price-exclude-popover-item .popover-count {
+  color: var(--text-tertiary);
+  font-size: 0.75rem;
+}
+
 .ph-recall-btn {
   background: transparent;
   border: none;
