@@ -7539,8 +7539,16 @@ async function loadPriceHistoryStores() {
 
   try {
     const stores = await apiRequest("/stores");
+    const config = priceUpdatesState.config;
+    const configuredIds =
+      config && config.storeIds
+        ? new Set(config.storeIds.map(String))
+        : null;
+    const filtered = configuredIds
+      ? stores.filter((s) => configuredIds.has(String(s.id)))
+      : stores;
     const filtersEl = document.getElementById("price-history-store-filters");
-    const chipStores = stores.map((s) => ({
+    const chipStores = filtered.map((s) => ({
       id: String(s.id),
       name: s.name,
       type: s.store_type,
