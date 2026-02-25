@@ -179,6 +179,7 @@ async function loadDashboard() {
 async function loadSettings() {
   await loadStores();
   await loadExclusions();
+  await loadStoreMirrors();
   await loadItemTrackerExclusions();
 
   // Set dropdown value to saved preference
@@ -186,6 +187,179 @@ async function loadSettings() {
   const dropdown = document.getElementById("default-landing-page");
   if (dropdown) {
     dropdown.value = savedLandingPage;
+  }
+}
+
+// Store Mirrors Functions
+async function loadStoreMirrors() {
+  const loadingEl = document.getElementById("mirrors-loading");
+  const emptyEl = document.getElementById("mirrors-empty");
+  const resultsEl = document.getElementById("mirrors-results");
+  const tableBody = document.getElementById("mirrors-table-body");
+  const countEl = document.getElementById("mirrors-count");
+  const sourceSelect = document.getElementById("mirror-source-store");
+  const mirrorSelect = document.getElementById("mirror-mirror-store");
+
+  if (!loadingEl) return;
+
+  loadingEl.style.display = "block";
+  emptyEl.style.display = "none";
+  resultsEl.style.display = "none";
+
+  try {
+    const [mirrorsData, stores] = await Promise.all([
+      apiRequest("/store-mirrors"),
+      apiRequest("/stores"),
+    ]);
+
+    const activeStores = stores.filter((s) => s.is_active);
+    const existingMirrors = mirrorsData.mirrors || [];
+
+    const mirrorStoreIds = new Set(existingMirrors.map((m) => m.mirror_store_id));
+    const sourceStoreIds = new Set(existingMirrors.map((m) => m.source_store_id));
+
+    sourceSelect.innerHTML = '<option value="">Select source...</option>';
+    mirrorSelect.innerHTML = '<option value="">Select mirror...</option>';
+
+    activeStores.forEach((store) => {
+      if (!mirrorStoreIds.has(store.id)) {
+        const opt = document.createElement("option");
+        opt.value = store.id;
+        opt.textContent = `${store.name} (${store.store_type === "mssql" ? "BACKOFFICE" : "SHOPIFY"})`;
+        sourceSelect.appendChild(opt);
+      }
+    });
+
+    activeStores.forEach((store) => {
+      if (!sourceStoreIds.has(store.id)) {
+        const opt = document.createElement("option");
+        opt.value = store.id;
+        opt.textContent = `${store.name} (${store.store_type === "mssql" ? "BACKOFFICE" : "SHOPIFY"})`;
+        mirrorSelect.appendChild(opt);
+      }
+    });
+
+    loadingEl.style.display = "none";
+
+    if (existingMirrors.length === 0) {
+      emptyEl.style.display = "block";
+      return;
+    }
+
+    resultsEl.style.display = "block";
+    countEl.textContent = existingMirrors.length;
+
+    tableBody.innerHTML = "";
+    existingMirrors.forEach((mirror) => {
+      const row = document.createElement("tr");
+
+      const sourceTd = document.createElement("td");
+      sourceTd.style.fontWeight = "500";
+      sourceTd.textContent = `${mirror.source_store_name} (${mirror.source_store_type === "mssql" ? "BACKOFFICE" : "SHOPIFY"})`;
+      row.appendChild(sourceTd);
+
+      const arrowTd = document.createElement("td");
+      arrowTd.style.textAlign = "center";
+      arrowTd.style.color = "var(--text-tertiary)";
+      arrowTd.style.fontSize = "1.25rem";
+      arrowTd.innerHTML = "&rarr;";
+      row.appendChild(arrowTd);
+
+      const mirrorTd = document.createElement("td");
+      mirrorTd.style.fontWeight = "500";
+      mirrorTd.textContent = `${mirror.mirror_store_name} (${mirror.mirror_store_type === "mssql" ? "BACKOFFICE" : "SHOPIFY"})`;
+      row.appendChild(mirrorTd);
+
+      const dateTd = document.createElement("td");
+      const date = new Date(mirror.created_at);
+      dateTd.textContent = date.toLocaleDateString() + " " + date.toLocaleTimeString();
+      dateTd.style.color = "var(--text-secondary)";
+      dateTd.style.fontSize = "0.875rem";
+      row.appendChild(dateTd);
+
+      const actionsTd = document.createElement("td");
+      actionsTd.style.textAlign = "center";
+      const deleteBtn = document.createElement("button");
+      deleteBtn.className = "btn-icon";
+      deleteBtn.title = "Remove mirror";
+      deleteBtn.innerHTML = "\u{1F5D1}\u{FE0F}";
+      deleteBtn.style.cursor = "pointer";
+      deleteBtn.style.fontSize = "1rem";
+      deleteBtn.style.padding = "0.25rem 0.5rem";
+      deleteBtn.style.background = "transparent";
+      deleteBtn.style.border = "1px solid var(--border-color)";
+      deleteBtn.style.borderRadius = "var(--radius-sm)";
+      deleteBtn.style.transition = "all 0.2s";
+      deleteBtn.onclick = async () => {
+        if (!confirm(`Remove mirror: ${mirror.source_store_name} \u2192 ${mirror.mirror_store_name}?`)) return;
+        try {
+          await apiRequest(`/store-mirrors/${mirror.id}`, { method: "DELETE" });
+          row.style.transition = "opacity 0.3s";
+          row.style.opacity = "0";
+          setTimeout(() => {
+            row.remove();
+            const remaining = tableBody.querySelectorAll("tr").length;
+            countEl.textContent = remaining;
+            if (remaining === 0) {
+              resultsEl.style.display = "none";
+              emptyEl.style.display = "block";
+            }
+            loadStoreMirrors();
+          }, 300);
+          showToast("\u2713 Mirror removed", "success");
+        } catch (error) {
+          showToast(`\u2717 Failed to remove mirror: ${error.message}`, "error");
+        }
+      };
+      deleteBtn.onmouseover = () => {
+        deleteBtn.style.background = "var(--error)";
+        deleteBtn.style.borderColor = "var(--error)";
+        deleteBtn.style.color = "#fff";
+      };
+      deleteBtn.onmouseout = () => {
+        deleteBtn.style.background = "transparent";
+        deleteBtn.style.borderColor = "var(--border-color)";
+        deleteBtn.style.color = "inherit";
+      };
+      actionsTd.appendChild(deleteBtn);
+      row.appendChild(actionsTd);
+
+      tableBody.appendChild(row);
+    });
+  } catch (error) {
+    console.error("Error loading store mirrors:", error);
+    loadingEl.style.display = "none";
+    emptyEl.style.display = "block";
+    showToast(`\u2717 Failed to load mirrors: ${error.message}`, "error");
+  }
+}
+
+async function addStoreMirror() {
+  const sourceId = document.getElementById("mirror-source-store").value;
+  const mirrorId = document.getElementById("mirror-mirror-store").value;
+
+  if (!sourceId || !mirrorId) {
+    showToast("Please select both a source and mirror store", "error");
+    return;
+  }
+
+  if (sourceId === mirrorId) {
+    showToast("Source and mirror store cannot be the same", "error");
+    return;
+  }
+
+  try {
+    await apiRequest("/store-mirrors", {
+      method: "POST",
+      body: JSON.stringify({
+        source_store_id: parseInt(sourceId),
+        mirror_store_id: parseInt(mirrorId),
+      }),
+    });
+    showToast("\u2713 Mirror added successfully", "success");
+    await loadStoreMirrors();
+  } catch (error) {
+    showToast(`\u2717 Failed to add mirror: ${error.message}`, "error");
   }
 }
 
@@ -5333,6 +5507,7 @@ let priceUpdatesState = {
   config: null,
   prices: [],
   siblingPrices: [],
+  mirrors: [],
   isSearching: false,
   isUpdating: false,
   searchAbortController: null,
@@ -5353,9 +5528,20 @@ async function loadPriceUpdatesPage() {
   const searchSection = document.getElementById("price-updates-search-section");
 
   try {
-    const stores = await apiRequest("/stores");
+    const [stores, mirrorsData] = await Promise.all([
+      apiRequest("/stores"),
+      apiRequest("/store-mirrors"),
+    ]);
     const allStores = stores.filter((s) => s.is_active);
     const mssqlStores = allStores.filter((s) => s.store_type === "mssql");
+    const mirrors = mirrorsData.mirrors || [];
+    priceUpdatesState.mirrors = mirrors;
+
+    const mirrorStoreIds = new Set(mirrors.map((m) => m.mirror_store_id));
+    const mirrorSourceMap = {};
+    mirrors.forEach((m) => {
+      mirrorSourceMap[m.mirror_store_id] = m.source_store_name;
+    });
 
     // Populate primary store dropdown (MSSQL only)
     const primaryDropdown = document.getElementById(
@@ -5376,11 +5562,13 @@ async function loadPriceUpdatesPage() {
     );
     checkboxContainer.innerHTML = "";
     allStores.forEach((store) => {
+      const isMirror = mirrorStoreIds.has(store.id);
       const label = document.createElement("label");
       label.style.display = "flex";
       label.style.alignItems = "center";
       label.style.gap = "0.5rem";
-      label.style.cursor = "pointer";
+      label.style.cursor = isMirror ? "default" : "pointer";
+      if (isMirror) label.style.opacity = "0.5";
 
       const checkbox = document.createElement("input");
       checkbox.type = "checkbox";
@@ -5388,15 +5576,38 @@ async function loadPriceUpdatesPage() {
       checkbox.id = `price-store-${store.id}`;
       checkbox.dataset.storeName = store.name;
       checkbox.dataset.storeType = store.store_type;
+      checkbox.dataset.isMirror = isMirror ? "true" : "false";
       checkbox.style.width = "auto";
       checkbox.style.margin = "0";
 
+      if (isMirror) {
+        checkbox.disabled = true;
+        checkbox.dataset.mirrorSource = mirrorSourceMap[store.id];
+      }
+
       const span = document.createElement("span");
-      span.textContent = `${store.name} (${store.store_type === "mssql" ? "BACKOFFICE" : store.store_type.toUpperCase()})`;
+      const typeLabel = store.store_type === "mssql" ? "BACKOFFICE" : store.store_type.toUpperCase();
+      if (isMirror) {
+        span.innerHTML = `${escapeHtml(store.name)} <span style="font-size:0.75rem;color:var(--text-tertiary);font-style:italic">(mirrors ${escapeHtml(mirrorSourceMap[store.id])})</span>`;
+      } else {
+        span.textContent = `${store.name} (${typeLabel})`;
+      }
 
       label.appendChild(checkbox);
       label.appendChild(span);
       checkboxContainer.appendChild(label);
+    });
+
+    // Auto-check/uncheck mirror stores when source changes
+    checkboxContainer.addEventListener("change", (e) => {
+      if (e.target.type !== "checkbox" || e.target.dataset.isMirror === "true") return;
+      const sourceId = parseInt(e.target.value);
+      mirrors.forEach((m) => {
+        if (m.source_store_id === sourceId) {
+          const mirrorCb = document.getElementById(`price-store-${m.mirror_store_id}`);
+          if (mirrorCb) mirrorCb.checked = e.target.checked;
+        }
+      });
     });
 
     // Load config from localStorage
@@ -5414,7 +5625,14 @@ async function loadPriceUpdatesPage() {
 
         config.storeIds.forEach((id) => {
           const cb = document.getElementById(`price-store-${id}`);
-          if (cb) cb.checked = true;
+          if (cb && !cb.disabled) cb.checked = true;
+        });
+
+        // Auto-check mirrors of checked sources
+        mirrors.forEach((m) => {
+          const sourceCb = document.getElementById(`price-store-${m.source_store_id}`);
+          const mirrorCb = document.getElementById(`price-store-${m.mirror_store_id}`);
+          if (sourceCb && sourceCb.checked && mirrorCb) mirrorCb.checked = true;
         });
 
         updatePriceUpdatesConfigSummary(config);
@@ -5443,10 +5661,13 @@ async function loadPriceUpdatesPage() {
 function updatePriceUpdatesConfigSummary(config) {
   document.getElementById("price-updates-primary-name").textContent =
     config.primaryStoreName || "-";
-  document.getElementById("price-updates-store-names").textContent =
-    config.storeNames && config.storeNames.length > 0
-      ? config.storeNames.join(", ")
-      : "None selected";
+  let storeText = config.storeNames && config.storeNames.length > 0
+    ? config.storeNames.join(", ")
+    : "None selected";
+  if (config.mirrorStoreNames && config.mirrorStoreNames.length > 0) {
+    storeText += " + " + config.mirrorStoreNames.join(", ");
+  }
+  document.getElementById("price-updates-store-names").textContent = storeText;
 }
 
 function savePriceUpdatesConfig() {
@@ -5461,13 +5682,20 @@ function savePriceUpdatesConfig() {
 
   const storeIds = [];
   const storeNames = [];
+  const mirrorStoreIds = [];
+  const mirrorStoreNames = [];
   document
     .querySelectorAll(
       '#price-updates-store-checkboxes input[type="checkbox"]:checked',
     )
     .forEach((cb) => {
-      storeIds.push(parseInt(cb.value));
-      storeNames.push(cb.dataset.storeName);
+      if (cb.dataset.isMirror === "true") {
+        mirrorStoreIds.push(parseInt(cb.value));
+        mirrorStoreNames.push(`${cb.dataset.storeName} (mirrors ${cb.dataset.mirrorSource})`);
+      } else {
+        storeIds.push(parseInt(cb.value));
+        storeNames.push(cb.dataset.storeName);
+      }
     });
 
   if (storeIds.length === 0) {
@@ -5483,6 +5711,8 @@ function savePriceUpdatesConfig() {
     primaryStoreName: primaryOption ? primaryOption.textContent : "-",
     storeIds,
     storeNames,
+    mirrorStoreIds,
+    mirrorStoreNames,
   };
 
   localStorage.setItem("priceUpdatesConfig", JSON.stringify(config));
@@ -6449,10 +6679,43 @@ function showUpdateConfirmation() {
     }
   });
 
+  // Build mirror entries from configured mirrors
+  const mirrors = priceUpdatesState.mirrors || [];
+  const sourceStoreNames = new Set(storeGroups.keys());
+  const mirrorGroups = new Map();
+  mirrors.forEach((m) => {
+    const escapedSource = escapeHtml(m.source_store_name);
+    if (sourceStoreNames.has(escapedSource)) {
+      const mirrorName = escapeHtml(m.mirror_store_name);
+      const sourceItems = storeGroups.get(escapedSource);
+      if (sourceItems) {
+        const cloned = sourceItems.map((item) => ({
+          desc: item.desc,
+          changes: item.changes.replace(/Delivery B [^,]+,?\s*/g, "").replace(/,\s*$/, ""),
+        })).filter((item) => item.changes);
+        if (cloned.length > 0) {
+          mirrorGroups.set(mirrorName, { items: cloned, sourceName: m.source_store_name });
+        }
+      }
+    }
+  });
+
   let html = "";
   storeGroups.forEach((items, storeName) => {
     html += `<div style="margin-bottom: 0.75rem;">`;
     html += `<div style="font-weight: 600; color: var(--text-primary); margin-bottom: 0.25rem;">${storeName}</div>`;
+    items.forEach((item) => {
+      html += `<div style="padding-left: 0.75rem; margin-bottom: 0.25rem;">`;
+      if (item.desc) html += `<div style="color: var(--text-tertiary); font-size: 0.75rem;">${item.desc}</div>`;
+      html += `<div>${item.changes}</div>`;
+      html += `</div>`;
+    });
+    html += `</div>`;
+  });
+
+  mirrorGroups.forEach(({ items, sourceName }, mirrorName) => {
+    html += `<div style="margin-bottom: 0.75rem; opacity: 0.75;">`;
+    html += `<div style="font-weight: 600; color: var(--text-primary); margin-bottom: 0.25rem;">${mirrorName} <span style="font-size: 0.75rem; font-weight: 400; font-style: italic; color: var(--text-tertiary);">(mirrored from ${escapeHtml(sourceName)})</span></div>`;
     items.forEach((item) => {
       html += `<div style="padding-left: 0.75rem; margin-bottom: 0.25rem;">`;
       if (item.desc) html += `<div style="color: var(--text-tertiary); font-size: 0.75rem;">${item.desc}</div>`;
@@ -6537,7 +6800,7 @@ async function executeUpdate() {
         if (line.startsWith("data: ")) {
           const data = JSON.parse(line.substring(6));
 
-          if (data.status === "updating" && data.message) {
+          if ((data.status === "updating" || data.status === "mirroring") && data.message) {
             const itemEl = document.createElement("div");
             itemEl.className = "progress-store-item";
             itemEl.innerHTML = `<div class="progress-spinner"></div><span>${escapeHtml(data.message)}</span>`;
@@ -6994,7 +7257,10 @@ document
 document
   .getElementById("price-updates-deselect-all-btn")
   ?.addEventListener("click", () => {
-    document.querySelectorAll('#price-updates-store-checkboxes input[type="checkbox"]').forEach((cb) => { cb.checked = false; });
+    document.querySelectorAll('#price-updates-store-checkboxes input[type="checkbox"]').forEach((cb) => {
+      if (!cb.disabled) cb.checked = false;
+      else cb.checked = false;
+    });
   });
 document
   .getElementById("edit-price-updates-config-btn")
@@ -7913,6 +8179,21 @@ function displayPriceHistory(batches, total, targetConfig = null) {
       storeSpan.style.fontWeight = "600";
       storeSpan.textContent = entry.store_name;
       descCell.appendChild(storeSpan);
+      if (entry.is_mirror) {
+        const mirrorBadge = document.createElement("span");
+        mirrorBadge.style.fontSize = "0.625rem";
+        mirrorBadge.style.marginLeft = "0.375rem";
+        mirrorBadge.style.padding = "0.125rem 0.375rem";
+        mirrorBadge.style.borderRadius = "var(--radius-sm)";
+        mirrorBadge.style.background = "color-mix(in srgb, var(--accent-primary) 15%, transparent)";
+        mirrorBadge.style.color = "var(--accent-primary)";
+        mirrorBadge.style.fontWeight = "500";
+        mirrorBadge.textContent = "mirrored";
+        if (entry.mirror_source_store_name) {
+          mirrorBadge.title = `Mirrored from ${entry.mirror_source_store_name}`;
+        }
+        descCell.appendChild(mirrorBadge);
+      }
       if (entry.product_description) {
         descCell.appendChild(document.createTextNode(" \u2014 " + entry.product_description));
         const variantTitle = entry.variant_title;

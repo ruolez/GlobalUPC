@@ -716,6 +716,123 @@
             </div>
           </section>
 
+          <!-- Store Mirrors Section -->
+          <section class="settings-section">
+            <div class="section-header">
+              <h3>Store Mirrors</h3>
+            </div>
+            <p
+              style="
+                margin: 0 0 1rem;
+                font-size: 0.875rem;
+                color: var(--text-secondary);
+              "
+            >
+              Configure mirror relationships between stores. When a source
+              store is updated during price updates, its mirrors
+              automatically receive the same values.
+            </p>
+
+            <!-- Add Mirror Form -->
+            <div
+              style="
+                display: flex;
+                gap: 0.75rem;
+                align-items: flex-end;
+                flex-wrap: wrap;
+                margin-bottom: 1rem;
+              "
+            >
+              <div class="form-group" style="margin: 0; flex: 1; min-width: 160px">
+                <label for="mirror-source-store" style="font-size: 0.75rem">Source Store</label>
+                <select id="mirror-source-store">
+                  <option value="">Select source...</option>
+                </select>
+              </div>
+              <div style="padding-bottom: 0.5rem; color: var(--text-tertiary); font-size: 1.25rem">&rarr;</div>
+              <div class="form-group" style="margin: 0; flex: 1; min-width: 160px">
+                <label for="mirror-mirror-store" style="font-size: 0.75rem">Mirror Store</label>
+                <select id="mirror-mirror-store">
+                  <option value="">Select mirror...</option>
+                </select>
+              </div>
+              <button
+                type="button"
+                class="btn btn-primary"
+                id="add-mirror-btn"
+                style="font-size: 0.8125rem; padding: 0.5rem 1rem; white-space: nowrap"
+                onclick="addStoreMirror()"
+              >
+                Add Mirror
+              </button>
+            </div>
+
+            <!-- Loading State -->
+            <div
+              id="mirrors-loading"
+              class="test-status"
+              style="display: none; margin-top: 1rem"
+            >
+              <div class="loading">Loading mirrors...</div>
+            </div>
+
+            <!-- Empty State -->
+            <div
+              id="mirrors-empty"
+              style="
+                display: none;
+                text-align: center;
+                padding: 2rem 1rem;
+                color: var(--text-tertiary);
+                margin-top: 1rem;
+                background: var(--bg-secondary);
+                border-radius: var(--radius-md);
+              "
+            >
+              <p style="margin: 0; font-size: 0.875rem">
+                No store mirrors configured
+              </p>
+              <p style="margin: 0.5rem 0 0; font-size: 0.75rem">
+                Add a mirror to automatically propagate price updates
+                between stores
+              </p>
+            </div>
+
+            <!-- Mirrors Table -->
+            <div
+              id="mirrors-results"
+              style="display: none; margin-top: 1rem"
+            >
+              <div style="margin-bottom: 1rem">
+                <p
+                  style="
+                    margin: 0;
+                    font-size: 0.875rem;
+                    color: var(--text-secondary);
+                  "
+                >
+                  <strong id="mirrors-count">0</strong> mirror(s) configured
+                </p>
+              </div>
+              <div style="overflow-x: auto">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th style="width: 30%">Source Store</th>
+                      <th style="width: 10%"></th>
+                      <th style="width: 30%">Mirror Store</th>
+                      <th style="width: 20%">Created</th>
+                      <th style="width: 10%">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="mirrors-table-body">
+                    <!-- Mirrors will be populated here by JavaScript -->
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+
           <!-- Item Tracker Exclusions Section -->
           <section class="settings-section">
             <div class="section-header">

@@ -178,6 +178,8 @@ CREATE TABLE price_update_history (
     success BOOLEAN NOT NULL,
     rows_affected INTEGER DEFAULT 0,
     error_message TEXT,
+    is_mirror BOOLEAN DEFAULT false,
+    mirror_source_store_id INTEGER REFERENCES stores(id) ON DELETE SET NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -185,6 +187,23 @@ CREATE INDEX idx_price_history_batch_id ON price_update_history(batch_id);
 CREATE INDEX idx_price_history_store_id ON price_update_history(store_id);
 CREATE INDEX idx_price_history_created_at ON price_update_history(created_at DESC);
 CREATE INDEX idx_price_history_upc ON price_update_history(upc);
+
+-- Store mirrors for price update propagation
+CREATE TABLE store_mirrors (
+    id SERIAL PRIMARY KEY,
+    source_store_id INTEGER NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
+    mirror_store_id INTEGER NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(source_store_id, mirror_store_id),
+    CHECK (source_store_id != mirror_store_id)
+);
+
+CREATE INDEX idx_store_mirrors_source ON store_mirrors(source_store_id);
+CREATE INDEX idx_store_mirrors_mirror ON store_mirrors(mirror_store_id);
+
+CREATE TRIGGER update_store_mirrors_updated_at BEFORE UPDATE ON store_mirrors
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- Insert default settings
 INSERT INTO settings (key, value, description) VALUES

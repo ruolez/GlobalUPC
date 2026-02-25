@@ -464,6 +464,9 @@ class PriceUpdateHistoryResponse(BaseModel):
     success: bool
     rows_affected: int
     error_message: Optional[str] = None
+    is_mirror: bool = False
+    mirror_source_store_id: Optional[int] = None
+    mirror_source_store_name: Optional[str] = None
     created_at: datetime
 
     class Config:
@@ -487,6 +490,30 @@ class PriceUpdateHistoryListResponse(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class StoreMirrorCreate(BaseModel):
+    source_store_id: int
+    mirror_store_id: int
+
+
+class StoreMirrorResponse(BaseModel):
+    id: int
+    source_store_id: int
+    source_store_name: str
+    source_store_type: str
+    mirror_store_id: int
+    mirror_store_name: str
+    mirror_store_type: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class StoreMirrorListResponse(BaseModel):
+    mirrors: List[StoreMirrorResponse]
+    total: int
 
 
 class ItemTrackerExclusionCreate(BaseModel):

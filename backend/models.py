@@ -135,9 +135,25 @@ class PriceUpdateHistory(Base):
     success = Column(Boolean, nullable=False)
     rows_affected = Column(Integer, default=0)
     error_message = Column(Text)
+    is_mirror = Column(Boolean, default=False)
+    mirror_source_store_id = Column(Integer, ForeignKey("stores.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
 
-    store = relationship("Store")
+    store = relationship("Store", foreign_keys=[store_id])
+    mirror_source_store = relationship("Store", foreign_keys=[mirror_source_store_id])
+
+
+class StoreMirror(Base):
+    __tablename__ = "store_mirrors"
+
+    id = Column(Integer, primary_key=True, index=True)
+    source_store_id = Column(Integer, ForeignKey("stores.id", ondelete="CASCADE"), nullable=False, index=True)
+    mirror_store_id = Column(Integer, ForeignKey("stores.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    source_store = relationship("Store", foreign_keys=[source_store_id])
+    mirror_store = relationship("Store", foreign_keys=[mirror_store_id])
 
 
 class ItemTrackerExclusion(Base):

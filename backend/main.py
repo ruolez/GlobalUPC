@@ -12,7 +12,7 @@ import uuid
 import os
 
 from database import get_db, engine
-from models import Store, MSSQLConnection, ShopifyConnection, Setting, StoreType, UPCUpdateHistory, UPCExclusion, ItemTrackerConfig, ItemTrackerExclusion, PriceUpdateHistory
+from models import Store, MSSQLConnection, ShopifyConnection, Setting, StoreType, UPCUpdateHistory, UPCExclusion, ItemTrackerConfig, ItemTrackerExclusion, PriceUpdateHistory, StoreMirror
 from schemas import (
     MSSQLStoreCreate, ShopifyStoreCreate, StoreResponse,
     SettingCreate, SettingUpdate, SettingResponse,
@@ -32,7 +32,8 @@ from schemas import (
     DescriptionAutocompleteRequest, DescriptionAutocompleteResult, DescriptionAutocompleteResponse,
     ItemTrackerExclusionCreate, ItemTrackerExclusionResponse, ItemTrackerExclusionListResponse,
     PriceSearchRequest, StorePriceInfo, PriceUpdateItem, PriceUpdateRequest,
-    PriceUpdateHistoryResponse, PriceUpdateHistoryBatch, PriceUpdateHistoryListResponse
+    PriceUpdateHistoryResponse, PriceUpdateHistoryBatch, PriceUpdateHistoryListResponse,
+    StoreMirrorCreate, StoreMirrorResponse, StoreMirrorListResponse
 )
 from mssql_helper import (
     test_mssql_connection, search_upc_across_mssql_stores, search_products_by_upc,
@@ -2135,6 +2136,93 @@ def delete_exclusion(exclusion_id: int, db: Session = Depends(get_db)):
     db.commit()
     return None
 
+# Store Mirrors Endpoints
+@app.get("/api/store-mirrors", response_model=StoreMirrorListResponse)
+def get_store_mirrors(db: Session = Depends(get_db)):
+    mirrors = db.query(StoreMirror).order_by(StoreMirror.created_at.desc()).all()
+
+    mirror_responses = []
+    for mirror in mirrors:
+        source = db.query(Store).filter(Store.id == mirror.source_store_id).first()
+        mirror_store = db.query(Store).filter(Store.id == mirror.mirror_store_id).first()
+        if source and mirror_store:
+            mirror_responses.append(StoreMirrorResponse(
+                id=mirror.id,
+                source_store_id=source.id,
+                source_store_name=source.name,
+                source_store_type=source.store_type.value if hasattr(source.store_type, 'value') else source.store_type,
+                mirror_store_id=mirror_store.id,
+                mirror_store_name=mirror_store.name,
+                mirror_store_type=mirror_store.store_type.value if hasattr(mirror_store.store_type, 'value') else mirror_store.store_type,
+                created_at=mirror.created_at,
+            ))
+
+    return StoreMirrorListResponse(mirrors=mirror_responses, total=len(mirror_responses))
+
+
+@app.post("/api/store-mirrors", response_model=StoreMirrorResponse, status_code=201)
+def create_store_mirror(data: StoreMirrorCreate, db: Session = Depends(get_db)):
+    source = db.query(Store).filter(Store.id == data.source_store_id).first()
+    if not source:
+        raise HTTPException(status_code=404, detail="Source store not found")
+
+    mirror_store = db.query(Store).filter(Store.id == data.mirror_store_id).first()
+    if not mirror_store:
+        raise HTTPException(status_code=404, detail="Mirror store not found")
+
+    if data.source_store_id == data.mirror_store_id:
+        raise HTTPException(status_code=400, detail="Source and mirror store cannot be the same")
+
+    existing = db.query(StoreMirror).filter(
+        StoreMirror.source_store_id == data.source_store_id,
+        StoreMirror.mirror_store_id == data.mirror_store_id,
+    ).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="This mirror relationship already exists")
+
+    is_already_mirror = db.query(StoreMirror).filter(
+        StoreMirror.mirror_store_id == data.source_store_id
+    ).first()
+    if is_already_mirror:
+        raise HTTPException(status_code=400, detail="Source store is already a mirror of another store (no chaining)")
+
+    is_already_source = db.query(StoreMirror).filter(
+        StoreMirror.source_store_id == data.mirror_store_id
+    ).first()
+    if is_already_source:
+        raise HTTPException(status_code=400, detail="Mirror store is already a source of another mirror (no chaining)")
+
+    mirror = StoreMirror(
+        source_store_id=data.source_store_id,
+        mirror_store_id=data.mirror_store_id,
+    )
+    db.add(mirror)
+    db.commit()
+    db.refresh(mirror)
+
+    return StoreMirrorResponse(
+        id=mirror.id,
+        source_store_id=source.id,
+        source_store_name=source.name,
+        source_store_type=source.store_type.value if hasattr(source.store_type, 'value') else source.store_type,
+        mirror_store_id=mirror_store.id,
+        mirror_store_name=mirror_store.name,
+        mirror_store_type=mirror_store.store_type.value if hasattr(mirror_store.store_type, 'value') else mirror_store.store_type,
+        created_at=mirror.created_at,
+    )
+
+
+@app.delete("/api/store-mirrors/{mirror_id}", status_code=204)
+def delete_store_mirror(mirror_id: int, db: Session = Depends(get_db)):
+    mirror = db.query(StoreMirror).filter(StoreMirror.id == mirror_id).first()
+    if not mirror:
+        raise HTTPException(status_code=404, detail="Mirror not found")
+
+    db.delete(mirror)
+    db.commit()
+    return None
+
+
 # Delivery B - UnitPriceC Sync Endpoint
 @app.post("/api/delivery-b/sync/stream")
 async def delivery_b_sync_stream(request: DeliveryBSyncRequest, db: Session = Depends(get_db)):
@@ -3741,6 +3829,231 @@ async def update_prices_stream(request: PriceUpdateRequest, db: Session = Depend
                     error_detail = '; '.join(errors)
                     yield f"event: progress\ndata: {json.dumps({'status': 'error', 'message': f'Failed to update {store.name}: {error_detail}'})}\n\n"
 
+        # Mirror propagation phase
+        successful_store_ids = {r["store_id"] for r in results if r.get("success")}
+        if successful_store_ids:
+            mirrors = db.query(StoreMirror).filter(
+                StoreMirror.source_store_id.in_(successful_store_ids)
+            ).all()
+
+            active_mirrors = []
+            for m in mirrors:
+                mirror_store = db.query(Store).filter(Store.id == m.mirror_store_id, Store.is_active == True).first()
+                if mirror_store:
+                    source_store = db.query(Store).filter(Store.id == m.source_store_id).first()
+                    active_mirrors.append((m, source_store, mirror_store))
+
+            if active_mirrors:
+                yield f"event: progress\ndata: {json.dumps({'status': 'mirroring', 'message': f'Propagating to {len(active_mirrors)} mirror store(s)...'})}\n\n"
+
+            for mirror_link, source_store, mirror_store in active_mirrors:
+                source_update = next((u for u, s in valid_updates if s.id == source_store.id), None)
+                if not source_update:
+                    continue
+
+                source_result = next((r for r in results if r["store_id"] == source_store.id), None)
+                if not source_result or not source_result.get("success"):
+                    continue
+
+                mirror_new_price = source_update.new_price
+                mirror_new_cost = source_update.new_cost
+                if source_update.store_type == "shopify" and source_update.variant_updates:
+                    first_vu = source_update.variant_updates[0]
+                    mirror_new_price = first_vu.get("new_price")
+                    mirror_new_cost = first_vu.get("new_cost")
+
+                if mirror_new_price is None and mirror_new_cost is None:
+                    continue
+
+                yield f"event: progress\ndata: {json.dumps({'status': 'mirroring', 'message': f'Mirroring to {mirror_store.name} (from {source_store.name})...'})}\n\n"
+
+                try:
+                    if mirror_store.store_type.value == "mssql" if hasattr(mirror_store.store_type, 'value') else mirror_store.store_type == "mssql":
+                        conn = mirror_store.mssql_connection
+                        if not conn:
+                            raise Exception("No MSSQL connection configured")
+                        m_success, m_error, m_rows, m_server_time = await update_item_prices_async(
+                            host=conn.host,
+                            port=conn.port,
+                            database=conn.database_name,
+                            username=conn.username,
+                            password=conn.password,
+                            upc=upc,
+                            unit_price=mirror_new_price,
+                            unit_cost=mirror_new_cost,
+                        )
+
+                        history_entry = PriceUpdateHistory(
+                            batch_id=batch_id,
+                            store_id=mirror_store.id,
+                            store_name=mirror_store.name,
+                            store_type="mssql",
+                            upc=upc,
+                            product_description=source_update.product_description if hasattr(source_update, 'product_description') else None,
+                            variant_barcode=upc,
+                            new_price=mirror_new_price,
+                            new_cost=mirror_new_cost,
+                            success=m_success,
+                            rows_affected=m_rows or 0,
+                            error_message=m_error,
+                            is_mirror=True,
+                            mirror_source_store_id=source_store.id,
+                            created_at=m_server_time,
+                        )
+                        db.add(history_entry)
+                        db.commit()
+
+                        mirror_result = {
+                            "store_id": mirror_store.id,
+                            "store_name": mirror_store.name,
+                            "success": m_success,
+                            "rows_affected": m_rows or 0,
+                            "error": m_error,
+                            "is_mirror": True,
+                            "mirror_source_store_id": source_store.id,
+                            "mirror_source_store_name": source_store.name,
+                        }
+                        results.append(mirror_result)
+
+                        if m_success:
+                            yield f"event: progress\ndata: {json.dumps({'status': 'updated', 'message': f'Mirrored to {mirror_store.name} ({m_rows} row(s))'})}\n\n"
+                        else:
+                            yield f"event: progress\ndata: {json.dumps({'status': 'error', 'message': f'Failed to mirror to {mirror_store.name}: {m_error}'})}\n\n"
+
+                    else:
+                        conn = mirror_store.shopify_connection
+                        if not conn:
+                            raise Exception("No Shopify connection configured")
+                        search_ok, search_err, found_variants = await search_product_prices_by_barcode(
+                            shop_domain=conn.shop_domain,
+                            admin_api_key=conn.admin_api_key,
+                            barcode=upc,
+                            api_version=conn.api_version,
+                        )
+
+                        if not search_ok or not found_variants:
+                            err_msg = search_err or "Product not found in mirror store"
+                            history_entry = PriceUpdateHistory(
+                                batch_id=batch_id,
+                                store_id=mirror_store.id,
+                                store_name=mirror_store.name,
+                                store_type="shopify",
+                                upc=upc,
+                                success=False,
+                                rows_affected=0,
+                                error_message=err_msg,
+                                is_mirror=True,
+                                mirror_source_store_id=source_store.id,
+                            )
+                            db.add(history_entry)
+                            db.commit()
+                            results.append({
+                                "store_id": mirror_store.id,
+                                "store_name": mirror_store.name,
+                                "success": False,
+                                "error": err_msg,
+                                "is_mirror": True,
+                                "mirror_source_store_id": source_store.id,
+                                "mirror_source_store_name": source_store.name,
+                            })
+                            yield f"event: progress\ndata: {json.dumps({'status': 'error', 'message': f'Failed to mirror to {mirror_store.name}: {err_msg}'})}\n\n"
+                            continue
+
+                        products = {}
+                        for v in found_variants:
+                            pid = v["product_id"]
+                            if pid not in products:
+                                products[pid] = []
+                            vu = {"variant_id": v["variant_id"]}
+                            if mirror_new_price is not None:
+                                vu["new_price"] = mirror_new_price
+                            if mirror_new_cost is not None:
+                                vu["new_cost"] = mirror_new_cost
+                            products[pid].append(vu)
+
+                        total_mirror_updated = 0
+                        mirror_errors = []
+                        for pid, vus in products.items():
+                            s_ok, s_err, s_count = await update_variant_prices(
+                                shop_domain=conn.shop_domain,
+                                admin_api_key=conn.admin_api_key,
+                                product_id=pid,
+                                variant_updates=vus,
+                                api_version=conn.api_version,
+                            )
+                            if s_ok:
+                                total_mirror_updated += s_count
+                            else:
+                                mirror_errors.append(s_err)
+
+                        shopify_mirror_success = len(mirror_errors) == 0
+
+                        for v in found_variants:
+                            history_entry = PriceUpdateHistory(
+                                batch_id=batch_id,
+                                store_id=mirror_store.id,
+                                store_name=mirror_store.name,
+                                store_type="shopify",
+                                upc=upc,
+                                product_description=v.get("product_title"),
+                                variant_id=str(v.get("variant_id", "")),
+                                variant_title=v.get("variant_title"),
+                                variant_barcode=v.get("barcode"),
+                                new_price=mirror_new_price,
+                                new_cost=mirror_new_cost,
+                                success=shopify_mirror_success,
+                                rows_affected=1 if shopify_mirror_success else 0,
+                                error_message="; ".join(mirror_errors) if mirror_errors else None,
+                                is_mirror=True,
+                                mirror_source_store_id=source_store.id,
+                            )
+                            db.add(history_entry)
+                        db.commit()
+
+                        results.append({
+                            "store_id": mirror_store.id,
+                            "store_name": mirror_store.name,
+                            "success": shopify_mirror_success,
+                            "rows_affected": total_mirror_updated,
+                            "error": "; ".join(mirror_errors) if mirror_errors else None,
+                            "is_mirror": True,
+                            "mirror_source_store_id": source_store.id,
+                            "mirror_source_store_name": source_store.name,
+                        })
+
+                        if shopify_mirror_success:
+                            yield f"event: progress\ndata: {json.dumps({'status': 'updated', 'message': f'Mirrored to {mirror_store.name} ({total_mirror_updated} variant(s))'})}\n\n"
+                        else:
+                            shopify_mirror_err = "; ".join(mirror_errors)
+                            yield f"event: progress\ndata: {json.dumps({'status': 'error', 'message': f'Failed to mirror to {mirror_store.name}: {shopify_mirror_err}'})}\n\n"
+
+                except Exception as e:
+                    err_msg = str(e)
+                    history_entry = PriceUpdateHistory(
+                        batch_id=batch_id,
+                        store_id=mirror_store.id,
+                        store_name=mirror_store.name,
+                        store_type=mirror_store.store_type.value if hasattr(mirror_store.store_type, 'value') else mirror_store.store_type,
+                        upc=upc,
+                        success=False,
+                        rows_affected=0,
+                        error_message=err_msg,
+                        is_mirror=True,
+                        mirror_source_store_id=source_store.id,
+                    )
+                    db.add(history_entry)
+                    db.commit()
+                    results.append({
+                        "store_id": mirror_store.id,
+                        "store_name": mirror_store.name,
+                        "success": False,
+                        "error": err_msg,
+                        "is_mirror": True,
+                        "mirror_source_store_id": source_store.id,
+                        "mirror_source_store_name": source_store.name,
+                    })
+                    yield f"event: progress\ndata: {json.dumps({'status': 'error', 'message': f'Failed to mirror to {mirror_store.name}: {err_msg}'})}\n\n"
+
         yield f"event: complete\ndata: {json.dumps({'results': results, 'batch_id': batch_id})}\n\n"
 
     return StreamingResponse(
@@ -3789,6 +4102,8 @@ def get_price_update_history(
 
     batch_id_list = [b.batch_id for b in batch_ids]
 
+    mirror_source_name_cache = {}
+
     batches = []
     for bid in batch_id_list:
         entries = db.query(PriceUpdateHistory).filter(
@@ -3800,6 +4115,41 @@ def get_price_update_history(
             successful = sum(1 for e in entries if e.success)
             failed = len(entries) - successful
 
+            entry_responses = []
+            for entry in entries:
+                mirror_source_name = None
+                if entry.is_mirror and entry.mirror_source_store_id:
+                    if entry.mirror_source_store_id not in mirror_source_name_cache:
+                        src = db.query(Store).filter(Store.id == entry.mirror_source_store_id).first()
+                        mirror_source_name_cache[entry.mirror_source_store_id] = src.name if src else "Deleted Store"
+                    mirror_source_name = mirror_source_name_cache[entry.mirror_source_store_id]
+
+                entry_responses.append(PriceUpdateHistoryResponse(
+                    id=entry.id,
+                    batch_id=entry.batch_id,
+                    store_id=entry.store_id,
+                    store_name=entry.store_name,
+                    store_type=entry.store_type.value if hasattr(entry.store_type, 'value') else entry.store_type,
+                    upc=entry.upc,
+                    product_description=entry.product_description,
+                    variant_id=entry.variant_id,
+                    variant_title=entry.variant_title,
+                    variant_barcode=entry.variant_barcode,
+                    old_price=float(entry.old_price) if entry.old_price is not None else None,
+                    old_cost=float(entry.old_cost) if entry.old_cost is not None else None,
+                    new_price=float(entry.new_price) if entry.new_price is not None else None,
+                    new_cost=float(entry.new_cost) if entry.new_cost is not None else None,
+                    old_delivery_b=float(entry.old_delivery_b) if entry.old_delivery_b is not None else None,
+                    new_delivery_b=float(entry.new_delivery_b) if entry.new_delivery_b is not None else None,
+                    success=entry.success,
+                    rows_affected=entry.rows_affected or 0,
+                    error_message=entry.error_message,
+                    is_mirror=entry.is_mirror or False,
+                    mirror_source_store_id=entry.mirror_source_store_id,
+                    mirror_source_store_name=mirror_source_name,
+                    created_at=entry.created_at,
+                ))
+
             batches.append(PriceUpdateHistoryBatch(
                 batch_id=bid,
                 upc=first.upc,
@@ -3808,7 +4158,7 @@ def get_price_update_history(
                 total_stores=len(entries),
                 successful_stores=successful,
                 failed_stores=failed,
-                entries=entries
+                entries=entry_responses
             ))
 
     return PriceUpdateHistoryListResponse(
