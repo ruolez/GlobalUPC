@@ -28,6 +28,10 @@ document.querySelectorAll(".nav-item").forEach((item) => {
 function navigateTo(page) {
   exitPriceFullscreen();
 
+  if (window.location.search) {
+    window.history.replaceState({}, "", window.location.pathname);
+  }
+
   // Update active nav item
   document.querySelectorAll(".nav-item").forEach((item) => {
     item.classList.remove("active");
@@ -4284,6 +4288,33 @@ let itemTrackerState = {
   configExpanded: false,
 };
 
+async function navigateToItemTrackerWithUpc(upc) {
+  // Show Item Tracker page and highlight nav item
+  document.querySelectorAll(".nav-item").forEach((item) => {
+    item.classList.remove("active");
+  });
+  const trackerNav = document.querySelector('[data-page="item-tracker"]');
+  if (trackerNav) trackerNav.classList.add("active");
+
+  document.querySelectorAll(".page").forEach((p) => {
+    p.style.display = "none";
+  });
+  const trackerPage = document.getElementById("item-tracker-page");
+  if (trackerPage) trackerPage.style.display = "block";
+
+  await loadItemTrackerPage();
+
+  const searchSection = document.getElementById("item-tracker-search-section");
+  if (searchSection && searchSection.style.display !== "none") {
+    document.getElementById("item-tracker-upc-input").value = upc;
+    window.history.replaceState({}, "", window.location.pathname);
+    searchItemTracker();
+  } else {
+    window.history.replaceState({}, "", window.location.pathname);
+    showToast("Please configure Item Tracker databases first", "error");
+  }
+}
+
 async function loadItemTrackerPage() {
   const configSection = document.getElementById("item-tracker-config-section");
   const searchSection = document.getElementById("item-tracker-search-section");
@@ -4464,6 +4495,10 @@ async function searchItemTracker() {
     showToast("Please enter a UPC to search", "error");
     return;
   }
+
+  const url = new URL(window.location);
+  url.searchParams.set("tracker", upc);
+  window.history.replaceState({}, "", url);
 
   const dateFrom =
     document.getElementById("item-tracker-date-from").value || null;
@@ -8628,11 +8663,16 @@ document
 
 // Initialize
 document.addEventListener("DOMContentLoaded", () => {
-  // Load saved landing page (or dashboard by default)
-  const defaultPage = getDefaultLandingPage();
-  navigateTo(defaultPage);
-
-  // Load saved theme
   const savedTheme = localStorage.getItem("selectedTheme") || "author-light";
   setTheme(savedTheme);
+
+  const params = new URLSearchParams(window.location.search);
+  const trackerUpc = params.get("tracker");
+
+  if (trackerUpc) {
+    navigateToItemTrackerWithUpc(trackerUpc);
+  } else {
+    const defaultPage = getDefaultLandingPage();
+    navigateTo(defaultPage);
+  }
 });
