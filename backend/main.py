@@ -3877,6 +3877,21 @@ async def shopify_sales_stream(request: ShopifySalesRequest, db: Session = Depen
 
         yield f"event: progress\ndata: {json.dumps({'status': 'aggregating'})}\n\n"
 
+        # Read SKU exclusion prefixes from settings
+        sku_exclude_setting = db.query(Setting).filter(Setting.key == "shopify_sales_sku_exclude_prefixes").first()
+        sku_exclude_prefixes = []
+        if sku_exclude_setting and sku_exclude_setting.value:
+            sku_exclude_prefixes = [p.strip().upper() for p in sku_exclude_setting.value.split(",") if p.strip()]
+
+        if sku_exclude_prefixes:
+            all_line_items = [
+                item for item in all_line_items
+                if not any(
+                    (item.get("sku") or "").upper().startswith(prefix)
+                    for prefix in sku_exclude_prefixes
+                )
+            ]
+
         aggregated = {}
         for item in all_line_items:
             barcode = item.get("barcode", "")

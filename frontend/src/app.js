@@ -183,6 +183,7 @@ async function loadSettings() {
   await loadExclusions();
   await loadStoreMirrors();
   await loadItemTrackerExclusions();
+  await loadShopifySalesSettings();
 
   // Set dropdown value to saved preference
   const savedLandingPage = getDefaultLandingPage();
@@ -665,6 +666,51 @@ async function loadItemTrackerExclusions() {
     );
   }
 }
+
+// Shopify Sales Settings Functions
+async function loadShopifySalesSettings() {
+  const input = document.getElementById("shopify-sales-sku-prefixes");
+  if (!input) return;
+
+  try {
+    const data = await apiRequest(
+      "/settings/shopify_sales_sku_exclude_prefixes",
+    );
+    input.value = data.value || "";
+  } catch {
+    input.value = "";
+  }
+}
+
+async function saveShopifySalesSkuPrefixes() {
+  const input = document.getElementById("shopify-sales-sku-prefixes");
+  const value = input.value.trim();
+
+  try {
+    try {
+      await apiRequest("/settings/shopify_sales_sku_exclude_prefixes", {
+        method: "PATCH",
+        body: JSON.stringify({ value }),
+      });
+    } catch {
+      await apiRequest("/settings", {
+        method: "POST",
+        body: JSON.stringify({
+          key: "shopify_sales_sku_exclude_prefixes",
+          value,
+          description: "Comma-separated SKU prefixes to exclude from Shopify Sales reports",
+        }),
+      });
+    }
+    showToast("✓ SKU exclusion prefixes saved", "success");
+  } catch (error) {
+    showToast(`✗ Failed to save: ${error.message}`, "error");
+  }
+}
+
+document
+  .getElementById("shopify-sales-sku-prefixes-save")
+  ?.addEventListener("click", saveShopifySalesSkuPrefixes);
 
 async function excludeBusinessName(businessName, voidStatus) {
   if (

@@ -841,6 +841,53 @@
             </div>
           </section>
 
+          <!-- Shopify Sales Settings Section -->
+          <section class="settings-section">
+            <div class="section-header">
+              <h3>Shopify Sales</h3>
+            </div>
+            <p
+              style="
+                margin: 0 0 1rem;
+                font-size: 0.875rem;
+                color: var(--text-secondary);
+              "
+            >
+              Configure exclusions for Shopify Sales reports.
+            </p>
+            <div class="form-group">
+              <label for="shopify-sales-sku-prefixes"
+                >Exclude SKUs Starting With</label
+              >
+              <div style="display: flex; gap: 0.5rem; max-width: 500px">
+                <input
+                  type="text"
+                  id="shopify-sales-sku-prefixes"
+                  placeholder="e.g. SHIP, GC-, INTERNAL"
+                  style="flex: 1"
+                />
+                <button
+                  type="button"
+                  class="btn btn-primary"
+                  id="shopify-sales-sku-prefixes-save"
+                >
+                  Save
+                </button>
+              </div>
+              <small
+                style="
+                  color: var(--text-tertiary);
+                  font-size: 0.75rem;
+                  margin-top: 0.5rem;
+                  display: block;
+                "
+              >
+                Comma-separated prefixes. Line items with SKUs matching any
+                prefix will be excluded from sales reports. Case-insensitive.
+              </small>
+            </div>
+          </section>
+
           <!-- Item Tracker Exclusions Section -->
           <section class="settings-section">
             <div class="section-header">
