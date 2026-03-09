@@ -8089,6 +8089,8 @@ document.getElementById("shopify-sales-fetch-btn")?.addEventListener("click", fe
 async function fetchShopifySales() {
   const fetchBtn = document.getElementById("shopify-sales-fetch-btn");
   const progressEl = document.getElementById("shopify-sales-progress");
+  const progressBar = document.getElementById("shopify-sales-progress-bar");
+  const progressStatus = document.getElementById("shopify-sales-progress-status");
   const progressItems = document.getElementById("shopify-sales-progress-items");
   const resultsEl = document.getElementById("shopify-sales-results");
   const emptyEl = document.getElementById("shopify-sales-empty");
@@ -8104,10 +8106,14 @@ async function fetchShopifySales() {
   fetchBtn.disabled = true;
   fetchBtn.textContent = "Fetching...";
   progressEl.style.display = "block";
+  progressBar.style.width = "0%";
+  progressStatus.textContent = "Connecting to stores...";
   progressItems.innerHTML = "";
   resultsEl.style.display = "none";
   emptyEl.style.display = "none";
   shopifySalesResults = null;
+
+  const storeItemMap = new Map();
 
   try {
     const response = await fetch(`${API_BASE}/shopify-sales/stream`, {
@@ -8129,41 +8135,67 @@ async function fetchShopifySales() {
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop();
+      const messages = buffer.split("\n\n");
+      buffer = messages.pop();
 
-      let eventType = null;
-      for (const line of lines) {
-        if (line.startsWith("event: ")) {
-          eventType = line.substring(7).trim();
-        } else if (line.startsWith("data: ") && eventType) {
-          const data = JSON.parse(line.substring(6));
+      for (const msg of messages) {
+        if (!msg.trim()) continue;
 
-          if (eventType === "progress") {
+        const eventMatch = msg.match(/event: (\w+)\ndata: (.+)/s);
+        if (!eventMatch) continue;
+
+        const [, eventType, dataStr] = eventMatch;
+        const data = JSON.parse(dataStr);
+
+        if (eventType === "progress") {
+          if (data.status === "started") {
+            progressStatus.textContent = `Fetching orders from ${data.total_stores} store(s)...`;
+          } else if (data.status === "searching_store") {
             const item = document.createElement("div");
-            item.style.color = "var(--text-secondary)";
-            if (data.status === "completed_store") {
-              item.innerHTML = `<span style="color: var(--success);">&#10003;</span> ${escapeHtml(data.store_name)} &mdash; ${data.orders_found} orders, ${data.line_items} line items`;
-            } else if (data.status === "error_store") {
-              item.innerHTML = `<span style="color: var(--danger);">&#10007;</span> ${escapeHtml(data.store_name)} &mdash; ${escapeHtml(data.message)}`;
-            }
-            if (item.innerHTML) progressItems.appendChild(item);
-          } else if (eventType === "complete") {
-            shopifySalesResults = data;
-            displayShopifySalesResults(data);
-          } else if (eventType === "error") {
-            const item = document.createElement("div");
-            item.style.color = "var(--danger)";
-            item.textContent = data.message || "Unknown error";
+            item.style.cssText = "display: flex; align-items: center; gap: 0.5rem;";
+            item.innerHTML = `<span style="color: var(--accent-primary); animation: pulse 1.5s ease-in-out infinite;">&#9679;</span> <span>${escapeHtml(data.store_name)} — fetching orders...</span>`;
+            storeItemMap.set(data.store_name, item);
             progressItems.appendChild(item);
-          }
+          } else if (data.status === "completed_store") {
+            const pct = Math.round((data.completed / data.total_stores) * 100);
+            progressBar.style.width = `${pct}%`;
+            progressStatus.textContent = `${data.completed} of ${data.total_stores} store(s) complete...`;
 
-          eventType = null;
+            const existing = storeItemMap.get(data.store_name);
+            if (existing) {
+              existing.style.cssText = "display: flex; align-items: center; gap: 0.5rem;";
+              existing.innerHTML = `<span style="color: var(--success);">&#10003;</span> <span>${escapeHtml(data.store_name)} &mdash; ${data.orders_found} orders, ${data.line_items} line items</span>`;
+            }
+          } else if (data.status === "error_store") {
+            const pct = Math.round((data.completed / data.total_stores) * 100);
+            progressBar.style.width = `${pct}%`;
+            progressStatus.textContent = `${data.completed} of ${data.total_stores} store(s) complete...`;
+
+            const existing = storeItemMap.get(data.store_name);
+            if (existing) {
+              existing.style.cssText = "display: flex; align-items: center; gap: 0.5rem;";
+              existing.innerHTML = `<span style="color: var(--danger);">&#10007;</span> <span>${escapeHtml(data.store_name)} &mdash; ${escapeHtml(data.message)}</span>`;
+            }
+          } else if (data.status === "aggregating") {
+            progressBar.style.width = "100%";
+            progressStatus.textContent = "Aggregating results...";
+          }
+        } else if (eventType === "complete") {
+          progressStatus.textContent = "Done!";
+          shopifySalesResults = data;
+          displayShopifySalesResults(data);
+        } else if (eventType === "error") {
+          progressStatus.textContent = "Error";
+          const item = document.createElement("div");
+          item.style.color = "var(--danger)";
+          item.textContent = data.message || "Unknown error";
+          progressItems.appendChild(item);
         }
       }
     }
   } catch (error) {
     console.error("Shopify sales fetch error:", error);
+    progressStatus.textContent = "Error";
     const item = document.createElement("div");
     item.style.color = "var(--danger)";
     item.textContent = `Error: ${error.message}`;

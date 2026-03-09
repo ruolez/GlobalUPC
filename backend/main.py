@@ -3842,6 +3842,12 @@ async def shopify_sales_stream(request: ShopifySalesRequest, db: Session = Depen
                 }
 
         all_line_items = []
+        total_stores = len(store_map)
+
+        yield f"event: progress\ndata: {json.dumps({'status': 'started', 'total_stores': total_stores})}\n\n"
+
+        for s in store_map.values():
+            yield f"event: progress\ndata: {json.dumps({'status': 'searching_store', 'store_name': s['name']})}\n\n"
 
         async def fetch_store_orders(store_info):
             return store_info, await fetch_fulfilled_orders(
@@ -3853,9 +3859,11 @@ async def shopify_sales_stream(request: ShopifySalesRequest, db: Session = Depen
             )
 
         tasks = [asyncio.create_task(fetch_store_orders(s)) for s in store_map.values()]
+        completed_count = 0
 
         for completed_task in asyncio.as_completed(tasks):
             store_info, (success, error, line_items) = await completed_task
+            completed_count += 1
 
             if success:
                 for item in line_items:
@@ -3863,9 +3871,11 @@ async def shopify_sales_stream(request: ShopifySalesRequest, db: Session = Depen
                     item["store_id"] = store_info["id"]
                 all_line_items.extend(line_items)
 
-                yield f"event: progress\ndata: {json.dumps({'status': 'completed_store', 'store_name': store_info['name'], 'orders_found': len(set(i['order_name'] for i in line_items)), 'line_items': len(line_items)})}\n\n"
+                yield f"event: progress\ndata: {json.dumps({'status': 'completed_store', 'store_name': store_info['name'], 'orders_found': len(set(i['order_name'] for i in line_items)), 'line_items': len(line_items), 'completed': completed_count, 'total_stores': total_stores})}\n\n"
             else:
-                yield f"event: progress\ndata: {json.dumps({'status': 'error_store', 'store_name': store_info['name'], 'message': error or 'Unknown error'})}\n\n"
+                yield f"event: progress\ndata: {json.dumps({'status': 'error_store', 'store_name': store_info['name'], 'message': error or 'Unknown error', 'completed': completed_count, 'total_stores': total_stores})}\n\n"
+
+        yield f"event: progress\ndata: {json.dumps({'status': 'aggregating'})}\n\n"
 
         aggregated = {}
         for item in all_line_items:
