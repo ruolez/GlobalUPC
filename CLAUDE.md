@@ -52,7 +52,6 @@ All tables have auto-updating `created_at` and `updated_at` timestamps.
 - `GET /api/config/export` - Export configurations
 - `POST /api/config/import` - Import configurations
 - `POST /api/analysis/orphaned-upcs/stream` - Audit orphaned UPCs (SSE)
-- `POST /api/comparison/stores/stream` - Compare Items_tbl (SSE)
 - `POST /api/exclusions` - Add UPC exclusion
 - `GET /api/exclusions?store_id={id}` - List exclusions (optionally filtered by store)
 - `DELETE /api/exclusions/{id}` - Remove UPC exclusion
@@ -176,13 +175,6 @@ sudo ./install.sh
   - Scoped per Store + UPC combination
   - Managed via Settings page or inline exclude button (🚫) in audit results
   - Server-side filtering ensures excluded UPCs never appear in results
-
-### Items Check (Store Comparison)
-- Compare Items_tbl between two MSSQL stores
-- Find products missing from comparison store
-- Category/subcategory filtering
-- Chunked processing with real-time progress
-- Export to CSV
 
 ### Configuration Import/Export
 - JSON format with version tracking
