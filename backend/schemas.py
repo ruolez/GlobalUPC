@@ -487,3 +487,9 @@ class ItemTrackerExclusionResponse(BaseModel):
 class ItemTrackerExclusionListResponse(BaseModel):
     exclusions: List[ItemTrackerExclusionResponse]
     total: int
+
+
+class ShopifySalesRequest(BaseModel):
+    store_ids: List[int]
+    start_date: str
+    end_date: str

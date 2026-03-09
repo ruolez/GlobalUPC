@@ -991,6 +991,184 @@ async def update_variant_prices(
         return False, f"Unexpected error: {str(e)}", 0
 
 
+async def fetch_fulfilled_orders(
+    shop_domain: str,
+    admin_api_key: str,
+    start_date: str,
+    end_date: str,
+    api_version: str = "2025-01"
+) -> tuple[bool, Optional[str], List[Dict[str, Any]]]:
+    try:
+        shop_domain = validate_shop_domain(shop_domain)
+
+        query_gql = """
+        query fetchFulfilledOrders($query: String!, $first: Int!, $after: String) {
+          orders(first: $first, after: $after, query: $query) {
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
+            edges {
+              node {
+                id
+                name
+                fulfillments(first: 10) {
+                  createdAt
+                  status
+                }
+                lineItems(first: 100) {
+                  edges {
+                    node {
+                      title
+                      quantity
+                      currentQuantity
+                      variantTitle
+                      sku
+                      originalUnitPriceSet {
+                        shopMoney {
+                          amount
+                          currencyCode
+                        }
+                      }
+                      discountedUnitPriceSet {
+                        shopMoney {
+                          amount
+                          currencyCode
+                        }
+                      }
+                      variant {
+                        barcode
+                        title
+                        product {
+                          title
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        """
+
+        query_filter = f"fulfillment_status:shipped updated_at:>={start_date} updated_at:<={end_date}"
+        url = f"https://{shop_domain}/admin/api/{api_version}/graphql.json"
+        headers = {
+            "X-Shopify-Access-Token": admin_api_key,
+            "Content-Type": "application/json"
+        }
+
+        all_line_items = []
+        has_next_page = True
+        cursor = None
+        max_retries = 3
+        backoff_seconds = [1, 2, 4]
+
+        async with aiohttp.ClientSession() as session:
+            while has_next_page:
+                variables = {
+                    "query": query_filter,
+                    "first": 250,
+                }
+                if cursor:
+                    variables["after"] = cursor
+
+                response_data = None
+                for attempt in range(max_retries + 1):
+                    async with session.post(
+                        url,
+                        json={"query": query_gql, "variables": variables},
+                        headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=60)
+                    ) as response:
+                        if response.status == 429:
+                            if attempt < max_retries:
+                                await asyncio.sleep(backoff_seconds[attempt])
+                                continue
+                            return False, "Shopify rate limit exceeded after retries", []
+
+                        if response.status != 200:
+                            error_text = await response.text()
+                            return False, f"HTTP {response.status}: {error_text}", []
+
+                        response_data = await response.json()
+
+                        if "errors" in response_data:
+                            errors = response_data["errors"]
+                            error_msg = "; ".join([e.get("message", str(e)) for e in errors])
+                            if "throttl" in error_msg.lower() and attempt < max_retries:
+                                await asyncio.sleep(backoff_seconds[attempt])
+                                continue
+                            return False, f"GraphQL errors: {error_msg}", []
+
+                        break
+
+                if not response_data:
+                    return False, "No response received", []
+
+                orders_data = response_data.get("data", {}).get("orders", {})
+                page_info = orders_data.get("pageInfo", {})
+                has_next_page = page_info.get("hasNextPage", False)
+                cursor = page_info.get("endCursor")
+
+                from datetime import datetime as dt
+
+                for edge in orders_data.get("edges", []):
+                    order = edge.get("node", {})
+                    order_name = order.get("name", "")
+
+                    fulfillments = order.get("fulfillments", [])
+                    fulfillment_in_range = False
+                    for f in fulfillments:
+                        if f.get("status") != "SUCCESS":
+                            continue
+                        created_at = f.get("createdAt", "")
+                        if created_at:
+                            f_date = created_at[:10]
+                            if start_date <= f_date <= end_date:
+                                fulfillment_in_range = True
+                                break
+
+                    if not fulfillment_in_range:
+                        continue
+
+                    for li_edge in order.get("lineItems", {}).get("edges", []):
+                        li = li_edge.get("node", {})
+                        quantity = li.get("currentQuantity", 0) or li.get("quantity", 0)
+                        if quantity <= 0:
+                            continue
+
+                        variant = li.get("variant") or {}
+                        product = variant.get("product") or {}
+
+                        product_title = product.get("title") or li.get("title", "")
+                        variant_title = variant.get("title") or li.get("variantTitle") or "Default Title"
+
+                        price_set = li.get("discountedUnitPriceSet") or li.get("originalUnitPriceSet") or {}
+                        shop_money = price_set.get("shopMoney") or {}
+                        unit_price = shop_money.get("amount", "0")
+                        currency = shop_money.get("currencyCode", "USD")
+
+                        all_line_items.append({
+                            "order_name": order_name,
+                            "product_title": product_title,
+                            "variant_title": variant_title,
+                            "barcode": variant.get("barcode") or "",
+                            "sku": li.get("sku") or "",
+                            "quantity": quantity,
+                            "unit_price": unit_price,
+                            "currency": currency
+                        })
+
+        return True, None, all_line_items
+
+    except aiohttp.ClientError as e:
+        return False, f"Network error: {str(e)}", []
+    except Exception as e:
+        return False, f"Unexpected error: {str(e)}", []
+
+
 async def update_barcodes_across_shopify_stores(
     store_updates: List[Dict[str, Any]]
 ) -> List[Dict[str, Any]]:

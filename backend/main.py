@@ -31,7 +31,8 @@ from schemas import (
     ItemTrackerExclusionCreate, ItemTrackerExclusionResponse, ItemTrackerExclusionListResponse,
     PriceSearchRequest, StorePriceInfo, PriceUpdateItem, PriceUpdateRequest,
     PriceUpdateHistoryResponse, PriceUpdateHistoryBatch, PriceUpdateHistoryListResponse,
-    StoreMirrorCreate, StoreMirrorResponse, StoreMirrorListResponse
+    StoreMirrorCreate, StoreMirrorResponse, StoreMirrorListResponse,
+    ShopifySalesRequest
 )
 from mssql_helper import (
     test_mssql_connection, search_upc_across_mssql_stores, search_products_by_upc,
@@ -45,7 +46,8 @@ from shopify_helper import (
     test_shopify_connection, search_barcode_across_shopify_stores,
     search_products_by_barcode, update_barcodes_across_shopify_stores,
     check_barcode_exists, search_product_prices_by_barcode, update_variant_prices,
-    get_all_product_variant_prices, search_product_prices_with_siblings
+    get_all_product_variant_prices, search_product_prices_with_siblings,
+    fetch_fulfilled_orders
 )
 from item_tracker_helper import (
     get_item_info_async, get_purchases_async, get_sales_async,
@@ -3805,6 +3807,134 @@ async def price_updates_autocomplete(request: DescriptionAutocompleteRequest, st
     ]
 
     return DescriptionAutocompleteResponse(results=results, count=len(results))
+
+
+@app.post("/api/shopify-sales/stream")
+async def shopify_sales_stream(request: ShopifySalesRequest, db: Session = Depends(get_db)):
+    async def generate_sales_events() -> AsyncGenerator[str, None]:
+        store_ids = request.store_ids
+        start_date = request.start_date
+        end_date = request.end_date
+
+        if not store_ids:
+            yield f"event: error\ndata: {json.dumps({'message': 'No stores selected'})}\n\n"
+            return
+
+        stores = db.query(Store).filter(
+            Store.id.in_(store_ids),
+            Store.store_type == StoreType.shopify,
+            Store.is_active == True
+        ).all()
+
+        if not stores:
+            yield f"event: error\ndata: {json.dumps({'message': 'No active Shopify stores found for selected IDs'})}\n\n"
+            return
+
+        store_map = {}
+        for store in stores:
+            if store.shopify_connection:
+                store_map[store.id] = {
+                    "id": store.id,
+                    "name": store.name,
+                    "shop_domain": store.shopify_connection.shop_domain,
+                    "admin_api_key": store.shopify_connection.admin_api_key,
+                    "api_version": store.shopify_connection.api_version
+                }
+
+        all_line_items = []
+
+        async def fetch_store_orders(store_info):
+            return store_info, await fetch_fulfilled_orders(
+                shop_domain=store_info["shop_domain"],
+                admin_api_key=store_info["admin_api_key"],
+                start_date=start_date,
+                end_date=end_date,
+                api_version=store_info["api_version"]
+            )
+
+        tasks = [asyncio.create_task(fetch_store_orders(s)) for s in store_map.values()]
+
+        for completed_task in asyncio.as_completed(tasks):
+            store_info, (success, error, line_items) = await completed_task
+
+            if success:
+                for item in line_items:
+                    item["store_name"] = store_info["name"]
+                    item["store_id"] = store_info["id"]
+                all_line_items.extend(line_items)
+
+                yield f"event: progress\ndata: {json.dumps({'status': 'completed_store', 'store_name': store_info['name'], 'orders_found': len(set(i['order_name'] for i in line_items)), 'line_items': len(line_items)})}\n\n"
+            else:
+                yield f"event: progress\ndata: {json.dumps({'status': 'error_store', 'store_name': store_info['name'], 'message': error or 'Unknown error'})}\n\n"
+
+        aggregated = {}
+        for item in all_line_items:
+            barcode = item.get("barcode", "")
+            product_title = item.get("product_title", "")
+            variant_title = item.get("variant_title", "")
+            store_name = item.get("store_name", "")
+            currency = item.get("currency", "USD")
+
+            if barcode:
+                key = (item["store_id"], barcode, variant_title, currency)
+            else:
+                key = (item["store_id"], product_title, variant_title, currency)
+
+            qty = item.get("quantity", 0)
+            price = float(item.get("unit_price", 0))
+
+            if key not in aggregated:
+                aggregated[key] = {
+                    "store_name": store_name,
+                    "product_title": product_title,
+                    "variant_title": variant_title,
+                    "barcode": barcode,
+                    "sku": item.get("sku", ""),
+                    "total_quantity": 0,
+                    "total_revenue": 0.0,
+                    "currency": currency
+                }
+
+            aggregated[key]["total_quantity"] += qty
+            aggregated[key]["total_revenue"] += price * qty
+            if not aggregated[key]["sku"] and item.get("sku"):
+                aggregated[key]["sku"] = item["sku"]
+            if not aggregated[key]["product_title"] and product_title:
+                aggregated[key]["product_title"] = product_title
+
+        results = []
+        for entry in aggregated.values():
+            qty = entry["total_quantity"]
+            revenue = entry["total_revenue"]
+            avg_price = f"{(revenue / qty):.2f}" if qty > 0 else "0.00"
+            variant_display = "" if entry["variant_title"] == "Default Title" else entry["variant_title"]
+            results.append({
+                "store_name": entry["store_name"],
+                "product_title": entry["product_title"],
+                "variant_title": variant_display,
+                "barcode": entry["barcode"],
+                "sku": entry["sku"],
+                "avg_price": avg_price,
+                "total_quantity": qty,
+                "total_revenue": f"{revenue:.2f}",
+                "currency": entry["currency"]
+            })
+
+        results.sort(key=lambda r: float(r["total_revenue"]), reverse=True)
+
+        total_quantity = sum(r["total_quantity"] for r in results)
+        total_revenue = sum(float(r["total_revenue"]) for r in results)
+
+        yield f"event: complete\ndata: {json.dumps({'results': results, 'summary': {'total_items': len(results), 'total_quantity': total_quantity, 'total_revenue': f'{total_revenue:.2f}', 'stores_searched': len(store_map), 'date_range': {'start': start_date, 'end': end_date}}})}\n\n"
+
+    return StreamingResponse(
+        generate_sales_events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        }
+    )
 
 
 if __name__ == "__main__":

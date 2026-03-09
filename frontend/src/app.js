@@ -71,6 +71,8 @@ function navigateTo(page) {
     loadItemTrackerPage();
   } else if (page === "price-updates") {
     loadPriceUpdatesPage();
+  } else if (page === "shopify-sales") {
+    loadShopifySalesPage();
   }
 }
 
@@ -7967,6 +7969,339 @@ document
     priceFsHistoryState.currentPage = 0;
     await loadFullscreenHistory();
   });
+
+// ===== Shopify Sales =====
+
+let shopifySalesResults = null;
+
+async function loadShopifySalesPage() {
+  const container = document.getElementById("shopify-sales-store-checkboxes");
+  const fetchBtn = document.getElementById("shopify-sales-fetch-btn");
+  container.innerHTML = "";
+  fetchBtn.disabled = true;
+  document.getElementById("shopify-sales-progress").style.display = "none";
+  document.getElementById("shopify-sales-results").style.display = "none";
+  document.getElementById("shopify-sales-empty").style.display = "none";
+
+  try {
+    const stores = await apiRequest("/stores");
+    const shopifyStores = stores.filter(
+      (s) => s.store_type === "shopify" && s.is_active,
+    );
+
+    if (shopifyStores.length === 0) {
+      container.innerHTML =
+        '<span style="color: var(--text-tertiary); font-size: 0.8125rem;">No active Shopify stores configured</span>';
+      return;
+    }
+
+    shopifyStores.forEach((store) => {
+      const label = document.createElement("label");
+      label.style.display = "flex";
+      label.style.alignItems = "center";
+      label.style.gap = "0.5rem";
+      label.style.cursor = "pointer";
+
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.value = store.id;
+      checkbox.className = "shopify-sales-store-cb";
+      checkbox.style.width = "auto";
+      checkbox.style.margin = "0";
+
+      const span = document.createElement("span");
+      span.textContent = store.name;
+
+      label.appendChild(checkbox);
+      label.appendChild(span);
+      container.appendChild(label);
+    });
+
+    updateShopifySalesFetchBtn();
+  } catch (error) {
+    console.error("Error loading Shopify stores:", error);
+  }
+}
+
+function updateShopifySalesFetchBtn() {
+  const checked = document.querySelectorAll(
+    ".shopify-sales-store-cb:checked",
+  ).length;
+  const startDate = document.getElementById("shopify-sales-start-date").value;
+  const endDate = document.getElementById("shopify-sales-end-date").value;
+  document.getElementById("shopify-sales-fetch-btn").disabled =
+    checked === 0 || !startDate || !endDate;
+}
+
+document
+  .getElementById("shopify-sales-store-checkboxes")
+  ?.addEventListener("change", updateShopifySalesFetchBtn);
+
+document
+  .getElementById("shopify-sales-start-date")
+  ?.addEventListener("change", updateShopifySalesFetchBtn);
+
+document
+  .getElementById("shopify-sales-end-date")
+  ?.addEventListener("change", updateShopifySalesFetchBtn);
+
+document.getElementById("shopify-sales-select-all")?.addEventListener("click", () => {
+  document.querySelectorAll(".shopify-sales-store-cb").forEach((cb) => (cb.checked = true));
+  updateShopifySalesFetchBtn();
+});
+
+document.getElementById("shopify-sales-deselect-all")?.addEventListener("click", () => {
+  document.querySelectorAll(".shopify-sales-store-cb").forEach((cb) => (cb.checked = false));
+  updateShopifySalesFetchBtn();
+});
+
+document.querySelectorAll("[data-range]").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const range = btn.dataset.range;
+    const today = new Date();
+    let start, end;
+
+    if (range === "this-month") {
+      start = new Date(today.getFullYear(), today.getMonth(), 1);
+      end = today;
+    } else if (range === "last-month") {
+      start = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+      end = new Date(today.getFullYear(), today.getMonth(), 0);
+    } else {
+      const days = parseInt(range, 10);
+      start = new Date(today);
+      start.setDate(today.getDate() - days);
+      end = today;
+    }
+
+    document.getElementById("shopify-sales-start-date").value = start
+      .toISOString()
+      .split("T")[0];
+    document.getElementById("shopify-sales-end-date").value = end
+      .toISOString()
+      .split("T")[0];
+    updateShopifySalesFetchBtn();
+  });
+});
+
+document.getElementById("shopify-sales-fetch-btn")?.addEventListener("click", fetchShopifySales);
+
+async function fetchShopifySales() {
+  const fetchBtn = document.getElementById("shopify-sales-fetch-btn");
+  const progressEl = document.getElementById("shopify-sales-progress");
+  const progressItems = document.getElementById("shopify-sales-progress-items");
+  const resultsEl = document.getElementById("shopify-sales-results");
+  const emptyEl = document.getElementById("shopify-sales-empty");
+
+  const storeIds = Array.from(
+    document.querySelectorAll(".shopify-sales-store-cb:checked"),
+  ).map((cb) => parseInt(cb.value, 10));
+  const startDate = document.getElementById("shopify-sales-start-date").value;
+  const endDate = document.getElementById("shopify-sales-end-date").value;
+
+  if (storeIds.length === 0 || !startDate || !endDate) return;
+
+  fetchBtn.disabled = true;
+  fetchBtn.textContent = "Fetching...";
+  progressEl.style.display = "block";
+  progressItems.innerHTML = "";
+  resultsEl.style.display = "none";
+  emptyEl.style.display = "none";
+  shopifySalesResults = null;
+
+  try {
+    const response = await fetch(`${API_BASE}/shopify-sales/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        store_ids: storeIds,
+        start_date: startDate,
+        end_date: endDate,
+      }),
+    });
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop();
+
+      let eventType = null;
+      for (const line of lines) {
+        if (line.startsWith("event: ")) {
+          eventType = line.substring(7).trim();
+        } else if (line.startsWith("data: ") && eventType) {
+          const data = JSON.parse(line.substring(6));
+
+          if (eventType === "progress") {
+            const item = document.createElement("div");
+            item.style.color = "var(--text-secondary)";
+            if (data.status === "completed_store") {
+              item.innerHTML = `<span style="color: var(--success);">&#10003;</span> ${escapeHtml(data.store_name)} &mdash; ${data.orders_found} orders, ${data.line_items} line items`;
+            } else if (data.status === "error_store") {
+              item.innerHTML = `<span style="color: var(--danger);">&#10007;</span> ${escapeHtml(data.store_name)} &mdash; ${escapeHtml(data.message)}`;
+            }
+            if (item.innerHTML) progressItems.appendChild(item);
+          } else if (eventType === "complete") {
+            shopifySalesResults = data;
+            displayShopifySalesResults(data);
+          } else if (eventType === "error") {
+            const item = document.createElement("div");
+            item.style.color = "var(--danger)";
+            item.textContent = data.message || "Unknown error";
+            progressItems.appendChild(item);
+          }
+
+          eventType = null;
+        }
+      }
+    }
+  } catch (error) {
+    console.error("Shopify sales fetch error:", error);
+    const item = document.createElement("div");
+    item.style.color = "var(--danger)";
+    item.textContent = `Error: ${error.message}`;
+    progressItems.appendChild(item);
+  } finally {
+    fetchBtn.disabled = false;
+    fetchBtn.textContent = "Fetch Sales";
+  }
+}
+
+function displayShopifySalesResults(data) {
+  const resultsEl = document.getElementById("shopify-sales-results");
+  const emptyEl = document.getElementById("shopify-sales-empty");
+  const tbody = document.getElementById("shopify-sales-tbody");
+  const tfoot = document.getElementById("shopify-sales-tfoot");
+  const summaryEl = document.getElementById("shopify-sales-summary");
+
+  const results = data.results || [];
+  const summary = data.summary || {};
+
+  if (results.length === 0) {
+    emptyEl.style.display = "block";
+    resultsEl.style.display = "none";
+    return;
+  }
+
+  summaryEl.textContent = `${summary.total_items} products \u00b7 ${summary.total_quantity?.toLocaleString()} units sold \u00b7 $${parseFloat(summary.total_revenue || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} total revenue \u00b7 ${summary.stores_searched} store(s) \u00b7 ${summary.date_range?.start} to ${summary.date_range?.end}`;
+
+  tbody.innerHTML = "";
+  results.forEach((r) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${escapeHtml(r.store_name)}</td>
+      <td>${escapeHtml(r.product_title)}</td>
+      <td>${escapeHtml(r.variant_title || "")}</td>
+      <td style="font-family: monospace; font-size: 0.8125rem;">${escapeHtml(r.barcode || "")}</td>
+      <td style="font-size: 0.8125rem;">${escapeHtml(r.sku || "")}</td>
+      <td style="text-align: right;">$${parseFloat(r.avg_price).toFixed(2)}</td>
+      <td style="text-align: right;">${r.total_quantity.toLocaleString()}</td>
+      <td style="text-align: right;">$${parseFloat(r.total_revenue).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+
+  const totalQty = results.reduce((s, r) => s + r.total_quantity, 0);
+  const totalRev = results.reduce((s, r) => s + parseFloat(r.total_revenue), 0);
+  const avgAll = totalQty > 0 ? (totalRev / totalQty).toFixed(2) : "0.00";
+  document.getElementById("shopify-sales-total-avg").textContent = `$${avgAll}`;
+  document.getElementById("shopify-sales-total-qty").textContent = totalQty.toLocaleString();
+  document.getElementById("shopify-sales-total-rev").textContent = `$${totalRev.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  tfoot.style.display = "";
+
+  resultsEl.style.display = "block";
+}
+
+document.getElementById("shopify-sales-export-btn")?.addEventListener("click", exportShopifySalesToExcel);
+
+function exportShopifySalesToExcel() {
+  if (!shopifySalesResults || !shopifySalesResults.results || shopifySalesResults.results.length === 0) return;
+
+  const escapeXml = (str) => {
+    if (!str) return "";
+    return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+  };
+
+  const header = `<?xml version="1.0"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
+ <Styles>
+  <Style ss:ID="header">
+   <Font ss:Bold="1"/>
+  </Style>
+  <Style ss:ID="text">
+   <NumberFormat ss:Format="@"/>
+  </Style>
+ </Styles>
+ <Worksheet ss:Name="Shopify Sales">
+  <Table>
+   <Row>
+    <Cell ss:StyleID="header"><Data ss:Type="String">Store</Data></Cell>
+    <Cell ss:StyleID="header"><Data ss:Type="String">Product</Data></Cell>
+    <Cell ss:StyleID="header"><Data ss:Type="String">Variant</Data></Cell>
+    <Cell ss:StyleID="header"><Data ss:Type="String">UPC</Data></Cell>
+    <Cell ss:StyleID="header"><Data ss:Type="String">SKU</Data></Cell>
+    <Cell ss:StyleID="header"><Data ss:Type="String">Avg Price</Data></Cell>
+    <Cell ss:StyleID="header"><Data ss:Type="String">Qty Sold</Data></Cell>
+    <Cell ss:StyleID="header"><Data ss:Type="String">Revenue</Data></Cell>
+   </Row>`;
+
+  const rows = shopifySalesResults.results
+    .map((r) => {
+      return `   <Row>
+    <Cell><Data ss:Type="String">${escapeXml(r.store_name)}</Data></Cell>
+    <Cell><Data ss:Type="String">${escapeXml(r.product_title)}</Data></Cell>
+    <Cell><Data ss:Type="String">${escapeXml(r.variant_title)}</Data></Cell>
+    <Cell ss:StyleID="text"><Data ss:Type="String">${escapeXml(r.barcode)}</Data></Cell>
+    <Cell ss:StyleID="text"><Data ss:Type="String">${escapeXml(r.sku)}</Data></Cell>
+    <Cell><Data ss:Type="Number">${r.avg_price}</Data></Cell>
+    <Cell><Data ss:Type="Number">${r.total_quantity}</Data></Cell>
+    <Cell><Data ss:Type="Number">${r.total_revenue}</Data></Cell>
+   </Row>`;
+    })
+    .join("\n");
+
+  const summary = shopifySalesResults.summary || {};
+  const totalQty = shopifySalesResults.results.reduce((s, r) => s + r.total_quantity, 0);
+  const totalRev = shopifySalesResults.results.reduce((s, r) => s + parseFloat(r.total_revenue), 0);
+
+  const totalsRow = `   <Row>
+    <Cell ss:StyleID="header"><Data ss:Type="String"></Data></Cell>
+    <Cell ss:StyleID="header"><Data ss:Type="String"></Data></Cell>
+    <Cell ss:StyleID="header"><Data ss:Type="String"></Data></Cell>
+    <Cell ss:StyleID="header"><Data ss:Type="String"></Data></Cell>
+    <Cell ss:StyleID="header"><Data ss:Type="String">Totals</Data></Cell>
+    <Cell ss:StyleID="header"><Data ss:Type="String"></Data></Cell>
+    <Cell ss:StyleID="header"><Data ss:Type="Number">${totalQty}</Data></Cell>
+    <Cell ss:StyleID="header"><Data ss:Type="Number">${totalRev.toFixed(2)}</Data></Cell>
+   </Row>`;
+
+  const footer = `
+  </Table>
+ </Worksheet>
+</Workbook>`;
+
+  const content = header + "\n" + rows + "\n" + totalsRow + footer;
+  const blob = new Blob([content], { type: "application/vnd.ms-excel" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  const startDate = document.getElementById("shopify-sales-start-date").value;
+  const endDate = document.getElementById("shopify-sales-end-date").value;
+  a.download = `shopify-sales-${startDate}-to-${endDate}.xls`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ===== End Shopify Sales =====
 
 // Initialize
 document.addEventListener("DOMContentLoaded", () => {

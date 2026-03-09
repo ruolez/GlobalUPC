@@ -47,6 +47,9 @@
           <a href="#" class="nav-item" data-page="item-tracker">
             <span>Item Tracker</span>
           </a>
+          <a href="#" class="nav-item" data-page="shopify-sales">
+            <span>Shopify Sales</span>
+          </a>
           <a href="#" class="nav-item" data-page="sql-audit">
             <span>Orphan UPCs</span>
           </a>
@@ -316,6 +319,19 @@
                       Track and monitor product items across stores and
                       databases
                     </p>
+                  </div>
+                </a>
+                <a href="#" class="tool-card" data-page="shopify-sales">
+                  <div class="tool-icon">
+                    <svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+                      <path d="M4 24L10 16L16 20L22 10L28 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+                      <path d="M4 28H28" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                      <path d="M4 4V28" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                    </svg>
+                  </div>
+                  <div class="tool-info">
+                    <h4>Shopify Sales</h4>
+                    <p>View fulfilled order sales reports from Shopify stores</p>
                   </div>
                 </a>
                 <a href="#" class="tool-card" data-page="sql-audit">
@@ -2997,6 +3013,92 @@
                   <button type="button" class="btn btn-secondary" id="price-fs-history-next-btn" disabled>Next</button>
                 </div>
               </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Shopify Sales Page -->
+        <div id="shopify-sales-page" class="page" style="display: none">
+          <header class="page-header">
+            <h2>Shopify Sales</h2>
+            <p class="subtitle">View fulfilled order sales reports from Shopify stores</p>
+          </header>
+
+          <div class="card" style="margin-bottom: 1.5rem">
+            <div class="card-header"><h3>Select Stores & Date Range</h3></div>
+            <div style="padding: 1rem 1.5rem 1.5rem">
+              <div class="form-group">
+                <label>Shopify Stores</label>
+                <div style="margin-bottom: 0.5rem; display: flex; gap: 0.5rem;">
+                  <button type="button" class="btn btn-secondary" id="shopify-sales-select-all" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Select All</button>
+                  <button type="button" class="btn btn-secondary" id="shopify-sales-deselect-all" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Deselect All</button>
+                </div>
+                <div id="shopify-sales-store-checkboxes" style="display: flex; flex-direction: column; gap: 0.5rem; max-width: 400px;"></div>
+              </div>
+
+              <div class="form-group" style="margin-top: 1rem">
+                <label>Date Range</label>
+                <div style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
+                  <input type="date" id="shopify-sales-start-date" style="max-width: 180px" />
+                  <span style="color: var(--text-secondary)">to</span>
+                  <input type="date" id="shopify-sales-end-date" style="max-width: 180px" />
+                </div>
+                <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem; flex-wrap: wrap;">
+                  <button type="button" class="btn btn-secondary" data-range="7" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Last 7 Days</button>
+                  <button type="button" class="btn btn-secondary" data-range="30" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Last 30 Days</button>
+                  <button type="button" class="btn btn-secondary" data-range="this-month" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">This Month</button>
+                  <button type="button" class="btn btn-secondary" data-range="last-month" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Last Month</button>
+                </div>
+                <small style="color: var(--text-tertiary); font-size: 0.75rem; margin-top: 0.5rem; display: block;">
+                  Filters by fulfillment date. Shopify limits to last 60 days unless your app has <code>read_all_orders</code> scope.
+                </small>
+              </div>
+
+              <div style="margin-top: 1.25rem">
+                <button type="button" class="btn btn-primary" id="shopify-sales-fetch-btn" disabled>Fetch Sales</button>
+              </div>
+            </div>
+          </div>
+
+          <div id="shopify-sales-progress" style="display: none; margin-bottom: 1.5rem;">
+            <div class="card" style="padding: 1rem 1.5rem">
+              <div id="shopify-sales-progress-items" style="display: flex; flex-direction: column; gap: 0.5rem; font-size: 0.8125rem;"></div>
+            </div>
+          </div>
+
+          <div id="shopify-sales-empty" style="display: none; text-align: center; padding: 3rem 1rem; color: var(--text-secondary);">
+            <p>No fulfilled orders found for the selected date range.</p>
+          </div>
+
+          <div id="shopify-sales-results" style="display: none;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.5rem;">
+              <div id="shopify-sales-summary" style="font-size: 0.8125rem; color: var(--text-secondary);"></div>
+              <button type="button" class="btn btn-secondary" id="shopify-sales-export-btn" style="font-size: 0.75rem; padding: 0.375rem 0.75rem;">Export to Excel</button>
+            </div>
+            <div class="table-container">
+              <table class="data-table" id="shopify-sales-table">
+                <thead>
+                  <tr>
+                    <th>Store</th>
+                    <th>Product</th>
+                    <th>Variant</th>
+                    <th>UPC</th>
+                    <th>SKU</th>
+                    <th style="text-align: right">Avg Price</th>
+                    <th style="text-align: right">Qty Sold</th>
+                    <th style="text-align: right">Revenue</th>
+                  </tr>
+                </thead>
+                <tbody id="shopify-sales-tbody"></tbody>
+                <tfoot id="shopify-sales-tfoot" style="display: none">
+                  <tr>
+                    <td colspan="5" style="text-align: right; font-weight: 600;">Totals</td>
+                    <td style="text-align: right; font-weight: 600;" id="shopify-sales-total-avg"></td>
+                    <td style="text-align: right; font-weight: 600;" id="shopify-sales-total-qty"></td>
+                    <td style="text-align: right; font-weight: 600;" id="shopify-sales-total-rev"></td>
+                  </tr>
+                </tfoot>
+              </table>
             </div>
           </div>
         </div>
