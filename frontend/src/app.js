@@ -2661,6 +2661,80 @@ document
     await reconcileOrphanedUPCs("product_description", selectedRecords);
   });
 
+function exportAuditToCSV() {
+  if (
+    !currentAuditResults.orphaned_records ||
+    currentAuditResults.orphaned_records.length === 0
+  ) {
+    return;
+  }
+
+  const header = `<?xml version="1.0"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
+ <Styles>
+  <Style ss:ID="header">
+   <Font ss:Bold="1"/>
+  </Style>
+  <Style ss:ID="text">
+   <NumberFormat ss:Format="@"/>
+  </Style>
+ </Styles>
+ <Worksheet ss:Name="Orphaned UPCs">
+  <Table>
+   <Row>
+    <Cell ss:StyleID="header"><Data ss:Type="String">Table Name</Data></Cell>
+    <Cell ss:StyleID="header"><Data ss:Type="String">Record ID</Data></Cell>
+    <Cell ss:StyleID="header"><Data ss:Type="String">Orphaned UPC</Data></Cell>
+    <Cell ss:StyleID="header"><Data ss:Type="String">Product Description</Data></Cell>
+   </Row>`;
+
+  const rows = currentAuditResults.orphaned_records
+    .map((record) => {
+      const escapeXml = (str) => {
+        if (!str) return "";
+        return String(str)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&apos;");
+      };
+
+      return `   <Row>
+    <Cell><Data ss:Type="String">${escapeXml(record.table_name)}</Data></Cell>
+    <Cell><Data ss:Type="Number">${record.primary_key}</Data></Cell>
+    <Cell ss:StyleID="text"><Data ss:Type="String">${escapeXml(record.upc)}</Data></Cell>
+    <Cell><Data ss:Type="String">${escapeXml(record.description || "")}</Data></Cell>
+   </Row>`;
+    })
+    .join("\n");
+
+  const footer = `
+  </Table>
+ </Worksheet>
+</Workbook>`;
+
+  const excelContent = header + "\n" + rows + footer;
+  const blob = new Blob([excelContent], { type: "application/vnd.ms-excel" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+
+  const storeSelect = document.getElementById("audit-store-select");
+  const storeName =
+    storeSelect.options[storeSelect.selectedIndex]?.text || "unknown";
+  const dateStr = new Date().toISOString().split("T")[0];
+  const mode = currentAuditResults.isCrossDatabase
+    ? "cross-database"
+    : "orphaned";
+
+  a.download = `${mode}-upcs-${storeName}-${dateStr}.xls`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 // Export audit results button handler
 document
   .getElementById("export-audit-btn")
