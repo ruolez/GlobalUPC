@@ -3697,7 +3697,7 @@ let itemTrackerState = {
   configExpanded: false,
 };
 
-async function navigateToItemTrackerWithUpc(upc) {
+async function navigateToItemTrackerWithUpc(upc, days = null) {
   // Show Item Tracker page and highlight nav item
   document.querySelectorAll(".nav-item").forEach((item) => {
     item.classList.remove("active");
@@ -3712,6 +3712,14 @@ async function navigateToItemTrackerWithUpc(upc) {
   if (trackerPage) trackerPage.style.display = "block";
 
   await loadItemTrackerPage();
+
+  if (days && days > 0) {
+    const today = new Date();
+    const fromDate = new Date();
+    fromDate.setDate(today.getDate() - days);
+    document.getElementById("item-tracker-date-from").value = formatDateForInput(fromDate);
+    document.getElementById("item-tracker-date-to").value = formatDateForInput(today);
+  }
 
   const searchSection = document.getElementById("item-tracker-search-section");
   if (searchSection && searchSection.style.display !== "none") {
@@ -8454,9 +8462,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
   const params = new URLSearchParams(window.location.search);
   const trackerUpc = params.get("tracker");
+  const trackerDays = params.get("days");
 
   if (trackerUpc) {
-    navigateToItemTrackerWithUpc(trackerUpc);
+    navigateToItemTrackerWithUpc(trackerUpc, trackerDays ? parseInt(trackerDays, 10) : null);
   } else {
     const defaultPage = getDefaultLandingPage();
     navigateTo(defaultPage);
