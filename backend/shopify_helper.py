@@ -1012,6 +1012,12 @@ async def fetch_fulfilled_orders(
               node {
                 id
                 name
+                totalShippingPriceSet {
+                  shopMoney {
+                    amount
+                    currencyCode
+                  }
+                }
                 fulfillments(first: 10) {
                   createdAt
                   status
@@ -1133,6 +1139,10 @@ async def fetch_fulfilled_orders(
                     if not fulfillment_in_range:
                         continue
 
+                    shipping_price_set = order.get("totalShippingPriceSet") or {}
+                    shipping_money = shipping_price_set.get("shopMoney") or {}
+                    shipping_amount = shipping_money.get("amount", "0")
+
                     for li_edge in order.get("lineItems", {}).get("edges", []):
                         li = li_edge.get("node", {})
                         quantity = li.get("currentQuantity", 0) or li.get("quantity", 0)
@@ -1158,7 +1168,8 @@ async def fetch_fulfilled_orders(
                             "sku": li.get("sku") or "",
                             "quantity": quantity,
                             "unit_price": unit_price,
-                            "currency": currency
+                            "currency": currency,
+                            "shipping_amount": shipping_amount
                         })
 
         return True, None, all_line_items

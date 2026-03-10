@@ -8384,7 +8384,34 @@ function displayShopifySalesResults(data) {
     return;
   }
 
-  summaryEl.textContent = `${summary.total_items} products \u00b7 ${summary.total_quantity?.toLocaleString()} units sold \u00b7 $${parseFloat(summary.total_revenue || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} total revenue \u00b7 ${summary.stores_searched} store(s) \u00b7 ${summary.date_range?.start} to ${summary.date_range?.end}`;
+  const shippingVal = parseFloat(summary.total_shipping || 0);
+  const shippingPart = shippingVal > 0 ? ` · $${shippingVal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} shipping` : "";
+  let summaryHtml = `<div>${summary.total_items} products · ${summary.total_quantity?.toLocaleString()} units sold · $${parseFloat(summary.total_revenue || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} total revenue${shippingPart} · ${summary.stores_searched} store(s) · ${summary.date_range?.start} to ${summary.date_range?.end}</div>`;
+
+  const excludedProducts = summary.excluded_products || [];
+  if (excludedProducts.length > 0) {
+    const exclRev = parseFloat(summary.excluded_total_revenue || 0);
+    const exclQty = summary.excluded_total_quantity || 0;
+    let exclRows = excludedProducts.map(p => `<div style="display:flex;justify-content:space-between;padding:2px 0;font-size:0.8125rem;"><span>${escapeHtml(p.product_title)}</span><span>${p.quantity.toLocaleString()} units · $${parseFloat(p.revenue).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></div>`).join("");
+    summaryHtml += `<div style="margin-top:6px;padding:6px 10px;border-left:3px solid var(--warning, #f9ab00);background:var(--bg-tertiary, rgba(255,255,255,0.04));border-radius:4px;font-size:0.85rem;">Excluded: ${excludedProducts.length} product(s) · ${exclQty.toLocaleString()} units · $${exclRev.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} revenue <a href="#" id="toggle-excluded-details" style="margin-left:8px;font-size:0.8rem;">[show]</a><div id="excluded-details" style="display:none;margin-top:4px;padding-top:4px;border-top:1px solid var(--border-color, rgba(255,255,255,0.1));">${exclRows}</div></div>`;
+  }
+
+  summaryEl.innerHTML = summaryHtml;
+
+  const toggleLink = document.getElementById("toggle-excluded-details");
+  if (toggleLink) {
+    toggleLink.addEventListener("click", (e) => {
+      e.preventDefault();
+      const details = document.getElementById("excluded-details");
+      if (details.style.display === "none") {
+        details.style.display = "block";
+        toggleLink.textContent = "[hide]";
+      } else {
+        details.style.display = "none";
+        toggleLink.textContent = "[show]";
+      }
+    });
+  }
 
   const sorted = sortShopifySalesResults(results);
 
@@ -8439,7 +8466,23 @@ function exportShopifySalesToExcel() {
   const totalRev = shopifySalesResults.results.reduce((s, r) => s + parseFloat(r.total_revenue), 0);
   const totalsRow = ["", "", "", "", "", "Totals", "", totalQty, totalRev];
 
-  const wsData = [headers, ...dataRows, totalsRow];
+  const extraRows = [];
+  const summary = shopifySalesResults.summary || {};
+  const shippingTotal = parseFloat(summary.total_shipping || 0);
+  if (shippingTotal > 0) {
+    extraRows.push(["", "", "", "", "", "Shipping Collected", "", "", shippingTotal]);
+  }
+  const excludedProducts = summary.excluded_products || [];
+  if (excludedProducts.length > 0) {
+    const exclRev = parseFloat(summary.excluded_total_revenue || 0);
+    const exclQty = summary.excluded_total_quantity || 0;
+    extraRows.push(["", "", "", "", "", "Excluded Products", "", exclQty, exclRev]);
+    excludedProducts.forEach((p) => {
+      extraRows.push(["", p.product_title, "", "", "", "", "", p.quantity, parseFloat(p.revenue)]);
+    });
+  }
+
+  const wsData = [headers, ...dataRows, totalsRow, ...extraRows];
   const ws = XLSX.utils.aoa_to_sheet(wsData);
 
   const colWidths = [18, 40, 20, 16, 16, 10, 12, 10, 14];

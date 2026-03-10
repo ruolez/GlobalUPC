@@ -3884,13 +3884,41 @@ async def shopify_sales_stream(request: ShopifySalesRequest, db: Session = Depen
             sku_exclude_prefixes = [p.strip().upper() for p in sku_exclude_setting.value.split(",") if p.strip()]
 
         if sku_exclude_prefixes:
-            all_line_items = [
-                item for item in all_line_items
-                if not any(
-                    (item.get("sku") or "").upper().startswith(prefix)
-                    for prefix in sku_exclude_prefixes
-                )
-            ]
+            included_items = []
+            excluded_items = []
+            for item in all_line_items:
+                if any((item.get("sku") or "").upper().startswith(p) for p in sku_exclude_prefixes):
+                    excluded_items.append(item)
+                else:
+                    included_items.append(item)
+        else:
+            included_items = all_line_items
+            excluded_items = []
+
+        seen_orders = set()
+        total_shipping = 0.0
+        for item in all_line_items:
+            key = (item.get("store_id"), item.get("order_name"))
+            if key not in seen_orders:
+                seen_orders.add(key)
+                total_shipping += float(item.get("shipping_amount", 0))
+
+        excluded_by_product = {}
+        for item in excluded_items:
+            title = item.get("product_title", "Unknown")
+            qty = item.get("quantity", 0)
+            revenue = float(item.get("unit_price", 0)) * qty
+            if title not in excluded_by_product:
+                excluded_by_product[title] = {"product_title": title, "quantity": 0, "revenue": 0.0}
+            excluded_by_product[title]["quantity"] += qty
+            excluded_by_product[title]["revenue"] += revenue
+        excluded_products = sorted(excluded_by_product.values(), key=lambda x: x["revenue"], reverse=True)
+        excluded_total_revenue = sum(p["revenue"] for p in excluded_products)
+        excluded_total_quantity = sum(p["quantity"] for p in excluded_products)
+        for p in excluded_products:
+            p["revenue"] = f"{p['revenue']:.2f}"
+
+        all_line_items = included_items
 
         aggregated = {}
         for item in all_line_items:
@@ -3992,7 +4020,7 @@ async def shopify_sales_stream(request: ShopifySalesRequest, db: Session = Depen
         total_quantity = sum(r["total_quantity"] for r in results)
         total_revenue = sum(float(r["total_revenue"]) for r in results)
 
-        yield f"event: complete\ndata: {json.dumps({'results': results, 'summary': {'total_items': len(results), 'total_quantity': total_quantity, 'total_revenue': f'{total_revenue:.2f}', 'stores_searched': len(store_map), 'date_range': {'start': start_date, 'end': end_date}}})}\n\n"
+        yield f"event: complete\ndata: {json.dumps({'results': results, 'summary': {'total_items': len(results), 'total_quantity': total_quantity, 'total_revenue': f'{total_revenue:.2f}', 'total_shipping': f'{total_shipping:.2f}', 'stores_searched': len(store_map), 'date_range': {'start': start_date, 'end': end_date}, 'excluded_products': excluded_products, 'excluded_total_revenue': f'{excluded_total_revenue:.2f}', 'excluded_total_quantity': excluded_total_quantity}})}\n\n"
 
     return StreamingResponse(
         generate_sales_events(),
