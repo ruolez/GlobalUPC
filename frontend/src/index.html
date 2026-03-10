@@ -886,6 +886,18 @@
                 prefix will be excluded from sales reports. Case-insensitive.
               </small>
             </div>
+            <div class="form-group" style="margin-top: 1.25rem">
+              <label for="shopify-sales-s2s-store">Cost Lookup Store (S2S)</label>
+              <div style="display: flex; gap: 0.5rem; max-width: 500px">
+                <select id="shopify-sales-s2s-store" style="flex: 1">
+                  <option value="">— None —</option>
+                </select>
+                <button type="button" class="btn btn-primary" id="shopify-sales-s2s-store-save">Save</button>
+              </div>
+              <small style="color: var(--text-tertiary); font-size: 0.75rem; margin-top: 0.5rem; display: block;">
+                Select an MSSQL store to look up product cost (UnitPriceC) by barcode. Costs appear in the "Cost" column.
+              </small>
+            </div>
           </section>
 
           <!-- Item Tracker Exclusions Section -->
@@ -3080,7 +3092,7 @@
                   <button type="button" class="btn btn-secondary" id="shopify-sales-select-all" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Select All</button>
                   <button type="button" class="btn btn-secondary" id="shopify-sales-deselect-all" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Deselect All</button>
                 </div>
-                <div id="shopify-sales-store-checkboxes" style="display: flex; flex-direction: column; gap: 0.5rem; max-width: 400px;"></div>
+                <div id="shopify-sales-store-checkboxes" style="display: flex; flex-wrap: wrap; gap: 0.5rem 1.5rem;"></div>
               </div>
 
               <div class="form-group" style="margin-top: 1rem">
@@ -3135,6 +3147,7 @@
                     <th>Variant</th>
                     <th>UPC</th>
                     <th>SKU</th>
+                    <th style="text-align: right">Cost</th>
                     <th style="text-align: right">Avg Price</th>
                     <th style="text-align: right">Qty Sold</th>
                     <th style="text-align: right">Revenue</th>
@@ -3143,7 +3156,7 @@
                 <tbody id="shopify-sales-tbody"></tbody>
                 <tfoot id="shopify-sales-tfoot" style="display: none">
                   <tr>
-                    <td colspan="5" style="text-align: right; font-weight: 600;">Totals</td>
+                    <td colspan="6" style="text-align: right; font-weight: 600;">Totals</td>
                     <td style="text-align: right; font-weight: 600;" id="shopify-sales-total-avg"></td>
                     <td style="text-align: right; font-weight: 600;" id="shopify-sales-total-qty"></td>
                     <td style="text-align: right; font-weight: 600;" id="shopify-sales-total-rev"></td>

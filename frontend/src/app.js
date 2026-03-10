@@ -680,6 +680,30 @@ async function loadShopifySalesSettings() {
   } catch {
     input.value = "";
   }
+
+  const s2sSelect = document.getElementById("shopify-sales-s2s-store");
+  if (!s2sSelect) return;
+
+  try {
+    const stores = await apiRequest("/stores");
+    const mssqlStores = stores.filter(
+      (s) => s.store_type === "mssql" && s.is_active,
+    );
+    s2sSelect.innerHTML = '<option value="">— None —</option>';
+    mssqlStores.forEach((store) => {
+      const opt = document.createElement("option");
+      opt.value = store.id;
+      opt.textContent = store.name;
+      s2sSelect.appendChild(opt);
+    });
+
+    try {
+      const setting = await apiRequest(
+        "/settings/shopify_sales_s2s_store_id",
+      );
+      if (setting.value) s2sSelect.value = setting.value;
+    } catch {}
+  } catch {}
 }
 
 async function saveShopifySalesSkuPrefixes() {
@@ -711,6 +735,36 @@ async function saveShopifySalesSkuPrefixes() {
 document
   .getElementById("shopify-sales-sku-prefixes-save")
   ?.addEventListener("click", saveShopifySalesSkuPrefixes);
+
+async function saveShopifySalesS2sStore() {
+  const select = document.getElementById("shopify-sales-s2s-store");
+  const value = select.value;
+
+  try {
+    try {
+      await apiRequest("/settings/shopify_sales_s2s_store_id", {
+        method: "PATCH",
+        body: JSON.stringify({ value }),
+      });
+    } catch {
+      await apiRequest("/settings", {
+        method: "POST",
+        body: JSON.stringify({
+          key: "shopify_sales_s2s_store_id",
+          value,
+          description: "MSSQL store ID for Shopify Sales cost lookup (UnitPriceC)",
+        }),
+      });
+    }
+    showToast("✓ Cost lookup store saved", "success");
+  } catch (error) {
+    showToast(`✗ Failed to save: ${error.message}`, "error");
+  }
+}
+
+document
+  .getElementById("shopify-sales-s2s-store-save")
+  ?.addEventListener("click", saveShopifySalesS2sStore);
 
 async function excludeBusinessName(businessName, voidStatus) {
   if (
@@ -8047,6 +8101,7 @@ async function loadShopifySalesPage() {
       label.style.alignItems = "center";
       label.style.gap = "0.5rem";
       label.style.cursor = "pointer";
+      label.style.whiteSpace = "nowrap";
 
       const checkbox = document.createElement("input");
       checkbox.type = "checkbox";
@@ -8279,6 +8334,7 @@ function displayShopifySalesResults(data) {
       <td>${escapeHtml(r.variant_title || "")}</td>
       <td style="font-family: monospace; font-size: 0.8125rem;">${escapeHtml(r.barcode || "")}</td>
       <td style="font-size: 0.8125rem;">${escapeHtml(r.sku || "")}</td>
+      <td style="text-align: right;">${r.cost != null ? "$" + parseFloat(r.cost).toFixed(2) : "\u2014"}</td>
       <td style="text-align: right;">$${parseFloat(r.avg_price).toFixed(2)}</td>
       <td style="text-align: right;">${r.total_quantity.toLocaleString()}</td>
       <td style="text-align: right;">$${parseFloat(r.total_revenue).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
@@ -8327,6 +8383,7 @@ function exportShopifySalesToExcel() {
     <Cell ss:StyleID="header"><Data ss:Type="String">Variant</Data></Cell>
     <Cell ss:StyleID="header"><Data ss:Type="String">UPC</Data></Cell>
     <Cell ss:StyleID="header"><Data ss:Type="String">SKU</Data></Cell>
+    <Cell ss:StyleID="header"><Data ss:Type="String">Cost</Data></Cell>
     <Cell ss:StyleID="header"><Data ss:Type="String">Avg Price</Data></Cell>
     <Cell ss:StyleID="header"><Data ss:Type="String">Qty Sold</Data></Cell>
     <Cell ss:StyleID="header"><Data ss:Type="String">Revenue</Data></Cell>
@@ -8340,6 +8397,7 @@ function exportShopifySalesToExcel() {
     <Cell><Data ss:Type="String">${escapeXml(r.variant_title)}</Data></Cell>
     <Cell ss:StyleID="text"><Data ss:Type="String">${escapeXml(r.barcode)}</Data></Cell>
     <Cell ss:StyleID="text"><Data ss:Type="String">${escapeXml(r.sku)}</Data></Cell>
+    <Cell><Data ss:Type="${r.cost != null ? "Number" : "String"}">${r.cost != null ? r.cost : ""}</Data></Cell>
     <Cell><Data ss:Type="Number">${r.avg_price}</Data></Cell>
     <Cell><Data ss:Type="Number">${r.total_quantity}</Data></Cell>
     <Cell><Data ss:Type="Number">${r.total_revenue}</Data></Cell>
@@ -8352,6 +8410,7 @@ function exportShopifySalesToExcel() {
   const totalRev = shopifySalesResults.results.reduce((s, r) => s + parseFloat(r.total_revenue), 0);
 
   const totalsRow = `   <Row>
+    <Cell ss:StyleID="header"><Data ss:Type="String"></Data></Cell>
     <Cell ss:StyleID="header"><Data ss:Type="String"></Data></Cell>
     <Cell ss:StyleID="header"><Data ss:Type="String"></Data></Cell>
     <Cell ss:StyleID="header"><Data ss:Type="String"></Data></Cell>

@@ -3947,6 +3947,47 @@ async def shopify_sales_stream(request: ShopifySalesRequest, db: Session = Depen
 
         results.sort(key=lambda r: float(r["total_revenue"]), reverse=True)
 
+        s2s_setting = db.query(Setting).filter(Setting.key == "shopify_sales_s2s_store_id").first()
+        if s2s_setting and s2s_setting.value:
+            try:
+                s2s_store_id = int(s2s_setting.value)
+                s2s_store = db.query(Store).filter(
+                    Store.id == s2s_store_id,
+                    Store.store_type == StoreType.mssql,
+                    Store.is_active == True
+                ).first()
+                if s2s_store and s2s_store.mssql_connection:
+                    conn = s2s_store.mssql_connection
+                    barcodes = list({r["barcode"] for r in results if r.get("barcode")})
+                    if barcodes:
+                        success, error, prices_map = await get_item_prices_batch_async(
+                            conn.host, conn.port, conn.database_name,
+                            conn.username, conn.password, barcodes
+                        )
+                        if success:
+                            for r in results:
+                                bc = r.get("barcode", "")
+                                if bc and bc in prices_map:
+                                    cost_val = prices_map[bc].get("unit_delivery_b")
+                                    r["cost"] = f"{cost_val:.2f}" if cost_val is not None else None
+                                else:
+                                    r["cost"] = None
+                        else:
+                            for r in results:
+                                r["cost"] = None
+                    else:
+                        for r in results:
+                            r["cost"] = None
+                else:
+                    for r in results:
+                        r["cost"] = None
+            except Exception:
+                for r in results:
+                    r["cost"] = None
+        else:
+            for r in results:
+                r["cost"] = None
+
         total_quantity = sum(r["total_quantity"] for r in results)
         total_revenue = sum(float(r["total_revenue"]) for r in results)
 
