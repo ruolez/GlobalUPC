@@ -673,10 +673,11 @@ async function loadShopifySalesSettings() {
   if (!input) return;
 
   try {
-    const data = await apiRequest(
-      "/settings/shopify_sales_sku_exclude_prefixes",
-    );
-    input.value = data.value || "";
+    const resp = await fetch(`${API_BASE}/settings/shopify_sales_sku_exclude_prefixes`);
+    if (resp.ok) {
+      const data = await resp.json();
+      input.value = data.value || "";
+    }
   } catch {
     input.value = "";
   }
@@ -697,12 +698,11 @@ async function loadShopifySalesSettings() {
       s2sSelect.appendChild(opt);
     });
 
-    try {
-      const setting = await apiRequest(
-        "/settings/shopify_sales_s2s_store_id",
-      );
+    const s2sResp = await fetch(`${API_BASE}/settings/shopify_sales_s2s_store_id`);
+    if (s2sResp.ok) {
+      const setting = await s2sResp.json();
       if (setting.value) s2sSelect.value = setting.value;
-    } catch {}
+    }
   } catch {}
 }
 
