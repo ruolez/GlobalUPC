@@ -8416,7 +8416,7 @@ function exportShopifySalesToExcel() {
 
   const escapeXml = (str) => {
     if (!str) return "";
-    return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+    return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   };
 
   const header = `<?xml version="1.0"?>
@@ -8453,7 +8453,7 @@ function exportShopifySalesToExcel() {
     <Cell><Data ss:Type="String">${escapeXml(r.variant_title)}</Data></Cell>
     <Cell ss:StyleID="text"><Data ss:Type="String">${escapeXml(r.barcode)}</Data></Cell>
     <Cell ss:StyleID="text"><Data ss:Type="String">${escapeXml(r.sku)}</Data></Cell>
-    <Cell><Data ss:Type="${r.cost != null ? "Number" : "String"}">${r.cost != null ? r.cost : ""}</Data></Cell>
+    <Cell><Data ss:Type="Number">${r.cost != null ? r.cost : ""}</Data></Cell>
     <Cell><Data ss:Type="Number">${r.avg_price}</Data></Cell>
     <Cell><Data ss:Type="Number">${r.total_quantity}</Data></Cell>
     <Cell><Data ss:Type="Number">${r.total_revenue}</Data></Cell>
