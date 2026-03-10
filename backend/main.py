@@ -3962,7 +3962,8 @@ async def shopify_sales_stream(request: ShopifySalesRequest, db: Session = Depen
                     if barcodes:
                         success, error, prices_map = await get_item_prices_batch_async(
                             conn.host, conn.port, conn.database_name,
-                            conn.username, conn.password, barcodes
+                            conn.username, conn.password, barcodes,
+                            include_discontinued=True
                         )
                         if success:
                             for r in results:

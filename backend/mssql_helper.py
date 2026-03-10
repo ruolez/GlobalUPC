@@ -1820,7 +1820,8 @@ def get_item_prices_batch(
     username: str,
     password: str,
     upcs: list[str],
-    tds_version: str = "7.4"
+    tds_version: str = "7.4",
+    include_discontinued: bool = False
 ) -> tuple[bool, Optional[str], Dict[str, Dict[str, Any]]]:
     conn_str = get_mssql_connection_string(host, port, database, username, password, tds_version)
 
@@ -1830,13 +1831,14 @@ def get_item_prices_batch(
 
         results: Dict[str, Dict[str, Any]] = {}
         MAX_PARAMS = 2000
+        discontinued_filter = "" if include_discontinued else " AND Discontinued = 0"
 
         for batch_start in range(0, len(upcs), MAX_PARAMS):
             batch = upcs[batch_start:batch_start + MAX_PARAMS]
             placeholders = ",".join(["?"] * len(batch))
             cursor.execute(
                 f"SELECT ProductID, ProductUPC, ProductDescription, UnitPrice, UnitCost, UnitPriceC "
-                f"FROM Items_tbl WHERE ProductUPC IN ({placeholders}) AND Discontinued = 0",
+                f"FROM Items_tbl WHERE ProductUPC IN ({placeholders}){discontinued_filter}",
                 batch
             )
             for row in cursor.fetchall():
@@ -1866,13 +1868,14 @@ async def get_item_prices_batch_async(
     username: str,
     password: str,
     upcs: list[str],
-    tds_version: str = "7.4"
+    tds_version: str = "7.4",
+    include_discontinued: bool = False
 ) -> tuple[bool, Optional[str], Dict[str, Dict[str, Any]]]:
     loop = asyncio.get_event_loop()
     with ThreadPoolExecutor() as executor:
         return await loop.run_in_executor(
             executor,
-            lambda: get_item_prices_batch(host, port, database, username, password, upcs, tds_version)
+            lambda: get_item_prices_batch(host, port, database, username, password, upcs, tds_version, include_discontinued)
         )
 
 
