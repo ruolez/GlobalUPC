@@ -711,12 +711,12 @@ async function saveShopifySalesSkuPrefixes() {
   const value = input.value.trim();
 
   try {
-    try {
-      await apiRequest("/settings/shopify_sales_sku_exclude_prefixes", {
-        method: "PATCH",
-        body: JSON.stringify({ value }),
-      });
-    } catch {
+    const patchResp = await fetch(`${API_BASE}/settings/shopify_sales_sku_exclude_prefixes`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ value }),
+    });
+    if (!patchResp.ok) {
       await apiRequest("/settings", {
         method: "POST",
         body: JSON.stringify({
@@ -741,12 +741,12 @@ async function saveShopifySalesS2sStore() {
   const value = select.value;
 
   try {
-    try {
-      await apiRequest("/settings/shopify_sales_s2s_store_id", {
-        method: "PATCH",
-        body: JSON.stringify({ value }),
-      });
-    } catch {
+    const patchResp = await fetch(`${API_BASE}/settings/shopify_sales_s2s_store_id`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ value }),
+    });
+    if (!patchResp.ok) {
       await apiRequest("/settings", {
         method: "POST",
         body: JSON.stringify({
