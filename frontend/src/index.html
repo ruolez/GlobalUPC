@@ -3142,15 +3142,15 @@
               <table class="data-table" id="shopify-sales-table">
                 <thead>
                   <tr>
-                    <th>Store</th>
-                    <th>Product</th>
-                    <th>Variant</th>
-                    <th>UPC</th>
-                    <th>SKU</th>
-                    <th style="text-align: right">Cost</th>
-                    <th style="text-align: right">Avg Price</th>
-                    <th style="text-align: right">Qty Sold</th>
-                    <th style="text-align: right">Revenue</th>
+                    <th style="cursor: pointer; user-select: none;" data-sort="store_name">Store <span class="sort-indicator"></span></th>
+                    <th style="cursor: pointer; user-select: none;" data-sort="product_title">Product <span class="sort-indicator"></span></th>
+                    <th style="cursor: pointer; user-select: none;" data-sort="variant_title">Variant <span class="sort-indicator"></span></th>
+                    <th style="cursor: pointer; user-select: none;" data-sort="barcode">UPC <span class="sort-indicator"></span></th>
+                    <th style="cursor: pointer; user-select: none;" data-sort="sku">SKU <span class="sort-indicator"></span></th>
+                    <th style="text-align: right; cursor: pointer; user-select: none;" data-sort="cost">Cost <span class="sort-indicator"></span></th>
+                    <th style="text-align: right; cursor: pointer; user-select: none;" data-sort="avg_price">Avg Price <span class="sort-indicator"></span></th>
+                    <th style="text-align: right; cursor: pointer; user-select: none;" data-sort="total_quantity">Qty Sold <span class="sort-indicator"></span></th>
+                    <th style="text-align: right; cursor: pointer; user-select: none;" data-sort="total_revenue">Revenue <span class="sort-indicator">▼</span></th>
                   </tr>
                 </thead>
                 <tbody id="shopify-sales-tbody"></tbody>

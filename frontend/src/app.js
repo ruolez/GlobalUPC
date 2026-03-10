@@ -8307,6 +8307,59 @@ async function fetchShopifySales() {
   }
 }
 
+let shopifySalesSortColumn = "total_revenue";
+let shopifySalesSortDirection = "desc";
+
+const shopifySalesNumericColumns = new Set(["cost", "avg_price", "total_quantity", "total_revenue"]);
+
+function sortShopifySalesResults(results) {
+  const col = shopifySalesSortColumn;
+  const dir = shopifySalesSortDirection === "asc" ? 1 : -1;
+  const isNumeric = shopifySalesNumericColumns.has(col);
+
+  return [...results].sort((a, b) => {
+    let av = a[col];
+    let bv = b[col];
+    if (isNumeric) {
+      av = av != null ? parseFloat(av) : -Infinity;
+      bv = bv != null ? parseFloat(bv) : -Infinity;
+      return (av - bv) * dir;
+    }
+    av = (av || "").toLowerCase();
+    bv = (bv || "").toLowerCase();
+    return av < bv ? -dir : av > bv ? dir : 0;
+  });
+}
+
+function updateShopifySalesSortIndicators() {
+  const table = document.getElementById("shopify-sales-table");
+  if (!table) return;
+  table.querySelectorAll("th[data-sort]").forEach((th) => {
+    const indicator = th.querySelector(".sort-indicator");
+    if (!indicator) return;
+    if (th.dataset.sort === shopifySalesSortColumn) {
+      indicator.textContent = shopifySalesSortDirection === "asc" ? "▲" : "▼";
+      indicator.style.opacity = "1";
+    } else {
+      indicator.textContent = "";
+      indicator.style.opacity = "0.3";
+    }
+  });
+}
+
+document.getElementById("shopify-sales-table")?.addEventListener("click", (e) => {
+  const th = e.target.closest("th[data-sort]");
+  if (!th) return;
+  const col = th.dataset.sort;
+  if (shopifySalesSortColumn === col) {
+    shopifySalesSortDirection = shopifySalesSortDirection === "asc" ? "desc" : "asc";
+  } else {
+    shopifySalesSortColumn = col;
+    shopifySalesSortDirection = shopifySalesNumericColumns.has(col) ? "desc" : "asc";
+  }
+  if (shopifySalesResults) displayShopifySalesResults(shopifySalesResults);
+});
+
 function displayShopifySalesResults(data) {
   const resultsEl = document.getElementById("shopify-sales-results");
   const emptyEl = document.getElementById("shopify-sales-empty");
@@ -8325,8 +8378,10 @@ function displayShopifySalesResults(data) {
 
   summaryEl.textContent = `${summary.total_items} products \u00b7 ${summary.total_quantity?.toLocaleString()} units sold \u00b7 $${parseFloat(summary.total_revenue || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} total revenue \u00b7 ${summary.stores_searched} store(s) \u00b7 ${summary.date_range?.start} to ${summary.date_range?.end}`;
 
+  const sorted = sortShopifySalesResults(results);
+
   tbody.innerHTML = "";
-  results.forEach((r) => {
+  sorted.forEach((r) => {
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${escapeHtml(r.store_name)}</td>
@@ -8350,6 +8405,7 @@ function displayShopifySalesResults(data) {
   document.getElementById("shopify-sales-total-rev").textContent = `$${totalRev.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   tfoot.style.display = "";
 
+  updateShopifySalesSortIndicators();
   resultsEl.style.display = "block";
 }
 
