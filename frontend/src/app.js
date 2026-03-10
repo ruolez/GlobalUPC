@@ -8441,7 +8441,7 @@ function exportShopifySalesToExcel() {
     <Cell ss:StyleID="header"><Data ss:Type="String">SKU</Data></Cell>
     <Cell ss:StyleID="header"><Data ss:Type="String">Cost</Data></Cell>
     <Cell ss:StyleID="header"><Data ss:Type="String">Avg Price</Data></Cell>
-    <Cell ss:StyleID="header"><Data ss:Type="String">Qty Sold</Data></Cell>
+    <Cell ss:StyleID="header"><Data ss:Type="String">Qty</Data></Cell>
     <Cell ss:StyleID="header"><Data ss:Type="String">Revenue</Data></Cell>
    </Row>`;
 
