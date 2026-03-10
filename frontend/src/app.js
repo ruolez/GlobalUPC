@@ -8414,84 +8414,35 @@ document.getElementById("shopify-sales-export-btn")?.addEventListener("click", e
 function exportShopifySalesToExcel() {
   if (!shopifySalesResults || !shopifySalesResults.results || shopifySalesResults.results.length === 0) return;
 
-  const escapeXml = (str) => {
-    if (!str) return "";
-    return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
-  };
+  const headers = ["Store", "Product", "Variant", "UPC", "SKU", "Cost", "Avg Price", "Qty", "Revenue"];
+  const dataRows = shopifySalesResults.results.map((r) => [
+    r.store_name || "",
+    r.product_title || "",
+    r.variant_title || "",
+    r.barcode || "",
+    r.sku || "",
+    r.cost != null ? parseFloat(r.cost) : null,
+    parseFloat(r.avg_price),
+    r.total_quantity,
+    parseFloat(r.total_revenue),
+  ]);
 
-  const header = `<?xml version="1.0"?>
-<?mso-application progid="Excel.Sheet"?>
-<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
- xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
- <Styles>
-  <Style ss:ID="header">
-   <Font ss:Bold="1"/>
-  </Style>
-  <Style ss:ID="text">
-   <NumberFormat ss:Format="@"/>
-  </Style>
- </Styles>
- <Worksheet ss:Name="Shopify Sales">
-  <Table>
-   <Row>
-    <Cell ss:StyleID="header"><Data ss:Type="String">Store</Data></Cell>
-    <Cell ss:StyleID="header"><Data ss:Type="String">Product</Data></Cell>
-    <Cell ss:StyleID="header"><Data ss:Type="String">Variant</Data></Cell>
-    <Cell ss:StyleID="header"><Data ss:Type="String">UPC</Data></Cell>
-    <Cell ss:StyleID="header"><Data ss:Type="String">SKU</Data></Cell>
-    <Cell ss:StyleID="header"><Data ss:Type="String">Cost</Data></Cell>
-    <Cell ss:StyleID="header"><Data ss:Type="String">Avg Price</Data></Cell>
-    <Cell ss:StyleID="header"><Data ss:Type="String">Qty</Data></Cell>
-    <Cell ss:StyleID="header"><Data ss:Type="String">Revenue</Data></Cell>
-   </Row>`;
-
-  const rows = shopifySalesResults.results
-    .map((r) => {
-      return `   <Row>
-    <Cell><Data ss:Type="String">${escapeXml(r.store_name)}</Data></Cell>
-    <Cell><Data ss:Type="String">${escapeXml(r.product_title)}</Data></Cell>
-    <Cell><Data ss:Type="String">${escapeXml(r.variant_title)}</Data></Cell>
-    <Cell ss:StyleID="text"><Data ss:Type="String">${escapeXml(r.barcode)}</Data></Cell>
-    <Cell ss:StyleID="text"><Data ss:Type="String">${escapeXml(r.sku)}</Data></Cell>
-    <Cell><Data ss:Type="Number">${r.cost != null ? r.cost : ""}</Data></Cell>
-    <Cell><Data ss:Type="Number">${r.avg_price}</Data></Cell>
-    <Cell><Data ss:Type="Number">${r.total_quantity}</Data></Cell>
-    <Cell><Data ss:Type="Number">${r.total_revenue}</Data></Cell>
-   </Row>`;
-    })
-    .join("\n");
-
-  const summary = shopifySalesResults.summary || {};
   const totalQty = shopifySalesResults.results.reduce((s, r) => s + r.total_quantity, 0);
   const totalRev = shopifySalesResults.results.reduce((s, r) => s + parseFloat(r.total_revenue), 0);
+  const totalsRow = ["", "", "", "", "", "Totals", "", totalQty, totalRev];
 
-  const totalsRow = `   <Row>
-    <Cell ss:StyleID="header"><Data ss:Type="String"></Data></Cell>
-    <Cell ss:StyleID="header"><Data ss:Type="String"></Data></Cell>
-    <Cell ss:StyleID="header"><Data ss:Type="String"></Data></Cell>
-    <Cell ss:StyleID="header"><Data ss:Type="String"></Data></Cell>
-    <Cell ss:StyleID="header"><Data ss:Type="String"></Data></Cell>
-    <Cell ss:StyleID="header"><Data ss:Type="String">Totals</Data></Cell>
-    <Cell ss:StyleID="header"><Data ss:Type="String"></Data></Cell>
-    <Cell ss:StyleID="header"><Data ss:Type="Number">${totalQty}</Data></Cell>
-    <Cell ss:StyleID="header"><Data ss:Type="Number">${totalRev.toFixed(2)}</Data></Cell>
-   </Row>`;
+  const wsData = [headers, ...dataRows, totalsRow];
+  const ws = XLSX.utils.aoa_to_sheet(wsData);
 
-  const footer = `
-  </Table>
- </Worksheet>
-</Workbook>`;
+  const colWidths = [18, 40, 20, 16, 16, 10, 12, 10, 14];
+  ws["!cols"] = colWidths.map((w) => ({ wch: w }));
 
-  const content = header + "\n" + rows + "\n" + totalsRow + footer;
-  const blob = new Blob([content], { type: "application/vnd.ms-excel" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Shopify Sales");
+
   const startDate = document.getElementById("shopify-sales-start-date").value;
   const endDate = document.getElementById("shopify-sales-end-date").value;
-  a.download = `shopify-sales-${startDate}-to-${endDate}.xls`;
-  a.click();
-  URL.revokeObjectURL(url);
+  XLSX.writeFile(wb, `shopify-sales-${startDate}-to-${endDate}.xlsx`);
 }
 
 // ===== End Shopify Sales =====
