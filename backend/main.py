@@ -3958,7 +3958,7 @@ async def shopify_sales_stream(request: ShopifySalesRequest, db: Session = Depen
                 ).first()
                 if s2s_store and s2s_store.mssql_connection:
                     conn = s2s_store.mssql_connection
-                    barcodes = list({r["barcode"] for r in results if r.get("barcode")})
+                    barcodes = list({r["barcode"].strip() for r in results if r.get("barcode", "").strip()})
                     if barcodes:
                         success, error, prices_map = await get_item_prices_batch_async(
                             conn.host, conn.port, conn.database_name,
@@ -3966,7 +3966,7 @@ async def shopify_sales_stream(request: ShopifySalesRequest, db: Session = Depen
                         )
                         if success:
                             for r in results:
-                                bc = r.get("barcode", "")
+                                bc = r.get("barcode", "").strip()
                                 if bc and bc in prices_map:
                                     cost_val = prices_map[bc].get("unit_delivery_b")
                                     r["cost"] = f"{cost_val:.2f}" if cost_val is not None else None
