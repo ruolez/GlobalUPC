@@ -8418,10 +8418,9 @@ function displayShopifySalesResults(data) {
   tbody.innerHTML = "";
   sorted.forEach((r) => {
     const tr = document.createElement("tr");
+    const productDisplay = r.variant_title ? `${r.product_title} - ${r.variant_title}` : r.product_title;
     tr.innerHTML = `
-      <td>${escapeHtml(r.store_name)}</td>
-      <td>${escapeHtml(r.product_title)}</td>
-      <td>${escapeHtml(r.variant_title || "")}</td>
+      <td>${escapeHtml(productDisplay)}</td>
       <td style="font-family: monospace; font-size: 0.8125rem;">${escapeHtml(r.barcode || "")}</td>
       <td style="font-size: 0.8125rem;">${escapeHtml(r.sku || "")}</td>
       <td style="text-align: right;">${r.cost != null ? "$" + parseFloat(r.cost).toFixed(2) : "\u2014"}</td>
@@ -8449,11 +8448,9 @@ document.getElementById("shopify-sales-export-btn")?.addEventListener("click", e
 function exportShopifySalesToExcel() {
   if (!shopifySalesResults || !shopifySalesResults.results || shopifySalesResults.results.length === 0) return;
 
-  const headers = ["Store", "Product", "Variant", "UPC", "SKU", "Cost", "Avg Price", "Qty", "Revenue"];
+  const headers = ["Product", "UPC", "SKU", "Cost", "Avg Price", "Qty", "Revenue"];
   const dataRows = shopifySalesResults.results.map((r) => [
-    r.store_name || "",
-    r.product_title || "",
-    r.variant_title || "",
+    r.variant_title ? `${r.product_title} - ${r.variant_title}` : (r.product_title || ""),
     r.barcode || "",
     r.sku || "",
     r.cost != null ? parseFloat(r.cost) : null,
@@ -8464,28 +8461,28 @@ function exportShopifySalesToExcel() {
 
   const totalQty = shopifySalesResults.results.reduce((s, r) => s + r.total_quantity, 0);
   const totalRev = shopifySalesResults.results.reduce((s, r) => s + parseFloat(r.total_revenue), 0);
-  const totalsRow = ["", "", "", "", "", "Totals", "", totalQty, totalRev];
+  const totalsRow = ["", "", "", "Totals", "", totalQty, totalRev];
 
   const extraRows = [];
   const summary = shopifySalesResults.summary || {};
   const shippingTotal = parseFloat(summary.total_shipping || 0);
   if (shippingTotal > 0) {
-    extraRows.push(["", "", "", "", "", "Shipping Collected", "", "", shippingTotal]);
+    extraRows.push(["", "", "", "Shipping Collected", "", "", shippingTotal]);
   }
   const excludedProducts = summary.excluded_products || [];
   if (excludedProducts.length > 0) {
     const exclRev = parseFloat(summary.excluded_total_revenue || 0);
     const exclQty = summary.excluded_total_quantity || 0;
-    extraRows.push(["", "", "", "", "", "Excluded Products", "", exclQty, exclRev]);
+    extraRows.push(["", "", "", "Excluded Products", "", exclQty, exclRev]);
     excludedProducts.forEach((p) => {
-      extraRows.push(["", p.product_title, "", "", "", "", "", p.quantity, parseFloat(p.revenue)]);
+      extraRows.push([p.product_title, "", "", "", "", p.quantity, parseFloat(p.revenue)]);
     });
   }
 
   const wsData = [headers, ...dataRows, totalsRow, ...extraRows];
   const ws = XLSX.utils.aoa_to_sheet(wsData);
 
-  const colWidths = [18, 40, 20, 16, 16, 10, 12, 10, 14];
+  const colWidths = [55, 16, 16, 10, 12, 10, 14];
   ws["!cols"] = colWidths.map((w) => ({ wch: w }));
 
   const wb = XLSX.utils.book_new();
