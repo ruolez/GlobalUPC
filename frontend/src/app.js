@@ -843,13 +843,19 @@ async function loadStores() {
       storeCard.classList.toggle("expanded");
     });
 
-    // Toggle/delete button listeners
+    // Toggle/delete/edit-name button listeners
     document
       .getElementById(`toggle-${store.id}`)
       ?.addEventListener("click", () => toggleStore(store.id));
     document
       .getElementById(`delete-${store.id}`)
       ?.addEventListener("click", () => deleteStore(store.id));
+    document
+      .getElementById(`edit-name-${store.id}`)
+      ?.addEventListener("click", (e) => {
+        e.stopPropagation();
+        startRenameStore(store.id, store.name);
+      });
   });
 }
 
@@ -864,7 +870,8 @@ function createStoreCard(store, index) {
                     <div class="store-header-clickable">
                         <span class="row-number">${index}.</span>
                         <span class="expand-icon">▶</span>
-                        <h4>${store.name}</h4>
+                        <h4 id="store-name-${store.id}">${store.name}</h4>
+                        <button class="btn-edit-name" id="edit-name-${store.id}" title="Rename store">&#9998;</button>
                         <span class="store-type-badge ${store.store_type}">${store.store_type.toUpperCase()}</span>
                     </div>
                 </div>
@@ -928,6 +935,53 @@ async function deleteStore(storeId) {
   }
 
   await apiRequest(`/stores/${storeId}`, { method: "DELETE" });
+  await loadStores();
+  await loadDashboard();
+}
+
+function startRenameStore(storeId, currentName) {
+  const h4 = document.getElementById(`store-name-${storeId}`);
+  const editBtn = document.getElementById(`edit-name-${storeId}`);
+  if (!h4) return;
+
+  editBtn.style.display = "none";
+
+  const input = document.createElement("input");
+  input.type = "text";
+  input.value = currentName;
+  input.className = "inline-rename-input";
+  h4.replaceWith(input);
+  input.focus();
+  input.select();
+
+  const commit = async () => {
+    const newName = input.value.trim();
+    if (newName && newName !== currentName) {
+      await renameStore(storeId, newName);
+    } else {
+      await loadStores();
+    }
+  };
+
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      input.blur();
+    } else if (e.key === "Escape") {
+      input.value = currentName;
+      input.blur();
+    }
+  });
+
+  input.addEventListener("blur", commit, { once: true });
+}
+
+async function renameStore(storeId, newName) {
+  await apiRequest(`/stores/${storeId}/name`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: newName }),
+  });
   await loadStores();
   await loadDashboard();
 }

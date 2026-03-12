@@ -14,7 +14,7 @@ import os
 from database import get_db, engine
 from models import Store, MSSQLConnection, ShopifyConnection, Setting, StoreType, UPCUpdateHistory, UPCExclusion, ItemTrackerConfig, ItemTrackerExclusion, PriceUpdateHistory, StoreMirror
 from schemas import (
-    MSSQLStoreCreate, ShopifyStoreCreate, StoreResponse,
+    MSSQLStoreCreate, ShopifyStoreCreate, StoreResponse, StoreNameUpdate,
     SettingCreate, SettingUpdate, SettingResponse,
     UPCSearchRequest, UPCSearchResponse, ProductVariantMatch,
     UPCUpdateRequest, UPCUpdateResult,
@@ -1029,6 +1029,22 @@ def delete_store(store_id: int, db: Session = Depends(get_db)):
     db.delete(store)
     db.commit()
     return None
+
+@app.patch("/api/stores/{store_id}/name", response_model=StoreResponse)
+def update_store_name(store_id: int, body: StoreNameUpdate, db: Session = Depends(get_db)):
+    store = db.query(Store).filter(Store.id == store_id).first()
+    if not store:
+        raise HTTPException(status_code=404, detail="Store not found")
+
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Store name cannot be empty")
+
+    store.name = name
+    db.commit()
+    db.refresh(store)
+
+    return store
 
 @app.patch("/api/stores/{store_id}/toggle", response_model=StoreResponse)
 def toggle_store_active(store_id: int, db: Session = Depends(get_db)):

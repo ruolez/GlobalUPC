@@ -510,6 +510,38 @@ body {
   gap: 0.5rem;
 }
 
+.btn-edit-name {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  padding: 0.1rem 0.3rem;
+  border-radius: 4px;
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease;
+}
+
+.store-header-clickable:hover .btn-edit-name {
+  opacity: 1;
+}
+
+.btn-edit-name:hover {
+  color: var(--accent);
+}
+
+.inline-rename-input {
+  font-size: 1rem;
+  font-weight: 600;
+  padding: 0.15rem 0.4rem;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  outline: none;
+  min-width: 120px;
+}
+
 .store-card .expand-icon {
   display: inline-block;
   font-size: 0.75rem;

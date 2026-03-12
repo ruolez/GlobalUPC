@@ -519,6 +519,10 @@ class ItemTrackerExclusionListResponse(BaseModel):
     total: int
 
 
+class StoreNameUpdate(BaseModel):
+    name: str
+
+
 class ShopifySalesRequest(BaseModel):
     store_ids: List[int]
     start_date: str
