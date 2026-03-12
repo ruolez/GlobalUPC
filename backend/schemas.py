@@ -342,6 +342,36 @@ class ItemTrackerSearchResponse(BaseModel):
     stores_searched: int
 
 
+class ItemTrackerSummaryItemInfo(BaseModel):
+    product_upc: str
+    product_description: Optional[str] = None
+    quant_on_hand: Optional[float] = None
+    unit_price: Optional[float] = None
+    unit_cost: Optional[float] = None
+    avr_cost: Optional[float] = None
+
+
+class ItemTrackerQuantityTotals(BaseModel):
+    purchase: float = 0.0
+    sale: float = 0.0
+    customer_return: float = 0.0
+    vendor_return: float = 0.0
+    inventory_recount: float = 0.0
+
+
+class ItemTrackerSummaryResponse(BaseModel):
+    upc: str
+    item_info: Optional[ItemTrackerSummaryItemInfo] = None
+    event_counts: Dict[str, int]
+    quantity_totals: ItemTrackerQuantityTotals
+    net_quantity: float
+    beginning_inventory: Optional[float] = None
+    ending_inventory: Optional[float] = None
+    total_events: int
+    stores_searched: int
+    errors: Optional[List[str]] = None
+
+
 class DescriptionAutocompleteRequest(BaseModel):
     query: str
 

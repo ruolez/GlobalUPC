@@ -1,10 +1,10 @@
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from typing import List, Union, AsyncGenerator, Optional
 from pydantic import BaseModel
-from datetime import datetime
+from datetime import datetime, date
 import uvicorn
 import asyncio
 import json
@@ -29,6 +29,7 @@ from schemas import (
     ItemInfo, ItemTrackerEvent, ItemTrackerSearchResponse,
     DescriptionAutocompleteRequest, DescriptionAutocompleteResult, DescriptionAutocompleteResponse,
     ItemTrackerExclusionCreate, ItemTrackerExclusionResponse, ItemTrackerExclusionListResponse,
+    ItemTrackerSummaryItemInfo, ItemTrackerQuantityTotals, ItemTrackerSummaryResponse,
     PriceSearchRequest, StorePriceInfo, PriceUpdateItem, PriceUpdateRequest,
     PriceUpdateHistoryResponse, PriceUpdateHistoryBatch, PriceUpdateHistoryListResponse,
     StoreMirrorCreate, StoreMirrorResponse, StoreMirrorListResponse,
@@ -76,6 +77,10 @@ if ALLOWED_IFRAME_ORIGINS:
 
 # Remove duplicates while preserving order
 cors_origins = list(dict.fromkeys(cors_origins))
+
+# Allow all origins when explicitly configured
+if os.getenv("CORS_ALLOW_ALL", "").lower() == "true":
+    cors_origins = ["*"]
 
 # CORS middleware
 app.add_middleware(
@@ -2143,6 +2148,92 @@ def save_item_tracker_config(config_data: ItemTrackerConfigCreate, db: Session =
     )
 
 
+def get_item_tracker_stores(db: Session):
+    config = db.query(ItemTrackerConfig).first()
+    if not config or not config.s2s_store_id:
+        raise HTTPException(status_code=400, detail="Item Tracker not configured. Please configure S2S database in Settings.")
+
+    s2s_store = db.query(Store).filter(
+        Store.id == config.s2s_store_id,
+        Store.store_type == StoreType.mssql
+    ).first()
+
+    if not s2s_store or not s2s_store.mssql_connection:
+        raise HTTPException(status_code=400, detail="S2S database not found or missing connection details")
+
+    s2s_conn = s2s_store.mssql_connection
+
+    sales_stores = []
+    if config.sales_store_ids:
+        sales_stores = db.query(Store).filter(
+            Store.id.in_(config.sales_store_ids),
+            Store.store_type == StoreType.mssql
+        ).all()
+
+    inventory_store = None
+    if config.inventory_store_id:
+        inventory_store = db.query(Store).filter(
+            Store.id == config.inventory_store_id,
+            Store.store_type == StoreType.mssql
+        ).first()
+
+    return config, s2s_store, s2s_conn, sales_stores, inventory_store
+
+
+def apply_exclusion_filter(all_events, event_counts, db: Session):
+    exclusions = db.query(ItemTrackerExclusion).all()
+
+    exclusion_map = {}
+    for excl in exclusions:
+        key = excl.business_name.lower()
+        if key not in exclusion_map:
+            exclusion_map[key] = []
+        exclusion_map[key].append(excl)
+
+    def should_exclude(event):
+        if not event.business_name:
+            return False
+        key = event.business_name.lower()
+        if key not in exclusion_map:
+            return False
+        for excl in exclusion_map[key]:
+            if excl.void_status is None:
+                return True
+            if event.event_type == "sale" and event.is_voided is not None:
+                if excl.void_status == 1 and event.is_voided:
+                    return True
+                if excl.void_status == 0 and not event.is_voided:
+                    return True
+        return False
+
+    if exclusion_map:
+        all_events = [e for e in all_events if not should_exclude(e)]
+        event_counts = {
+            "purchase": 0,
+            "sale": 0,
+            "customer_return": 0,
+            "vendor_return": 0,
+            "inventory_recount": 0
+        }
+        for event in all_events:
+            event_counts[event.event_type] += 1
+
+    return all_events, event_counts
+
+
+def compute_quantity_totals(all_events):
+    totals = {
+        "purchase": 0.0,
+        "sale": 0.0,
+        "customer_return": 0.0,
+        "vendor_return": 0.0,
+        "inventory_recount": 0.0
+    }
+    for event in all_events:
+        totals[event.event_type] += event.quantity or 0.0
+    return totals
+
+
 @app.post("/api/item-tracker/search/stream")
 async def search_item_tracker_stream(request: ItemTrackerSearchRequest, db: Session = Depends(get_db)):
     """
@@ -2445,52 +2536,7 @@ async def search_item_tracker_stream(request: ItemTrackerSearchRequest, db: Sess
                         yield f"event: progress\ndata: {json.dumps({'status': 'completed', 'message': f'Found {len(recounts)} inventory recounts'})}\n\n"
 
             # Filter out excluded business names (void-aware)
-            exclusions = db.query(ItemTrackerExclusion).all()
-
-            # Build exclusion lookup: {business_name_lower: [exclusion objects]}
-            exclusion_map = {}
-            for excl in exclusions:
-                key = excl.business_name.lower()
-                if key not in exclusion_map:
-                    exclusion_map[key] = []
-                exclusion_map[key].append(excl)
-
-            def should_exclude(event):
-                if not event.business_name:
-                    return False
-
-                key = event.business_name.lower()
-                if key not in exclusion_map:
-                    return False
-
-                for excl in exclusion_map[key]:
-                    # NULL void_status = exclude all events for this business
-                    if excl.void_status is None:
-                        return True
-                    # For sale events, check void status match
-                    if event.event_type == "sale" and event.is_voided is not None:
-                        if excl.void_status == 1 and event.is_voided:
-                            return True  # Exclude voided
-                        if excl.void_status == 0 and not event.is_voided:
-                            return True  # Exclude non-voided
-
-                return False
-
-            if exclusion_map:
-                original_count = len(all_events)
-                all_events = [e for e in all_events if not should_exclude(e)]
-                filtered_count = original_count - len(all_events)
-                if filtered_count > 0:
-                    # Update event counts after filtering
-                    event_counts = {
-                        "purchase": 0,
-                        "sale": 0,
-                        "customer_return": 0,
-                        "vendor_return": 0,
-                        "inventory_recount": 0
-                    }
-                    for event in all_events:
-                        event_counts[event.event_type] += 1
+            all_events, event_counts = apply_exclusion_filter(all_events, event_counts, db)
 
             # Sort all events by date (newest first)
             all_events.sort(key=lambda e: e.event_date if e.event_date else datetime.min, reverse=True)
@@ -2582,6 +2628,258 @@ async def search_item_tracker_stream(request: ItemTrackerSearchRequest, db: Sess
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
         }
+    )
+
+
+@app.get("/api/item-tracker/summary", response_model=ItemTrackerSummaryResponse)
+async def get_item_tracker_summary(
+    upc: str,
+    date_from: Optional[date] = Query(None, alias="from"),
+    date_to: Optional[date] = Query(None, alias="to"),
+    show_voided: bool = Query(False),
+    db: Session = Depends(get_db),
+):
+    upc = upc.strip()
+    if not upc:
+        raise HTTPException(status_code=400, detail="UPC is required")
+
+    config, s2s_store, s2s_conn, sales_stores, inventory_store = get_item_tracker_stores(db)
+
+    all_events = []
+    event_counts = {
+        "purchase": 0,
+        "sale": 0,
+        "customer_return": 0,
+        "vendor_return": 0,
+        "inventory_recount": 0
+    }
+    stores_searched = 1
+    item_info = None
+    errors = []
+
+    conn_kwargs = dict(
+        host=s2s_conn.host,
+        port=s2s_conn.port,
+        database=s2s_conn.database_name,
+        username=s2s_conn.username,
+        password=s2s_conn.password,
+    )
+
+    # 1. Get Item Info from S2S
+    success, error, item_data = await get_item_info_async(**conn_kwargs, upc=upc)
+    if not success:
+        errors.append(f"S2S Items_tbl: {error}")
+    elif item_data:
+        item_info = ItemInfo(
+            product_id=item_data["product_id"],
+            product_upc=item_data["product_upc"],
+            product_description=item_data["product_description"],
+            last_received=item_data["last_received"],
+            last_sold=item_data["last_sold"],
+            unit_price=item_data["unit_price"],
+            unit_cost=item_data["unit_cost"],
+            avr_cost=item_data["avr_cost"],
+            quant_on_hand=item_data["quant_on_hand"]
+        )
+
+    # 2. Get Purchases + Vendor Returns from S2S in parallel
+    purchases_result, vendor_returns_result = await asyncio.gather(
+        get_purchases_async(**conn_kwargs, upc=upc, date_from=date_from, date_to=date_to),
+        get_vendor_returns_async(**conn_kwargs, upc=upc, date_from=date_from, date_to=date_to),
+    )
+
+    success, error, purchases = purchases_result
+    if not success:
+        errors.append(f"S2S Purchases: {error}")
+    else:
+        for p in purchases:
+            all_events.append(ItemTrackerEvent(
+                event_type="purchase",
+                event_date=p["event_date"],
+                store_name=s2s_store.name,
+                document_number=p["document_number"],
+                quantity=p["quantity"],
+                price_or_cost=p["price_or_cost"],
+                business_name=p["business_name"],
+                line_id=p["line_id"],
+                extended_amount=p["extended_amount"]
+            ))
+        event_counts["purchase"] = len(purchases)
+
+    success, error, vendor_returns = vendor_returns_result
+    if not success:
+        errors.append(f"S2S Vendor Returns: {error}")
+    else:
+        for r in vendor_returns:
+            all_events.append(ItemTrackerEvent(
+                event_type="vendor_return",
+                event_date=r["event_date"],
+                store_name=s2s_store.name,
+                document_number=r["document_number"],
+                quantity=r["quantity"],
+                price_or_cost=r["price_or_cost"],
+                business_name=r["business_name"],
+                line_id=r["line_id"],
+                extended_amount=r["extended_amount"]
+            ))
+        event_counts["vendor_return"] = len(vendor_returns)
+
+    # 3. Get Sales + Customer Returns from all sales stores
+    if sales_stores:
+        stores_searched += len(sales_stores)
+        sales_tasks = []
+        cr_tasks = []
+        for store in sales_stores:
+            if store.mssql_connection:
+                c = store.mssql_connection
+                sk = dict(host=c.host, port=c.port, database=c.database_name, username=c.username, password=c.password)
+                sales_tasks.append((store.name, get_sales_async(**sk, upc=upc, date_from=date_from, date_to=date_to, show_voided=show_voided)))
+                cr_tasks.append((store.name, get_customer_returns_async(**sk, upc=upc, date_from=date_from, date_to=date_to)))
+
+        for store_name, task in sales_tasks:
+            success, error, sales = await task
+            if not success:
+                errors.append(f"{store_name} Sales: {error}")
+            else:
+                for s in sales:
+                    all_events.append(ItemTrackerEvent(
+                        event_type="sale",
+                        event_date=s["event_date"],
+                        store_name=store_name,
+                        document_number=s["document_number"],
+                        quantity=s["quantity"],
+                        price_or_cost=s["price_or_cost"],
+                        business_name=s["business_name"],
+                        line_id=s["line_id"],
+                        extended_amount=s["extended_amount"],
+                        is_voided=s.get("is_voided", False)
+                    ))
+                event_counts["sale"] += len(sales)
+
+        for store_name, task in cr_tasks:
+            success, error, returns = await task
+            if not success:
+                errors.append(f"{store_name} Customer Returns: {error}")
+            else:
+                for r in returns:
+                    all_events.append(ItemTrackerEvent(
+                        event_type="customer_return",
+                        event_date=r["event_date"],
+                        store_name=store_name,
+                        document_number=r["document_number"],
+                        quantity=r["quantity"],
+                        price_or_cost=r["price_or_cost"],
+                        business_name=r["business_name"],
+                        line_id=r["line_id"],
+                        extended_amount=r["extended_amount"]
+                    ))
+                event_counts["customer_return"] += len(returns)
+
+    # 4. Inventory Recounts
+    if inventory_store and inventory_store.mssql_connection:
+        stores_searched += 1
+        inv_conn = inventory_store.mssql_connection
+        success, error, recounts = await get_inventory_recounts_async(
+            host=inv_conn.host,
+            port=inv_conn.port,
+            database=inv_conn.database_name,
+            username=inv_conn.username,
+            password=inv_conn.password,
+            upc=upc,
+            date_from=date_from,
+            date_to=date_to
+        )
+        if not success:
+            errors.append(f"Inventory Recounts: {error}")
+        else:
+            for r in recounts:
+                all_events.append(ItemTrackerEvent(
+                    event_type="inventory_recount",
+                    event_date=r["event_date"],
+                    store_name=inventory_store.name,
+                    document_number=r["update_type"],
+                    quantity=r["quantity"],
+                    price_or_cost=None,
+                    business_name=r["username"],
+                    line_id=r["line_id"],
+                    extended_amount=r.get("new_qty"),
+                    username=r["username"],
+                    update_type=r["update_type"]
+                ))
+            event_counts["inventory_recount"] = len(recounts)
+
+    # 5. Apply exclusion filter
+    all_events, event_counts = apply_exclusion_filter(all_events, event_counts, db)
+
+    # 6. Sort by date (newest first) and calculate running balance
+    all_events.sort(key=lambda e: e.event_date if e.event_date else datetime.min, reverse=True)
+
+    beginning_inventory = None
+    ending_inventory = None
+
+    if item_info and item_info.quant_on_hand is not None and all_events:
+        balance = item_info.quant_on_hand
+        for event in all_events:
+            if event.event_type == "inventory_recount":
+                new_qty = event.extended_amount
+                event.running_balance = new_qty
+                event.extended_amount = None
+                balance -= (event.quantity or 0)
+            else:
+                event.running_balance = balance
+                qty = event.quantity or 0
+                if event.event_type == "sale":
+                    balance += qty
+                elif event.event_type == "purchase":
+                    balance -= qty
+                elif event.event_type == "customer_return":
+                    balance -= qty
+                elif event.event_type == "vendor_return":
+                    balance += qty
+
+        ending_inventory = all_events[0].running_balance
+        last_event = all_events[-1]
+        if last_event.event_type == "inventory_recount":
+            beginning_inventory = last_event.running_balance - (last_event.quantity or 0)
+        else:
+            qty = last_event.quantity or 0
+            if last_event.event_type == "sale":
+                beginning_inventory = last_event.running_balance + qty
+            elif last_event.event_type == "purchase":
+                beginning_inventory = last_event.running_balance - qty
+            elif last_event.event_type == "customer_return":
+                beginning_inventory = last_event.running_balance - qty
+            elif last_event.event_type == "vendor_return":
+                beginning_inventory = last_event.running_balance + qty
+            else:
+                beginning_inventory = last_event.running_balance
+
+    # 7. Compute quantity totals and net quantity
+    qty_totals = compute_quantity_totals(all_events)
+    net_quantity = qty_totals["purchase"] - qty_totals["sale"] + qty_totals["customer_return"] - qty_totals["vendor_return"]
+
+    summary_item_info = None
+    if item_info:
+        summary_item_info = ItemTrackerSummaryItemInfo(
+            product_upc=item_info.product_upc,
+            product_description=item_info.product_description,
+            quant_on_hand=item_info.quant_on_hand,
+            unit_price=item_info.unit_price,
+            unit_cost=item_info.unit_cost,
+            avr_cost=item_info.avr_cost
+        )
+
+    return ItemTrackerSummaryResponse(
+        upc=upc,
+        item_info=summary_item_info,
+        event_counts=event_counts,
+        quantity_totals=ItemTrackerQuantityTotals(**qty_totals),
+        net_quantity=net_quantity,
+        beginning_inventory=beginning_inventory,
+        ending_inventory=ending_inventory,
+        total_events=len(all_events),
+        stores_searched=stores_searched,
+        errors=errors if errors else None
     )
 
 
