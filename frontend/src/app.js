@@ -3697,7 +3697,7 @@ let itemTrackerState = {
   configExpanded: false,
 };
 
-async function navigateToItemTrackerWithUpc(upc, days = null) {
+async function navigateToItemTrackerWithUpc(upc, days = null, fromDate = null, toDate = null) {
   // Show Item Tracker page and highlight nav item
   document.querySelectorAll(".nav-item").forEach((item) => {
     item.classList.remove("active");
@@ -3713,11 +3713,18 @@ async function navigateToItemTrackerWithUpc(upc, days = null) {
 
   await loadItemTrackerPage();
 
-  if (days && days > 0) {
+  if (fromDate || toDate) {
+    if (fromDate) {
+      document.getElementById("item-tracker-date-from").value = fromDate;
+    }
+    if (toDate) {
+      document.getElementById("item-tracker-date-to").value = toDate;
+    }
+  } else if (days && days > 0) {
     const today = new Date();
-    const fromDate = new Date();
-    fromDate.setDate(today.getDate() - days);
-    document.getElementById("item-tracker-date-from").value = formatDateForInput(fromDate);
+    const from = new Date();
+    from.setDate(today.getDate() - days);
+    document.getElementById("item-tracker-date-from").value = formatDateForInput(from);
     document.getElementById("item-tracker-date-to").value = formatDateForInput(today);
   }
 
@@ -8503,9 +8510,11 @@ document.addEventListener("DOMContentLoaded", () => {
   const params = new URLSearchParams(window.location.search);
   const trackerUpc = params.get("tracker");
   const trackerDays = params.get("days");
+  const trackerFrom = params.get("from");
+  const trackerTo = params.get("to");
 
   if (trackerUpc) {
-    navigateToItemTrackerWithUpc(trackerUpc, trackerDays ? parseInt(trackerDays, 10) : null);
+    navigateToItemTrackerWithUpc(trackerUpc, trackerDays ? parseInt(trackerDays, 10) : null, trackerFrom, trackerTo);
   } else {
     const defaultPage = getDefaultLandingPage();
     navigateTo(defaultPage);
