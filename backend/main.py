@@ -2636,7 +2636,7 @@ async def get_item_tracker_summary(
     upc: str,
     date_from: Optional[date] = Query(None, alias="from"),
     date_to: Optional[date] = Query(None, alias="to"),
-    show_voided: bool = Query(False),
+    show_voided: bool = Query(True),
     db: Session = Depends(get_db),
 ):
     upc = upc.strip()
