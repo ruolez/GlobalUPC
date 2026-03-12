@@ -4,7 +4,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from typing import List, Union, AsyncGenerator, Optional
 from pydantic import BaseModel
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import uvicorn
 import asyncio
 import json
@@ -2234,6 +2234,100 @@ def compute_quantity_totals(all_events):
     return totals
 
 
+def compute_adjusted_balance(quant_on_hand, gap_events):
+    balance = quant_on_hand
+    for event in gap_events:
+        qty = event.quantity or 0
+        if event.event_type == "inventory_recount":
+            balance -= qty
+        elif event.event_type == "sale":
+            balance += qty
+        elif event.event_type == "purchase":
+            balance -= qty
+        elif event.event_type == "customer_return":
+            balance -= qty
+        elif event.event_type == "vendor_return":
+            balance += qty
+    return balance
+
+
+async def fetch_gap_events(upc, date_to, show_voided, s2s_conn, s2s_store_name, sales_stores, inventory_store, db):
+    today = date.today()
+    gap_from = date_to + timedelta(days=1)
+    if gap_from > today:
+        return []
+
+    gap_events = []
+    tasks = []
+
+    conn_kwargs = dict(
+        host=s2s_conn.host,
+        port=s2s_conn.port,
+        database=s2s_conn.database_name,
+        username=s2s_conn.username,
+        password=s2s_conn.password,
+    )
+
+    tasks.append(("purchase", s2s_store_name, get_purchases_async(**conn_kwargs, upc=upc, date_from=gap_from, date_to=today)))
+    tasks.append(("vendor_return", s2s_store_name, get_vendor_returns_async(**conn_kwargs, upc=upc, date_from=gap_from, date_to=today)))
+
+    for store in sales_stores:
+        if store.mssql_connection:
+            c = store.mssql_connection
+            sk = dict(host=c.host, port=c.port, database=c.database_name, username=c.username, password=c.password)
+            tasks.append(("sale", store.name, get_sales_async(**sk, upc=upc, date_from=gap_from, date_to=today, show_voided=show_voided)))
+            tasks.append(("customer_return", store.name, get_customer_returns_async(**sk, upc=upc, date_from=gap_from, date_to=today)))
+
+    if inventory_store and inventory_store.mssql_connection:
+        inv_conn = inventory_store.mssql_connection
+        tasks.append(("inventory_recount", inventory_store.name, get_inventory_recounts_async(
+            host=inv_conn.host, port=inv_conn.port, database=inv_conn.database_name,
+            username=inv_conn.username, password=inv_conn.password,
+            upc=upc, date_from=gap_from, date_to=today
+        )))
+
+    results = await asyncio.gather(*[t[2] for t in tasks], return_exceptions=True)
+
+    for (event_type, store_name, _), result in zip(tasks, results):
+        if isinstance(result, Exception):
+            continue
+        success, error, rows = result
+        if not success:
+            continue
+        for r in rows:
+            if event_type == "inventory_recount":
+                gap_events.append(ItemTrackerEvent(
+                    event_type=event_type,
+                    event_date=r["event_date"],
+                    store_name=store_name,
+                    document_number=r["update_type"],
+                    quantity=r["quantity"],
+                    price_or_cost=None,
+                    business_name=r["username"],
+                    line_id=r["line_id"],
+                    extended_amount=r.get("new_qty"),
+                    username=r["username"],
+                    update_type=r["update_type"]
+                ))
+            else:
+                gap_events.append(ItemTrackerEvent(
+                    event_type=event_type,
+                    event_date=r["event_date"],
+                    store_name=store_name,
+                    document_number=r["document_number"],
+                    quantity=r["quantity"],
+                    price_or_cost=r.get("price_or_cost"),
+                    business_name=r.get("business_name"),
+                    line_id=r["line_id"],
+                    extended_amount=r.get("extended_amount"),
+                    is_voided=r.get("is_voided", False) if event_type == "sale" else None
+                ))
+
+    gap_events, _ = apply_exclusion_filter(gap_events, {}, db)
+    gap_events.sort(key=lambda e: e.event_date if e.event_date else datetime.min, reverse=True)
+    return gap_events
+
+
 @app.post("/api/item-tracker/search/stream")
 async def search_item_tracker_stream(request: ItemTrackerSearchRequest, db: Session = Depends(get_db)):
     """
@@ -2278,6 +2372,8 @@ async def search_item_tracker_stream(request: ItemTrackerSearchRequest, db: Sess
         }
         stores_searched = 1  # S2S store
         item_info = None
+        sales_stores = []
+        inventory_store = None
         errors = []
 
         try:
@@ -2544,6 +2640,12 @@ async def search_item_tracker_stream(request: ItemTrackerSearchRequest, db: Sess
             # Calculate running balance (working backwards from current QoH)
             if item_info and item_info.quant_on_hand is not None:
                 balance = item_info.quant_on_hand
+                if date_to and date_to < date.today():
+                    gap_events = await fetch_gap_events(
+                        upc, date_to, show_voided, s2s_conn, s2s_store.name,
+                        sales_stores, inventory_store, db
+                    )
+                    balance = compute_adjusted_balance(balance, gap_events)
                 for event in all_events:
                     if event.event_type == "inventory_recount":
                         event.expected_balance = balance
@@ -2819,6 +2921,12 @@ async def get_item_tracker_summary(
 
     if item_info and item_info.quant_on_hand is not None and all_events:
         balance = item_info.quant_on_hand
+        if date_to and date_to < date.today():
+            gap_events = await fetch_gap_events(
+                upc, date_to, show_voided, s2s_conn, s2s_store.name,
+                sales_stores, inventory_store, db
+            )
+            balance = compute_adjusted_balance(balance, gap_events)
         for event in all_events:
             if event.event_type == "inventory_recount":
                 new_qty = event.extended_amount
