@@ -8992,8 +8992,8 @@ function sortSalesProducts() {
   salesState.filteredProducts.sort((a, b) => {
     let va = a[col];
     let vb = b[col];
-    if (typeof va === "string") {
-      return va.localeCompare(vb) * dir;
+    if (typeof va === "string" || typeof vb === "string") {
+      return (va || "").localeCompare(vb || "") * dir;
     }
     return ((va || 0) - (vb || 0)) * dir;
   });
@@ -9025,19 +9025,21 @@ function renderSalesTable() {
 
   if (isSold) {
     thead.innerHTML = `
-      <th style="width: 4%; text-align: center">#</th>
-      <th style="width: 18%; ${sortStyle}" onclick="handleSalesSort('upc')">UPC${sortIcon("upc")}</th>
-      <th style="width: 36%; ${sortStyle}" onclick="handleSalesSort('description')">Description${sortIcon("description")}</th>
-      <th style="width: 14%; text-align: right; ${sortStyle}" onclick="handleSalesSort('total_sold')">Sold${sortIcon("total_sold")}</th>
-      <th style="width: 14%; text-align: right; ${sortStyle}" onclick="handleSalesSort('total_returned')">Returns${sortIcon("total_returned")}</th>
-      <th style="width: 14%; text-align: right; ${sortStyle}" onclick="handleSalesSort('net_sold')">Net Sold${sortIcon("net_sold")}</th>
+      <th style="width: 3%; text-align: center">#</th>
+      <th style="width: 14%; ${sortStyle}" onclick="handleSalesSort('upc')">UPC${sortIcon("upc")}</th>
+      <th style="width: 27%; ${sortStyle}" onclick="handleSalesSort('description')">Description${sortIcon("description")}</th>
+      <th style="width: 16%; ${sortStyle}" onclick="handleSalesSort('subcategory')">Subcategory${sortIcon("subcategory")}</th>
+      <th style="width: 13%; text-align: right; ${sortStyle}" onclick="handleSalesSort('total_sold')">Sold${sortIcon("total_sold")}</th>
+      <th style="width: 13%; text-align: right; ${sortStyle}" onclick="handleSalesSort('total_returned')">Returns${sortIcon("total_returned")}</th>
+      <th style="width: 13%; text-align: right; ${sortStyle}" onclick="handleSalesSort('net_sold')">Net Sold${sortIcon("net_sold")}</th>
     `;
   } else {
     thead.innerHTML = `
-      <th style="width: 5%; text-align: center">#</th>
-      <th style="width: 20%; ${sortStyle}" onclick="handleSalesSort('upc')">UPC${sortIcon("upc")}</th>
-      <th style="width: 50%; ${sortStyle}" onclick="handleSalesSort('description')">Description${sortIcon("description")}</th>
-      <th style="width: 20%; text-align: right; ${sortStyle}" onclick="handleSalesSort('quant_on_hand')">Qty on Hand${sortIcon("quant_on_hand")}</th>
+      <th style="width: 4%; text-align: center">#</th>
+      <th style="width: 16%; ${sortStyle}" onclick="handleSalesSort('upc')">UPC${sortIcon("upc")}</th>
+      <th style="width: 36%; ${sortStyle}" onclick="handleSalesSort('description')">Description${sortIcon("description")}</th>
+      <th style="width: 22%; ${sortStyle}" onclick="handleSalesSort('subcategory')">Subcategory${sortIcon("subcategory")}</th>
+      <th style="width: 16%; text-align: right; ${sortStyle}" onclick="handleSalesSort('quant_on_hand')">Qty on Hand${sortIcon("quant_on_hand")}</th>
     `;
   }
 
@@ -9048,11 +9050,13 @@ function renderSalesTable() {
   tbody.innerHTML = "";
   pageData.forEach((p, i) => {
     const row = document.createElement("tr");
+    const sc = p.subcategory || "";
     if (isSold) {
       row.innerHTML = `
         <td style="text-align: center; color: var(--text-tertiary); font-size: 0.75rem">${start + i + 1}</td>
         <td style="font-family: monospace; font-size: 0.8125rem">${p.upc}</td>
-        <td style="font-size: 0.8125rem; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap" title="${p.description}">${p.description}</td>
+        <td style="font-size: 0.8125rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap" title="${p.description}">${p.description}</td>
+        <td style="font-size: 0.8125rem; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap" title="${sc}">${sc}</td>
         <td style="text-align: right; font-size: 0.8125rem">${p.total_sold.toLocaleString()}</td>
         <td style="text-align: right; font-size: 0.8125rem; color: var(--warning)">${p.total_returned.toLocaleString()}</td>
         <td style="text-align: right; font-size: 0.8125rem; font-weight: 600">${p.net_sold.toLocaleString()}</td>
@@ -9061,7 +9065,8 @@ function renderSalesTable() {
       row.innerHTML = `
         <td style="text-align: center; color: var(--text-tertiary); font-size: 0.75rem">${start + i + 1}</td>
         <td style="font-family: monospace; font-size: 0.8125rem">${p.upc}</td>
-        <td style="font-size: 0.8125rem; max-width: 350px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap" title="${p.description}">${p.description}</td>
+        <td style="font-size: 0.8125rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap" title="${p.description}">${p.description}</td>
+        <td style="font-size: 0.8125rem; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap" title="${sc}">${sc}</td>
         <td style="text-align: right; font-size: 0.8125rem">${p.quant_on_hand.toLocaleString()}</td>
       `;
     }
@@ -9075,7 +9080,7 @@ function renderSalesTable() {
     const totalNet = salesState.filteredProducts.reduce((s, p) => s + p.net_sold, 0);
     tfoot.innerHTML = `
       <tr style="font-weight: 700; border-top: 2px solid var(--border-color);">
-        <td></td><td></td><td style="font-size: 0.8125rem">Totals</td>
+        <td></td><td></td><td style="font-size: 0.8125rem">Totals</td><td></td>
         <td style="text-align: right; font-size: 0.8125rem">${totalSold.toLocaleString()}</td>
         <td style="text-align: right; font-size: 0.8125rem; color: var(--warning)">${totalReturned.toLocaleString()}</td>
         <td style="text-align: right; font-size: 0.8125rem">${totalNet.toLocaleString()}</td>
@@ -9114,20 +9119,20 @@ function exportSalesReport() {
 
   const isSold = salesState.viewMode === "sold";
   const headers = isSold
-    ? ["UPC", "Description", "Sold", "Returns", "Net Sold"]
-    : ["UPC", "Description", "Qty on Hand"];
+    ? ["UPC", "Description", "Subcategory", "Sold", "Returns", "Net Sold"]
+    : ["UPC", "Description", "Subcategory", "Qty on Hand"];
 
   const dataRows = salesState.filteredProducts.map((p) =>
     isSold
-      ? [p.upc, p.description, p.total_sold, p.total_returned, p.net_sold]
-      : [p.upc, p.description, p.quant_on_hand]
+      ? [p.upc, p.description, p.subcategory || "", p.total_sold, p.total_returned, p.net_sold]
+      : [p.upc, p.description, p.subcategory || "", p.quant_on_hand]
   );
 
   if (isSold) {
     const totalSold = salesState.filteredProducts.reduce((s, p) => s + p.total_sold, 0);
     const totalReturned = salesState.filteredProducts.reduce((s, p) => s + p.total_returned, 0);
     const totalNet = salesState.filteredProducts.reduce((s, p) => s + p.net_sold, 0);
-    dataRows.push(["", "Totals", totalSold, totalReturned, totalNet]);
+    dataRows.push(["", "Totals", "", totalSold, totalReturned, totalNet]);
   }
 
   const wsData = [headers, ...dataRows];
