@@ -113,6 +113,18 @@ class ItemTrackerConfig(Base):
     s2s_store = relationship("Store", foreign_keys=[s2s_store_id])
     inventory_store = relationship("Store", foreign_keys=[inventory_store_id])
 
+class SalesConfig(Base):
+    __tablename__ = "sales_config"
+
+    id = Column(Integer, primary_key=True, index=True)
+    s2s_store_id = Column(Integer, ForeignKey("stores.id", ondelete="SET NULL"), nullable=True)
+    mssql_store_ids = Column(JSONB, default=[])
+    shopify_store_ids = Column(JSONB, default=[])
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    s2s_store = relationship("Store", foreign_keys=[s2s_store_id])
+
 class PriceUpdateHistory(Base):
     __tablename__ = "price_update_history"
 

@@ -527,3 +527,31 @@ class ShopifySalesRequest(BaseModel):
     store_ids: List[int]
     start_date: str
     end_date: str
+
+
+class SalesReportRequest(BaseModel):
+    mssql_store_ids: List[int] = []
+    shopify_store_ids: List[int] = []
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
+
+
+class SalesConfigCreate(BaseModel):
+    s2s_store_id: Optional[int] = None
+    mssql_store_ids: List[int] = []
+    shopify_store_ids: List[int] = []
+
+
+class SalesConfigResponse(BaseModel):
+    id: int
+    s2s_store_id: Optional[int] = None
+    s2s_store_name: Optional[str] = None
+    mssql_store_ids: List[int] = []
+    mssql_store_names: List[str] = []
+    shopify_store_ids: List[int] = []
+    shopify_store_names: List[str] = []
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True

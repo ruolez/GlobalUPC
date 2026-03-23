@@ -12,7 +12,7 @@ import uuid
 import os
 
 from database import get_db, engine
-from models import Store, MSSQLConnection, ShopifyConnection, Setting, StoreType, UPCUpdateHistory, UPCExclusion, ItemTrackerConfig, ItemTrackerExclusion, PriceUpdateHistory, StoreMirror
+from models import Store, MSSQLConnection, ShopifyConnection, Setting, StoreType, UPCUpdateHistory, UPCExclusion, ItemTrackerConfig, ItemTrackerExclusion, PriceUpdateHistory, StoreMirror, SalesConfig
 from schemas import (
     MSSQLStoreCreate, ShopifyStoreCreate, StoreResponse, StoreNameUpdate,
     SettingCreate, SettingUpdate, SettingResponse,
@@ -33,7 +33,9 @@ from schemas import (
     PriceSearchRequest, StorePriceInfo, PriceUpdateItem, PriceUpdateRequest,
     PriceUpdateHistoryResponse, PriceUpdateHistoryBatch, PriceUpdateHistoryListResponse,
     StoreMirrorCreate, StoreMirrorResponse, StoreMirrorListResponse,
-    ShopifySalesRequest
+    ShopifySalesRequest,
+    SalesReportRequest,
+    SalesConfigCreate, SalesConfigResponse
 )
 from mssql_helper import (
     test_mssql_connection, search_upc_across_mssql_stores, search_products_by_upc,
@@ -41,7 +43,8 @@ from mssql_helper import (
     find_matches_by_product_id, find_matches_by_description, update_orphaned_upcs,
     check_upc_exists,
     get_item_prices_async, update_item_prices_async,
-    get_item_prices_batch_async
+    get_item_prices_batch_async,
+    get_active_products_async, get_aggregated_sales_async, get_aggregated_returns_async
 )
 from shopify_helper import (
     test_shopify_connection, search_barcode_across_shopify_stores,
@@ -4446,6 +4449,285 @@ async def shopify_sales_stream(request: ShopifySalesRequest, db: Session = Depen
 
     return StreamingResponse(
         generate_sales_events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        }
+    )
+
+
+@app.get("/api/sales/config", response_model=SalesConfigResponse)
+def get_sales_config(db: Session = Depends(get_db)):
+    config = db.query(SalesConfig).first()
+    if not config:
+        return SalesConfigResponse(
+            id=0, s2s_store_id=None, s2s_store_name=None,
+            mssql_store_ids=[], mssql_store_names=[],
+            shopify_store_ids=[], shopify_store_names=[],
+            created_at=datetime.now(), updated_at=datetime.now()
+        )
+
+    s2s_store_name = None
+    if config.s2s_store_id:
+        s2s_store = db.query(Store).filter(Store.id == config.s2s_store_id).first()
+        if s2s_store:
+            s2s_store_name = s2s_store.name
+
+    mssql_store_names = []
+    for sid in (config.mssql_store_ids or []):
+        store = db.query(Store).filter(Store.id == sid).first()
+        if store:
+            mssql_store_names.append(store.name)
+
+    shopify_store_names = []
+    for sid in (config.shopify_store_ids or []):
+        store = db.query(Store).filter(Store.id == sid).first()
+        if store:
+            shopify_store_names.append(store.name)
+
+    return SalesConfigResponse(
+        id=config.id,
+        s2s_store_id=config.s2s_store_id, s2s_store_name=s2s_store_name,
+        mssql_store_ids=config.mssql_store_ids or [], mssql_store_names=mssql_store_names,
+        shopify_store_ids=config.shopify_store_ids or [], shopify_store_names=shopify_store_names,
+        created_at=config.created_at, updated_at=config.updated_at
+    )
+
+
+@app.post("/api/sales/config", response_model=SalesConfigResponse)
+def save_sales_config(config_data: SalesConfigCreate, db: Session = Depends(get_db)):
+    if config_data.s2s_store_id:
+        s2s = db.query(Store).filter(Store.id == config_data.s2s_store_id, Store.store_type == StoreType.mssql).first()
+        if not s2s:
+            raise HTTPException(status_code=400, detail="Invalid S2S store ID")
+
+    for sid in config_data.mssql_store_ids:
+        if not db.query(Store).filter(Store.id == sid, Store.store_type == StoreType.mssql).first():
+            raise HTTPException(status_code=400, detail=f"Invalid MSSQL store ID: {sid}")
+
+    for sid in config_data.shopify_store_ids:
+        if not db.query(Store).filter(Store.id == sid, Store.store_type == StoreType.shopify).first():
+            raise HTTPException(status_code=400, detail=f"Invalid Shopify store ID: {sid}")
+
+    config = db.query(SalesConfig).first()
+    if config:
+        config.s2s_store_id = config_data.s2s_store_id
+        config.mssql_store_ids = config_data.mssql_store_ids
+        config.shopify_store_ids = config_data.shopify_store_ids
+    else:
+        config = SalesConfig(
+            s2s_store_id=config_data.s2s_store_id,
+            mssql_store_ids=config_data.mssql_store_ids,
+            shopify_store_ids=config_data.shopify_store_ids,
+        )
+        db.add(config)
+
+    db.commit()
+    db.refresh(config)
+    return get_sales_config(db)
+
+
+@app.post("/api/sales/report/stream")
+async def sales_report_stream(request: SalesReportRequest, db: Session = Depends(get_db)):
+    async def generate_report_events() -> AsyncGenerator[str, None]:
+        if not request.mssql_store_ids and not request.shopify_store_ids:
+            yield f"event: error\ndata: {json.dumps({'message': 'No stores selected'})}\n\n"
+            return
+
+        config = db.query(SalesConfig).first()
+        if not config or not config.s2s_store_id:
+            yield f"event: error\ndata: {json.dumps({'message': 'Sales config not set. Please configure the primary database first.'})}\n\n"
+            return
+
+        s2s_store = db.query(Store).filter(
+            Store.id == config.s2s_store_id,
+            Store.store_type == StoreType.mssql,
+            Store.is_active == True
+        ).first()
+        if not s2s_store or not s2s_store.mssql_connection:
+            yield f"event: error\ndata: {json.dumps({'message': 'S2S database store not found or inactive'})}\n\n"
+            return
+
+        s2s_conn = s2s_store.mssql_connection
+
+        yield f"event: progress\ndata: {json.dumps({'status': 'fetching_products'})}\n\n"
+
+        success, error, products_list = await get_active_products_async(
+            s2s_conn.host, s2s_conn.port, s2s_conn.database_name,
+            s2s_conn.username, s2s_conn.password
+        )
+
+        if not success:
+            yield f"event: error\ndata: {json.dumps({'message': f'Failed to fetch products: {error}'})}\n\n"
+            return
+
+        products_map = {}
+        for p in products_list:
+            products_map[p["upc"]] = {
+                "upc": p["upc"],
+                "description": p["description"],
+                "quant_on_hand": p["quant_on_hand"],
+                "total_sold": 0.0,
+                "total_returned": 0.0,
+                "net_sold": 0.0,
+                "store_sales": {},
+            }
+
+        yield f"event: progress\ndata: {json.dumps({'status': 'products_fetched', 'count': len(products_map)})}\n\n"
+
+        total_stores = len(request.mssql_store_ids) + len(request.shopify_store_ids)
+        completed_count = 0
+        store_names = []
+
+        for store_id in request.mssql_store_ids:
+            store = db.query(Store).filter(
+                Store.id == store_id,
+                Store.store_type == StoreType.mssql,
+                Store.is_active == True
+            ).first()
+            if not store or not store.mssql_connection:
+                completed_count += 1
+                yield f"event: progress\ndata: {json.dumps({'status': 'error_store', 'store_name': f'Store ID {store_id}', 'message': 'Store not found or inactive', 'completed': completed_count, 'total_stores': total_stores})}\n\n"
+                continue
+
+            conn = store.mssql_connection
+            store_name = store.name
+            store_names.append({"id": store.id, "name": store_name, "type": "mssql"})
+
+            yield f"event: progress\ndata: {json.dumps({'status': 'searching_store', 'store_name': store_name, 'store_type': 'mssql'})}\n\n"
+
+            try:
+                sales_task = get_aggregated_sales_async(
+                    conn.host, conn.port, conn.database_name,
+                    conn.username, conn.password,
+                    request.date_from, request.date_to
+                )
+                returns_task = get_aggregated_returns_async(
+                    conn.host, conn.port, conn.database_name,
+                    conn.username, conn.password,
+                    request.date_from, request.date_to
+                )
+
+                (sales_ok, sales_err, sales_data), (returns_ok, returns_err, returns_data) = await asyncio.gather(
+                    sales_task, returns_task
+                )
+
+                if not sales_ok:
+                    completed_count += 1
+                    yield f"event: progress\ndata: {json.dumps({'status': 'error_store', 'store_name': store_name, 'message': sales_err or 'Failed to fetch sales', 'completed': completed_count, 'total_stores': total_stores})}\n\n"
+                    continue
+
+                if not returns_ok:
+                    returns_data = {}
+
+                products_found = 0
+                all_upcs = set(sales_data.keys()) | set(returns_data.keys())
+                for upc in all_upcs:
+                    sold = sales_data.get(upc, 0.0)
+                    returned = returns_data.get(upc, 0.0)
+                    net = sold - returned
+
+                    if upc in products_map:
+                        products_map[upc]["total_sold"] += sold
+                        products_map[upc]["total_returned"] += returned
+                        products_map[upc]["net_sold"] += net
+                        products_map[upc]["store_sales"][store_name] = {
+                            "sold": sold, "returned": returned, "net": net
+                        }
+                        products_found += 1
+
+                completed_count += 1
+                yield f"event: progress\ndata: {json.dumps({'status': 'completed_store', 'store_name': store_name, 'products_found': products_found, 'completed': completed_count, 'total_stores': total_stores})}\n\n"
+
+            except Exception as e:
+                completed_count += 1
+                yield f"event: progress\ndata: {json.dumps({'status': 'error_store', 'store_name': store_name, 'message': str(e), 'completed': completed_count, 'total_stores': total_stores})}\n\n"
+
+        for store_id in request.shopify_store_ids:
+            store = db.query(Store).filter(
+                Store.id == store_id,
+                Store.store_type == StoreType.shopify,
+                Store.is_active == True
+            ).first()
+            if not store or not store.shopify_connection:
+                completed_count += 1
+                yield f"event: progress\ndata: {json.dumps({'status': 'error_store', 'store_name': f'Store ID {store_id}', 'message': 'Store not found or inactive', 'completed': completed_count, 'total_stores': total_stores})}\n\n"
+                continue
+
+            shopify_conn = store.shopify_connection
+            store_name = store.name
+            store_names.append({"id": store.id, "name": store_name, "type": "shopify"})
+
+            yield f"event: progress\ndata: {json.dumps({'status': 'searching_store', 'store_name': store_name, 'store_type': 'shopify'})}\n\n"
+
+            try:
+                start_date = request.date_from or "2000-01-01"
+                end_date = request.date_to or datetime.now().strftime("%Y-%m-%d")
+
+                success, error, line_items = await fetch_fulfilled_orders(
+                    shop_domain=shopify_conn.shop_domain,
+                    admin_api_key=shopify_conn.admin_api_key,
+                    start_date=start_date,
+                    end_date=end_date,
+                    api_version=shopify_conn.api_version
+                )
+
+                if not success:
+                    completed_count += 1
+                    yield f"event: progress\ndata: {json.dumps({'status': 'error_store', 'store_name': store_name, 'message': error or 'Failed to fetch Shopify orders', 'completed': completed_count, 'total_stores': total_stores})}\n\n"
+                    continue
+
+                shopify_by_barcode = {}
+                for item in line_items:
+                    barcode = (item.get("barcode") or "").strip()
+                    if barcode:
+                        qty = item.get("quantity", 0)
+                        shopify_by_barcode[barcode] = shopify_by_barcode.get(barcode, 0) + qty
+
+                products_found = 0
+                for upc, qty in shopify_by_barcode.items():
+                    if upc in products_map:
+                        products_map[upc]["total_sold"] += qty
+                        products_map[upc]["net_sold"] += qty
+                        products_map[upc]["store_sales"][store_name] = {
+                            "sold": qty, "returned": 0, "net": qty
+                        }
+                        products_found += 1
+
+                completed_count += 1
+                yield f"event: progress\ndata: {json.dumps({'status': 'completed_store', 'store_name': store_name, 'products_found': products_found, 'completed': completed_count, 'total_stores': total_stores})}\n\n"
+
+            except Exception as e:
+                completed_count += 1
+                yield f"event: progress\ndata: {json.dumps({'status': 'error_store', 'store_name': store_name, 'message': str(e), 'completed': completed_count, 'total_stores': total_stores})}\n\n"
+
+        yield f"event: progress\ndata: {json.dumps({'status': 'merging'})}\n\n"
+
+        products = list(products_map.values())
+        products.sort(key=lambda p: p["net_sold"], reverse=True)
+
+        sold_count = sum(1 for p in products if p["net_sold"] > 0)
+        not_sold_count = sum(1 for p in products if p["net_sold"] <= 0)
+        total_net_sold = sum(p["net_sold"] for p in products)
+        total_sold = sum(p["total_sold"] for p in products)
+        total_returned = sum(p["total_returned"] for p in products)
+
+        summary = {
+            "total_products": len(products),
+            "sold_count": sold_count,
+            "not_sold_count": not_sold_count,
+            "total_sold": total_sold,
+            "total_returned": total_returned,
+            "total_net_sold": total_net_sold,
+            "date_range": {"start": request.date_from, "end": request.date_to},
+            "stores_searched": completed_count,
+        }
+
+        yield f"event: complete\ndata: {json.dumps({'products': products, 'summary': summary, 'stores': store_names})}\n\n"
+
+    return StreamingResponse(
+        generate_report_events(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

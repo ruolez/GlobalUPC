@@ -71,6 +71,8 @@ function navigateTo(page) {
     loadItemTrackerPage();
   } else if (page === "price-updates") {
     loadPriceUpdatesPage();
+  } else if (page === "sales") {
+    loadSalesPage();
   } else if (page === "shopify-sales") {
     loadShopifySalesPage();
   }
@@ -8555,6 +8557,565 @@ function exportShopifySalesToExcel() {
 }
 
 // ===== End Shopify Sales =====
+
+// ===== Sales Report =====
+
+let salesState = {
+  isLoading: false,
+  allProducts: [],
+  filteredProducts: [],
+  viewMode: "sold",
+  sortColumn: "net_sold",
+  sortDirection: "desc",
+  currentPage: 0,
+  pageSize: 100,
+  summary: null,
+  stores: [],
+  config: null,
+  configExpanded: false,
+  allMssqlStores: [],
+  allShopifyStores: [],
+};
+
+async function loadSalesPage() {
+  document.getElementById("sales-config-bar").style.display = "none";
+  document.getElementById("sales-config-setup").style.display = "none";
+  document.getElementById("sales-controls").style.display = "none";
+  document.getElementById("sales-results").style.display = "none";
+  document.getElementById("sales-progress").style.display = "none";
+  document.getElementById("sales-empty").style.display = "none";
+
+  try {
+    const [config, allStores] = await Promise.all([
+      apiRequest("/sales/config"),
+      apiRequest("/stores"),
+    ]);
+
+    salesState.allMssqlStores = allStores.filter((s) => s.store_type === "mssql" && s.is_active);
+    salesState.allShopifyStores = allStores.filter((s) => s.store_type === "shopify" && s.is_active);
+
+    if (!config || !config.s2s_store_id) {
+      populateSalesConfigForm(null);
+      document.getElementById("sales-config-setup").style.display = "block";
+      document.getElementById("sales-config-cancel-btn").style.display = "none";
+      return;
+    }
+
+    salesState.config = config;
+    updateSalesConfigBar(config);
+    document.getElementById("sales-config-bar").style.display = "block";
+    document.getElementById("sales-controls").style.display = "block";
+
+    if (!document.getElementById("sales-date-from").value) {
+      setSalesDatePreset("30d");
+    }
+  } catch (e) {
+    populateSalesConfigForm(null);
+    document.getElementById("sales-config-setup").style.display = "block";
+  }
+}
+
+function updateSalesConfigBar(config) {
+  const s2sName = config.s2s_store_name || "Unknown";
+  const mssqlNames = (config.mssql_store_names || []).join(", ") || "None";
+  const shopifyNames = (config.shopify_store_names || []).join(", ") || "None";
+
+  document.getElementById("sales-config-label").innerHTML =
+    `Database Config: <strong style="color: var(--text-primary)">${s2sName}</strong>`;
+  document.getElementById("sales-config-mssql-info").innerHTML =
+    `MSSQL Sales Stores: <strong style="color: var(--text-primary)">${mssqlNames}</strong>`;
+  document.getElementById("sales-config-shopify-info").innerHTML =
+    `Shopify Stores: <strong style="color: var(--text-primary)">${shopifyNames}</strong>`;
+}
+
+function toggleSalesConfig() {
+  salesState.configExpanded = !salesState.configExpanded;
+  const details = document.getElementById("sales-config-details");
+  const toggle = document.getElementById("sales-config-toggle");
+  if (salesState.configExpanded) {
+    details.style.display = "block";
+    toggle.style.transform = "rotate(90deg)";
+  } else {
+    details.style.display = "none";
+    toggle.style.transform = "rotate(0deg)";
+  }
+}
+
+function populateSalesConfigForm(config) {
+  const s2sSelect = document.getElementById("sales-s2s-select");
+  s2sSelect.innerHTML = '<option value="">Select primary database...</option>';
+  salesState.allMssqlStores.forEach((s) => {
+    const opt = document.createElement("option");
+    opt.value = s.id;
+    opt.textContent = s.name;
+    if (config && config.s2s_store_id === s.id) opt.selected = true;
+    s2sSelect.appendChild(opt);
+  });
+
+  const mssqlContainer = document.getElementById("sales-mssql-checkboxes");
+  mssqlContainer.innerHTML = "";
+  const selectedMssql = config ? (config.mssql_store_ids || []) : [];
+  salesState.allMssqlStores.forEach((s) => {
+    const label = document.createElement("label");
+    label.style.cssText = "display: flex; align-items: center; gap: 0.375rem; font-size: 0.8125rem; cursor: pointer;";
+    const checked = selectedMssql.includes(s.id) ? "checked" : "";
+    label.innerHTML = `<input type="checkbox" class="sales-cfg-mssql-cb" value="${s.id}" ${checked}> ${s.name}`;
+    mssqlContainer.appendChild(label);
+  });
+
+  const shopifyContainer = document.getElementById("sales-shopify-checkboxes");
+  shopifyContainer.innerHTML = "";
+  const selectedShopify = config ? (config.shopify_store_ids || []) : [];
+  const shopifyGroup = document.getElementById("sales-shopify-config-group");
+  if (salesState.allShopifyStores.length > 0) {
+    shopifyGroup.style.display = "block";
+    salesState.allShopifyStores.forEach((s) => {
+      const label = document.createElement("label");
+      label.style.cssText = "display: flex; align-items: center; gap: 0.375rem; font-size: 0.8125rem; cursor: pointer;";
+      const checked = selectedShopify.includes(s.id) ? "checked" : "";
+      label.innerHTML = `<input type="checkbox" class="sales-cfg-shopify-cb" value="${s.id}" ${checked}> ${s.name}`;
+      shopifyContainer.appendChild(label);
+    });
+  } else {
+    shopifyGroup.style.display = "none";
+  }
+}
+
+function openSalesConfigEdit() {
+  populateSalesConfigForm(salesState.config);
+  document.getElementById("sales-config-setup").style.display = "block";
+  document.getElementById("sales-config-cancel-btn").style.display = "inline-flex";
+}
+
+function cancelSalesConfigEdit() {
+  document.getElementById("sales-config-setup").style.display = "none";
+}
+
+async function saveSalesConfig() {
+  const s2sId = parseInt(document.getElementById("sales-s2s-select").value);
+  if (!s2sId) {
+    showToast("Please select a primary database", "warning");
+    return;
+  }
+
+  const mssqlIds = Array.from(document.querySelectorAll(".sales-cfg-mssql-cb:checked")).map((cb) => parseInt(cb.value));
+  const shopifyIds = Array.from(document.querySelectorAll(".sales-cfg-shopify-cb:checked")).map((cb) => parseInt(cb.value));
+
+  try {
+    const config = await apiRequest("/sales/config", {
+      method: "POST",
+      body: JSON.stringify({ s2s_store_id: s2sId, mssql_store_ids: mssqlIds, shopify_store_ids: shopifyIds }),
+    });
+
+    salesState.config = config;
+    updateSalesConfigBar(config);
+    document.getElementById("sales-config-setup").style.display = "none";
+    document.getElementById("sales-config-bar").style.display = "block";
+    document.getElementById("sales-controls").style.display = "block";
+
+    if (!document.getElementById("sales-date-from").value) {
+      setSalesDatePreset("30d");
+    }
+
+    showToast("Sales configuration saved", "success");
+  } catch (e) {
+    showToast(e.message || "Failed to save configuration", "error");
+  }
+}
+
+function setSalesDatePreset(preset) {
+  const now = new Date();
+  let from, to;
+
+  switch (preset) {
+    case "7d":
+      from = new Date(now);
+      from.setDate(from.getDate() - 7);
+      to = now;
+      break;
+    case "30d":
+      from = new Date(now);
+      from.setDate(from.getDate() - 30);
+      to = now;
+      break;
+    case "thisMonth":
+      from = new Date(now.getFullYear(), now.getMonth(), 1);
+      to = now;
+      break;
+    case "lastMonth":
+      from = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      to = new Date(now.getFullYear(), now.getMonth(), 0);
+      break;
+    case "thisYear":
+      from = new Date(now.getFullYear(), 0, 1);
+      to = now;
+      break;
+    case "lastYear":
+      from = new Date(now.getFullYear() - 1, 0, 1);
+      to = new Date(now.getFullYear() - 1, 11, 31);
+      break;
+  }
+
+  document.getElementById("sales-date-from").value = from.toISOString().split("T")[0];
+  document.getElementById("sales-date-to").value = to.toISOString().split("T")[0];
+}
+
+async function fetchSalesReport() {
+  if (salesState.isLoading) return;
+
+  const config = salesState.config;
+  if (!config || !config.s2s_store_id) {
+    showToast("Please configure databases first", "warning");
+    return;
+  }
+
+  const mssqlStoreIds = config.mssql_store_ids || [];
+  const shopifyStoreIds = config.shopify_store_ids || [];
+  const dateFrom = document.getElementById("sales-date-from").value || null;
+  const dateTo = document.getElementById("sales-date-to").value || null;
+
+  if (mssqlStoreIds.length === 0 && shopifyStoreIds.length === 0) {
+    showToast("Please configure at least one sales store", "warning");
+    return;
+  }
+
+  salesState.isLoading = true;
+  const btn = document.getElementById("sales-generate-btn");
+  btn.disabled = true;
+  btn.textContent = "Generating...";
+
+  document.getElementById("sales-results").style.display = "none";
+  document.getElementById("sales-empty").style.display = "none";
+  document.getElementById("sales-progress").style.display = "block";
+  const progressList = document.getElementById("sales-progress-list");
+  progressList.innerHTML = "";
+
+  try {
+    const response = await fetch(`${API_BASE}/sales/report/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        mssql_store_ids: mssqlStoreIds,
+        shopify_store_ids: shopifyStoreIds,
+        date_from: dateFrom,
+        date_to: dateTo,
+      }),
+    });
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        if (line.startsWith("data: ")) {
+          try {
+            const data = JSON.parse(line.substring(6));
+            handleSalesProgress(data, progressList);
+          } catch (e) {
+            // skip malformed
+          }
+        }
+      }
+    }
+  } catch (e) {
+    addSalesProgressItem(progressList, `Error: ${e.message}`, "var(--danger)");
+  } finally {
+    salesState.isLoading = false;
+    btn.disabled = false;
+    btn.textContent = "Generate Report";
+  }
+}
+
+function handleSalesProgress(data, progressList) {
+  if (data.message && !data.status) {
+    addSalesProgressItem(progressList, data.message, "var(--danger)");
+    return;
+  }
+
+  switch (data.status) {
+    case "fetching_products":
+      addSalesProgressItem(progressList, "Fetching active products from primary database...", "var(--text-secondary)");
+      break;
+    case "products_fetched":
+      addSalesProgressItem(progressList, `Found ${data.count.toLocaleString()} active products`, "var(--success)");
+      break;
+    case "searching_store":
+      addSalesProgressItem(progressList, `Searching ${data.store_name} (${data.store_type})...`, "var(--text-secondary)");
+      break;
+    case "completed_store":
+      addSalesProgressItem(progressList, `${data.store_name}: ${data.products_found.toLocaleString()} products with sales (${data.completed}/${data.total_stores})`, "var(--success)");
+      break;
+    case "error_store":
+      addSalesProgressItem(progressList, `${data.store_name}: ${data.message}`, "var(--danger)");
+      break;
+    case "merging":
+      addSalesProgressItem(progressList, "Merging results...", "var(--text-secondary)");
+      break;
+  }
+
+  if (data.products) {
+    document.getElementById("sales-progress").style.display = "none";
+    if (data.products.length === 0) {
+      document.getElementById("sales-empty").style.display = "block";
+    } else {
+      displaySalesResults(data);
+    }
+  }
+}
+
+function addSalesProgressItem(container, text, color) {
+  const li = document.createElement("li");
+  li.style.cssText = `padding: 0.25rem 0; color: ${color};`;
+  li.textContent = text;
+  container.appendChild(li);
+}
+
+function displaySalesResults(data) {
+  salesState.allProducts = data.products;
+  salesState.summary = data.summary;
+  salesState.stores = data.stores || [];
+
+  const summary = data.summary;
+  const summaryBar = document.getElementById("sales-summary-bar");
+  summaryBar.innerHTML = `
+    <div class="sales-summary-card">
+      <div class="label">Total Products</div>
+      <div class="value">${summary.total_products.toLocaleString()}</div>
+    </div>
+    <div class="sales-summary-card">
+      <div class="label">Products Sold</div>
+      <div class="value" style="color: var(--success)">${summary.sold_count.toLocaleString()}</div>
+    </div>
+    <div class="sales-summary-card">
+      <div class="label">Not Sold</div>
+      <div class="value" style="color: var(--warning)">${summary.not_sold_count.toLocaleString()}</div>
+    </div>
+    <div class="sales-summary-card">
+      <div class="label">Net Qty Sold</div>
+      <div class="value">${summary.total_net_sold.toLocaleString()}</div>
+    </div>
+  `;
+
+  document.querySelector('.sales-toggle-btn[data-view="sold"]').textContent = `Products Sold (${summary.sold_count.toLocaleString()})`;
+  document.querySelector('.sales-toggle-btn[data-view="not-sold"]').textContent = `Products Not Sold (${summary.not_sold_count.toLocaleString()})`;
+
+  salesState.viewMode = "sold";
+  salesState.sortColumn = "net_sold";
+  salesState.sortDirection = "desc";
+  salesState.currentPage = 0;
+
+  document.querySelectorAll(".sales-toggle-btn").forEach((b) => b.classList.remove("active"));
+  document.querySelector('.sales-toggle-btn[data-view="sold"]').classList.add("active");
+
+  applySalesFilters();
+  document.getElementById("sales-results").style.display = "block";
+}
+
+function toggleSalesView(mode) {
+  salesState.viewMode = mode;
+  salesState.currentPage = 0;
+
+  if (mode === "sold") {
+    salesState.sortColumn = "net_sold";
+    salesState.sortDirection = "desc";
+  } else {
+    salesState.sortColumn = "description";
+    salesState.sortDirection = "asc";
+  }
+
+  document.querySelectorAll(".sales-toggle-btn").forEach((b) => b.classList.remove("active"));
+  document.querySelector(`.sales-toggle-btn[data-view="${mode}"]`).classList.add("active");
+
+  applySalesFilters();
+}
+
+function applySalesFilters() {
+  const upcFilter = (document.getElementById("sales-filter-upc").value || "").toLowerCase().trim();
+  const descFilter = (document.getElementById("sales-filter-desc").value || "").toLowerCase().trim();
+
+  let filtered = salesState.allProducts.filter((p) => {
+    if (salesState.viewMode === "sold" && p.net_sold <= 0) return false;
+    if (salesState.viewMode === "not-sold" && p.net_sold > 0) return false;
+    if (upcFilter && !p.upc.toLowerCase().includes(upcFilter)) return false;
+    if (descFilter && !p.description.toLowerCase().includes(descFilter)) return false;
+    return true;
+  });
+
+  salesState.filteredProducts = filtered;
+  sortSalesProducts();
+  salesState.currentPage = 0;
+  renderSalesTable();
+}
+
+function clearSalesFilters() {
+  document.getElementById("sales-filter-upc").value = "";
+  document.getElementById("sales-filter-desc").value = "";
+  applySalesFilters();
+}
+
+function sortSalesProducts() {
+  const col = salesState.sortColumn;
+  const dir = salesState.sortDirection === "asc" ? 1 : -1;
+
+  salesState.filteredProducts.sort((a, b) => {
+    let va = a[col];
+    let vb = b[col];
+    if (typeof va === "string") {
+      return va.localeCompare(vb) * dir;
+    }
+    return ((va || 0) - (vb || 0)) * dir;
+  });
+}
+
+function handleSalesSort(column) {
+  if (salesState.sortColumn === column) {
+    salesState.sortDirection = salesState.sortDirection === "asc" ? "desc" : "asc";
+  } else {
+    salesState.sortColumn = column;
+    salesState.sortDirection = column === "description" || column === "upc" ? "asc" : "desc";
+  }
+  sortSalesProducts();
+  salesState.currentPage = 0;
+  renderSalesTable();
+}
+
+function renderSalesTable() {
+  const isSold = salesState.viewMode === "sold";
+  const thead = document.getElementById("sales-table-head");
+  const tbody = document.getElementById("sales-table-body");
+  const tfoot = document.getElementById("sales-table-foot");
+
+  const sortIcon = (col) => {
+    if (salesState.sortColumn !== col) return "";
+    return salesState.sortDirection === "asc" ? " ▲" : " ▼";
+  };
+  const sortStyle = 'cursor: pointer; user-select: none;';
+
+  if (isSold) {
+    thead.innerHTML = `
+      <th style="width: 4%; text-align: center">#</th>
+      <th style="width: 18%; ${sortStyle}" onclick="handleSalesSort('upc')">UPC${sortIcon("upc")}</th>
+      <th style="width: 36%; ${sortStyle}" onclick="handleSalesSort('description')">Description${sortIcon("description")}</th>
+      <th style="width: 14%; text-align: right; ${sortStyle}" onclick="handleSalesSort('total_sold')">Sold${sortIcon("total_sold")}</th>
+      <th style="width: 14%; text-align: right; ${sortStyle}" onclick="handleSalesSort('total_returned')">Returns${sortIcon("total_returned")}</th>
+      <th style="width: 14%; text-align: right; ${sortStyle}" onclick="handleSalesSort('net_sold')">Net Sold${sortIcon("net_sold")}</th>
+    `;
+  } else {
+    thead.innerHTML = `
+      <th style="width: 5%; text-align: center">#</th>
+      <th style="width: 20%; ${sortStyle}" onclick="handleSalesSort('upc')">UPC${sortIcon("upc")}</th>
+      <th style="width: 50%; ${sortStyle}" onclick="handleSalesSort('description')">Description${sortIcon("description")}</th>
+      <th style="width: 20%; text-align: right; ${sortStyle}" onclick="handleSalesSort('quant_on_hand')">Qty on Hand${sortIcon("quant_on_hand")}</th>
+    `;
+  }
+
+  const start = salesState.currentPage * salesState.pageSize;
+  const end = Math.min(start + salesState.pageSize, salesState.filteredProducts.length);
+  const pageData = salesState.filteredProducts.slice(start, end);
+
+  tbody.innerHTML = "";
+  pageData.forEach((p, i) => {
+    const row = document.createElement("tr");
+    if (isSold) {
+      row.innerHTML = `
+        <td style="text-align: center; color: var(--text-tertiary); font-size: 0.75rem">${start + i + 1}</td>
+        <td style="font-family: monospace; font-size: 0.8125rem">${p.upc}</td>
+        <td style="font-size: 0.8125rem; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap" title="${p.description}">${p.description}</td>
+        <td style="text-align: right; font-size: 0.8125rem">${p.total_sold.toLocaleString()}</td>
+        <td style="text-align: right; font-size: 0.8125rem; color: var(--warning)">${p.total_returned.toLocaleString()}</td>
+        <td style="text-align: right; font-size: 0.8125rem; font-weight: 600">${p.net_sold.toLocaleString()}</td>
+      `;
+    } else {
+      row.innerHTML = `
+        <td style="text-align: center; color: var(--text-tertiary); font-size: 0.75rem">${start + i + 1}</td>
+        <td style="font-family: monospace; font-size: 0.8125rem">${p.upc}</td>
+        <td style="font-size: 0.8125rem; max-width: 350px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap" title="${p.description}">${p.description}</td>
+        <td style="text-align: right; font-size: 0.8125rem">${p.quant_on_hand.toLocaleString()}</td>
+      `;
+    }
+    tbody.appendChild(row);
+  });
+
+  tfoot.innerHTML = "";
+  if (isSold && pageData.length > 0) {
+    const totalSold = salesState.filteredProducts.reduce((s, p) => s + p.total_sold, 0);
+    const totalReturned = salesState.filteredProducts.reduce((s, p) => s + p.total_returned, 0);
+    const totalNet = salesState.filteredProducts.reduce((s, p) => s + p.net_sold, 0);
+    tfoot.innerHTML = `
+      <tr style="font-weight: 700; border-top: 2px solid var(--border-color);">
+        <td></td><td></td><td style="font-size: 0.8125rem">Totals</td>
+        <td style="text-align: right; font-size: 0.8125rem">${totalSold.toLocaleString()}</td>
+        <td style="text-align: right; font-size: 0.8125rem; color: var(--warning)">${totalReturned.toLocaleString()}</td>
+        <td style="text-align: right; font-size: 0.8125rem">${totalNet.toLocaleString()}</td>
+      </tr>
+    `;
+  }
+
+  const total = salesState.filteredProducts.length;
+  const totalPages = Math.max(1, Math.ceil(total / salesState.pageSize));
+  document.getElementById("sales-total-records").textContent = `${total.toLocaleString()} records`;
+  document.getElementById("sales-page-info").textContent = `Page ${salesState.currentPage + 1} of ${totalPages}`;
+  document.getElementById("sales-prev-page").disabled = salesState.currentPage === 0;
+  document.getElementById("sales-next-page").disabled = salesState.currentPage >= totalPages - 1;
+  document.getElementById("sales-results-count").textContent = `Showing ${start + 1}-${end} of ${total.toLocaleString()} ${salesState.viewMode === "sold" ? "products sold" : "products not sold"}`;
+}
+
+function changeSalesPage(delta) {
+  const totalPages = Math.ceil(salesState.filteredProducts.length / salesState.pageSize);
+  const newPage = salesState.currentPage + delta;
+  if (newPage >= 0 && newPage < totalPages) {
+    salesState.currentPage = newPage;
+    renderSalesTable();
+  }
+}
+
+function changeSalesPageSize() {
+  salesState.pageSize = parseInt(document.getElementById("sales-page-size").value);
+  salesState.currentPage = 0;
+  renderSalesTable();
+}
+
+function exportSalesReport() {
+  if (!salesState.filteredProducts || salesState.filteredProducts.length === 0) return;
+
+  const isSold = salesState.viewMode === "sold";
+  const headers = isSold
+    ? ["UPC", "Description", "Sold", "Returns", "Net Sold"]
+    : ["UPC", "Description", "Qty on Hand"];
+
+  const dataRows = salesState.filteredProducts.map((p) =>
+    isSold
+      ? [p.upc, p.description, p.total_sold, p.total_returned, p.net_sold]
+      : [p.upc, p.description, p.quant_on_hand]
+  );
+
+  if (isSold) {
+    const totalSold = salesState.filteredProducts.reduce((s, p) => s + p.total_sold, 0);
+    const totalReturned = salesState.filteredProducts.reduce((s, p) => s + p.total_returned, 0);
+    const totalNet = salesState.filteredProducts.reduce((s, p) => s + p.net_sold, 0);
+    dataRows.push(["", "Totals", totalSold, totalReturned, totalNet]);
+  }
+
+  const wsData = [headers, ...dataRows];
+  const ws = XLSX.utils.aoa_to_sheet(wsData);
+  ws["!cols"] = headers.map(() => ({ wch: 18 }));
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, isSold ? "Products Sold" : "Products Not Sold");
+
+  const dateStr = new Date().toISOString().split("T")[0];
+  XLSX.writeFile(wb, `sales-report-${salesState.viewMode}-${dateStr}.xlsx`);
+}
+
+// ===== End Sales Report =====
 
 // Initialize
 document.addEventListener("DOMContentLoaded", () => {

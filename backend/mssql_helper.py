@@ -1951,3 +1951,229 @@ async def update_item_prices_async(
             executor,
             lambda: update_item_prices(host, port, database, username, password, upc, unit_price, unit_cost, unit_delivery_b, tds_version)
         )
+
+
+def get_active_products(
+    host: str,
+    port: int,
+    database: str,
+    username: str,
+    password: str,
+    tds_version: str = "7.4"
+) -> tuple[bool, Optional[str], list[Dict[str, Any]]]:
+    conn_str = get_mssql_connection_string(host, port, database, username, password, tds_version)
+
+    try:
+        conn = pyodbc.connect(conn_str, timeout=30)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES
+            WHERE TABLE_NAME = 'Items_tbl'
+        """)
+        if cursor.fetchone()[0] == 0:
+            cursor.close()
+            conn.close()
+            return True, None, []
+
+        cursor.execute("""
+            SELECT ProductUPC, ProductDescription, ISNULL(QuantOnHand, 0) AS QuantOnHand
+            FROM Items_tbl
+            WHERE Discontinued = 0
+              AND ProductUPC IS NOT NULL
+              AND LTRIM(RTRIM(ProductUPC)) != ''
+        """)
+        rows = cursor.fetchall()
+
+        cursor.close()
+        conn.close()
+
+        products = []
+        for row in rows:
+            upc = row[0].strip() if row[0] else ""
+            if upc:
+                products.append({
+                    "upc": upc,
+                    "description": row[1].strip() if row[1] else "",
+                    "quant_on_hand": float(row[2]) if row[2] is not None else 0.0,
+                })
+
+        return True, None, products
+
+    except Exception as e:
+        return False, str(e), []
+
+
+async def get_active_products_async(
+    host: str,
+    port: int,
+    database: str,
+    username: str,
+    password: str,
+    tds_version: str = "7.4"
+) -> tuple[bool, Optional[str], list[Dict[str, Any]]]:
+    loop = asyncio.get_event_loop()
+    with ThreadPoolExecutor() as executor:
+        return await loop.run_in_executor(
+            executor,
+            lambda: get_active_products(host, port, database, username, password, tds_version)
+        )
+
+
+def get_aggregated_sales(
+    host: str,
+    port: int,
+    database: str,
+    username: str,
+    password: str,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    tds_version: str = "7.4"
+) -> tuple[bool, Optional[str], Dict[str, float]]:
+    conn_str = get_mssql_connection_string(host, port, database, username, password, tds_version)
+
+    try:
+        conn = pyodbc.connect(conn_str, timeout=60)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES
+            WHERE TABLE_NAME IN ('InvoicesDetails_tbl', 'Invoices_tbl')
+        """)
+        if cursor.fetchone()[0] < 2:
+            cursor.close()
+            conn.close()
+            return True, None, {}
+
+        query = """
+            SELECT d.ProductUPC, SUM(d.QtyShipped) AS total_sold
+            FROM InvoicesDetails_tbl d
+            INNER JOIN Invoices_tbl h ON d.InvoiceID = h.InvoiceID
+            WHERE ISNULL(h.Void, 0) = 0
+              AND d.ProductUPC IS NOT NULL
+              AND LTRIM(RTRIM(d.ProductUPC)) != ''
+        """
+        params = []
+
+        if date_from:
+            query += " AND h.InvoiceDate >= ?"
+            params.append(date_from)
+        if date_to:
+            query += " AND h.InvoiceDate <= ?"
+            params.append(date_to)
+
+        query += " GROUP BY d.ProductUPC"
+
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+
+        cursor.close()
+        conn.close()
+
+        results = {}
+        for row in rows:
+            upc = row[0].strip() if row[0] else ""
+            if upc:
+                results[upc] = float(row[1]) if row[1] is not None else 0.0
+
+        return True, None, results
+
+    except Exception as e:
+        return False, str(e), {}
+
+
+async def get_aggregated_sales_async(
+    host: str,
+    port: int,
+    database: str,
+    username: str,
+    password: str,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    tds_version: str = "7.4"
+) -> tuple[bool, Optional[str], Dict[str, float]]:
+    loop = asyncio.get_event_loop()
+    with ThreadPoolExecutor() as executor:
+        return await loop.run_in_executor(
+            executor,
+            lambda: get_aggregated_sales(host, port, database, username, password, date_from, date_to, tds_version)
+        )
+
+
+def get_aggregated_returns(
+    host: str,
+    port: int,
+    database: str,
+    username: str,
+    password: str,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    tds_version: str = "7.4"
+) -> tuple[bool, Optional[str], Dict[str, float]]:
+    conn_str = get_mssql_connection_string(host, port, database, username, password, tds_version)
+
+    try:
+        conn = pyodbc.connect(conn_str, timeout=60)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES
+            WHERE TABLE_NAME IN ('CreditMemosDetails_tbl', 'CreditMemos_tbl')
+        """)
+        if cursor.fetchone()[0] < 2:
+            cursor.close()
+            conn.close()
+            return True, None, {}
+
+        query = """
+            SELECT d.ProductUPC, SUM(d.QtyShipped) AS total_returned
+            FROM CreditMemosDetails_tbl d
+            INNER JOIN CreditMemos_tbl h ON d.CmemoID = h.CmemoID
+            WHERE d.ProductUPC IS NOT NULL
+              AND LTRIM(RTRIM(d.ProductUPC)) != ''
+        """
+        params = []
+
+        if date_from:
+            query += " AND h.CmemoDate >= ?"
+            params.append(date_from)
+        if date_to:
+            query += " AND h.CmemoDate <= ?"
+            params.append(date_to)
+
+        query += " GROUP BY d.ProductUPC"
+
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+
+        cursor.close()
+        conn.close()
+
+        results = {}
+        for row in rows:
+            upc = row[0].strip() if row[0] else ""
+            if upc:
+                results[upc] = float(row[1]) if row[1] is not None else 0.0
+
+        return True, None, results
+
+    except Exception as e:
+        return False, str(e), {}
+
+
+async def get_aggregated_returns_async(
+    host: str,
+    port: int,
+    database: str,
+    username: str,
+    password: str,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    tds_version: str = "7.4"
+) -> tuple[bool, Optional[str], Dict[str, float]]:
+    loop = asyncio.get_event_loop()
+    with ThreadPoolExecutor() as executor:
+        return await loop.run_in_executor(
+            executor,
+            lambda: get_aggregated_returns(host, port, database, username, password, date_from, date_to, tds_version)
+        )
