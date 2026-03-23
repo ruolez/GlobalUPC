@@ -8918,13 +8918,13 @@ function displaySalesResults(data) {
   document.getElementById("sales-filter-desc").value = savedDesc;
 
   const savedSubcats = JSON.parse(localStorage.getItem("sales_filter_subcategories") || "[]");
-  if (savedSubcats.length > 0) {
+  if (savedSubcats.length > 0 && savedSubcats.length < (data.subcategories || []).length) {
     salesState.selectedSubcategories = savedSubcats.filter((s) => (data.subcategories || []).includes(s));
-    updateSubcatLabel();
     document.querySelectorAll(".sales-subcat-cb").forEach((cb) => {
       cb.checked = salesState.selectedSubcategories.includes(cb.value);
     });
   }
+  updateSubcatLabel();
 
   document.getElementById("sales-instock-cb").checked = localStorage.getItem("sales_filter_instock") === "1";
   document.getElementById("sales-instock-filter").style.display = salesState.viewMode === "not-sold" ? "flex" : "none";
@@ -8970,7 +8970,8 @@ function applySalesFilters() {
     if (salesState.viewMode === "not-sold" && instockOnly && p.quant_on_hand <= 0) return false;
     if (upcFilter && !p.upc.toLowerCase().includes(upcFilter)) return false;
     if (descFilter && !p.description.toLowerCase().includes(descFilter)) return false;
-    if (subcatFilters.length > 0 && !subcatFilters.includes(p.subcategory || "")) return false;
+    const allSubcats = salesState.subcategories ? salesState.subcategories.length : 0;
+    if (subcatFilters.length > 0 && subcatFilters.length < allSubcats && !subcatFilters.includes(p.subcategory || "")) return false;
     return true;
   });
 
@@ -8983,8 +8984,8 @@ function applySalesFilters() {
 function clearSalesFilters() {
   document.getElementById("sales-filter-upc").value = "";
   document.getElementById("sales-filter-desc").value = "";
-  salesState.selectedSubcategories = [];
-  document.querySelectorAll(".sales-subcat-cb").forEach((cb) => (cb.checked = false));
+  salesState.selectedSubcategories = [...(salesState.subcategories || [])];
+  document.querySelectorAll(".sales-subcat-cb").forEach((cb) => (cb.checked = true));
   updateSubcatLabel();
   document.getElementById("sales-instock-cb").checked = false;
   localStorage.removeItem("sales_filter_upc");
@@ -9174,9 +9175,10 @@ function buildSubcatDropdown(subcategories) {
   subcategories.forEach((sc) => {
     const label = document.createElement("label");
     label.style.cssText = "display: flex; align-items: center; gap: 0.5rem; padding: 0.375rem 0.75rem; cursor: pointer; font-size: 0.8125rem; border-bottom: 1px solid var(--border-color);";
-    label.innerHTML = `<input type="checkbox" class="sales-subcat-cb" value="${sc}" onchange="onSubcatChange()"> ${sc}`;
+    label.innerHTML = `<input type="checkbox" class="sales-subcat-cb" value="${sc}" checked onchange="onSubcatChange()"> ${sc}`;
     container.appendChild(label);
   });
+  salesState.selectedSubcategories = [...subcategories];
 }
 
 function toggleSubcatDropdown() {
@@ -9192,13 +9194,13 @@ function onSubcatChange() {
 
 function updateSubcatLabel() {
   const sel = salesState.selectedSubcategories || [];
+  const total = salesState.subcategories ? salesState.subcategories.length : 0;
   const label = document.getElementById("sales-subcat-label");
-  if (sel.length === 0) {
+  if (sel.length === 0 || sel.length === total) {
     label.textContent = "All";
-  } else if (sel.length <= 2) {
-    label.textContent = sel.join(", ");
   } else {
-    label.textContent = `${sel.length} selected`;
+    const unchecked = total - sel.length;
+    label.textContent = `${unchecked} excluded`;
   }
 }
 
