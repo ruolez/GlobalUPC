@@ -8926,6 +8926,9 @@ function displaySalesResults(data) {
     });
   }
 
+  document.getElementById("sales-instock-cb").checked = localStorage.getItem("sales_filter_instock") === "1";
+  document.getElementById("sales-instock-filter").style.display = salesState.viewMode === "not-sold" ? "flex" : "none";
+
   applySalesFilters();
   document.getElementById("sales-results").style.display = "block";
 }
@@ -8945,6 +8948,7 @@ function toggleSalesView(mode) {
 
   document.querySelectorAll(".sales-toggle-btn").forEach((b) => b.classList.remove("active"));
   document.querySelector(`.sales-toggle-btn[data-view="${mode}"]`).classList.add("active");
+  document.getElementById("sales-instock-filter").style.display = mode === "not-sold" ? "flex" : "none";
 
   applySalesFilters();
 }
@@ -8953,14 +8957,17 @@ function applySalesFilters() {
   const upcFilter = (document.getElementById("sales-filter-upc").value || "").toLowerCase().trim();
   const descFilter = (document.getElementById("sales-filter-desc").value || "").toLowerCase().trim();
   const subcatFilters = salesState.selectedSubcategories || [];
+  const instockOnly = document.getElementById("sales-instock-cb").checked;
 
   localStorage.setItem("sales_filter_upc", upcFilter);
   localStorage.setItem("sales_filter_desc", descFilter);
   localStorage.setItem("sales_filter_subcategories", JSON.stringify(subcatFilters));
+  localStorage.setItem("sales_filter_instock", instockOnly ? "1" : "0");
 
   let filtered = salesState.allProducts.filter((p) => {
     if (salesState.viewMode === "sold" && p.net_sold <= 0) return false;
     if (salesState.viewMode === "not-sold" && p.net_sold > 0) return false;
+    if (salesState.viewMode === "not-sold" && instockOnly && p.quant_on_hand <= 0) return false;
     if (upcFilter && !p.upc.toLowerCase().includes(upcFilter)) return false;
     if (descFilter && !p.description.toLowerCase().includes(descFilter)) return false;
     if (subcatFilters.length > 0 && !subcatFilters.includes(p.subcategory || "")) return false;
@@ -8979,9 +8986,11 @@ function clearSalesFilters() {
   salesState.selectedSubcategories = [];
   document.querySelectorAll(".sales-subcat-cb").forEach((cb) => (cb.checked = false));
   updateSubcatLabel();
+  document.getElementById("sales-instock-cb").checked = false;
   localStorage.removeItem("sales_filter_upc");
   localStorage.removeItem("sales_filter_desc");
   localStorage.removeItem("sales_filter_subcategories");
+  localStorage.removeItem("sales_filter_instock");
   applySalesFilters();
 }
 
