@@ -2024,6 +2024,69 @@ async def get_active_products_async(
         )
 
 
+def search_business_names(
+    host: str,
+    port: int,
+    database: str,
+    username: str,
+    password: str,
+    query: str = "",
+    tds_version: str = "7.4"
+) -> tuple[bool, Optional[str], list[str]]:
+    conn_str = get_mssql_connection_string(host, port, database, username, password, tds_version)
+
+    try:
+        conn = pyodbc.connect(conn_str, timeout=30)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES
+            WHERE TABLE_NAME = 'Invoices_tbl'
+        """)
+        if cursor.fetchone()[0] == 0:
+            cursor.close()
+            conn.close()
+            return True, None, []
+
+        sql = """
+            SELECT DISTINCT TOP 20 h.BusinessName
+            FROM Invoices_tbl h
+            WHERE h.BusinessName IS NOT NULL AND h.BusinessName != ''
+        """
+        params = []
+        if query:
+            sql += " AND h.BusinessName LIKE ?"
+            params.append(f"%{query}%")
+        sql += " ORDER BY h.BusinessName"
+
+        cursor.execute(sql, params)
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        return True, None, [row[0].strip() for row in rows if row[0]]
+
+    except Exception as e:
+        return False, str(e), []
+
+
+async def search_business_names_async(
+    host: str,
+    port: int,
+    database: str,
+    username: str,
+    password: str,
+    query: str = "",
+    tds_version: str = "7.4"
+) -> tuple[bool, Optional[str], list[str]]:
+    loop = asyncio.get_event_loop()
+    with ThreadPoolExecutor() as executor:
+        return await loop.run_in_executor(
+            executor,
+            lambda: search_business_names(host, port, database, username, password, query, tds_version)
+        )
+
+
 def get_aggregated_sales(
     host: str,
     port: int,

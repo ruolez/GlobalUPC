@@ -8568,13 +8568,16 @@ let salesState = {
   sortColumn: "net_sold",
   sortDirection: "desc",
   currentPage: 0,
-  pageSize: 100,
+  pageSize: parseInt(localStorage.getItem("sales_page_size") || "100"),
   summary: null,
   stores: [],
   config: null,
   configExpanded: false,
   allMssqlStores: [],
   allShopifyStores: [],
+  subcategories: [],
+  selectedSubcategories: [],
+  exclSearchTimeout: null,
 };
 
 async function loadSalesPage() {
@@ -8606,7 +8609,12 @@ async function loadSalesPage() {
     document.getElementById("sales-config-bar").style.display = "block";
     document.getElementById("sales-controls").style.display = "block";
 
-    if (!document.getElementById("sales-date-from").value) {
+    const savedFrom = localStorage.getItem("sales_date_from");
+    const savedTo = localStorage.getItem("sales_date_to");
+    if (savedFrom && savedTo) {
+      document.getElementById("sales-date-from").value = savedFrom;
+      document.getElementById("sales-date-to").value = savedTo;
+    } else if (!document.getElementById("sales-date-from").value) {
       setSalesDatePreset("30d");
     }
   } catch (e) {
@@ -8756,8 +8764,12 @@ function setSalesDatePreset(preset) {
       break;
   }
 
-  document.getElementById("sales-date-from").value = from.toISOString().split("T")[0];
-  document.getElementById("sales-date-to").value = to.toISOString().split("T")[0];
+  const fromStr = from.toISOString().split("T")[0];
+  const toStr = to.toISOString().split("T")[0];
+  document.getElementById("sales-date-from").value = fromStr;
+  document.getElementById("sales-date-to").value = toStr;
+  localStorage.setItem("sales_date_from", fromStr);
+  localStorage.setItem("sales_date_to", toStr);
 }
 
 async function fetchSalesReport() {
@@ -8882,47 +8894,37 @@ function displaySalesResults(data) {
   salesState.allProducts = data.products;
   salesState.summary = data.summary;
   salesState.stores = data.stores || [];
+  salesState.subcategories = data.subcategories || [];
+  salesState.selectedSubcategories = [];
 
   const summary = data.summary;
-  const summaryBar = document.getElementById("sales-summary-bar");
-  summaryBar.innerHTML = `
-    <div class="sales-summary-card">
-      <div class="label">Total Products</div>
-      <div class="value">${summary.total_products.toLocaleString()}</div>
-    </div>
-    <div class="sales-summary-card">
-      <div class="label">Products Sold</div>
-      <div class="value" style="color: var(--success)">${summary.sold_count.toLocaleString()}</div>
-    </div>
-    <div class="sales-summary-card">
-      <div class="label">Not Sold</div>
-      <div class="value" style="color: var(--warning)">${summary.not_sold_count.toLocaleString()}</div>
-    </div>
-    <div class="sales-summary-card">
-      <div class="label">Net Qty Sold</div>
-      <div class="value">${summary.total_net_sold.toLocaleString()}</div>
-    </div>
-  `;
-
   document.querySelector('.sales-toggle-btn[data-view="sold"]').textContent = `Products Sold (${summary.sold_count.toLocaleString()})`;
   document.querySelector('.sales-toggle-btn[data-view="not-sold"]').textContent = `Products Not Sold (${summary.not_sold_count.toLocaleString()})`;
 
-  salesState.viewMode = "sold";
-  salesState.sortColumn = "net_sold";
-  salesState.sortDirection = "desc";
+  const savedView = localStorage.getItem("sales_view_mode");
+  salesState.viewMode = savedView || "sold";
+  salesState.sortColumn = salesState.viewMode === "sold" ? "net_sold" : "description";
+  salesState.sortDirection = salesState.viewMode === "sold" ? "desc" : "asc";
   salesState.currentPage = 0;
 
   document.querySelectorAll(".sales-toggle-btn").forEach((b) => b.classList.remove("active"));
-  document.querySelector('.sales-toggle-btn[data-view="sold"]').classList.add("active");
+  document.querySelector(`.sales-toggle-btn[data-view="${salesState.viewMode}"]`).classList.add("active");
 
-  const subcatSelect = document.getElementById("sales-filter-subcategory");
-  subcatSelect.innerHTML = '<option value="">All Subcategories</option>';
-  (data.subcategories || []).forEach((sc) => {
-    const opt = document.createElement("option");
-    opt.value = sc;
-    opt.textContent = sc;
-    subcatSelect.appendChild(opt);
-  });
+  buildSubcatDropdown(data.subcategories || []);
+
+  const savedUpc = localStorage.getItem("sales_filter_upc") || "";
+  const savedDesc = localStorage.getItem("sales_filter_desc") || "";
+  document.getElementById("sales-filter-upc").value = savedUpc;
+  document.getElementById("sales-filter-desc").value = savedDesc;
+
+  const savedSubcats = JSON.parse(localStorage.getItem("sales_filter_subcategories") || "[]");
+  if (savedSubcats.length > 0) {
+    salesState.selectedSubcategories = savedSubcats.filter((s) => (data.subcategories || []).includes(s));
+    updateSubcatLabel();
+    document.querySelectorAll(".sales-subcat-cb").forEach((cb) => {
+      cb.checked = salesState.selectedSubcategories.includes(cb.value);
+    });
+  }
 
   applySalesFilters();
   document.getElementById("sales-results").style.display = "block";
@@ -8931,6 +8933,7 @@ function displaySalesResults(data) {
 function toggleSalesView(mode) {
   salesState.viewMode = mode;
   salesState.currentPage = 0;
+  localStorage.setItem("sales_view_mode", mode);
 
   if (mode === "sold") {
     salesState.sortColumn = "net_sold";
@@ -8949,14 +8952,18 @@ function toggleSalesView(mode) {
 function applySalesFilters() {
   const upcFilter = (document.getElementById("sales-filter-upc").value || "").toLowerCase().trim();
   const descFilter = (document.getElementById("sales-filter-desc").value || "").toLowerCase().trim();
-  const subcatFilter = document.getElementById("sales-filter-subcategory").value;
+  const subcatFilters = salesState.selectedSubcategories || [];
+
+  localStorage.setItem("sales_filter_upc", upcFilter);
+  localStorage.setItem("sales_filter_desc", descFilter);
+  localStorage.setItem("sales_filter_subcategories", JSON.stringify(subcatFilters));
 
   let filtered = salesState.allProducts.filter((p) => {
     if (salesState.viewMode === "sold" && p.net_sold <= 0) return false;
     if (salesState.viewMode === "not-sold" && p.net_sold > 0) return false;
     if (upcFilter && !p.upc.toLowerCase().includes(upcFilter)) return false;
     if (descFilter && !p.description.toLowerCase().includes(descFilter)) return false;
-    if (subcatFilter && (p.subcategory || "") !== subcatFilter) return false;
+    if (subcatFilters.length > 0 && !subcatFilters.includes(p.subcategory || "")) return false;
     return true;
   });
 
@@ -8969,7 +8976,12 @@ function applySalesFilters() {
 function clearSalesFilters() {
   document.getElementById("sales-filter-upc").value = "";
   document.getElementById("sales-filter-desc").value = "";
-  document.getElementById("sales-filter-subcategory").value = "";
+  salesState.selectedSubcategories = [];
+  document.querySelectorAll(".sales-subcat-cb").forEach((cb) => (cb.checked = false));
+  updateSubcatLabel();
+  localStorage.removeItem("sales_filter_upc");
+  localStorage.removeItem("sales_filter_desc");
+  localStorage.removeItem("sales_filter_subcategories");
   applySalesFilters();
 }
 
@@ -9078,6 +9090,7 @@ function renderSalesTable() {
   document.getElementById("sales-prev-page").disabled = salesState.currentPage === 0;
   document.getElementById("sales-next-page").disabled = salesState.currentPage >= totalPages - 1;
   document.getElementById("sales-results-count").textContent = `Showing ${start + 1}-${end} of ${total.toLocaleString()} ${salesState.viewMode === "sold" ? "products sold" : "products not sold"}`;
+  document.getElementById("sales-page-size").value = salesState.pageSize;
 }
 
 function changeSalesPage(delta) {
@@ -9092,6 +9105,7 @@ function changeSalesPage(delta) {
 function changeSalesPageSize() {
   salesState.pageSize = parseInt(document.getElementById("sales-page-size").value);
   salesState.currentPage = 0;
+  localStorage.setItem("sales_page_size", salesState.pageSize);
   renderSalesTable();
 }
 
@@ -9125,6 +9139,83 @@ function exportSalesReport() {
 
   const dateStr = new Date().toISOString().split("T")[0];
   XLSX.writeFile(wb, `sales-report-${salesState.viewMode}-${dateStr}.xlsx`);
+}
+
+function buildSubcatDropdown(subcategories) {
+  const container = document.getElementById("sales-subcat-dropdown");
+  container.innerHTML = "";
+  subcategories.forEach((sc) => {
+    const label = document.createElement("label");
+    label.style.cssText = "display: flex; align-items: center; gap: 0.5rem; padding: 0.375rem 0.75rem; cursor: pointer; font-size: 0.8125rem; border-bottom: 1px solid var(--border-color);";
+    label.innerHTML = `<input type="checkbox" class="sales-subcat-cb" value="${sc}" onchange="onSubcatChange()"> ${sc}`;
+    container.appendChild(label);
+  });
+}
+
+function toggleSubcatDropdown() {
+  const dd = document.getElementById("sales-subcat-dropdown");
+  dd.style.display = dd.style.display === "none" ? "block" : "none";
+}
+
+function onSubcatChange() {
+  salesState.selectedSubcategories = Array.from(document.querySelectorAll(".sales-subcat-cb:checked")).map((cb) => cb.value);
+  updateSubcatLabel();
+  applySalesFilters();
+}
+
+function updateSubcatLabel() {
+  const sel = salesState.selectedSubcategories || [];
+  const label = document.getElementById("sales-subcat-label");
+  if (sel.length === 0) {
+    label.textContent = "All";
+  } else if (sel.length <= 2) {
+    label.textContent = sel.join(", ");
+  } else {
+    label.textContent = `${sel.length} selected`;
+  }
+}
+
+document.addEventListener("click", (e) => {
+  const trigger = document.getElementById("sales-subcat-trigger");
+  const dropdown = document.getElementById("sales-subcat-dropdown");
+  if (trigger && dropdown && !trigger.contains(e.target) && !dropdown.contains(e.target)) {
+    dropdown.style.display = "none";
+  }
+  const acContainer = document.getElementById("sales-excl-autocomplete");
+  const acInput = document.getElementById("sales-excl-name");
+  if (acContainer && acInput && !acContainer.contains(e.target) && e.target !== acInput) {
+    acContainer.style.display = "none";
+  }
+});
+
+function searchSalesBusinessNames() {
+  clearTimeout(salesState.exclSearchTimeout);
+  const query = document.getElementById("sales-excl-name").value.trim();
+  const container = document.getElementById("sales-excl-autocomplete");
+  if (query.length < 2) { container.style.display = "none"; return; }
+
+  salesState.exclSearchTimeout = setTimeout(async () => {
+    try {
+      const data = await apiRequest(`/sales/business-names?query=${encodeURIComponent(query)}`);
+      if (!data.results || data.results.length === 0) { container.style.display = "none"; return; }
+      container.innerHTML = "";
+      data.results.forEach((name) => {
+        const div = document.createElement("div");
+        div.style.cssText = "padding: 0.375rem 0.75rem; cursor: pointer; font-size: 0.8125rem; border-bottom: 1px solid var(--border-color);";
+        div.textContent = name;
+        div.onmouseenter = () => { div.style.background = "var(--bg-hover)"; };
+        div.onmouseleave = () => { div.style.background = ""; };
+        div.onclick = () => {
+          document.getElementById("sales-excl-name").value = name;
+          container.style.display = "none";
+        };
+        container.appendChild(div);
+      });
+      container.style.display = "block";
+    } catch (e) {
+      container.style.display = "none";
+    }
+  }, 300);
 }
 
 function toggleSalesExclusions() {

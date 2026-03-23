@@ -45,7 +45,8 @@ from mssql_helper import (
     check_upc_exists,
     get_item_prices_async, update_item_prices_async,
     get_item_prices_batch_async,
-    get_active_products_async, get_aggregated_sales_async, get_aggregated_returns_async
+    get_active_products_async, get_aggregated_sales_async, get_aggregated_returns_async,
+    search_business_names_async
 )
 from shopify_helper import (
     test_shopify_connection, search_barcode_across_shopify_stores,
@@ -4527,6 +4528,34 @@ def save_sales_config(config_data: SalesConfigCreate, db: Session = Depends(get_
     db.commit()
     db.refresh(config)
     return get_sales_config(db)
+
+
+@app.get("/api/sales/business-names")
+async def search_sales_business_names(query: str = "", db: Session = Depends(get_db)):
+    config = db.query(SalesConfig).first()
+    if not config or not config.s2s_store_id:
+        return {"results": []}
+
+    all_names = set()
+    store_ids = (config.mssql_store_ids or [])
+    if not store_ids:
+        return {"results": []}
+
+    for store_id in store_ids:
+        store = db.query(Store).filter(
+            Store.id == store_id, Store.store_type == StoreType.mssql, Store.is_active == True
+        ).first()
+        if not store or not store.mssql_connection:
+            continue
+        conn = store.mssql_connection
+        success, error, names = await search_business_names_async(
+            conn.host, conn.port, conn.database_name,
+            conn.username, conn.password, query
+        )
+        if success:
+            all_names.update(names)
+
+    return {"results": sorted(all_names)[:20]}
 
 
 @app.post("/api/sales/exclusions", response_model=SalesExclusionResponse)

@@ -3175,9 +3175,6 @@
 
           <!-- Results -->
           <div id="sales-results" style="display: none">
-            <!-- Summary Bar -->
-            <div id="sales-summary-bar" class="sales-summary-bar" style="margin-bottom: 1.5rem"></div>
-
             <!-- Toggle + Filters -->
             <div class="card" style="margin-bottom: 1.5rem">
               <div style="padding: 1rem 1.5rem">
@@ -3194,11 +3191,13 @@
                     <label style="font-size: 0.75rem; color: var(--text-tertiary)">Search Description</label>
                     <input type="text" id="sales-filter-desc" class="dark-input" placeholder="Filter by description..." style="width: 100%;" oninput="applySalesFilters()">
                   </div>
-                  <div style="min-width: 150px;">
+                  <div style="min-width: 180px; position: relative;">
                     <label style="font-size: 0.75rem; color: var(--text-tertiary)">Subcategory</label>
-                    <select id="sales-filter-subcategory" onchange="applySalesFilters()" style="width: 100%;">
-                      <option value="">All Subcategories</option>
-                    </select>
+                    <div id="sales-subcat-trigger" onclick="toggleSubcatDropdown()" class="dark-input" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center; min-height: 2.25rem; user-select: none;">
+                      <span id="sales-subcat-label" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">All</span>
+                      <span style="font-size: 0.625rem; color: var(--text-tertiary);">▼</span>
+                    </div>
+                    <div id="sales-subcat-dropdown" style="display: none; position: absolute; top: 100%; left: 0; right: 0; z-index: 100; max-height: 250px; overflow-y: auto; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-md); box-shadow: var(--shadow-md); margin-top: 2px;"></div>
                   </div>
                   <button type="button" class="btn btn-secondary" onclick="clearSalesFilters()" style="font-size: 0.75rem; padding: 0.4rem 0.75rem;">Clear</button>
                   <button type="button" class="btn btn-secondary" onclick="exportSalesReport()" style="font-size: 0.75rem; padding: 0.4rem 0.75rem;">Export Excel</button>
@@ -3214,8 +3213,9 @@
               </div>
               <div style="padding: 1rem 1.5rem">
                 <div style="display: flex; gap: 0.5rem; margin-bottom: 0.75rem; align-items: flex-end;">
-                  <div style="flex: 1;">
-                    <input type="text" id="sales-excl-name" class="dark-input" placeholder="Business / Account name..." style="width: 100%;">
+                  <div style="flex: 1; position: relative;">
+                    <input type="text" id="sales-excl-name" class="dark-input" placeholder="Business / Account name..." style="width: 100%;" oninput="searchSalesBusinessNames()" autocomplete="off">
+                    <div id="sales-excl-autocomplete" style="display: none; position: absolute; top: 100%; left: 0; right: 0; z-index: 100; max-height: 200px; overflow-y: auto; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-md); box-shadow: var(--shadow-md); margin-top: 2px;"></div>
                   </div>
                   <select id="sales-excl-scope" style="width: 140px;">
                     <option value="">All</option>
