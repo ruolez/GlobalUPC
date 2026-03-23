@@ -8971,14 +8971,31 @@ function applySalesFilters() {
     if (salesState.viewMode === "not-sold" && instockOnly && p.quant_on_hand <= 0) return false;
     if (upcFilter && !p.upc.toLowerCase().includes(upcFilter)) return false;
     if (descFilter && !p.description.toLowerCase().includes(descFilter)) return false;
-    const allSubcats = salesState.subcategories ? salesState.subcategories.length : 0;
-    if (subcatFilters.length > 0 && subcatFilters.length < allSubcats && !subcatFilters.includes(p.subcategory || "")) return false;
+    if (subcatFilters.length > 0 && !subcatFilters.includes(p.subcategory || "")) return false;
     return true;
   });
 
   salesState.filteredProducts = filtered;
   sortSalesProducts();
   salesState.currentPage = 0;
+
+  const soldCount = salesState.allProducts.filter((p) => {
+    if (p.net_sold <= 0) return false;
+    if (upcFilter && !p.upc.toLowerCase().includes(upcFilter)) return false;
+    if (descFilter && !p.description.toLowerCase().includes(descFilter)) return false;
+    if (subcatFilters.length > 0 && !subcatFilters.includes(p.subcategory || "")) return false;
+    return true;
+  }).length;
+  const notSoldCount = salesState.allProducts.filter((p) => {
+    if (p.net_sold > 0) return false;
+    if (upcFilter && !p.upc.toLowerCase().includes(upcFilter)) return false;
+    if (descFilter && !p.description.toLowerCase().includes(descFilter)) return false;
+    if (subcatFilters.length > 0 && !subcatFilters.includes(p.subcategory || "")) return false;
+    return true;
+  }).length;
+  document.querySelector('.sales-toggle-btn[data-view="sold"]').textContent = `Products Sold (${soldCount.toLocaleString()})`;
+  document.querySelector('.sales-toggle-btn[data-view="not-sold"]').textContent = `Products Not Sold (${notSoldCount.toLocaleString()})`;
+
   renderSalesTable();
 }
 
