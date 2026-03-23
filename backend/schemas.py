@@ -536,6 +536,28 @@ class SalesReportRequest(BaseModel):
     date_to: Optional[str] = None
 
 
+class SalesExclusionCreate(BaseModel):
+    business_name: str
+    void_status: Optional[int] = None
+    notes: Optional[str] = None
+
+
+class SalesExclusionResponse(BaseModel):
+    id: int
+    business_name: str
+    void_status: Optional[int] = None
+    excluded_at: datetime
+    notes: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class SalesExclusionListResponse(BaseModel):
+    exclusions: List[SalesExclusionResponse]
+    total: int
+
+
 class SalesConfigCreate(BaseModel):
     s2s_store_id: Optional[int] = None
     mssql_store_ids: List[int] = []

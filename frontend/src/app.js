@@ -8657,7 +8657,7 @@ function populateSalesConfigForm(config) {
   const selectedMssql = config ? (config.mssql_store_ids || []) : [];
   salesState.allMssqlStores.forEach((s) => {
     const label = document.createElement("label");
-    label.style.cssText = "display: flex; align-items: center; gap: 0.375rem; font-size: 0.8125rem; cursor: pointer;";
+    label.style.cssText = "display: flex; align-items: center; gap: 0.5rem; font-size: 0.8125rem; cursor: pointer; padding: 0.375rem 0.75rem; border-radius: var(--radius-sm); border: 1px solid var(--border-color); background: var(--bg-tertiary);";
     const checked = selectedMssql.includes(s.id) ? "checked" : "";
     label.innerHTML = `<input type="checkbox" class="sales-cfg-mssql-cb" value="${s.id}" ${checked}> ${s.name}`;
     mssqlContainer.appendChild(label);
@@ -8671,7 +8671,7 @@ function populateSalesConfigForm(config) {
     shopifyGroup.style.display = "block";
     salesState.allShopifyStores.forEach((s) => {
       const label = document.createElement("label");
-      label.style.cssText = "display: flex; align-items: center; gap: 0.375rem; font-size: 0.8125rem; cursor: pointer;";
+      label.style.cssText = "display: flex; align-items: center; gap: 0.5rem; font-size: 0.8125rem; cursor: pointer; padding: 0.375rem 0.75rem; border-radius: var(--radius-sm); border: 1px solid var(--border-color); background: var(--bg-tertiary);";
       const checked = selectedShopify.includes(s.id) ? "checked" : "";
       label.innerHTML = `<input type="checkbox" class="sales-cfg-shopify-cb" value="${s.id}" ${checked}> ${s.name}`;
       shopifyContainer.appendChild(label);
@@ -8915,6 +8915,15 @@ function displaySalesResults(data) {
   document.querySelectorAll(".sales-toggle-btn").forEach((b) => b.classList.remove("active"));
   document.querySelector('.sales-toggle-btn[data-view="sold"]').classList.add("active");
 
+  const subcatSelect = document.getElementById("sales-filter-subcategory");
+  subcatSelect.innerHTML = '<option value="">All Subcategories</option>';
+  (data.subcategories || []).forEach((sc) => {
+    const opt = document.createElement("option");
+    opt.value = sc;
+    opt.textContent = sc;
+    subcatSelect.appendChild(opt);
+  });
+
   applySalesFilters();
   document.getElementById("sales-results").style.display = "block";
 }
@@ -8940,12 +8949,14 @@ function toggleSalesView(mode) {
 function applySalesFilters() {
   const upcFilter = (document.getElementById("sales-filter-upc").value || "").toLowerCase().trim();
   const descFilter = (document.getElementById("sales-filter-desc").value || "").toLowerCase().trim();
+  const subcatFilter = document.getElementById("sales-filter-subcategory").value;
 
   let filtered = salesState.allProducts.filter((p) => {
     if (salesState.viewMode === "sold" && p.net_sold <= 0) return false;
     if (salesState.viewMode === "not-sold" && p.net_sold > 0) return false;
     if (upcFilter && !p.upc.toLowerCase().includes(upcFilter)) return false;
     if (descFilter && !p.description.toLowerCase().includes(descFilter)) return false;
+    if (subcatFilter && (p.subcategory || "") !== subcatFilter) return false;
     return true;
   });
 
@@ -8958,6 +8969,7 @@ function applySalesFilters() {
 function clearSalesFilters() {
   document.getElementById("sales-filter-upc").value = "";
   document.getElementById("sales-filter-desc").value = "";
+  document.getElementById("sales-filter-subcategory").value = "";
   applySalesFilters();
 }
 
@@ -9113,6 +9125,70 @@ function exportSalesReport() {
 
   const dateStr = new Date().toISOString().split("T")[0];
   XLSX.writeFile(wb, `sales-report-${salesState.viewMode}-${dateStr}.xlsx`);
+}
+
+function toggleSalesExclusions() {
+  const panel = document.getElementById("sales-exclusions-panel");
+  if (panel.style.display === "none") {
+    panel.style.display = "block";
+    loadSalesExclusions();
+  } else {
+    panel.style.display = "none";
+  }
+}
+
+async function loadSalesExclusions() {
+  try {
+    const data = await apiRequest("/sales/exclusions");
+    const container = document.getElementById("sales-exclusions-list");
+    if (!data.exclusions || data.exclusions.length === 0) {
+      container.innerHTML = '<p style="color: var(--text-tertiary); margin: 0;">No exclusions configured.</p>';
+      return;
+    }
+    let html = '<table class="data-table" style="font-size: 0.8125rem;"><thead><tr><th>Business Name</th><th style="width: 100px;">Scope</th><th style="width: 60px;"></th></tr></thead><tbody>';
+    data.exclusions.forEach((e) => {
+      const scope = e.void_status === null ? "All" : (e.void_status === 0 ? "Non-voided" : "Voided");
+      const scopeColor = e.void_status === null ? "var(--text-tertiary)" : (e.void_status === 0 ? "var(--success)" : "var(--warning)");
+      html += `<tr>
+        <td>${e.business_name}</td>
+        <td style="color: ${scopeColor}">${scope}</td>
+        <td style="text-align: center;"><button class="btn btn-secondary" style="font-size: 0.6875rem; padding: 0.15rem 0.4rem;" onclick="deleteSalesExclusion(${e.id})">Remove</button></td>
+      </tr>`;
+    });
+    html += '</tbody></table>';
+    container.innerHTML = html;
+  } catch (e) {
+    document.getElementById("sales-exclusions-list").innerHTML = '<p style="color: var(--danger);">Failed to load exclusions.</p>';
+  }
+}
+
+async function addSalesExclusion() {
+  const name = document.getElementById("sales-excl-name").value.trim();
+  if (!name) { showToast("Enter a business name", "warning"); return; }
+  const scopeVal = document.getElementById("sales-excl-scope").value;
+  const voidStatus = scopeVal === "" ? null : parseInt(scopeVal);
+
+  try {
+    await apiRequest("/sales/exclusions", {
+      method: "POST",
+      body: JSON.stringify({ business_name: name, void_status: voidStatus }),
+    });
+    document.getElementById("sales-excl-name").value = "";
+    loadSalesExclusions();
+    showToast("Exclusion added", "success");
+  } catch (e) {
+    showToast(e.message || "Failed to add exclusion", "error");
+  }
+}
+
+async function deleteSalesExclusion(id) {
+  try {
+    await apiRequest(`/sales/exclusions/${id}`, { method: "DELETE" });
+    loadSalesExclusions();
+    showToast("Exclusion removed", "success");
+  } catch (e) {
+    showToast(e.message || "Failed to remove", "error");
+  }
 }
 
 // ===== End Sales Report =====

@@ -12,7 +12,7 @@ import uuid
 import os
 
 from database import get_db, engine
-from models import Store, MSSQLConnection, ShopifyConnection, Setting, StoreType, UPCUpdateHistory, UPCExclusion, ItemTrackerConfig, ItemTrackerExclusion, PriceUpdateHistory, StoreMirror, SalesConfig
+from models import Store, MSSQLConnection, ShopifyConnection, Setting, StoreType, UPCUpdateHistory, UPCExclusion, ItemTrackerConfig, ItemTrackerExclusion, PriceUpdateHistory, StoreMirror, SalesConfig, SalesExclusion
 from schemas import (
     MSSQLStoreCreate, ShopifyStoreCreate, StoreResponse, StoreNameUpdate,
     SettingCreate, SettingUpdate, SettingResponse,
@@ -35,7 +35,8 @@ from schemas import (
     StoreMirrorCreate, StoreMirrorResponse, StoreMirrorListResponse,
     ShopifySalesRequest,
     SalesReportRequest,
-    SalesConfigCreate, SalesConfigResponse
+    SalesConfigCreate, SalesConfigResponse,
+    SalesExclusionCreate, SalesExclusionResponse, SalesExclusionListResponse
 )
 from mssql_helper import (
     test_mssql_connection, search_upc_across_mssql_stores, search_products_by_upc,
@@ -4528,6 +4529,44 @@ def save_sales_config(config_data: SalesConfigCreate, db: Session = Depends(get_
     return get_sales_config(db)
 
 
+@app.post("/api/sales/exclusions", response_model=SalesExclusionResponse)
+def add_sales_exclusion(exclusion: SalesExclusionCreate, db: Session = Depends(get_db)):
+    existing = db.query(SalesExclusion).filter(
+        SalesExclusion.business_name == exclusion.business_name,
+        SalesExclusion.void_status == exclusion.void_status if exclusion.void_status is not None
+        else SalesExclusion.void_status.is_(None)
+    ).first()
+    if existing:
+        scope = "all events" if exclusion.void_status is None else ("non-voided" if exclusion.void_status == 0 else "voided")
+        raise HTTPException(status_code=409, detail=f"Already excluded: {exclusion.business_name} ({scope})")
+
+    db_excl = SalesExclusion(
+        business_name=exclusion.business_name,
+        void_status=exclusion.void_status,
+        notes=exclusion.notes,
+    )
+    db.add(db_excl)
+    db.commit()
+    db.refresh(db_excl)
+    return db_excl
+
+
+@app.get("/api/sales/exclusions", response_model=SalesExclusionListResponse)
+def list_sales_exclusions(db: Session = Depends(get_db)):
+    exclusions = db.query(SalesExclusion).order_by(SalesExclusion.excluded_at.desc()).all()
+    return SalesExclusionListResponse(exclusions=exclusions, total=len(exclusions))
+
+
+@app.delete("/api/sales/exclusions/{exclusion_id}")
+def delete_sales_exclusion(exclusion_id: int, db: Session = Depends(get_db)):
+    excl = db.query(SalesExclusion).filter(SalesExclusion.id == exclusion_id).first()
+    if not excl:
+        raise HTTPException(status_code=404, detail="Exclusion not found")
+    db.delete(excl)
+    db.commit()
+    return {"message": "Exclusion removed"}
+
+
 @app.post("/api/sales/report/stream")
 async def sales_report_stream(request: SalesReportRequest, db: Session = Depends(get_db)):
     async def generate_report_events() -> AsyncGenerator[str, None]:
@@ -4563,18 +4602,32 @@ async def sales_report_stream(request: SalesReportRequest, db: Session = Depends
             return
 
         products_map = {}
+        subcategories = {}
         for p in products_list:
             products_map[p["upc"]] = {
                 "upc": p["upc"],
                 "description": p["description"],
                 "quant_on_hand": p["quant_on_hand"],
+                "subcategory": p.get("subcategory"),
                 "total_sold": 0.0,
                 "total_returned": 0.0,
                 "net_sold": 0.0,
                 "store_sales": {},
             }
+            sc = p.get("subcategory")
+            if sc and sc not in subcategories:
+                subcategories[sc] = sc
 
         yield f"event: progress\ndata: {json.dumps({'status': 'products_fetched', 'count': len(products_map)})}\n\n"
+
+        exclusions = db.query(SalesExclusion).all()
+        excluded_sales_names = []
+        excluded_return_names = []
+        for excl in exclusions:
+            if excl.void_status is None or excl.void_status == 0:
+                excluded_sales_names.append(excl.business_name)
+            if excl.void_status is None:
+                excluded_return_names.append(excl.business_name)
 
         total_stores = len(request.mssql_store_ids) + len(request.shopify_store_ids)
         completed_count = 0
@@ -4601,12 +4654,14 @@ async def sales_report_stream(request: SalesReportRequest, db: Session = Depends
                 sales_task = get_aggregated_sales_async(
                     conn.host, conn.port, conn.database_name,
                     conn.username, conn.password,
-                    request.date_from, request.date_to
+                    request.date_from, request.date_to,
+                    excluded_sales_names or None
                 )
                 returns_task = get_aggregated_returns_async(
                     conn.host, conn.port, conn.database_name,
                     conn.username, conn.password,
-                    request.date_from, request.date_to
+                    request.date_from, request.date_to,
+                    excluded_return_names or None
                 )
 
                 (sales_ok, sales_err, sales_data), (returns_ok, returns_err, returns_data) = await asyncio.gather(
@@ -4724,7 +4779,7 @@ async def sales_report_stream(request: SalesReportRequest, db: Session = Depends
             "stores_searched": completed_count,
         }
 
-        yield f"event: complete\ndata: {json.dumps({'products': products, 'summary': summary, 'stores': store_names})}\n\n"
+        yield f"event: complete\ndata: {json.dumps({'products': products, 'summary': summary, 'stores': store_names, 'subcategories': sorted(subcategories.keys())})}\n\n"
 
     return StreamingResponse(
         generate_report_events(),

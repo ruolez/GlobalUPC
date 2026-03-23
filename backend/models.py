@@ -113,6 +113,15 @@ class ItemTrackerConfig(Base):
     s2s_store = relationship("Store", foreign_keys=[s2s_store_id])
     inventory_store = relationship("Store", foreign_keys=[inventory_store_id])
 
+class SalesExclusion(Base):
+    __tablename__ = "sales_exclusions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    business_name = Column(String(255), nullable=False)
+    void_status = Column(Integer, nullable=True)
+    excluded_at = Column(DateTime(timezone=True), server_default=func.now())
+    notes = Column(Text)
+
 class SalesConfig(Base):
     __tablename__ = "sales_config"
 

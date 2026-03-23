@@ -1977,11 +1977,13 @@ def get_active_products(
             return True, None, []
 
         cursor.execute("""
-            SELECT ProductUPC, ProductDescription, ISNULL(QuantOnHand, 0) AS QuantOnHand
-            FROM Items_tbl
-            WHERE Discontinued = 0
-              AND ProductUPC IS NOT NULL
-              AND LTRIM(RTRIM(ProductUPC)) != ''
+            SELECT i.ProductUPC, i.ProductDescription, ISNULL(i.QuantOnHand, 0) AS QuantOnHand,
+                   i.SubCateID, s.SubCateName
+            FROM Items_tbl i
+            LEFT JOIN SubCategories_tbl s ON i.SubCateID = s.SubCateID
+            WHERE i.Discontinued = 0
+              AND i.ProductUPC IS NOT NULL
+              AND LTRIM(RTRIM(i.ProductUPC)) != ''
         """)
         rows = cursor.fetchall()
 
@@ -1996,6 +1998,8 @@ def get_active_products(
                     "upc": upc,
                     "description": row[1].strip() if row[1] else "",
                     "quant_on_hand": float(row[2]) if row[2] is not None else 0.0,
+                    "subcategory_id": row[3],
+                    "subcategory": row[4].strip() if row[4] else None,
                 })
 
         return True, None, products
@@ -2028,6 +2032,7 @@ def get_aggregated_sales(
     password: str,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    excluded_names: Optional[list[str]] = None,
     tds_version: str = "7.4"
 ) -> tuple[bool, Optional[str], Dict[str, float]]:
     conn_str = get_mssql_connection_string(host, port, database, username, password, tds_version)
@@ -2061,6 +2066,10 @@ def get_aggregated_sales(
         if date_to:
             query += " AND h.InvoiceDate <= ?"
             params.append(date_to)
+        if excluded_names:
+            placeholders = ",".join(["?" for _ in excluded_names])
+            query += f" AND (h.BusinessName IS NULL OR h.BusinessName NOT IN ({placeholders}))"
+            params.extend(excluded_names)
 
         query += " GROUP BY d.ProductUPC"
 
@@ -2090,13 +2099,14 @@ async def get_aggregated_sales_async(
     password: str,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    excluded_names: Optional[list[str]] = None,
     tds_version: str = "7.4"
 ) -> tuple[bool, Optional[str], Dict[str, float]]:
     loop = asyncio.get_event_loop()
     with ThreadPoolExecutor() as executor:
         return await loop.run_in_executor(
             executor,
-            lambda: get_aggregated_sales(host, port, database, username, password, date_from, date_to, tds_version)
+            lambda: get_aggregated_sales(host, port, database, username, password, date_from, date_to, excluded_names, tds_version)
         )
 
 
@@ -2108,6 +2118,7 @@ def get_aggregated_returns(
     password: str,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    excluded_names: Optional[list[str]] = None,
     tds_version: str = "7.4"
 ) -> tuple[bool, Optional[str], Dict[str, float]]:
     conn_str = get_mssql_connection_string(host, port, database, username, password, tds_version)
@@ -2140,6 +2151,10 @@ def get_aggregated_returns(
         if date_to:
             query += " AND h.CmemoDate <= ?"
             params.append(date_to)
+        if excluded_names:
+            placeholders = ",".join(["?" for _ in excluded_names])
+            query += f" AND (h.BusinessName IS NULL OR h.BusinessName NOT IN ({placeholders}))"
+            params.extend(excluded_names)
 
         query += " GROUP BY d.ProductUPC"
 
@@ -2169,11 +2184,12 @@ async def get_aggregated_returns_async(
     password: str,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    excluded_names: Optional[list[str]] = None,
     tds_version: str = "7.4"
 ) -> tuple[bool, Optional[str], Dict[str, float]]:
     loop = asyncio.get_event_loop()
     with ThreadPoolExecutor() as executor:
         return await loop.run_in_executor(
             executor,
-            lambda: get_aggregated_returns(host, port, database, username, password, date_from, date_to, tds_version)
+            lambda: get_aggregated_returns(host, port, database, username, password, date_from, date_to, excluded_names, tds_version)
         )
