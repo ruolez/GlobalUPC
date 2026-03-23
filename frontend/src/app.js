@@ -9141,6 +9141,19 @@ function exportSalesReport() {
   XLSX.writeFile(wb, `sales-report-${salesState.viewMode}-${dateStr}.xlsx`);
 }
 
+function selectSellingSubcategories() {
+  const sellingSubcats = new Set();
+  salesState.allProducts.forEach((p) => {
+    if (p.net_sold > 0 && p.subcategory) sellingSubcats.add(p.subcategory);
+  });
+  salesState.selectedSubcategories = [...sellingSubcats];
+  document.querySelectorAll(".sales-subcat-cb").forEach((cb) => {
+    cb.checked = sellingSubcats.has(cb.value);
+  });
+  updateSubcatLabel();
+  applySalesFilters();
+}
+
 function buildSubcatDropdown(subcategories) {
   const container = document.getElementById("sales-subcat-dropdown");
   container.innerHTML = "";
