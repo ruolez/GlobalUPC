@@ -8894,6 +8894,7 @@ function displaySalesResults(data) {
   salesState.allProducts = data.products;
   salesState.summary = data.summary;
   salesState.stores = data.stores || [];
+  salesState.allSubcategories = data.subcategories || [];
   salesState.subcategories = data.subcategories || [];
   salesState.selectedSubcategories = [];
 
@@ -9172,13 +9173,84 @@ function selectSellingSubcategories() {
 function buildSubcatDropdown(subcategories) {
   const container = document.getElementById("sales-subcat-dropdown");
   container.innerHTML = "";
-  subcategories.forEach((sc) => {
+
+  const excludedSubcats = JSON.parse(localStorage.getItem("sales_excluded_subcategories") || "[]");
+  const visibleSubcats = subcategories.filter((sc) => !excludedSubcats.includes(sc));
+  salesState.subcategories = visibleSubcats;
+
+  const controls = document.createElement("div");
+  controls.style.cssText = "display: flex; justify-content: space-between; align-items: center; padding: 0.375rem 0.75rem; border-bottom: 2px solid var(--border-color); gap: 0.25rem;";
+  controls.innerHTML = `
+    <div style="display: flex; gap: 0.375rem;">
+      <button type="button" class="btn btn-secondary" onclick="salesSubcatCheckAll(true)" style="font-size: 0.625rem; padding: 0.15rem 0.4rem;">All</button>
+      <button type="button" class="btn btn-secondary" onclick="salesSubcatCheckAll(false)" style="font-size: 0.625rem; padding: 0.15rem 0.4rem;">None</button>
+    </div>
+    <button type="button" class="btn btn-secondary" onclick="openSubcatExclusions()" style="font-size: 0.625rem; padding: 0.15rem 0.4rem;" title="Hide subcategories from this list">Manage</button>
+  `;
+  container.appendChild(controls);
+
+  visibleSubcats.forEach((sc) => {
     const label = document.createElement("label");
     label.style.cssText = "display: flex; align-items: center; gap: 0.5rem; padding: 0.375rem 0.75rem; cursor: pointer; font-size: 0.8125rem; border-bottom: 1px solid var(--border-color);";
     label.innerHTML = `<input type="checkbox" class="sales-subcat-cb" value="${sc}" checked onchange="onSubcatChange()"> ${sc}`;
     container.appendChild(label);
   });
-  salesState.selectedSubcategories = [...subcategories];
+  salesState.selectedSubcategories = [...visibleSubcats];
+}
+
+function salesSubcatCheckAll(checked) {
+  document.querySelectorAll(".sales-subcat-cb").forEach((cb) => (cb.checked = checked));
+  onSubcatChange();
+}
+
+function openSubcatExclusions() {
+  const dd = document.getElementById("sales-subcat-dropdown");
+  dd.style.display = "none";
+
+  const allSubcats = salesState.allSubcategories || salesState.subcategories || [];
+  const excluded = JSON.parse(localStorage.getItem("sales_excluded_subcategories") || "[]");
+
+  let html = '<div style="max-height: 300px; overflow-y: auto;">';
+  allSubcats.forEach((sc) => {
+    const isExcluded = excluded.includes(sc);
+    html += `<label style="display: flex; align-items: center; gap: 0.5rem; padding: 0.375rem 0.75rem; cursor: pointer; font-size: 0.8125rem; border-bottom: 1px solid var(--border-color);">
+      <input type="checkbox" class="sales-subcat-manage-cb" value="${sc}" ${isExcluded ? "" : "checked"}> ${sc}
+    </label>`;
+  });
+  html += '</div>';
+  html += '<div style="padding: 0.5rem 0.75rem; border-top: 2px solid var(--border-color); display: flex; justify-content: flex-end; gap: 0.375rem;">';
+  html += '<button type="button" class="btn btn-secondary" onclick="cancelSubcatExclusions()" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Cancel</button>';
+  html += '<button type="button" class="btn btn-primary" onclick="saveSubcatExclusions()" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Save</button>';
+  html += '</div>';
+
+  const panel = document.getElementById("sales-subcat-dropdown");
+  panel.setAttribute("data-mode", "manage");
+  panel.innerHTML = html;
+  panel.style.display = "block";
+}
+
+function cancelSubcatExclusions() {
+  const panel = document.getElementById("sales-subcat-dropdown");
+  panel.removeAttribute("data-mode");
+  buildSubcatDropdown(salesState.allSubcategories || salesState.subcategories || []);
+  panel.style.display = "none";
+  updateSubcatLabel();
+}
+
+function saveSubcatExclusions() {
+  const included = Array.from(document.querySelectorAll(".sales-subcat-manage-cb:checked")).map((cb) => cb.value);
+  const allSubcats = salesState.allSubcategories || salesState.subcategories || [];
+  const excluded = allSubcats.filter((sc) => !included.includes(sc));
+
+  localStorage.setItem("sales_excluded_subcategories", JSON.stringify(excluded));
+
+  const panel = document.getElementById("sales-subcat-dropdown");
+  panel.removeAttribute("data-mode");
+  buildSubcatDropdown(allSubcats);
+  panel.style.display = "none";
+  updateSubcatLabel();
+  applySalesFilters();
+  showToast(`${excluded.length} subcategories hidden`, "success");
 }
 
 function toggleSubcatDropdown() {
@@ -9207,7 +9279,7 @@ function updateSubcatLabel() {
 document.addEventListener("click", (e) => {
   const trigger = document.getElementById("sales-subcat-trigger");
   const dropdown = document.getElementById("sales-subcat-dropdown");
-  if (trigger && dropdown && !trigger.contains(e.target) && !dropdown.contains(e.target)) {
+  if (trigger && dropdown && !trigger.contains(e.target) && !dropdown.contains(e.target) && !dropdown.getAttribute("data-mode")) {
     dropdown.style.display = "none";
   }
   const acContainer = document.getElementById("sales-excl-autocomplete");
