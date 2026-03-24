@@ -9061,7 +9061,7 @@ function renderSalesTable() {
       <th style="width: 5%; text-align: right; ${sortStyle}" onclick="handleSalesSort('reorder_level')">Reorder${sortIcon("reorder_level")}</th>
       <th style="width: 5%; text-align: right; ${sortStyle}" onclick="handleSalesSort('total_sold')">Sold${sortIcon("total_sold")}</th>
       <th style="width: 5%; text-align: right; ${sortStyle}" onclick="handleSalesSort('total_returned')">Returns${sortIcon("total_returned")}</th>
-      <th style="width: 6%; text-align: right; ${sortStyle}" onclick="handleSalesSort('net_sold')">Net Sold${sortIcon("net_sold")}</th>
+      <th style="width: 6%; text-align: right; ${sortStyle}" onclick="handleSalesSort('net_sold')">Net${sortIcon("net_sold")}</th>
     `;
   } else {
     thead.innerHTML = `
@@ -9071,7 +9071,7 @@ function renderSalesTable() {
       <th style="width: 18%; ${sortStyle}" onclick="handleSalesSort('subcategory')">Subcategory${sortIcon("subcategory")}</th>
       <th style="width: 10%; ${sortStyle}" onclick="handleSalesSort('bin_location')">Bin${sortIcon("bin_location")}</th>
       <th style="width: 5%; text-align: right; ${sortStyle}" onclick="handleSalesSort('reorder_level')">Reorder${sortIcon("reorder_level")}</th>
-      <th style="width: 6%; text-align: right; ${sortStyle}" onclick="handleSalesSort('quant_on_hand')">Qty on Hand${sortIcon("quant_on_hand")}</th>
+      <th style="width: 6%; text-align: right; ${sortStyle}" onclick="handleSalesSort('quant_on_hand')">On Hand${sortIcon("quant_on_hand")}</th>
     `;
   }
 
@@ -9157,8 +9157,8 @@ function exportSalesReport() {
 
   const isSold = salesState.viewMode === "sold";
   const headers = isSold
-    ? ["UPC", "Description", "Subcategory", "Bin", "Reorder", "Sold", "Returns", "Net Sold"]
-    : ["UPC", "Description", "Subcategory", "Bin", "Reorder", "Qty on Hand"];
+    ? ["UPC", "Description", "Subcategory", "Bin", "Reorder", "Sold", "Returns", "Net"]
+    : ["UPC", "Description", "Subcategory", "Bin", "Reorder", "On Hand"];
 
   const dataRows = salesState.filteredProducts.map((p) =>
     isSold
