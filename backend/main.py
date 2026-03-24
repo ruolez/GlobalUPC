@@ -4638,6 +4638,7 @@ async def sales_report_stream(request: SalesReportRequest, db: Session = Depends
                 "description": p["description"],
                 "quant_on_hand": p["quant_on_hand"],
                 "subcategory": p.get("subcategory"),
+                "reorder_level": p.get("reorder_level", 0),
                 "total_sold": 0.0,
                 "total_returned": 0.0,
                 "net_sold": 0.0,

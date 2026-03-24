@@ -1978,7 +1978,7 @@ def get_active_products(
 
         cursor.execute("""
             SELECT i.ProductUPC, i.ProductDescription, ISNULL(i.QuantOnHand, 0) AS QuantOnHand,
-                   i.SubCateID, s.SubCateName
+                   i.SubCateID, s.SubCateName, ISNULL(i.ReorderLevel, 0) AS ReorderLevel
             FROM Items_tbl i
             LEFT JOIN SubCategories_tbl s ON i.SubCateID = s.SubCateID
             WHERE i.Discontinued = 0
@@ -2000,6 +2000,7 @@ def get_active_products(
                     "quant_on_hand": float(row[2]) if row[2] is not None else 0.0,
                     "subcategory_id": row[3],
                     "subcategory": row[4].strip() if row[4] else None,
+                    "reorder_level": int(row[5]) if row[5] is not None else 0,
                 })
 
         return True, None, products
