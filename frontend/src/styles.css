@@ -1030,9 +1030,14 @@ body {
 
 #sales-table-filters .dark-input {
   width: 100%;
+  max-width: 100%;
   font-size: 0.75rem;
   padding: 0.2rem 0.4rem;
   box-sizing: border-box;
+}
+
+#sales-table-filters td {
+  overflow: hidden;
 }
 
 
