@@ -3167,8 +3167,9 @@
             <div class="card" style="margin-bottom: 0.75rem">
               <div style="padding: 0.625rem 1rem; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
                 <div class="sales-toggle-group" style="flex-shrink: 0;">
-                  <button type="button" class="sales-toggle-btn active" data-view="sold" onclick="toggleSalesView('sold')">Products Sold</button>
-                  <button type="button" class="sales-toggle-btn" data-view="not-sold" onclick="toggleSalesView('not-sold')">Products Not Sold</button>
+                  <button type="button" class="sales-toggle-btn active" data-view="all" onclick="toggleSalesView('all')">All</button>
+                  <button type="button" class="sales-toggle-btn" data-view="sold" onclick="toggleSalesView('sold')">Sold</button>
+                  <button type="button" class="sales-toggle-btn" data-view="not-sold" onclick="toggleSalesView('not-sold')">Not Sold</button>
                 </div>
                 <label id="sales-instock-filter" style="display: none; align-items: center; gap: 0.25rem; font-size: 0.75rem; cursor: pointer; flex-shrink: 0;">
                   <input type="checkbox" id="sales-instock-cb" onchange="applySalesFilters()"> In Stock

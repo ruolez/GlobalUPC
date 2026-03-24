@@ -8899,11 +8899,12 @@ function displaySalesResults(data) {
   salesState.selectedSubcategories = [];
 
   const summary = data.summary;
-  document.querySelector('.sales-toggle-btn[data-view="sold"]').textContent = `Products Sold (${summary.sold_count.toLocaleString()})`;
-  document.querySelector('.sales-toggle-btn[data-view="not-sold"]').textContent = `Products Not Sold (${summary.not_sold_count.toLocaleString()})`;
+  document.querySelector('.sales-toggle-btn[data-view="sold"]').textContent = `Sold (${summary.sold_count.toLocaleString()})`;
+  document.querySelector('.sales-toggle-btn[data-view="not-sold"]').textContent = `Not Sold (${summary.not_sold_count.toLocaleString()})`;
+  document.querySelector('.sales-toggle-btn[data-view="all"]').textContent = `All (${summary.total_products.toLocaleString()})`;
 
   const savedView = localStorage.getItem("sales_view_mode");
-  salesState.viewMode = savedView || "sold";
+  salesState.viewMode = savedView || "all";
   salesState.sortColumn = salesState.viewMode === "sold" ? "net_sold" : "description";
   salesState.sortDirection = salesState.viewMode === "sold" ? "desc" : "asc";
   salesState.currentPage = 0;
@@ -8939,7 +8940,7 @@ function toggleSalesView(mode) {
   salesState.currentPage = 0;
   localStorage.setItem("sales_view_mode", mode);
 
-  if (mode === "sold") {
+  if (mode === "sold" || mode === "all") {
     salesState.sortColumn = "net_sold";
     salesState.sortDirection = "desc";
   } else {
@@ -8993,8 +8994,9 @@ function applySalesFilters() {
     if (subcatFilters.length > 0 && !subcatFilters.includes(p.subcategory || "")) return false;
     return true;
   }).length;
-  document.querySelector('.sales-toggle-btn[data-view="sold"]').textContent = `Products Sold (${soldCount.toLocaleString()})`;
-  document.querySelector('.sales-toggle-btn[data-view="not-sold"]').textContent = `Products Not Sold (${notSoldCount.toLocaleString()})`;
+  document.querySelector('.sales-toggle-btn[data-view="sold"]').textContent = `Sold (${soldCount.toLocaleString()})`;
+  document.querySelector('.sales-toggle-btn[data-view="not-sold"]').textContent = `Not Sold (${notSoldCount.toLocaleString()})`;
+  document.querySelector('.sales-toggle-btn[data-view="all"]').textContent = `All (${(soldCount + notSoldCount).toLocaleString()})`;
 
   renderSalesTable();
 }
@@ -9040,7 +9042,7 @@ function handleSalesSort(column) {
 }
 
 function renderSalesTable() {
-  const isSold = salesState.viewMode === "sold";
+  const isSold = salesState.viewMode === "sold" || salesState.viewMode === "all";
   const thead = document.getElementById("sales-table-head");
   const tbody = document.getElementById("sales-table-body");
   const tfoot = document.getElementById("sales-table-foot");
@@ -9132,7 +9134,8 @@ function renderSalesTable() {
   document.getElementById("sales-page-info").textContent = `Page ${salesState.currentPage + 1} of ${totalPages}`;
   document.getElementById("sales-prev-page").disabled = salesState.currentPage === 0;
   document.getElementById("sales-next-page").disabled = salesState.currentPage >= totalPages - 1;
-  document.getElementById("sales-results-count").textContent = `Showing ${start + 1}-${end} of ${total.toLocaleString()} ${salesState.viewMode === "sold" ? "products sold" : "products not sold"}`;
+  const viewLabel = salesState.viewMode === "sold" ? "products sold" : salesState.viewMode === "not-sold" ? "products not sold" : "products";
+  document.getElementById("sales-results-count").textContent = `Showing ${start + 1}-${end} of ${total.toLocaleString()} ${viewLabel}`;
   document.getElementById("sales-page-size").value = salesState.pageSize;
 }
 
@@ -9155,7 +9158,7 @@ function changeSalesPageSize() {
 function exportSalesReport() {
   if (!salesState.filteredProducts || salesState.filteredProducts.length === 0) return;
 
-  const isSold = salesState.viewMode === "sold";
+  const isSold = salesState.viewMode === "sold" || salesState.viewMode === "all";
   const headers = isSold
     ? ["UPC", "Description", "Subcategory", "Bin", "Reorder", "Sold", "Returns", "Net"]
     : ["UPC", "Description", "Subcategory", "Bin", "Reorder", "On Hand"];
