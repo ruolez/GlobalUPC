@@ -129,6 +129,7 @@ class SalesConfig(Base):
     s2s_store_id = Column(Integer, ForeignKey("stores.id", ondelete="SET NULL"), nullable=True)
     mssql_store_ids = Column(JSONB, default=[])
     shopify_store_ids = Column(JSONB, default=[])
+    excluded_subcategories = Column(JSONB, default=[])
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

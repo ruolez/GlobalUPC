@@ -8577,6 +8577,7 @@ let salesState = {
   allShopifyStores: [],
   subcategories: [],
   selectedSubcategories: [],
+  excludedSubcategories: [],
   exclSearchTimeout: null,
 };
 
@@ -8605,6 +8606,7 @@ async function loadSalesPage() {
     }
 
     salesState.config = config;
+    salesState.excludedSubcategories = config.excluded_subcategories || [];
     updateSalesConfigBar(config);
     document.getElementById("sales-config-bar").style.display = "block";
     document.getElementById("sales-controls").style.display = "block";
@@ -8716,6 +8718,7 @@ async function saveSalesConfig() {
     });
 
     salesState.config = config;
+    salesState.excludedSubcategories = config.excluded_subcategories || [];
     updateSalesConfigBar(config);
     document.getElementById("sales-config-setup").style.display = "none";
     document.getElementById("sales-config-bar").style.display = "block";
@@ -9204,7 +9207,7 @@ function buildSubcatDropdown(subcategories) {
   const container = document.getElementById("sales-subcat-dropdown");
   container.innerHTML = "";
 
-  const excludedSubcats = JSON.parse(localStorage.getItem("sales_excluded_subcategories") || "[]");
+  const excludedSubcats = salesState.excludedSubcategories || [];
   const visibleSubcats = subcategories.filter((sc) => !excludedSubcats.includes(sc));
   salesState.subcategories = visibleSubcats;
 
@@ -9238,7 +9241,7 @@ function openSubcatExclusions() {
   dd.style.display = "none";
 
   const allSubcats = salesState.allSubcategories || salesState.subcategories || [];
-  const excluded = JSON.parse(localStorage.getItem("sales_excluded_subcategories") || "[]");
+  const excluded = salesState.excludedSubcategories || [];
 
   let html = '<div style="max-height: 300px; overflow-y: auto;">';
   allSubcats.forEach((sc) => {
@@ -9267,12 +9270,21 @@ function cancelSubcatExclusions() {
   updateSubcatLabel();
 }
 
-function saveSubcatExclusions() {
+async function saveSubcatExclusions() {
   const included = Array.from(document.querySelectorAll(".sales-subcat-manage-cb:checked")).map((cb) => cb.value);
   const allSubcats = salesState.allSubcategories || salesState.subcategories || [];
   const excluded = allSubcats.filter((sc) => !included.includes(sc));
 
-  localStorage.setItem("sales_excluded_subcategories", JSON.stringify(excluded));
+  try {
+    await apiRequest("/sales/config/excluded-subcategories", {
+      method: "PUT",
+      body: JSON.stringify({ excluded_subcategories: excluded }),
+    });
+    salesState.excludedSubcategories = excluded;
+  } catch (e) {
+    showToast(e.message || "Failed to save", "error");
+    return;
+  }
 
   const panel = document.getElementById("sales-subcat-dropdown");
   panel.removeAttribute("data-mode");

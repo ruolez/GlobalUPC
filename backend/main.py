@@ -4493,6 +4493,7 @@ def get_sales_config(db: Session = Depends(get_db)):
         s2s_store_id=config.s2s_store_id, s2s_store_name=s2s_store_name,
         mssql_store_ids=config.mssql_store_ids or [], mssql_store_names=mssql_store_names,
         shopify_store_ids=config.shopify_store_ids or [], shopify_store_names=shopify_store_names,
+        excluded_subcategories=config.excluded_subcategories or [],
         created_at=config.created_at, updated_at=config.updated_at
     )
 
@@ -4528,6 +4529,16 @@ def save_sales_config(config_data: SalesConfigCreate, db: Session = Depends(get_
     db.commit()
     db.refresh(config)
     return get_sales_config(db)
+
+
+@app.put("/api/sales/config/excluded-subcategories")
+def update_excluded_subcategories(data: dict, db: Session = Depends(get_db)):
+    config = db.query(SalesConfig).first()
+    if not config:
+        raise HTTPException(status_code=400, detail="Sales config not found")
+    config.excluded_subcategories = data.get("excluded_subcategories", [])
+    db.commit()
+    return {"excluded_subcategories": config.excluded_subcategories}
 
 
 @app.get("/api/sales/business-names")

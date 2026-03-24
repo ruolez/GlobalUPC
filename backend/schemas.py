@@ -572,6 +572,7 @@ class SalesConfigResponse(BaseModel):
     mssql_store_names: List[str] = []
     shopify_store_ids: List[int] = []
     shopify_store_names: List[str] = []
+    excluded_subcategories: List[str] = []
     created_at: datetime
     updated_at: datetime
 
