@@ -9077,7 +9077,7 @@ function renderSalesTable() {
       <th style="${sortStyle}" onclick="handleSalesSort('description')">Description${sortIcon("description")}</th>
       <th style="width: 12%; ${sortStyle}" onclick="handleSalesSort('subcategory')">Subcategory${sortIcon("subcategory")}</th>
       <th style="width: 8%; ${sortStyle}" onclick="handleSalesSort('bin_location')">Bin${sortIcon("bin_location")}</th>
-      <th style="width: 5%; text-align: right; ${sortStyle}" onclick="handleSalesSort('reorder_level')">Reorder${sortIcon("reorder_level")}</th>
+      <th style="width: 70px; text-align: right; ${sortStyle}" onclick="handleSalesSort('reorder_level')">Reorder${sortIcon("reorder_level")}</th>
       <th style="width: 6%; text-align: right; ${sortStyle}" onclick="handleSalesSort('quant_on_hand')">On Hand${sortIcon("quant_on_hand")}</th>
       <th style="width: 5%; text-align: right; ${sortStyle}" onclick="handleSalesSort('total_sold')">Sold${sortIcon("total_sold")}</th>
       <th style="width: 5%; text-align: right; ${sortStyle}" onclick="handleSalesSort('total_returned')">Returns${sortIcon("total_returned")}</th>
@@ -9090,7 +9090,7 @@ function renderSalesTable() {
       <th style="${sortStyle}" onclick="handleSalesSort('description')">Description${sortIcon("description")}</th>
       <th style="width: 14%; ${sortStyle}" onclick="handleSalesSort('subcategory')">Subcategory${sortIcon("subcategory")}</th>
       <th style="width: 8%; ${sortStyle}" onclick="handleSalesSort('bin_location')">Bin${sortIcon("bin_location")}</th>
-      <th style="width: 5%; text-align: right; ${sortStyle}" onclick="handleSalesSort('reorder_level')">Reorder${sortIcon("reorder_level")}</th>
+      <th style="width: 70px; text-align: right; ${sortStyle}" onclick="handleSalesSort('reorder_level')">Reorder${sortIcon("reorder_level")}</th>
       <th style="width: 6%; text-align: right; ${sortStyle}" onclick="handleSalesSort('quant_on_hand')">On Hand${sortIcon("quant_on_hand")}</th>
     `;
   }
