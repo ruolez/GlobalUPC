@@ -2207,7 +2207,7 @@ def get_aggregated_returns(
             return True, None, {}
 
         query = """
-            SELECT d.ProductUPC, SUM(d.QtyShipped) AS total_returned
+            SELECT d.ProductUPC, SUM(d.Quantity) AS total_returned
             FROM CreditMemosDetails_tbl d
             INNER JOIN CreditMemos_tbl h ON d.CmemoID = h.CmemoID
             WHERE d.ProductUPC IS NOT NULL
