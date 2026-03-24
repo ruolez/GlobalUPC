@@ -9072,9 +9072,9 @@ function renderSalesTable() {
 
   if (isSold) {
     thead.innerHTML = `
-      <th style="width: 2%; text-align: center">#</th>
+      <th style="width: 30px; text-align: center">#</th>
       <th style="width: 10%; ${sortStyle}" onclick="handleSalesSort('upc')">UPC${sortIcon("upc")}</th>
-      <th style="width: 24%; ${sortStyle}" onclick="handleSalesSort('description')">Description${sortIcon("description")}</th>
+      <th style="${sortStyle}" onclick="handleSalesSort('description')">Description${sortIcon("description")}</th>
       <th style="width: 12%; ${sortStyle}" onclick="handleSalesSort('subcategory')">Subcategory${sortIcon("subcategory")}</th>
       <th style="width: 8%; ${sortStyle}" onclick="handleSalesSort('bin_location')">Bin${sortIcon("bin_location")}</th>
       <th style="width: 5%; text-align: right; ${sortStyle}" onclick="handleSalesSort('reorder_level')">Reorder${sortIcon("reorder_level")}</th>
@@ -9085,11 +9085,11 @@ function renderSalesTable() {
     `;
   } else {
     thead.innerHTML = `
-      <th style="width: 2%; text-align: center">#</th>
+      <th style="width: 30px; text-align: center">#</th>
       <th style="width: 10%; ${sortStyle}" onclick="handleSalesSort('upc')">UPC${sortIcon("upc")}</th>
-      <th style="width: 32%; ${sortStyle}" onclick="handleSalesSort('description')">Description${sortIcon("description")}</th>
-      <th style="width: 18%; ${sortStyle}" onclick="handleSalesSort('subcategory')">Subcategory${sortIcon("subcategory")}</th>
-      <th style="width: 10%; ${sortStyle}" onclick="handleSalesSort('bin_location')">Bin${sortIcon("bin_location")}</th>
+      <th style="${sortStyle}" onclick="handleSalesSort('description')">Description${sortIcon("description")}</th>
+      <th style="width: 14%; ${sortStyle}" onclick="handleSalesSort('subcategory')">Subcategory${sortIcon("subcategory")}</th>
+      <th style="width: 8%; ${sortStyle}" onclick="handleSalesSort('bin_location')">Bin${sortIcon("bin_location")}</th>
       <th style="width: 5%; text-align: right; ${sortStyle}" onclick="handleSalesSort('reorder_level')">Reorder${sortIcon("reorder_level")}</th>
       <th style="width: 6%; text-align: right; ${sortStyle}" onclick="handleSalesSort('quant_on_hand')">On Hand${sortIcon("quant_on_hand")}</th>
     `;
