@@ -3129,12 +3129,12 @@
             <div class="card" style="margin-bottom: 0.75rem">
               <div style="padding: 0.625rem 1rem; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
                 <div style="display: flex; gap: 0.25rem; flex-shrink: 0;">
-                  <button type="button" class="btn btn-secondary" onclick="setSalesDatePreset('7d')" style="font-size: 0.625rem; padding: 0.2rem 0.4rem;">7d</button>
-                  <button type="button" class="btn btn-secondary" onclick="setSalesDatePreset('30d')" style="font-size: 0.625rem; padding: 0.2rem 0.4rem;">30d</button>
-                  <button type="button" class="btn btn-secondary" onclick="setSalesDatePreset('thisMonth')" style="font-size: 0.625rem; padding: 0.2rem 0.4rem;">Mo</button>
-                  <button type="button" class="btn btn-secondary" onclick="setSalesDatePreset('lastMonth')" style="font-size: 0.625rem; padding: 0.2rem 0.4rem;">Prev</button>
-                  <button type="button" class="btn btn-secondary" onclick="setSalesDatePreset('thisYear')" style="font-size: 0.625rem; padding: 0.2rem 0.4rem;">Yr</button>
-                  <button type="button" class="btn btn-secondary" onclick="setSalesDatePreset('lastYear')" style="font-size: 0.625rem; padding: 0.2rem 0.4rem;">Prev Yr</button>
+                  <button type="button" class="btn btn-secondary" onclick="setSalesDatePreset('7d')" style="font-size: 0.6875rem; padding: 0.3rem 0.5rem;">7d</button>
+                  <button type="button" class="btn btn-secondary" onclick="setSalesDatePreset('30d')" style="font-size: 0.6875rem; padding: 0.3rem 0.5rem;">30d</button>
+                  <button type="button" class="btn btn-secondary" onclick="setSalesDatePreset('thisMonth')" style="font-size: 0.6875rem; padding: 0.3rem 0.5rem;">Month</button>
+                  <button type="button" class="btn btn-secondary" onclick="setSalesDatePreset('lastMonth')" style="font-size: 0.6875rem; padding: 0.3rem 0.5rem;">Prev Mo</button>
+                  <button type="button" class="btn btn-secondary" onclick="setSalesDatePreset('thisYear')" style="font-size: 0.6875rem; padding: 0.3rem 0.5rem;">Year</button>
+                  <button type="button" class="btn btn-secondary" onclick="setSalesDatePreset('lastYear')" style="font-size: 0.6875rem; padding: 0.3rem 0.5rem;">Prev Yr</button>
                 </div>
                 <input type="date" id="sales-date-from" class="dark-input" style="width: 140px; font-size: 0.8125rem; padding: 0.3rem 0.5rem;">
                 <span style="color: var(--text-tertiary); font-size: 0.75rem;">to</span>
@@ -3174,8 +3174,8 @@
                   <input type="checkbox" id="sales-instock-cb" onchange="applySalesFilters()"> In Stock
                 </label>
                 <span style="border-left: 1px solid var(--border-color); height: 1.25rem; flex-shrink: 0;"></span>
-                <input type="text" id="sales-filter-upc" class="dark-input" placeholder="UPC..." style="width: 110px; font-size: 0.8125rem; padding: 0.3rem 0.5rem;" oninput="applySalesFilters()">
-                <input type="text" id="sales-filter-desc" class="dark-input" placeholder="Description..." style="width: 140px; font-size: 0.8125rem; padding: 0.3rem 0.5rem;" oninput="applySalesFilters()">
+                <input type="text" id="sales-filter-upc" class="dark-input" placeholder="UPC..." style="flex: 1; min-width: 120px; max-width: 200px; font-size: 0.8125rem; padding: 0.3rem 0.5rem;" oninput="applySalesFilters()">
+                <input type="text" id="sales-filter-desc" class="dark-input" placeholder="Description..." style="flex: 2; min-width: 160px; max-width: 300px; font-size: 0.8125rem; padding: 0.3rem 0.5rem;" oninput="applySalesFilters()">
                 <div style="position: relative; flex-shrink: 0;">
                   <div id="sales-subcat-trigger" onclick="toggleSubcatDropdown()" class="dark-input" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center; width: 130px; font-size: 0.8125rem; padding: 0.3rem 0.5rem; user-select: none;">
                     <span id="sales-subcat-label" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">All</span>
