@@ -2334,8 +2334,8 @@ body.no-scroll {
 }
 
 .sales-toggle-btn {
-  padding: 0.5rem 1.25rem;
-  font-size: 0.8125rem;
+  padding: 0.35rem 0.875rem;
+  font-size: 0.75rem;
   font-weight: 500;
   border: none;
   background: var(--bg-tertiary);

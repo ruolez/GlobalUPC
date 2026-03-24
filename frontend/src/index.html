@@ -3126,27 +3126,20 @@
 
           <!-- Report Controls (shown after config saved) -->
           <div id="sales-controls" style="display: none;">
-            <div class="card" style="margin-bottom: 1.5rem">
-              <div style="padding: 1rem 1.5rem">
-                <div style="display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem;">
-                  <button type="button" class="btn btn-secondary" onclick="setSalesDatePreset('7d')" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Last 7 Days</button>
-                  <button type="button" class="btn btn-secondary" onclick="setSalesDatePreset('30d')" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Last 30 Days</button>
-                  <button type="button" class="btn btn-secondary" onclick="setSalesDatePreset('thisMonth')" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">This Month</button>
-                  <button type="button" class="btn btn-secondary" onclick="setSalesDatePreset('lastMonth')" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Last Month</button>
-                  <button type="button" class="btn btn-secondary" onclick="setSalesDatePreset('thisYear')" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">This Year</button>
-                  <button type="button" class="btn btn-secondary" onclick="setSalesDatePreset('lastYear')" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Last Year</button>
+            <div class="card" style="margin-bottom: 0.75rem">
+              <div style="padding: 0.625rem 1rem; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+                <div style="display: flex; gap: 0.25rem; flex-shrink: 0;">
+                  <button type="button" class="btn btn-secondary" onclick="setSalesDatePreset('7d')" style="font-size: 0.625rem; padding: 0.2rem 0.4rem;">7d</button>
+                  <button type="button" class="btn btn-secondary" onclick="setSalesDatePreset('30d')" style="font-size: 0.625rem; padding: 0.2rem 0.4rem;">30d</button>
+                  <button type="button" class="btn btn-secondary" onclick="setSalesDatePreset('thisMonth')" style="font-size: 0.625rem; padding: 0.2rem 0.4rem;">Mo</button>
+                  <button type="button" class="btn btn-secondary" onclick="setSalesDatePreset('lastMonth')" style="font-size: 0.625rem; padding: 0.2rem 0.4rem;">Prev</button>
+                  <button type="button" class="btn btn-secondary" onclick="setSalesDatePreset('thisYear')" style="font-size: 0.625rem; padding: 0.2rem 0.4rem;">Yr</button>
+                  <button type="button" class="btn btn-secondary" onclick="setSalesDatePreset('lastYear')" style="font-size: 0.625rem; padding: 0.2rem 0.4rem;">Prev Yr</button>
                 </div>
-                <div style="display: flex; gap: 1rem; flex-wrap: wrap; align-items: flex-end;">
-                  <div style="flex: 1; min-width: 150px;">
-                    <label for="sales-date-from" style="font-size: 0.75rem; color: var(--text-tertiary)">From</label>
-                    <input type="date" id="sales-date-from" class="dark-input" style="width: 100%">
-                  </div>
-                  <div style="flex: 1; min-width: 150px;">
-                    <label for="sales-date-to" style="font-size: 0.75rem; color: var(--text-tertiary)">To</label>
-                    <input type="date" id="sales-date-to" class="dark-input" style="width: 100%">
-                  </div>
-                  <button type="button" class="btn btn-primary" id="sales-generate-btn" onclick="fetchSalesReport()">Generate Report</button>
-                </div>
+                <input type="date" id="sales-date-from" class="dark-input" style="width: 140px; font-size: 0.8125rem; padding: 0.3rem 0.5rem;">
+                <span style="color: var(--text-tertiary); font-size: 0.75rem;">to</span>
+                <input type="date" id="sales-date-to" class="dark-input" style="width: 140px; font-size: 0.8125rem; padding: 0.3rem 0.5rem;">
+                <button type="button" class="btn btn-primary" id="sales-generate-btn" onclick="fetchSalesReport()" style="font-size: 0.8125rem; padding: 0.35rem 1rem; margin-left: auto;">Generate Report</button>
               </div>
             </div>
           </div>
@@ -3171,38 +3164,30 @@
           <!-- Results -->
           <div id="sales-results" style="display: none">
             <!-- Toggle + Filters -->
-            <div class="card" style="margin-bottom: 1.5rem">
-              <div style="padding: 1rem 1.5rem">
-                <div style="display: flex; align-items: center; margin-bottom: 1rem;">
-                  <div class="sales-toggle-group">
-                    <button type="button" class="sales-toggle-btn active" data-view="sold" onclick="toggleSalesView('sold')">Products Sold</button>
-                    <button type="button" class="sales-toggle-btn" data-view="not-sold" onclick="toggleSalesView('not-sold')">Products Not Sold</button>
-                  </div>
-                  <label id="sales-instock-filter" style="display: none; align-items: center; gap: 0.375rem; font-size: 0.8125rem; cursor: pointer; margin-left: 1rem;">
-                    <input type="checkbox" id="sales-instock-cb" onchange="applySalesFilters()"> In Stock Only
-                  </label>
+            <div class="card" style="margin-bottom: 0.75rem">
+              <div style="padding: 0.625rem 1rem; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+                <div class="sales-toggle-group" style="flex-shrink: 0;">
+                  <button type="button" class="sales-toggle-btn active" data-view="sold" onclick="toggleSalesView('sold')">Products Sold</button>
+                  <button type="button" class="sales-toggle-btn" data-view="not-sold" onclick="toggleSalesView('not-sold')">Products Not Sold</button>
                 </div>
-                <div style="display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: flex-end;">
-                  <div style="flex: 1; min-width: 120px;">
-                    <label style="font-size: 0.75rem; color: var(--text-tertiary)">Search UPC</label>
-                    <input type="text" id="sales-filter-upc" class="dark-input" placeholder="Filter by UPC..." style="width: 100%;" oninput="applySalesFilters()">
+                <label id="sales-instock-filter" style="display: none; align-items: center; gap: 0.25rem; font-size: 0.75rem; cursor: pointer; flex-shrink: 0;">
+                  <input type="checkbox" id="sales-instock-cb" onchange="applySalesFilters()"> In Stock
+                </label>
+                <span style="border-left: 1px solid var(--border-color); height: 1.25rem; flex-shrink: 0;"></span>
+                <input type="text" id="sales-filter-upc" class="dark-input" placeholder="UPC..." style="width: 110px; font-size: 0.8125rem; padding: 0.3rem 0.5rem;" oninput="applySalesFilters()">
+                <input type="text" id="sales-filter-desc" class="dark-input" placeholder="Description..." style="width: 140px; font-size: 0.8125rem; padding: 0.3rem 0.5rem;" oninput="applySalesFilters()">
+                <div style="position: relative; flex-shrink: 0;">
+                  <div id="sales-subcat-trigger" onclick="toggleSubcatDropdown()" class="dark-input" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center; width: 130px; font-size: 0.8125rem; padding: 0.3rem 0.5rem; user-select: none;">
+                    <span id="sales-subcat-label" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">All</span>
+                    <span style="font-size: 0.5rem; color: var(--text-tertiary);">▼</span>
                   </div>
-                  <div style="flex: 1; min-width: 120px;">
-                    <label style="font-size: 0.75rem; color: var(--text-tertiary)">Search Description</label>
-                    <input type="text" id="sales-filter-desc" class="dark-input" placeholder="Filter by description..." style="width: 100%;" oninput="applySalesFilters()">
-                  </div>
-                  <div style="min-width: 180px; position: relative;">
-                    <label style="font-size: 0.75rem; color: var(--text-tertiary)">Subcategory</label>
-                    <div id="sales-subcat-trigger" onclick="toggleSubcatDropdown()" class="dark-input" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center; min-height: 2.25rem; user-select: none;">
-                      <span id="sales-subcat-label" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">All</span>
-                      <span style="font-size: 0.625rem; color: var(--text-tertiary);">▼</span>
-                    </div>
-                    <div id="sales-subcat-dropdown" style="display: none; position: absolute; top: 100%; left: 0; right: 0; z-index: 100; max-height: 500px; overflow-y: auto; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-md); box-shadow: var(--shadow-md); margin-top: 2px; min-width: 280px;"></div>
-                  </div>
-                  <button type="button" class="btn btn-secondary" onclick="selectSellingSubcategories()" style="font-size: 0.75rem; padding: 0.4rem 0.75rem; white-space: nowrap;" title="Select only subcategories that have sold products">Selling Only</button>
-                  <button type="button" class="btn btn-secondary" onclick="clearSalesFilters()" style="font-size: 0.75rem; padding: 0.4rem 0.75rem;">Clear</button>
-                  <button type="button" class="btn btn-secondary" onclick="exportSalesReport()" style="font-size: 0.75rem; padding: 0.4rem 0.75rem;">Export Excel</button>
-                  <button type="button" class="btn btn-secondary" onclick="toggleSalesExclusions()" style="font-size: 0.75rem; padding: 0.4rem 0.75rem;">Exclusions</button>
+                  <div id="sales-subcat-dropdown" style="display: none; position: absolute; top: 100%; left: 0; z-index: 100; max-height: 500px; overflow-y: auto; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-md); box-shadow: var(--shadow-md); margin-top: 2px; min-width: 280px;"></div>
+                </div>
+                <div style="display: flex; gap: 0.25rem; margin-left: auto; flex-shrink: 0;">
+                  <button type="button" class="btn btn-secondary" onclick="selectSellingSubcategories()" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;" title="Select only subcategories that have sold products">Selling</button>
+                  <button type="button" class="btn btn-secondary" onclick="clearSalesFilters()" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Clear</button>
+                  <button type="button" class="btn btn-secondary" onclick="exportSalesReport()" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Excel</button>
+                  <button type="button" class="btn btn-secondary" onclick="toggleSalesExclusions()" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Excl</button>
                 </div>
               </div>
             </div>
