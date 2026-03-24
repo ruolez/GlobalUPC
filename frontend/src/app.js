@@ -9113,26 +9113,26 @@ function renderSalesTable() {
 
     if (isSold) {
       filterRow.innerHTML = `
-        <td></td>
-        <td><input type="text" id="sales-filter-upc" class="dark-input" placeholder="Filter..." oninput="applySalesFilters()"></td>
+        <td style="width: 20px;"></td>
+        <td style="width: 10%;"><input type="text" id="sales-filter-upc" class="dark-input" placeholder="Filter..." oninput="applySalesFilters()"></td>
         <td><input type="text" id="sales-filter-desc" class="dark-input" placeholder="Filter..." oninput="applySalesFilters()"></td>
-        <td>${subcatTrigger}</td>
-        <td></td>
-        <td><select id="sales-filter-reorder" class="dark-input" style="max-width: 100%; padding: 0.15rem 0.2rem;" onchange="applySalesFilters()"><option value="">All</option>${reorderOptions}</select></td>
-        <td></td>
-        <td></td>
-        <td></td>
-        <td></td>
+        <td style="width: 12%;">${subcatTrigger}</td>
+        <td style="width: 8%;"></td>
+        <td style="width: 55px;"><select id="sales-filter-reorder" class="dark-input" style="max-width: 100%; padding: 0.15rem 0.2rem;" onchange="applySalesFilters()"><option value="">All</option>${reorderOptions}</select></td>
+        <td style="width: 6%;"></td>
+        <td style="width: 5%;"></td>
+        <td style="width: 5%;"></td>
+        <td style="width: 6%;"></td>
       `;
     } else {
       filterRow.innerHTML = `
-        <td></td>
-        <td><input type="text" id="sales-filter-upc" class="dark-input" placeholder="Filter..." oninput="applySalesFilters()"></td>
+        <td style="width: 20px;"></td>
+        <td style="width: 10%;"><input type="text" id="sales-filter-upc" class="dark-input" placeholder="Filter..." oninput="applySalesFilters()"></td>
         <td><input type="text" id="sales-filter-desc" class="dark-input" placeholder="Filter..." oninput="applySalesFilters()"></td>
-        <td>${subcatTrigger}</td>
-        <td></td>
-        <td><select id="sales-filter-reorder" class="dark-input" style="max-width: 100%; padding: 0.15rem 0.2rem;" onchange="applySalesFilters()"><option value="">All</option>${reorderOptions}</select></td>
-        <td></td>
+        <td style="width: 14%;">${subcatTrigger}</td>
+        <td style="width: 8%;"></td>
+        <td style="width: 55px;"><select id="sales-filter-reorder" class="dark-input" style="max-width: 100%; padding: 0.15rem 0.2rem;" onchange="applySalesFilters()"><option value="">All</option>${reorderOptions}</select></td>
+        <td style="width: 6%;"></td>
       `;
     }
 
