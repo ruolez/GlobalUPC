@@ -8667,7 +8667,7 @@ function populateSalesConfigForm(config) {
   const selectedMssql = config ? (config.mssql_store_ids || []) : [];
   salesState.allMssqlStores.forEach((s) => {
     const label = document.createElement("label");
-    label.style.cssText = "display: flex; align-items: center; gap: 0.5rem; font-size: 0.8125rem; cursor: pointer; padding: 0.375rem 0.75rem; border-radius: var(--radius-sm); border: 1px solid var(--border-color); background: var(--bg-tertiary);";
+    label.style.cssText = "display: inline-flex; align-items: center; gap: 0.375rem; font-size: 0.8125rem; cursor: pointer; padding: 0.25rem 0.625rem; border-radius: 1rem; border: 1px solid var(--border-color); background: var(--bg-tertiary); white-space: nowrap;";
     const checked = selectedMssql.includes(s.id) ? "checked" : "";
     label.innerHTML = `<input type="checkbox" class="sales-cfg-mssql-cb" value="${s.id}" ${checked}> ${s.name}`;
     mssqlContainer.appendChild(label);
@@ -8681,7 +8681,7 @@ function populateSalesConfigForm(config) {
     shopifyGroup.style.display = "block";
     salesState.allShopifyStores.forEach((s) => {
       const label = document.createElement("label");
-      label.style.cssText = "display: flex; align-items: center; gap: 0.5rem; font-size: 0.8125rem; cursor: pointer; padding: 0.375rem 0.75rem; border-radius: var(--radius-sm); border: 1px solid var(--border-color); background: var(--bg-tertiary);";
+      label.style.cssText = "display: inline-flex; align-items: center; gap: 0.375rem; font-size: 0.8125rem; cursor: pointer; padding: 0.25rem 0.625rem; border-radius: 1rem; border: 1px solid var(--border-color); background: var(--bg-tertiary); white-space: nowrap;";
       const checked = selectedShopify.includes(s.id) ? "checked" : "";
       label.innerHTML = `<input type="checkbox" class="sales-cfg-shopify-cb" value="${s.id}" ${checked}> ${s.name}`;
       shopifyContainer.appendChild(label);

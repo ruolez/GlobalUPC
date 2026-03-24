@@ -3099,26 +3099,25 @@
 
           <!-- Config Setup (shown when no config or editing) -->
           <div id="sales-config-setup" style="display: none;">
-            <div class="card" style="margin-bottom: 1.5rem">
-              <div class="card-header"><h3>Database Configuration</h3></div>
-              <div style="padding: 1rem 1.5rem 1.5rem">
-                <div class="form-group">
-                  <label>Primary Database (S2S) <span style="color: var(--danger)">*</span></label>
-                  <select id="sales-s2s-select" style="max-width: 400px; width: 100%;">
-                    <option value="">Select primary database...</option>
+            <div class="card" style="margin-bottom: 0.75rem">
+              <div style="padding: 0.875rem 1.25rem">
+                <div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem; flex-wrap: wrap;">
+                  <span style="font-size: 0.75rem; color: var(--text-tertiary); font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em;">Primary DB</span>
+                  <select id="sales-s2s-select" style="max-width: 250px; font-size: 0.8125rem; padding: 0.3rem 0.5rem;">
+                    <option value="">Select...</option>
                   </select>
                 </div>
-                <div class="form-group" style="margin-top: 1rem">
-                  <label>MSSQL Sales Stores</label>
-                  <div id="sales-mssql-checkboxes" style="display: flex; flex-direction: column; gap: 0.375rem; padding: 0.25rem 0;"></div>
+                <div style="margin-bottom: 0.625rem;">
+                  <span style="font-size: 0.75rem; color: var(--text-tertiary); font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; display: block; margin-bottom: 0.375rem;">MSSQL Sales Stores</span>
+                  <div id="sales-mssql-checkboxes" style="display: flex; flex-wrap: wrap; gap: 0.375rem;"></div>
                 </div>
-                <div class="form-group" style="margin-top: 1rem" id="sales-shopify-config-group">
-                  <label>Shopify Stores</label>
-                  <div id="sales-shopify-checkboxes" style="display: flex; flex-direction: column; gap: 0.375rem; padding: 0.25rem 0;"></div>
+                <div id="sales-shopify-config-group" style="margin-bottom: 0.625rem;">
+                  <span style="font-size: 0.75rem; color: var(--text-tertiary); font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; display: block; margin-bottom: 0.375rem;">Shopify Stores</span>
+                  <div id="sales-shopify-checkboxes" style="display: flex; flex-wrap: wrap; gap: 0.375rem;"></div>
                 </div>
-                <div style="margin-top: 1.25rem; display: flex; gap: 0.5rem;">
-                  <button type="button" class="btn btn-primary" onclick="saveSalesConfig()">Save Configuration</button>
-                  <button type="button" class="btn btn-secondary" id="sales-config-cancel-btn" onclick="cancelSalesConfigEdit()" style="display: none;">Cancel</button>
+                <div style="display: flex; gap: 0.5rem; padding-top: 0.25rem;">
+                  <button type="button" class="btn btn-primary" onclick="saveSalesConfig()" style="font-size: 0.8125rem; padding: 0.35rem 1rem;">Save</button>
+                  <button type="button" class="btn btn-secondary" id="sales-config-cancel-btn" onclick="cancelSalesConfigEdit()" style="display: none; font-size: 0.8125rem; padding: 0.35rem 0.75rem;">Cancel</button>
                 </div>
               </div>
             </div>
