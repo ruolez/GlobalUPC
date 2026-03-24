@@ -9053,25 +9053,25 @@ function renderSalesTable() {
 
   if (isSold) {
     thead.innerHTML = `
-      <th style="width: 3%; text-align: center">#</th>
-      <th style="width: 11%; ${sortStyle}" onclick="handleSalesSort('upc')">UPC${sortIcon("upc")}</th>
-      <th style="width: 20%; ${sortStyle}" onclick="handleSalesSort('description')">Description${sortIcon("description")}</th>
-      <th style="width: 12%; ${sortStyle}" onclick="handleSalesSort('subcategory')">Subcategory${sortIcon("subcategory")}</th>
-      <th style="width: 7%; ${sortStyle}" onclick="handleSalesSort('bin_location')">Bin${sortIcon("bin_location")}</th>
-      <th style="width: 7%; text-align: right; ${sortStyle}" onclick="handleSalesSort('reorder_level')">Reorder${sortIcon("reorder_level")}</th>
-      <th style="width: 12%; text-align: right; ${sortStyle}" onclick="handleSalesSort('total_sold')">Sold${sortIcon("total_sold")}</th>
-      <th style="width: 10%; text-align: right; ${sortStyle}" onclick="handleSalesSort('total_returned')">Returns${sortIcon("total_returned")}</th>
-      <th style="width: 10%; text-align: right; ${sortStyle}" onclick="handleSalesSort('net_sold')">Net Sold${sortIcon("net_sold")}</th>
+      <th style="width: 2%; text-align: center">#</th>
+      <th style="width: 10%; ${sortStyle}" onclick="handleSalesSort('upc')">UPC${sortIcon("upc")}</th>
+      <th style="width: 26%; ${sortStyle}" onclick="handleSalesSort('description')">Description${sortIcon("description")}</th>
+      <th style="width: 14%; ${sortStyle}" onclick="handleSalesSort('subcategory')">Subcategory${sortIcon("subcategory")}</th>
+      <th style="width: 8%; ${sortStyle}" onclick="handleSalesSort('bin_location')">Bin${sortIcon("bin_location")}</th>
+      <th style="width: 5%; text-align: right; ${sortStyle}" onclick="handleSalesSort('reorder_level')">Reorder${sortIcon("reorder_level")}</th>
+      <th style="width: 5%; text-align: right; ${sortStyle}" onclick="handleSalesSort('total_sold')">Sold${sortIcon("total_sold")}</th>
+      <th style="width: 5%; text-align: right; ${sortStyle}" onclick="handleSalesSort('total_returned')">Returns${sortIcon("total_returned")}</th>
+      <th style="width: 6%; text-align: right; ${sortStyle}" onclick="handleSalesSort('net_sold')">Net Sold${sortIcon("net_sold")}</th>
     `;
   } else {
     thead.innerHTML = `
-      <th style="width: 3%; text-align: center">#</th>
-      <th style="width: 13%; ${sortStyle}" onclick="handleSalesSort('upc')">UPC${sortIcon("upc")}</th>
-      <th style="width: 27%; ${sortStyle}" onclick="handleSalesSort('description')">Description${sortIcon("description")}</th>
-      <th style="width: 16%; ${sortStyle}" onclick="handleSalesSort('subcategory')">Subcategory${sortIcon("subcategory")}</th>
-      <th style="width: 8%; ${sortStyle}" onclick="handleSalesSort('bin_location')">Bin${sortIcon("bin_location")}</th>
-      <th style="width: 9%; text-align: right; ${sortStyle}" onclick="handleSalesSort('reorder_level')">Reorder${sortIcon("reorder_level")}</th>
-      <th style="width: 11%; text-align: right; ${sortStyle}" onclick="handleSalesSort('quant_on_hand')">Qty on Hand${sortIcon("quant_on_hand")}</th>
+      <th style="width: 2%; text-align: center">#</th>
+      <th style="width: 10%; ${sortStyle}" onclick="handleSalesSort('upc')">UPC${sortIcon("upc")}</th>
+      <th style="width: 32%; ${sortStyle}" onclick="handleSalesSort('description')">Description${sortIcon("description")}</th>
+      <th style="width: 18%; ${sortStyle}" onclick="handleSalesSort('subcategory')">Subcategory${sortIcon("subcategory")}</th>
+      <th style="width: 10%; ${sortStyle}" onclick="handleSalesSort('bin_location')">Bin${sortIcon("bin_location")}</th>
+      <th style="width: 5%; text-align: right; ${sortStyle}" onclick="handleSalesSort('reorder_level')">Reorder${sortIcon("reorder_level")}</th>
+      <th style="width: 6%; text-align: right; ${sortStyle}" onclick="handleSalesSort('quant_on_hand')">Qty on Hand${sortIcon("quant_on_hand")}</th>
     `;
   }
 
