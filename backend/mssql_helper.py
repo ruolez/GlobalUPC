@@ -1978,7 +1978,12 @@ def get_active_products(
 
         cursor.execute("""
             SELECT i.ProductUPC, i.ProductDescription, ISNULL(i.QuantOnHand, 0) AS QuantOnHand,
-                   i.SubCateID, s.SubCateName, ISNULL(i.ReorderLevel, 0) AS ReorderLevel
+                   i.SubCateID, s.SubCateName, ISNULL(i.ReorderLevel, 0) AS ReorderLevel,
+                   (SELECT TOP 1 bl.BinLocation
+                    FROM Items_BinLocations ibl
+                    INNER JOIN BinLocations_tbl bl ON ibl.BinLocationID = bl.BinLocationID
+                    WHERE ibl.ProductUPC = i.ProductUPC
+                    ORDER BY bl.BinLocation ASC) AS BinLocation
             FROM Items_tbl i
             LEFT JOIN SubCategories_tbl s ON i.SubCateID = s.SubCateID
             WHERE i.Discontinued = 0
@@ -2001,6 +2006,7 @@ def get_active_products(
                     "subcategory_id": row[3],
                     "subcategory": row[4].strip() if row[4] else None,
                     "reorder_level": int(row[5]) if row[5] is not None else 0,
+                    "bin_location": row[6].strip() if row[6] else None,
                 })
 
         return True, None, products
