@@ -8579,6 +8579,9 @@ let salesState = {
   selectedSubcategories: [],
   excludedSubcategories: [],
   exclSearchTimeout: null,
+  upcFilter: "",
+  descFilter: "",
+  reorderFilter: "",
 };
 
 async function loadSalesPage() {
@@ -8915,21 +8918,14 @@ function displaySalesResults(data) {
   document.querySelectorAll(".sales-toggle-btn").forEach((b) => b.classList.remove("active"));
   document.querySelector(`.sales-toggle-btn[data-view="${salesState.viewMode}"]`).classList.add("active");
 
-  buildSubcatDropdown(data.subcategories || []);
-
-  const savedUpc = localStorage.getItem("sales_filter_upc") || "";
-  const savedDesc = localStorage.getItem("sales_filter_desc") || "";
-  document.getElementById("sales-filter-upc").value = savedUpc;
-  document.getElementById("sales-filter-desc").value = savedDesc;
+  salesState.upcFilter = localStorage.getItem("sales_filter_upc") || "";
+  salesState.descFilter = localStorage.getItem("sales_filter_desc") || "";
+  salesState.reorderFilter = localStorage.getItem("sales_filter_reorder") || "";
 
   const savedSubcats = JSON.parse(localStorage.getItem("sales_filter_subcategories") || "[]");
   if (savedSubcats.length > 0 && savedSubcats.length < (data.subcategories || []).length) {
     salesState.selectedSubcategories = savedSubcats.filter((s) => (data.subcategories || []).includes(s));
-    document.querySelectorAll(".sales-subcat-cb").forEach((cb) => {
-      cb.checked = salesState.selectedSubcategories.includes(cb.value);
-    });
   }
-  updateSubcatLabel();
 
   document.getElementById("sales-instock-cb").checked = localStorage.getItem("sales_filter_instock") === "1";
   document.getElementById("sales-instock-filter").style.display = salesState.viewMode === "not-sold" ? "flex" : "none";
@@ -8959,24 +8955,39 @@ function toggleSalesView(mode) {
 }
 
 function applySalesFilters() {
-  const upcFilter = (document.getElementById("sales-filter-upc").value || "").toLowerCase().trim();
-  const descFilter = (document.getElementById("sales-filter-desc").value || "").toLowerCase().trim();
+  const upcEl = document.getElementById("sales-filter-upc");
+  const descEl = document.getElementById("sales-filter-desc");
+  const reorderEl = document.getElementById("sales-filter-reorder");
+
+  const upcFilter = upcEl ? upcEl.value.toLowerCase().trim() : (salesState.upcFilter || "");
+  const descFilter = descEl ? descEl.value.toLowerCase().trim() : (salesState.descFilter || "");
+  const reorderFilter = reorderEl ? reorderEl.value : (salesState.reorderFilter || "");
   const subcatFilters = salesState.selectedSubcategories || [];
   const instockOnly = document.getElementById("sales-instock-cb").checked;
 
+  salesState.upcFilter = upcFilter;
+  salesState.descFilter = descFilter;
+  salesState.reorderFilter = reorderFilter;
+
   localStorage.setItem("sales_filter_upc", upcFilter);
   localStorage.setItem("sales_filter_desc", descFilter);
+  localStorage.setItem("sales_filter_reorder", reorderFilter);
   localStorage.setItem("sales_filter_subcategories", JSON.stringify(subcatFilters));
   localStorage.setItem("sales_filter_instock", instockOnly ? "1" : "0");
+
+  const matchesFilters = (p) => {
+    if (upcFilter && !p.upc.toLowerCase().includes(upcFilter)) return false;
+    if (descFilter && !p.description.toLowerCase().includes(descFilter)) return false;
+    if (subcatFilters.length > 0 && !subcatFilters.includes(p.subcategory || "")) return false;
+    if (reorderFilter !== "" && (p.reorder_level || 0) !== parseInt(reorderFilter)) return false;
+    return true;
+  };
 
   let filtered = salesState.allProducts.filter((p) => {
     if (salesState.viewMode === "sold" && p.net_sold <= 0) return false;
     if (salesState.viewMode === "not-sold" && p.net_sold > 0) return false;
     if (salesState.viewMode === "not-sold" && instockOnly && p.quant_on_hand <= 0) return false;
-    if (upcFilter && !p.upc.toLowerCase().includes(upcFilter)) return false;
-    if (descFilter && !p.description.toLowerCase().includes(descFilter)) return false;
-    if (subcatFilters.length > 0 && !subcatFilters.includes(p.subcategory || "")) return false;
-    return true;
+    return matchesFilters(p);
   });
 
   salesState.filteredProducts = filtered;
@@ -8985,17 +8996,11 @@ function applySalesFilters() {
 
   const soldCount = salesState.allProducts.filter((p) => {
     if (p.net_sold <= 0) return false;
-    if (upcFilter && !p.upc.toLowerCase().includes(upcFilter)) return false;
-    if (descFilter && !p.description.toLowerCase().includes(descFilter)) return false;
-    if (subcatFilters.length > 0 && !subcatFilters.includes(p.subcategory || "")) return false;
-    return true;
+    return matchesFilters(p);
   }).length;
   const notSoldCount = salesState.allProducts.filter((p) => {
     if (p.net_sold > 0) return false;
-    if (upcFilter && !p.upc.toLowerCase().includes(upcFilter)) return false;
-    if (descFilter && !p.description.toLowerCase().includes(descFilter)) return false;
-    if (subcatFilters.length > 0 && !subcatFilters.includes(p.subcategory || "")) return false;
-    return true;
+    return matchesFilters(p);
   }).length;
   document.querySelector('.sales-toggle-btn[data-view="sold"]').textContent = `Sold (${soldCount.toLocaleString()})`;
   document.querySelector('.sales-toggle-btn[data-view="not-sold"]').textContent = `Not Sold (${notSoldCount.toLocaleString()})`;
@@ -9005,14 +9010,22 @@ function applySalesFilters() {
 }
 
 function clearSalesFilters() {
-  document.getElementById("sales-filter-upc").value = "";
-  document.getElementById("sales-filter-desc").value = "";
+  salesState.upcFilter = "";
+  salesState.descFilter = "";
+  salesState.reorderFilter = "";
+  const upcEl = document.getElementById("sales-filter-upc");
+  const descEl = document.getElementById("sales-filter-desc");
+  const reorderEl = document.getElementById("sales-filter-reorder");
+  if (upcEl) upcEl.value = "";
+  if (descEl) descEl.value = "";
+  if (reorderEl) reorderEl.value = "";
   salesState.selectedSubcategories = [...(salesState.subcategories || [])];
   document.querySelectorAll(".sales-subcat-cb").forEach((cb) => (cb.checked = true));
   updateSubcatLabel();
   document.getElementById("sales-instock-cb").checked = false;
   localStorage.removeItem("sales_filter_upc");
   localStorage.removeItem("sales_filter_desc");
+  localStorage.removeItem("sales_filter_reorder");
   localStorage.removeItem("sales_filter_subcategories");
   localStorage.removeItem("sales_filter_instock");
   applySalesFilters();
@@ -9047,6 +9060,7 @@ function handleSalesSort(column) {
 function renderSalesTable() {
   const isSold = salesState.viewMode === "sold" || salesState.viewMode === "all";
   const thead = document.getElementById("sales-table-head");
+  const filterRow = document.getElementById("sales-table-filters");
   const tbody = document.getElementById("sales-table-body");
   const tfoot = document.getElementById("sales-table-foot");
 
@@ -9079,6 +9093,75 @@ function renderSalesTable() {
       <th style="width: 5%; text-align: right; ${sortStyle}" onclick="handleSalesSort('reorder_level')">Reorder${sortIcon("reorder_level")}</th>
       <th style="width: 6%; text-align: right; ${sortStyle}" onclick="handleSalesSort('quant_on_hand')">On Hand${sortIcon("quant_on_hand")}</th>
     `;
+  }
+
+  // Build filter row — only rebuild when view mode changes to avoid losing input focus
+  const newFilterView = isSold ? "sold" : "not-sold";
+  if (filterRow.dataset.view !== newFilterView) {
+    filterRow.dataset.view = newFilterView;
+
+    const reorderLevels = [...new Set(salesState.allProducts.map(p => p.reorder_level || 0))].sort((a, b) => a - b);
+    const reorderOptions = reorderLevels.map(v =>
+      `<option value="${v}" ${salesState.reorderFilter === String(v) ? "selected" : ""}>${v}</option>`
+    ).join("");
+
+    const subcatTrigger = `<div id="sales-subcat-trigger" onclick="toggleSubcatDropdown()" class="dark-input" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center; font-size: 0.75rem; padding: 0.2rem 0.4rem; user-select: none;">
+      <span id="sales-subcat-label" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">All</span>
+      <span style="font-size: 0.5rem; color: var(--text-tertiary);">▼</span>
+    </div>
+    <div id="sales-subcat-dropdown" style="display: none; position: fixed; z-index: 100; max-height: 500px; overflow-y: auto; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-md); box-shadow: var(--shadow-md); min-width: 280px;"></div>`;
+
+    if (isSold) {
+      filterRow.innerHTML = `
+        <td></td>
+        <td><input type="text" id="sales-filter-upc" class="dark-input" placeholder="Filter..." oninput="applySalesFilters()"></td>
+        <td><input type="text" id="sales-filter-desc" class="dark-input" placeholder="Filter..." oninput="applySalesFilters()"></td>
+        <td>${subcatTrigger}</td>
+        <td></td>
+        <td><select id="sales-filter-reorder" class="dark-input" onchange="applySalesFilters()"><option value="">All</option>${reorderOptions}</select></td>
+        <td></td>
+        <td></td>
+        <td></td>
+        <td></td>
+      `;
+    } else {
+      filterRow.innerHTML = `
+        <td></td>
+        <td><input type="text" id="sales-filter-upc" class="dark-input" placeholder="Filter..." oninput="applySalesFilters()"></td>
+        <td><input type="text" id="sales-filter-desc" class="dark-input" placeholder="Filter..." oninput="applySalesFilters()"></td>
+        <td>${subcatTrigger}</td>
+        <td></td>
+        <td><select id="sales-filter-reorder" class="dark-input" onchange="applySalesFilters()"><option value="">All</option>${reorderOptions}</select></td>
+        <td></td>
+      `;
+    }
+
+    // Restore filter input values from state
+    const upcEl = document.getElementById("sales-filter-upc");
+    const descEl = document.getElementById("sales-filter-desc");
+    if (upcEl) upcEl.value = salesState.upcFilter || "";
+    if (descEl) descEl.value = salesState.descFilter || "";
+
+    // Rebuild subcategory dropdown, preserving any saved selections
+    const savedSubcats = salesState.selectedSubcategories ? [...salesState.selectedSubcategories] : [];
+    buildSubcatDropdown(salesState.allSubcategories || salesState.subcategories || []);
+    if (savedSubcats.length > 0 && savedSubcats.length < (salesState.subcategories || []).length) {
+      salesState.selectedSubcategories = savedSubcats.filter(s => (salesState.subcategories || []).includes(s));
+      document.querySelectorAll(".sales-subcat-cb").forEach(cb => {
+        cb.checked = salesState.selectedSubcategories.includes(cb.value);
+      });
+    }
+    updateSubcatLabel();
+  } else {
+    // Update reorder dropdown options without full rebuild (dataset may have changed)
+    const reorderEl = document.getElementById("sales-filter-reorder");
+    if (reorderEl) {
+      const reorderLevels = [...new Set(salesState.allProducts.map(p => p.reorder_level || 0))].sort((a, b) => a - b);
+      const currentVal = reorderEl.value;
+      reorderEl.innerHTML = `<option value="">All</option>` + reorderLevels.map(v =>
+        `<option value="${v}" ${currentVal === String(v) ? "selected" : ""}>${v}</option>`
+      ).join("");
+    }
   }
 
   const start = salesState.currentPage * salesState.pageSize;
@@ -9261,6 +9344,10 @@ function openSubcatExclusions() {
   const panel = document.getElementById("sales-subcat-dropdown");
   panel.setAttribute("data-mode", "manage");
   panel.innerHTML = html;
+  const trigger = document.getElementById("sales-subcat-trigger");
+  const rect = trigger.getBoundingClientRect();
+  panel.style.top = (rect.bottom + 2) + "px";
+  panel.style.left = rect.left + "px";
   panel.style.display = "block";
 }
 
@@ -9299,7 +9386,16 @@ async function saveSubcatExclusions() {
 
 function toggleSubcatDropdown() {
   const dd = document.getElementById("sales-subcat-dropdown");
-  dd.style.display = dd.style.display === "none" ? "block" : "none";
+  if (dd.style.display === "none") {
+    const trigger = document.getElementById("sales-subcat-trigger");
+    const rect = trigger.getBoundingClientRect();
+    dd.style.position = "fixed";
+    dd.style.top = (rect.bottom + 2) + "px";
+    dd.style.left = rect.left + "px";
+    dd.style.display = "block";
+  } else {
+    dd.style.display = "none";
+  }
 }
 
 function onSubcatChange() {

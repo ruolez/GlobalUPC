@@ -3173,16 +3173,6 @@
                 <label id="sales-instock-filter" style="display: none; align-items: center; gap: 0.25rem; font-size: 0.75rem; cursor: pointer; flex-shrink: 0;">
                   <input type="checkbox" id="sales-instock-cb" onchange="applySalesFilters()"> In Stock
                 </label>
-                <span style="border-left: 1px solid var(--border-color); height: 1.25rem; flex-shrink: 0;"></span>
-                <input type="text" id="sales-filter-upc" class="dark-input" placeholder="UPC..." style="flex: 1; min-width: 120px; max-width: 200px; font-size: 0.8125rem; padding: 0.3rem 0.5rem;" oninput="applySalesFilters()">
-                <input type="text" id="sales-filter-desc" class="dark-input" placeholder="Description..." style="flex: 2; min-width: 160px; max-width: 300px; font-size: 0.8125rem; padding: 0.3rem 0.5rem;" oninput="applySalesFilters()">
-                <div style="position: relative; flex-shrink: 0;">
-                  <div id="sales-subcat-trigger" onclick="toggleSubcatDropdown()" class="dark-input" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center; width: 130px; font-size: 0.8125rem; padding: 0.3rem 0.5rem; user-select: none;">
-                    <span id="sales-subcat-label" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">All</span>
-                    <span style="font-size: 0.5rem; color: var(--text-tertiary);">▼</span>
-                  </div>
-                  <div id="sales-subcat-dropdown" style="display: none; position: absolute; top: 100%; left: 0; z-index: 100; max-height: 500px; overflow-y: auto; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-md); box-shadow: var(--shadow-md); margin-top: 2px; min-width: 280px;"></div>
-                </div>
                 <div style="display: flex; gap: 0.25rem; margin-left: auto; flex-shrink: 0;">
                   <button type="button" class="btn btn-secondary" onclick="selectSellingSubcategories()" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;" title="Select only subcategories that have sold products">Selling</button>
                   <button type="button" class="btn btn-secondary" onclick="clearSalesFilters()" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Clear</button>
@@ -3222,6 +3212,7 @@
               <div style="overflow-x: auto;">
                 <table class="data-table" id="sales-table">
                   <thead>
+                    <tr id="sales-table-filters"></tr>
                     <tr id="sales-table-head"></tr>
                   </thead>
                   <tbody id="sales-table-body"></tbody>

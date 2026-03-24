@@ -1022,6 +1022,20 @@ body {
   background: var(--bg-hover);
 }
 
+#sales-table-filters td {
+  padding: 0.25rem 0.5rem;
+  background: var(--bg-secondary);
+  border-bottom: 2px solid var(--border-color);
+}
+
+#sales-table-filters .dark-input {
+  width: 100%;
+  font-size: 0.75rem;
+  padding: 0.2rem 0.4rem;
+  box-sizing: border-box;
+}
+
+
 /* Collapsible Store Rows */
 .store-row {
   cursor: pointer;
