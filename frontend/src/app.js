@@ -9005,8 +9005,12 @@ function displaySalesResults(data) {
     salesState.selectedSubcategories = savedSubcats.filter((s) => (data.subcategories || []).includes(s));
   }
 
-  document.getElementById("sales-instock-cb").checked = localStorage.getItem("sales_filter_instock") === "1";
-  document.getElementById("sales-instock-filter").style.display = salesState.viewMode === "not-sold" ? "flex" : "none";
+  applySalesFilters();
+
+  const instockEl = document.getElementById("sales-filter-instock");
+  const nobinsEl = document.getElementById("sales-filter-nobins");
+  if (instockEl) instockEl.checked = localStorage.getItem("sales_filter_instock") === "1";
+  if (nobinsEl) nobinsEl.checked = localStorage.getItem("sales_filter_nobins") === "1";
 
   applySalesFilters();
   document.getElementById("sales-results").style.display = "block";
@@ -9027,7 +9031,6 @@ function toggleSalesView(mode) {
 
   document.querySelectorAll(".sales-toggle-btn").forEach((b) => b.classList.remove("active"));
   document.querySelector(`.sales-toggle-btn[data-view="${mode}"]`).classList.add("active");
-  document.getElementById("sales-instock-filter").style.display = mode === "not-sold" ? "flex" : "none";
 
   applySalesFilters();
 }
@@ -9041,7 +9044,10 @@ function applySalesFilters() {
   const descFilter = descEl ? descEl.value.toLowerCase().trim() : (salesState.descFilter || "");
   const reorderFilter = reorderEl ? reorderEl.value : (salesState.reorderFilter || "");
   const subcatFilters = salesState.selectedSubcategories || [];
-  const instockOnly = document.getElementById("sales-instock-cb").checked;
+  const instockEl = document.getElementById("sales-filter-instock");
+  const nobinsEl = document.getElementById("sales-filter-nobins");
+  const instockOnly = instockEl ? instockEl.checked : false;
+  const noBins = nobinsEl ? nobinsEl.checked : false;
 
   salesState.upcFilter = upcFilter;
   salesState.descFilter = descFilter;
@@ -9052,6 +9058,7 @@ function applySalesFilters() {
   localStorage.setItem("sales_filter_reorder", reorderFilter);
   localStorage.setItem("sales_filter_subcategories", JSON.stringify(subcatFilters));
   localStorage.setItem("sales_filter_instock", instockOnly ? "1" : "0");
+  localStorage.setItem("sales_filter_nobins", noBins ? "1" : "0");
 
   const matchesFilters = (p) => {
     if (upcFilter && !p.upc.toLowerCase().includes(upcFilter)) return false;
@@ -9064,7 +9071,8 @@ function applySalesFilters() {
   let filtered = salesState.allProducts.filter((p) => {
     if (salesState.viewMode === "sold" && p.net_sold <= 0) return false;
     if (salesState.viewMode === "not-sold" && p.net_sold > 0) return false;
-    if (salesState.viewMode === "not-sold" && instockOnly && p.quant_on_hand <= 0) return false;
+    if (instockOnly && p.quant_on_hand <= 0) return false;
+    if (noBins && p.bin_location) return false;
     return matchesFilters(p);
   });
 
@@ -9100,12 +9108,16 @@ function clearSalesFilters() {
   salesState.selectedSubcategories = [...(salesState.subcategories || [])];
   document.querySelectorAll(".sales-subcat-cb").forEach((cb) => (cb.checked = true));
   updateSubcatLabel();
-  document.getElementById("sales-instock-cb").checked = false;
+  const instockEl = document.getElementById("sales-filter-instock");
+  const nobinsEl = document.getElementById("sales-filter-nobins");
+  if (instockEl) instockEl.checked = false;
+  if (nobinsEl) nobinsEl.checked = false;
   localStorage.removeItem("sales_filter_upc");
   localStorage.removeItem("sales_filter_desc");
   localStorage.removeItem("sales_filter_reorder");
   localStorage.removeItem("sales_filter_subcategories");
   localStorage.removeItem("sales_filter_instock");
+  localStorage.removeItem("sales_filter_nobins");
   applySalesFilters();
 }
 
@@ -9183,6 +9195,10 @@ function renderSalesTable() {
         filterHtml += `<td style="${w}">${subcatTrigger}</td>`;
       } else if (col.key === "reorder_level") {
         filterHtml += `<td style="${w}"><select id="sales-filter-reorder" class="dark-input" onchange="applySalesFilters()"><option value="">All</option>${reorderOptions}</select></td>`;
+      } else if (col.key === "bin_location") {
+        filterHtml += `<td style="${w}"><label style="display: flex; align-items: center; gap: 0.25rem; font-size: 0.75rem; cursor: pointer; white-space: nowrap;"><input type="checkbox" id="sales-filter-nobins" onchange="applySalesFilters()"> No Bins</label></td>`;
+      } else if (col.key === "quant_on_hand") {
+        filterHtml += `<td style="${w}"><label style="display: flex; align-items: center; gap: 0.25rem; font-size: 0.75rem; cursor: pointer; white-space: nowrap;"><input type="checkbox" id="sales-filter-instock" onchange="applySalesFilters()"> In Stock</label></td>`;
       } else {
         filterHtml += `<td style="${w}"></td>`;
       }
