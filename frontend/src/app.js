@@ -9166,18 +9166,19 @@ function renderSalesTable() {
     </div>
     <div id="sales-subcat-dropdown" style="display: none; position: fixed; z-index: 100; max-height: 500px; overflow-y: auto; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-md); box-shadow: var(--shadow-md); min-width: 280px;"></div>`;
 
-    let filterHtml = `<td></td>`;
+    let filterHtml = `<td style="width: 20px;"></td>`;
     visibleCols.forEach(col => {
+      const w = col.width ? `width: ${col.width};` : "";
       if (col.key === "upc") {
-        filterHtml += `<td><input type="text" id="sales-filter-upc" class="dark-input" placeholder="Filter..." oninput="applySalesFilters()"></td>`;
+        filterHtml += `<td style="${w}"><input type="text" id="sales-filter-upc" class="dark-input" placeholder="Filter..." oninput="applySalesFilters()"></td>`;
       } else if (col.key === "description") {
-        filterHtml += `<td><input type="text" id="sales-filter-desc" class="dark-input" placeholder="Filter..." oninput="applySalesFilters()"></td>`;
+        filterHtml += `<td style="${w}"><input type="text" id="sales-filter-desc" class="dark-input" placeholder="Filter..." oninput="applySalesFilters()"></td>`;
       } else if (col.key === "subcategory") {
-        filterHtml += `<td>${subcatTrigger}</td>`;
+        filterHtml += `<td style="${w}">${subcatTrigger}</td>`;
       } else if (col.key === "reorder_level") {
-        filterHtml += `<td><select id="sales-filter-reorder" class="dark-input" onchange="applySalesFilters()"><option value="">All</option>${reorderOptions}</select></td>`;
+        filterHtml += `<td style="${w}"><select id="sales-filter-reorder" class="dark-input" onchange="applySalesFilters()"><option value="">All</option>${reorderOptions}</select></td>`;
       } else {
-        filterHtml += `<td></td>`;
+        filterHtml += `<td style="${w}"></td>`;
       }
     });
     filterRow.innerHTML = filterHtml;
