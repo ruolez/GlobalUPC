@@ -8561,22 +8561,28 @@ function exportShopifySalesToExcel() {
 // ===== Sales Report =====
 
 const SALES_COLUMNS = [
-  { key: "upc",            label: "UPC",         soldOnly: false, width: "10%",  align: "left",  thStyle: "",                                                                                       tdStyle: "font-family: monospace; font-size: 0.8125rem",                                                                      hasFilter: true },
-  { key: "description",    label: "Description", soldOnly: false, width: null,   align: "left",  thStyle: "",                                                                                       tdStyle: "font-size: 0.8125rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap",                               hasFilter: true },
-  { key: "subcategory",    label: "Subcategory", soldOnly: false, width: "12%",  align: "left",  thStyle: "",                                                                                       tdStyle: "font-size: 0.8125rem; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap", hasFilter: true },
-  { key: "bin_location",   label: "Bin",         soldOnly: false, width: "8%",   align: "left",  thStyle: "",                                                                                       tdStyle: "font-size: 0.8125rem",                                                                                              hasFilter: false },
-  { key: "reorder_level",  label: "Reorder",     soldOnly: false, width: "6%",   align: "right", thStyle: "text-align: right;",                                                                    tdStyle: "text-align: right; font-size: 0.8125rem",                                                                           hasFilter: true },
-  { key: "quant_on_hand",  label: "On Hand",     soldOnly: false, width: "7%",   align: "right", thStyle: "text-align: right;",                                                                    tdStyle: "text-align: right; font-size: 0.8125rem",                                                                           hasFilter: false },
-  { key: "total_sold",     label: "Sold",        soldOnly: true,  width: "6%",   align: "right", thStyle: "text-align: right;",                                                                    tdStyle: "text-align: right; font-size: 0.8125rem",                                                                           hasFilter: false },
-  { key: "total_returned", label: "Returns",     soldOnly: true,  width: "6%",   align: "right", thStyle: "text-align: right;",                                                                    tdStyle: "text-align: right; font-size: 0.8125rem; color: var(--warning)",                                                    hasFilter: false },
-  { key: "net_sold",       label: "Net Sold",    soldOnly: true,  width: "7%",   align: "right", thStyle: "text-align: right;",                                                                    tdStyle: "text-align: right; font-size: 0.8125rem; font-weight: 600",                                                         hasFilter: false },
+  { key: "upc",            label: "UPC",         soldOnly: false, baseWidth: 10, align: "left",  thStyle: "",                    tdStyle: "font-family: monospace; font-size: 0.8125rem",                                                                      hasFilter: true },
+  { key: "description",    label: "Description", soldOnly: false, baseWidth: 25, align: "left",  thStyle: "",                    tdStyle: "font-size: 0.8125rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap",                               hasFilter: true },
+  { key: "subcategory",    label: "Subcategory", soldOnly: false, baseWidth: 12, align: "left",  thStyle: "",                    tdStyle: "font-size: 0.8125rem; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap", hasFilter: true },
+  { key: "bin_location",   label: "Bin",         soldOnly: false, baseWidth: 8,  align: "left",  thStyle: "",                    tdStyle: "font-size: 0.8125rem",                                                                                              hasFilter: false },
+  { key: "reorder_level",  label: "Reorder",     soldOnly: false, baseWidth: 6,  align: "right", thStyle: "text-align: right;",  tdStyle: "text-align: right; font-size: 0.8125rem",                                                                           hasFilter: true },
+  { key: "quant_on_hand",  label: "On Hand",     soldOnly: false, baseWidth: 7,  align: "right", thStyle: "text-align: right;",  tdStyle: "text-align: right; font-size: 0.8125rem",                                                                           hasFilter: false },
+  { key: "total_sold",     label: "Sold",        soldOnly: true,  baseWidth: 6,  align: "right", thStyle: "text-align: right;",  tdStyle: "text-align: right; font-size: 0.8125rem",                                                                           hasFilter: false },
+  { key: "total_returned", label: "Returns",     soldOnly: true,  baseWidth: 6,  align: "right", thStyle: "text-align: right;",  tdStyle: "text-align: right; font-size: 0.8125rem; color: var(--warning)",                                                    hasFilter: false },
+  { key: "net_sold",       label: "Net Sold",    soldOnly: true,  baseWidth: 7,  align: "right", thStyle: "text-align: right;",  tdStyle: "text-align: right; font-size: 0.8125rem; font-weight: 600",                                                         hasFilter: false },
 ];
 
 function getVisibleColumns(isSold) {
-  return SALES_COLUMNS.filter(col => {
+  const cols = SALES_COLUMNS.filter(col => {
     if (col.soldOnly && !isSold) return false;
     return !salesState.hiddenColumns.includes(col.key);
   });
+  const totalBase = cols.reduce((s, c) => s + c.baseWidth, 0);
+  const target = 98;
+  cols.forEach(col => {
+    col.width = ((col.baseWidth / totalBase) * target).toFixed(1) + "%";
+  });
+  return cols;
 }
 
 function buildColumnTogglePills() {
