@@ -8654,7 +8654,8 @@ let salesState = {
   exclSearchTimeout: null,
   upcFilter: "",
   descFilter: "",
-  reorderFilter: "",
+  selectedReorderLevels: [],
+  binsFilter: "",
   hiddenColumns: JSON.parse(localStorage.getItem("sales_hidden_columns") || "[]"),
 };
 
@@ -8998,7 +8999,11 @@ function displaySalesResults(data) {
 
   salesState.upcFilter = localStorage.getItem("sales_filter_upc") || "";
   salesState.descFilter = localStorage.getItem("sales_filter_desc") || "";
-  salesState.reorderFilter = localStorage.getItem("sales_filter_reorder") || "";
+
+  const savedReorder = JSON.parse(localStorage.getItem("sales_filter_reorder") || "[]");
+  if (savedReorder.length > 0) {
+    salesState.selectedReorderLevels = savedReorder;
+  }
 
   const savedSubcats = JSON.parse(localStorage.getItem("sales_filter_subcategories") || "[]");
   if (savedSubcats.length > 0 && savedSubcats.length < (data.subcategories || []).length) {
@@ -9008,9 +9013,11 @@ function displaySalesResults(data) {
   applySalesFilters();
 
   const instockEl = document.getElementById("sales-filter-instock");
-  const nobinsEl = document.getElementById("sales-filter-nobins");
+  const binsEl = document.getElementById("sales-filter-bins");
   if (instockEl) instockEl.checked = localStorage.getItem("sales_filter_instock") === "1";
-  if (nobinsEl) nobinsEl.checked = localStorage.getItem("sales_filter_nobins") === "1";
+  const savedBins = localStorage.getItem("sales_filter_bins") || "";
+  salesState.binsFilter = savedBins;
+  if (binsEl) binsEl.value = savedBins;
 
   applySalesFilters();
   document.getElementById("sales-results").style.display = "block";
@@ -9038,33 +9045,34 @@ function toggleSalesView(mode) {
 function applySalesFilters() {
   const upcEl = document.getElementById("sales-filter-upc");
   const descEl = document.getElementById("sales-filter-desc");
-  const reorderEl = document.getElementById("sales-filter-reorder");
-
   const upcFilter = upcEl ? upcEl.value.toLowerCase().trim() : (salesState.upcFilter || "");
   const descFilter = descEl ? descEl.value.toLowerCase().trim() : (salesState.descFilter || "");
-  const reorderFilter = reorderEl ? reorderEl.value : (salesState.reorderFilter || "");
   const subcatFilters = salesState.selectedSubcategories || [];
+  const reorderFilters = salesState.selectedReorderLevels || [];
   const instockEl = document.getElementById("sales-filter-instock");
-  const nobinsEl = document.getElementById("sales-filter-nobins");
+  const binsEl = document.getElementById("sales-filter-bins");
   const instockOnly = instockEl ? instockEl.checked : false;
-  const noBins = nobinsEl ? nobinsEl.checked : false;
+  const binsFilter = binsEl ? binsEl.value : (salesState.binsFilter || "");
 
   salesState.upcFilter = upcFilter;
   salesState.descFilter = descFilter;
-  salesState.reorderFilter = reorderFilter;
+  salesState.binsFilter = binsFilter;
 
   localStorage.setItem("sales_filter_upc", upcFilter);
   localStorage.setItem("sales_filter_desc", descFilter);
-  localStorage.setItem("sales_filter_reorder", reorderFilter);
+  localStorage.setItem("sales_filter_reorder", JSON.stringify(reorderFilters));
   localStorage.setItem("sales_filter_subcategories", JSON.stringify(subcatFilters));
   localStorage.setItem("sales_filter_instock", instockOnly ? "1" : "0");
-  localStorage.setItem("sales_filter_nobins", noBins ? "1" : "0");
+  localStorage.setItem("sales_filter_bins", binsFilter);
+
+  const allReorderLevels = [...new Set(salesState.allProducts.map(p => p.reorder_level || 0))];
+  const reorderActive = reorderFilters.length > 0 && reorderFilters.length < allReorderLevels.length;
 
   const matchesFilters = (p) => {
     if (upcFilter && !p.upc.toLowerCase().includes(upcFilter)) return false;
     if (descFilter && !p.description.toLowerCase().includes(descFilter)) return false;
     if (subcatFilters.length > 0 && !subcatFilters.includes(p.subcategory || "")) return false;
-    if (reorderFilter !== "" && (p.reorder_level || 0) !== parseInt(reorderFilter)) return false;
+    if (reorderActive && !reorderFilters.includes(p.reorder_level || 0)) return false;
     return true;
   };
 
@@ -9072,7 +9080,8 @@ function applySalesFilters() {
     if (salesState.viewMode === "sold" && p.net_sold <= 0) return false;
     if (salesState.viewMode === "not-sold" && p.net_sold > 0) return false;
     if (instockOnly && p.quant_on_hand <= 0) return false;
-    if (noBins && p.bin_location) return false;
+    if (binsFilter === "no-bins" && p.bin_location) return false;
+    if (binsFilter === "bins-only" && !p.bin_location) return false;
     return matchesFilters(p);
   });
 
@@ -9098,25 +9107,28 @@ function applySalesFilters() {
 function clearSalesFilters() {
   salesState.upcFilter = "";
   salesState.descFilter = "";
-  salesState.reorderFilter = "";
+  salesState.binsFilter = "";
   const upcEl = document.getElementById("sales-filter-upc");
   const descEl = document.getElementById("sales-filter-desc");
-  const reorderEl = document.getElementById("sales-filter-reorder");
   if (upcEl) upcEl.value = "";
   if (descEl) descEl.value = "";
-  if (reorderEl) reorderEl.value = "";
   salesState.selectedSubcategories = [...(salesState.subcategories || [])];
   document.querySelectorAll(".sales-subcat-cb").forEach((cb) => (cb.checked = true));
   updateSubcatLabel();
+  const reorderLevels = [...new Set(salesState.allProducts.map(p => p.reorder_level || 0))].sort((a, b) => a - b);
+  salesState.selectedReorderLevels = [...reorderLevels];
+  document.querySelectorAll(".sales-reorder-cb").forEach((cb) => (cb.checked = true));
+  updateReorderLabel();
   const instockEl = document.getElementById("sales-filter-instock");
-  const nobinsEl = document.getElementById("sales-filter-nobins");
+  const binsEl = document.getElementById("sales-filter-bins");
   if (instockEl) instockEl.checked = false;
-  if (nobinsEl) nobinsEl.checked = false;
+  if (binsEl) binsEl.value = "";
   localStorage.removeItem("sales_filter_upc");
   localStorage.removeItem("sales_filter_desc");
   localStorage.removeItem("sales_filter_reorder");
   localStorage.removeItem("sales_filter_subcategories");
   localStorage.removeItem("sales_filter_instock");
+  localStorage.removeItem("sales_filter_bins");
   localStorage.removeItem("sales_filter_nobins");
   applySalesFilters();
 }
@@ -9173,16 +9185,17 @@ function renderSalesTable() {
   if (filterRow.dataset.viewKey !== filterCacheKey) {
     filterRow.dataset.viewKey = filterCacheKey;
 
-    const reorderLevels = [...new Set(salesState.allProducts.map(p => p.reorder_level || 0))].sort((a, b) => a - b);
-    const reorderOptions = reorderLevels.map(v =>
-      `<option value="${v}" ${salesState.reorderFilter === String(v) ? "selected" : ""}>${v}</option>`
-    ).join("");
-
     const subcatTrigger = `<div id="sales-subcat-trigger" onclick="toggleSubcatDropdown()" class="dark-input" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center; font-size: 0.75rem; padding: 0.2rem 0.4rem; user-select: none;">
       <span id="sales-subcat-label" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">All</span>
       <span style="font-size: 0.5rem; color: var(--text-tertiary);">▼</span>
     </div>
     <div id="sales-subcat-dropdown" style="display: none; position: fixed; z-index: 100; max-height: 500px; overflow-y: auto; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-md); box-shadow: var(--shadow-md); min-width: 280px;"></div>`;
+
+    const reorderTrigger = `<div id="sales-reorder-trigger" onclick="toggleReorderDropdown()" class="dark-input" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center; font-size: 0.75rem; padding: 0.2rem 0.4rem; user-select: none;">
+      <span id="sales-reorder-label" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">All</span>
+      <span style="font-size: 0.5rem; color: var(--text-tertiary);">▼</span>
+    </div>
+    <div id="sales-reorder-dropdown" style="display: none; position: fixed; z-index: 100; max-height: 500px; overflow-y: auto; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-md); box-shadow: var(--shadow-md); min-width: 180px;"></div>`;
 
     let filterHtml = `<td style="width: 20px;"></td>`;
     visibleCols.forEach(col => {
@@ -9194,9 +9207,9 @@ function renderSalesTable() {
       } else if (col.key === "subcategory") {
         filterHtml += `<td style="${w}">${subcatTrigger}</td>`;
       } else if (col.key === "reorder_level") {
-        filterHtml += `<td style="${w}"><select id="sales-filter-reorder" class="dark-input" onchange="applySalesFilters()"><option value="">All</option>${reorderOptions}</select></td>`;
+        filterHtml += `<td style="${w}">${reorderTrigger}</td>`;
       } else if (col.key === "bin_location") {
-        filterHtml += `<td style="${w}"><label style="display: flex; align-items: center; gap: 0.25rem; font-size: 0.75rem; cursor: pointer; white-space: nowrap;"><input type="checkbox" id="sales-filter-nobins" onchange="applySalesFilters()"> No Bins</label></td>`;
+        filterHtml += `<td style="${w}"><select id="sales-filter-bins" class="dark-input" onchange="applySalesFilters()" style="font-size: 0.75rem; padding: 0.2rem 0.3rem;"><option value="">All</option><option value="no-bins">No Bins</option><option value="bins-only">Bins Only</option></select></td>`;
       } else if (col.key === "quant_on_hand") {
         filterHtml += `<td style="${w}"><label style="display: flex; align-items: center; gap: 0.25rem; font-size: 0.75rem; cursor: pointer; white-space: nowrap;"><input type="checkbox" id="sales-filter-instock" onchange="applySalesFilters()"> In Stock</label></td>`;
       } else {
@@ -9221,16 +9234,34 @@ function renderSalesTable() {
       });
     }
     updateSubcatLabel();
+
+    // Build reorder dropdown, preserving any saved selections
+    const reorderLevels = [...new Set(salesState.allProducts.map(p => p.reorder_level || 0))].sort((a, b) => a - b);
+    const savedReorders = salesState.selectedReorderLevels.length > 0 ? [...salesState.selectedReorderLevels] : [];
+    buildReorderDropdown(reorderLevels);
+    if (savedReorders.length > 0 && savedReorders.length < reorderLevels.length) {
+      salesState.selectedReorderLevels = savedReorders.filter(v => reorderLevels.includes(v));
+      document.querySelectorAll(".sales-reorder-cb").forEach(cb => {
+        cb.checked = salesState.selectedReorderLevels.includes(Number(cb.value));
+      });
+    }
+    updateReorderLabel();
+
+    // Restore bins dropdown
+    const binsEl = document.getElementById("sales-filter-bins");
+    if (binsEl) binsEl.value = salesState.binsFilter || "";
   } else {
     // Update reorder dropdown options without full rebuild (dataset may have changed)
-    const reorderEl = document.getElementById("sales-filter-reorder");
-    if (reorderEl) {
-      const reorderLevels = [...new Set(salesState.allProducts.map(p => p.reorder_level || 0))].sort((a, b) => a - b);
-      const currentVal = reorderEl.value;
-      reorderEl.innerHTML = `<option value="">All</option>` + reorderLevels.map(v =>
-        `<option value="${v}" ${currentVal === String(v) ? "selected" : ""}>${v}</option>`
-      ).join("");
+    const reorderLevels = [...new Set(salesState.allProducts.map(p => p.reorder_level || 0))].sort((a, b) => a - b);
+    const currentSelected = salesState.selectedReorderLevels;
+    buildReorderDropdown(reorderLevels);
+    if (currentSelected.length > 0 && currentSelected.length < reorderLevels.length) {
+      salesState.selectedReorderLevels = currentSelected.filter(v => reorderLevels.includes(v));
+      document.querySelectorAll(".sales-reorder-cb").forEach(cb => {
+        cb.checked = salesState.selectedReorderLevels.includes(Number(cb.value));
+      });
     }
+    updateReorderLabel();
   }
 
   const start = salesState.currentPage * salesState.pageSize;
@@ -9489,11 +9520,79 @@ function updateSubcatLabel() {
   }
 }
 
+function buildReorderDropdown(levels) {
+  const container = document.getElementById("sales-reorder-dropdown");
+  if (!container) return;
+  container.innerHTML = "";
+
+  const controls = document.createElement("div");
+  controls.style.cssText = "display: flex; justify-content: space-between; align-items: center; padding: 0.375rem 0.75rem; border-bottom: 2px solid var(--border-color); gap: 0.25rem;";
+  controls.innerHTML = `
+    <div style="display: flex; gap: 0.375rem;">
+      <button type="button" class="btn btn-secondary" onclick="reorderCheckAll(true)" style="font-size: 0.625rem; padding: 0.15rem 0.4rem;">All</button>
+      <button type="button" class="btn btn-secondary" onclick="reorderCheckAll(false)" style="font-size: 0.625rem; padding: 0.15rem 0.4rem;">None</button>
+    </div>
+  `;
+  container.appendChild(controls);
+
+  levels.forEach((lvl) => {
+    const label = document.createElement("label");
+    label.style.cssText = "display: flex; align-items: center; gap: 0.5rem; padding: 0.375rem 0.75rem; cursor: pointer; font-size: 0.8125rem; border-bottom: 1px solid var(--border-color);";
+    label.innerHTML = `<input type="checkbox" class="sales-reorder-cb" value="${lvl}" checked onchange="onReorderChange()"> ${lvl}`;
+    container.appendChild(label);
+  });
+  salesState.selectedReorderLevels = [...levels];
+}
+
+function reorderCheckAll(checked) {
+  document.querySelectorAll(".sales-reorder-cb").forEach((cb) => (cb.checked = checked));
+  onReorderChange();
+}
+
+function toggleReorderDropdown() {
+  const dd = document.getElementById("sales-reorder-dropdown");
+  if (dd.style.display === "none") {
+    const trigger = document.getElementById("sales-reorder-trigger");
+    const rect = trigger.getBoundingClientRect();
+    dd.style.position = "fixed";
+    dd.style.top = (rect.bottom + 2) + "px";
+    dd.style.left = rect.left + "px";
+    dd.style.display = "block";
+  } else {
+    dd.style.display = "none";
+  }
+}
+
+function onReorderChange() {
+  salesState.selectedReorderLevels = Array.from(document.querySelectorAll(".sales-reorder-cb:checked")).map((cb) => Number(cb.value));
+  updateReorderLabel();
+  applySalesFilters();
+}
+
+function updateReorderLabel() {
+  const sel = salesState.selectedReorderLevels || [];
+  const allLevels = [...new Set(salesState.allProducts.map(p => p.reorder_level || 0))];
+  const total = allLevels.length;
+  const label = document.getElementById("sales-reorder-label");
+  if (!label) return;
+  if (sel.length === 0 || sel.length === total) {
+    label.textContent = "All";
+  } else {
+    const unchecked = total - sel.length;
+    label.textContent = `${unchecked} excluded`;
+  }
+}
+
 document.addEventListener("click", (e) => {
   const trigger = document.getElementById("sales-subcat-trigger");
   const dropdown = document.getElementById("sales-subcat-dropdown");
   if (trigger && dropdown && !trigger.contains(e.target) && !dropdown.contains(e.target) && !dropdown.getAttribute("data-mode")) {
     dropdown.style.display = "none";
+  }
+  const reorderTrigger = document.getElementById("sales-reorder-trigger");
+  const reorderDropdown = document.getElementById("sales-reorder-dropdown");
+  if (reorderTrigger && reorderDropdown && !reorderTrigger.contains(e.target) && !reorderDropdown.contains(e.target)) {
+    reorderDropdown.style.display = "none";
   }
   const acContainer = document.getElementById("sales-excl-autocomplete");
   const acInput = document.getElementById("sales-excl-name");
