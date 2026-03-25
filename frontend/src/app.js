@@ -8560,6 +8560,73 @@ function exportShopifySalesToExcel() {
 
 // ===== Sales Report =====
 
+const SALES_COLUMNS = [
+  { key: "upc",            label: "UPC",         soldOnly: false, width: "10%",  align: "left",  thStyle: "",                                                                                       tdStyle: "font-family: monospace; font-size: 0.8125rem",                                                                      hasFilter: true },
+  { key: "description",    label: "Description", soldOnly: false, width: null,   align: "left",  thStyle: "",                                                                                       tdStyle: "font-size: 0.8125rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap",                               hasFilter: true },
+  { key: "subcategory",    label: "Subcategory", soldOnly: false, width: "12%",  align: "left",  thStyle: "",                                                                                       tdStyle: "font-size: 0.8125rem; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap", hasFilter: true },
+  { key: "bin_location",   label: "Bin",         soldOnly: false, width: "8%",   align: "left",  thStyle: "",                                                                                       tdStyle: "font-size: 0.8125rem",                                                                                              hasFilter: false },
+  { key: "reorder_level",  label: "Reorder",     soldOnly: false, width: "55px", align: "right", thStyle: "text-align: right;",                                                                    tdStyle: "text-align: right; font-size: 0.8125rem",                                                                           hasFilter: true },
+  { key: "quant_on_hand",  label: "On Hand",     soldOnly: false, width: "6%",   align: "right", thStyle: "text-align: right;",                                                                    tdStyle: "text-align: right; font-size: 0.8125rem",                                                                           hasFilter: false },
+  { key: "total_sold",     label: "Sold",        soldOnly: true,  width: "5%",   align: "right", thStyle: "text-align: right;",                                                                    tdStyle: "text-align: right; font-size: 0.8125rem",                                                                           hasFilter: false },
+  { key: "total_returned", label: "Returns",     soldOnly: true,  width: "5%",   align: "right", thStyle: "text-align: right;",                                                                    tdStyle: "text-align: right; font-size: 0.8125rem; color: var(--warning)",                                                    hasFilter: false },
+  { key: "net_sold",       label: "Net Sold",    soldOnly: true,  width: "6%",   align: "right", thStyle: "text-align: right;",                                                                    tdStyle: "text-align: right; font-size: 0.8125rem; font-weight: 600",                                                         hasFilter: false },
+];
+
+function getVisibleColumns(isSold) {
+  return SALES_COLUMNS.filter(col => {
+    if (col.soldOnly && !isSold) return false;
+    return !salesState.hiddenColumns.includes(col.key);
+  });
+}
+
+function buildColumnTogglePills() {
+  const container = document.getElementById("sales-column-pills");
+  if (!container) return;
+  container.innerHTML = "";
+  SALES_COLUMNS.forEach(col => {
+    const isVisible = !salesState.hiddenColumns.includes(col.key);
+    const label = document.createElement("label");
+    label.style.cssText = `display: inline-flex; align-items: center; gap: 0.25rem; font-size: 0.75rem; cursor: pointer; padding: 0.2rem 0.5rem; border-radius: 1rem; border: 1px solid var(--border-color); background: ${isVisible ? "var(--bg-tertiary, rgba(255,255,255,0.08))" : "transparent"}; white-space: nowrap; opacity: ${isVisible ? "1" : "0.5"}; transition: opacity 0.15s, background 0.15s;`;
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = isVisible;
+    cb.style.cssText = "margin: 0; cursor: pointer;";
+    cb.onchange = () => toggleSalesColumn(col.key);
+    label.appendChild(cb);
+    label.appendChild(document.createTextNode(col.label));
+    container.appendChild(label);
+  });
+}
+
+function toggleSalesColumn(key) {
+  const idx = salesState.hiddenColumns.indexOf(key);
+  if (idx >= 0) {
+    salesState.hiddenColumns.splice(idx, 1);
+  } else {
+    const visibleCount = SALES_COLUMNS.filter(c => !salesState.hiddenColumns.includes(c.key)).length;
+    if (visibleCount <= 1) {
+      showToast("At least one column must remain visible", "warning");
+      buildColumnTogglePills();
+      return;
+    }
+    salesState.hiddenColumns.push(key);
+  }
+  localStorage.setItem("sales_hidden_columns", JSON.stringify(salesState.hiddenColumns));
+  buildColumnTogglePills();
+  const filterRow = document.getElementById("sales-table-filters");
+  if (filterRow) filterRow.dataset.viewKey = "";
+  renderSalesTable();
+}
+
+function resetSalesColumns() {
+  salesState.hiddenColumns = [];
+  localStorage.removeItem("sales_hidden_columns");
+  buildColumnTogglePills();
+  const filterRow = document.getElementById("sales-table-filters");
+  if (filterRow) filterRow.dataset.viewKey = "";
+  renderSalesTable();
+}
+
 let salesState = {
   isLoading: false,
   allProducts: [],
@@ -8582,6 +8649,7 @@ let salesState = {
   upcFilter: "",
   descFilter: "",
   reorderFilter: "",
+  hiddenColumns: JSON.parse(localStorage.getItem("sales_hidden_columns") || "[]"),
 };
 
 async function loadSalesPage() {
@@ -8639,6 +8707,7 @@ function updateSalesConfigBar(config) {
     `MSSQL Sales Stores: <strong style="color: var(--text-primary)">${mssqlNames}</strong>`;
   document.getElementById("sales-config-shopify-info").innerHTML =
     `Shopify Stores: <strong style="color: var(--text-primary)">${shopifyNames}</strong>`;
+  buildColumnTogglePills();
 }
 
 function toggleSalesConfig() {
@@ -9063,6 +9132,7 @@ function renderSalesTable() {
   const filterRow = document.getElementById("sales-table-filters");
   const tbody = document.getElementById("sales-table-body");
   const tfoot = document.getElementById("sales-table-foot");
+  const visibleCols = getVisibleColumns(isSold);
 
   const sortIcon = (col) => {
     if (salesState.sortColumn !== col) return "";
@@ -9070,35 +9140,17 @@ function renderSalesTable() {
   };
   const sortStyle = 'cursor: pointer; user-select: none;';
 
-  if (isSold) {
-    thead.innerHTML = `
-      <th style="width: 20px; text-align: center">#</th>
-      <th style="width: 10%; ${sortStyle}" onclick="handleSalesSort('upc')">UPC${sortIcon("upc")}</th>
-      <th style="${sortStyle}" onclick="handleSalesSort('description')">Description${sortIcon("description")}</th>
-      <th style="width: 12%; ${sortStyle}" onclick="handleSalesSort('subcategory')">Subcategory${sortIcon("subcategory")}</th>
-      <th style="width: 8%; ${sortStyle}" onclick="handleSalesSort('bin_location')">Bin${sortIcon("bin_location")}</th>
-      <th style="width: 55px; text-align: right; ${sortStyle}" onclick="handleSalesSort('reorder_level')">Reorder${sortIcon("reorder_level")}</th>
-      <th style="width: 6%; text-align: right; ${sortStyle}" onclick="handleSalesSort('quant_on_hand')">On Hand${sortIcon("quant_on_hand")}</th>
-      <th style="width: 5%; text-align: right; ${sortStyle}" onclick="handleSalesSort('total_sold')">Sold${sortIcon("total_sold")}</th>
-      <th style="width: 5%; text-align: right; ${sortStyle}" onclick="handleSalesSort('total_returned')">Returns${sortIcon("total_returned")}</th>
-      <th style="width: 6%; text-align: right; ${sortStyle}" onclick="handleSalesSort('net_sold')">Net${sortIcon("net_sold")}</th>
-    `;
-  } else {
-    thead.innerHTML = `
-      <th style="width: 20px; text-align: center">#</th>
-      <th style="width: 10%; ${sortStyle}" onclick="handleSalesSort('upc')">UPC${sortIcon("upc")}</th>
-      <th style="${sortStyle}" onclick="handleSalesSort('description')">Description${sortIcon("description")}</th>
-      <th style="width: 14%; ${sortStyle}" onclick="handleSalesSort('subcategory')">Subcategory${sortIcon("subcategory")}</th>
-      <th style="width: 8%; ${sortStyle}" onclick="handleSalesSort('bin_location')">Bin${sortIcon("bin_location")}</th>
-      <th style="width: 55px; text-align: right; ${sortStyle}" onclick="handleSalesSort('reorder_level')">Reorder${sortIcon("reorder_level")}</th>
-      <th style="width: 6%; text-align: right; ${sortStyle}" onclick="handleSalesSort('quant_on_hand')">On Hand${sortIcon("quant_on_hand")}</th>
-    `;
-  }
+  let headHtml = `<th style="width: 20px; text-align: center">#</th>`;
+  visibleCols.forEach(col => {
+    const widthStyle = col.width ? `width: ${col.width};` : "";
+    headHtml += `<th style="${widthStyle} ${col.thStyle} ${sortStyle}" onclick="handleSalesSort('${col.key}')">${col.label}${sortIcon(col.key)}</th>`;
+  });
+  thead.innerHTML = headHtml;
 
-  // Build filter row — only rebuild when view mode changes to avoid losing input focus
-  const newFilterView = isSold ? "sold" : "not-sold";
-  if (filterRow.dataset.view !== newFilterView) {
-    filterRow.dataset.view = newFilterView;
+  // Build filter row — only rebuild when view mode or visible columns change
+  const filterCacheKey = `${isSold ? "sold" : "not-sold"}|${salesState.hiddenColumns.join(",")}`;
+  if (filterRow.dataset.viewKey !== filterCacheKey) {
+    filterRow.dataset.viewKey = filterCacheKey;
 
     const reorderLevels = [...new Set(salesState.allProducts.map(p => p.reorder_level || 0))].sort((a, b) => a - b);
     const reorderOptions = reorderLevels.map(v =>
@@ -9111,32 +9163,21 @@ function renderSalesTable() {
     </div>
     <div id="sales-subcat-dropdown" style="display: none; position: fixed; z-index: 100; max-height: 500px; overflow-y: auto; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-md); box-shadow: var(--shadow-md); min-width: 280px;"></div>`;
 
-    if (isSold) {
-      // #:2%, UPC:9%, Desc:23%, Subcat:12%, Bin:6%, Reorder:6%, OnHand:7%, Sold:5%, Returns:5%, Net:5%
-      filterRow.innerHTML = `
-        <td style="width: 2%;"></td>
-        <td style="width: 9%;"><input type="text" id="sales-filter-upc" class="dark-input" placeholder="Filter..." oninput="applySalesFilters()"></td>
-        <td style="width: 23%;"><input type="text" id="sales-filter-desc" class="dark-input" placeholder="Filter..." oninput="applySalesFilters()"></td>
-        <td style="width: 12%;">${subcatTrigger}</td>
-        <td style="width: 6%;"></td>
-        <td style="width: 6%;"><select id="sales-filter-reorder" class="dark-input" onchange="applySalesFilters()"><option value="">All</option>${reorderOptions}</select></td>
-        <td style="width: 7%;"></td>
-        <td style="width: 5%;"></td>
-        <td style="width: 5%;"></td>
-        <td style="width: 5%;"></td>
-      `;
-    } else {
-      // #:2%, UPC:9%, Desc:32%, Subcat:14%, Bin:6%, Reorder:6%, OnHand:7%
-      filterRow.innerHTML = `
-        <td style="width: 2%;"></td>
-        <td style="width: 9%;"><input type="text" id="sales-filter-upc" class="dark-input" placeholder="Filter..." oninput="applySalesFilters()"></td>
-        <td style="width: 32%;"><input type="text" id="sales-filter-desc" class="dark-input" placeholder="Filter..." oninput="applySalesFilters()"></td>
-        <td style="width: 14%;">${subcatTrigger}</td>
-        <td style="width: 6%;"></td>
-        <td style="width: 6%;"><select id="sales-filter-reorder" class="dark-input" onchange="applySalesFilters()"><option value="">All</option>${reorderOptions}</select></td>
-        <td style="width: 7%;"></td>
-      `;
-    }
+    let filterHtml = `<td></td>`;
+    visibleCols.forEach(col => {
+      if (col.key === "upc") {
+        filterHtml += `<td><input type="text" id="sales-filter-upc" class="dark-input" placeholder="Filter..." oninput="applySalesFilters()"></td>`;
+      } else if (col.key === "description") {
+        filterHtml += `<td><input type="text" id="sales-filter-desc" class="dark-input" placeholder="Filter..." oninput="applySalesFilters()"></td>`;
+      } else if (col.key === "subcategory") {
+        filterHtml += `<td>${subcatTrigger}</td>`;
+      } else if (col.key === "reorder_level") {
+        filterHtml += `<td><select id="sales-filter-reorder" class="dark-input" onchange="applySalesFilters()"><option value="">All</option>${reorderOptions}</select></td>`;
+      } else {
+        filterHtml += `<td></td>`;
+      }
+    });
+    filterRow.innerHTML = filterHtml;
 
     // Restore filter input values from state
     const upcEl = document.getElementById("sales-filter-upc");
@@ -9173,33 +9214,17 @@ function renderSalesTable() {
   tbody.innerHTML = "";
   pageData.forEach((p, i) => {
     const row = document.createElement("tr");
-    const sc = p.subcategory || "";
-    const rl = p.reorder_level || 0;
-    const bin = p.bin_location || "";
-    if (isSold) {
-      row.innerHTML = `
-        <td style="text-align: center; color: var(--text-tertiary); font-size: 0.75rem">${start + i + 1}</td>
-        <td style="font-family: monospace; font-size: 0.8125rem">${p.upc}</td>
-        <td style="font-size: 0.8125rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap" title="${p.description}">${p.description}</td>
-        <td style="font-size: 0.8125rem; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap" title="${sc}">${sc}</td>
-        <td style="font-size: 0.8125rem" title="${bin}">${bin}</td>
-        <td style="text-align: right; font-size: 0.8125rem">${rl.toLocaleString()}</td>
-        <td style="text-align: right; font-size: 0.8125rem">${p.quant_on_hand.toLocaleString()}</td>
-        <td style="text-align: right; font-size: 0.8125rem">${p.total_sold.toLocaleString()}</td>
-        <td style="text-align: right; font-size: 0.8125rem; color: var(--warning)">${p.total_returned.toLocaleString()}</td>
-        <td style="text-align: right; font-size: 0.8125rem; font-weight: 600">${p.net_sold.toLocaleString()}</td>
-      `;
-    } else {
-      row.innerHTML = `
-        <td style="text-align: center; color: var(--text-tertiary); font-size: 0.75rem">${start + i + 1}</td>
-        <td style="font-family: monospace; font-size: 0.8125rem">${p.upc}</td>
-        <td style="font-size: 0.8125rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap" title="${p.description}">${p.description}</td>
-        <td style="font-size: 0.8125rem; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap" title="${sc}">${sc}</td>
-        <td style="font-size: 0.8125rem" title="${bin}">${bin}</td>
-        <td style="text-align: right; font-size: 0.8125rem">${rl.toLocaleString()}</td>
-        <td style="text-align: right; font-size: 0.8125rem">${p.quant_on_hand.toLocaleString()}</td>
-      `;
-    }
+    let cellsHtml = `<td style="text-align: center; color: var(--text-tertiary); font-size: 0.75rem">${start + i + 1}</td>`;
+    visibleCols.forEach(col => {
+      const raw = col.key === "subcategory" ? (p.subcategory || "") :
+                  col.key === "bin_location" ? (p.bin_location || "") :
+                  col.key === "reorder_level" ? (p.reorder_level || 0) :
+                  p[col.key];
+      const display = typeof raw === "number" ? raw.toLocaleString() : raw;
+      const titleAttr = (col.key === "description" || col.key === "subcategory" || col.key === "bin_location") ? ` title="${raw}"` : "";
+      cellsHtml += `<td style="${col.tdStyle}"${titleAttr}>${display}</td>`;
+    });
+    row.innerHTML = cellsHtml;
     tbody.appendChild(row);
   });
 
@@ -9208,14 +9233,26 @@ function renderSalesTable() {
     const totalSold = salesState.filteredProducts.reduce((s, p) => s + p.total_sold, 0);
     const totalReturned = salesState.filteredProducts.reduce((s, p) => s + p.total_returned, 0);
     const totalNet = salesState.filteredProducts.reduce((s, p) => s + p.net_sold, 0);
-    tfoot.innerHTML = `
-      <tr style="font-weight: 700; border-top: 2px solid var(--border-color);">
-        <td></td><td></td><td style="font-size: 0.8125rem">Totals</td><td></td><td></td><td></td><td></td>
-        <td style="text-align: right; font-size: 0.8125rem">${totalSold.toLocaleString()}</td>
-        <td style="text-align: right; font-size: 0.8125rem; color: var(--warning)">${totalReturned.toLocaleString()}</td>
-        <td style="text-align: right; font-size: 0.8125rem">${totalNet.toLocaleString()}</td>
-      </tr>
-    `;
+    const totalsMap = { total_sold: totalSold, total_returned: totalReturned, net_sold: totalNet };
+    const hasDesc = visibleCols.some(c => c.key === "description");
+
+    let footHtml = `<td></td>`;
+    let labelPlaced = false;
+    visibleCols.forEach((col, idx) => {
+      if (col.key === "description") {
+        footHtml += `<td style="font-size: 0.8125rem">Totals</td>`;
+        labelPlaced = true;
+      } else if (!labelPlaced && !hasDesc && idx === 0) {
+        footHtml += `<td style="font-size: 0.8125rem">Totals</td>`;
+        labelPlaced = true;
+      } else if (totalsMap[col.key] !== undefined) {
+        const colorStyle = col.key === "total_returned" ? " color: var(--warning);" : "";
+        footHtml += `<td style="text-align: right; font-size: 0.8125rem;${colorStyle}">${totalsMap[col.key].toLocaleString()}</td>`;
+      } else {
+        footHtml += `<td></td>`;
+      }
+    });
+    tfoot.innerHTML = `<tr style="font-weight: 700; border-top: 2px solid var(--border-color);">${footHtml}</tr>`;
   }
 
   const total = salesState.filteredProducts.length;
@@ -9249,21 +9286,29 @@ function exportSalesReport() {
   if (!salesState.filteredProducts || salesState.filteredProducts.length === 0) return;
 
   const isSold = salesState.viewMode === "sold" || salesState.viewMode === "all";
-  const headers = isSold
-    ? ["UPC", "Description", "Subcategory", "Bin", "Reorder", "On Hand", "Sold", "Returns", "Net"]
-    : ["UPC", "Description", "Subcategory", "Bin", "Reorder", "On Hand"];
+  const visibleCols = getVisibleColumns(isSold);
+  const headers = visibleCols.map(col => col.label);
 
   const dataRows = salesState.filteredProducts.map((p) =>
-    isSold
-      ? [p.upc, p.description, p.subcategory || "", p.bin_location || "", p.reorder_level || 0, p.quant_on_hand, p.total_sold, p.total_returned, p.net_sold]
-      : [p.upc, p.description, p.subcategory || "", p.bin_location || "", p.reorder_level || 0, p.quant_on_hand]
+    visibleCols.map(col => {
+      if (col.key === "subcategory") return p.subcategory || "";
+      if (col.key === "bin_location") return p.bin_location || "";
+      if (col.key === "reorder_level") return p.reorder_level || 0;
+      return p[col.key];
+    })
   );
 
   if (isSold) {
     const totalSold = salesState.filteredProducts.reduce((s, p) => s + p.total_sold, 0);
     const totalReturned = salesState.filteredProducts.reduce((s, p) => s + p.total_returned, 0);
     const totalNet = salesState.filteredProducts.reduce((s, p) => s + p.net_sold, 0);
-    dataRows.push(["", "Totals", "", "", "", "", totalSold, totalReturned, totalNet]);
+    const totalsMap = { total_sold: totalSold, total_returned: totalReturned, net_sold: totalNet };
+    const totalsRow = visibleCols.map(col => {
+      if (col.key === "description") return "Totals";
+      if (totalsMap[col.key] !== undefined) return totalsMap[col.key];
+      return "";
+    });
+    dataRows.push(totalsRow);
   }
 
   const wsData = [headers, ...dataRows];
