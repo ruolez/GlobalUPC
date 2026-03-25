@@ -8671,6 +8671,7 @@ async function loadSalesPage() {
 
     if (!config || !config.s2s_store_id) {
       populateSalesConfigForm(null);
+      buildColumnTogglePills();
       document.getElementById("sales-config-setup").style.display = "block";
       document.getElementById("sales-config-cancel-btn").style.display = "none";
       return;
@@ -8692,6 +8693,7 @@ async function loadSalesPage() {
     }
   } catch (e) {
     populateSalesConfigForm(null);
+    buildColumnTogglePills();
     document.getElementById("sales-config-setup").style.display = "block";
   }
 }
@@ -8765,6 +8767,7 @@ function populateSalesConfigForm(config) {
 
 function openSalesConfigEdit() {
   populateSalesConfigForm(salesState.config);
+  buildColumnTogglePills();
   document.getElementById("sales-config-setup").style.display = "block";
   document.getElementById("sales-config-cancel-btn").style.display = "inline-flex";
 }
