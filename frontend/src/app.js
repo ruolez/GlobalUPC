@@ -5050,6 +5050,8 @@ let priceUpdatesState = {
   autocompleteResults: [],
   configExpanded: false,
   primaryCost: null,
+  primaryDeliveryB: null,
+  stores: [],
   historyFilterTimeout: null,
   recallData: null,
   fsDescSearchTimeout: null,
@@ -5067,6 +5069,7 @@ async function loadPriceUpdatesPage() {
       apiRequest("/store-mirrors"),
     ]);
     const allStores = stores.filter((s) => s.is_active);
+    priceUpdatesState.stores = allStores;
     const mssqlStores = allStores.filter((s) => s.store_type === "mssql");
     const mirrors = mirrorsData.mirrors || [];
     priceUpdatesState.mirrors = mirrors;
@@ -5456,6 +5459,14 @@ function displayPriceResults(upc, prices, siblingPrices) {
     }
   }
   priceUpdatesState.primaryCost = primaryCost;
+  let primaryDeliveryB = null;
+  if (primaryEntry && primaryEntry.store_type === "mssql" && primaryEntry.product_found) {
+    primaryDeliveryB = primaryEntry.unit_delivery_b != null ? parseFloat(primaryEntry.unit_delivery_b) : null;
+  }
+  priceUpdatesState.primaryDeliveryB = primaryDeliveryB;
+
+  const storeCategoryMap = {};
+  (priceUpdatesState.stores || []).forEach(s => { storeCategoryMap[s.id] = s.store_category || "retail"; });
 
   function formatMarkup(price, cost) {
     if (price == null || cost == null || cost === 0) return { text: "-", color: "" };
@@ -5559,6 +5570,7 @@ function displayPriceResults(upc, prices, siblingPrices) {
         tr.style.setProperty("--store-border-color", storeColor);
         tr.dataset.storeId = p.store_id;
         tr.dataset.storeType = "mssql";
+        tr.dataset.storeCategory = storeCategoryMap[p.store_id] || "retail";
         tr.dataset.barcode = upc;
 
         const currentPrice = p.unit_price != null ? parseFloat(p.unit_price).toFixed(2) : "-";
@@ -5594,6 +5606,7 @@ function displayPriceResults(upc, prices, siblingPrices) {
           tr.style.setProperty("--store-border-color", storeColor);
           tr.dataset.storeId = p.store_id;
           tr.dataset.storeType = "shopify";
+          tr.dataset.storeCategory = storeCategoryMap[p.store_id] || "retail";
           tr.dataset.variantId = v.variant_id;
           tr.dataset.productId = v.product_id;
           tr.dataset.barcode = v.barcode || "";
@@ -5633,6 +5646,7 @@ function displayPriceResults(upc, prices, siblingPrices) {
       tr.style.setProperty("--store-border-color", storeColor);
       tr.dataset.storeId = sp.store_id;
       tr.dataset.storeType = "mssql";
+      tr.dataset.storeCategory = storeCategoryMap[sp.store_id] || "retail";
       tr.dataset.barcode = sp.sibling_barcode;
 
       const currentPrice = sp.unit_price != null ? parseFloat(sp.unit_price).toFixed(2) : "-";
@@ -5809,6 +5823,7 @@ function resetPriceUpdates() {
   priceUpdatesState.prices = [];
   priceUpdatesState.siblingPrices = [];
   priceUpdatesState.primaryCost = null;
+  priceUpdatesState.primaryDeliveryB = null;
   priceUpdatesState.isSearching = false;
   priceUpdatesState.isUpdating = false;
   priceUpdatesState.searchAbortController = null;
@@ -5893,12 +5908,24 @@ function fillAllPrices() {
   const rowSelector = '#price-updates-tbody tr:not(.store-header-row):not([style*="display: none"]):not(.price-excluded)';
 
   const primaryStoreId = priceUpdatesState.config?.primaryStoreId;
-  const primaryCost = priceUpdatesState.primaryCost;
-  let applyCostMarkup = false;
-  if (newCost !== "" && primaryStoreId && primaryCost && primaryCost > 0) {
-    applyCostMarkup = !!document.querySelector(
+
+  // Determine effective Delivery B for non-primary cost calculation
+  let effectiveDeliveryB = null;
+  if (newDeliveryB !== "") {
+    effectiveDeliveryB = parseFloat(newDeliveryB);
+  } else if (newCost !== "" && primaryStoreId) {
+    const primaryRow = document.querySelector(
       `${rowSelector}[data-store-id="${primaryStoreId}"]`
     );
+    if (primaryRow) {
+      const curCost = parseFloat(primaryRow.dataset.currentCost);
+      const curDeliveryB = parseFloat(primaryRow.dataset.currentDeliveryB);
+      if (curCost > 0 && curDeliveryB > 0) {
+        effectiveDeliveryB = roundUpTo5Cents(parseFloat(newCost) * (curDeliveryB / curCost));
+      }
+    }
+  } else {
+    effectiveDeliveryB = priceUpdatesState.primaryDeliveryB;
   }
 
   let filledCount = 0;
@@ -5906,15 +5933,25 @@ function fillAllPrices() {
     .querySelectorAll(rowSelector)
     .forEach((tr) => {
       let filled = false;
-      let rowCost = newCost;
+      let rowCost = null;
+      const isPrimary = String(tr.dataset.storeId) === String(primaryStoreId);
 
-      if (newCost !== "") {
-        if (applyCostMarkup && String(tr.dataset.storeId) !== String(primaryStoreId)) {
-          const currentRowCost = parseFloat(tr.dataset.currentCost);
-          if (currentRowCost && !isNaN(currentRowCost) && currentRowCost > 0) {
-            rowCost = roundUpTo5Cents(parseFloat(newCost) * (currentRowCost / primaryCost)).toFixed(2);
+      if (isPrimary) {
+        if (newCost !== "") {
+          rowCost = newCost;
+        }
+      } else {
+        if (effectiveDeliveryB && effectiveDeliveryB > 0) {
+          const category = tr.dataset.storeCategory;
+          if (category === "wholesale") {
+            rowCost = effectiveDeliveryB.toFixed(2);
+          } else {
+            rowCost = roundUpTo5Cents(effectiveDeliveryB * 1.02).toFixed(2);
           }
         }
+      }
+
+      if (rowCost !== null) {
         const costInput = tr.querySelector(".new-cost");
         if (costInput) { costInput.value = rowCost; filled = true; }
       }
@@ -5927,7 +5964,7 @@ function fillAllPrices() {
           priceInput.classList.remove("auto-calculated");
           filled = true;
         }
-      } else if (newCost !== "") {
+      } else if (rowCost !== null) {
         autoCalculateFromCost(tr, rowCost);
       }
 
