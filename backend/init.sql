@@ -179,6 +179,8 @@ CREATE TABLE price_update_history (
     new_cost NUMERIC(10,2),
     old_delivery_b NUMERIC(10,2),
     new_delivery_b NUMERIC(10,2),
+    old_list_price NUMERIC(10,2),
+    new_list_price NUMERIC(10,2),
     success BOOLEAN NOT NULL,
     rows_affected INTEGER DEFAULT 0,
     error_message TEXT,

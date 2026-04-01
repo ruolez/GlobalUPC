@@ -405,6 +405,7 @@ class StorePriceInfo(BaseModel):
     unit_price: Optional[float] = None
     unit_cost: Optional[float] = None
     unit_delivery_b: Optional[float] = None
+    unit_list_price: Optional[float] = None
     variants: Optional[List[dict]] = None
 
 
@@ -418,6 +419,8 @@ class PriceUpdateItem(BaseModel):
     old_cost: Optional[float] = None
     new_delivery_b: Optional[float] = None
     old_delivery_b: Optional[float] = None
+    new_list_price: Optional[float] = None
+    old_list_price: Optional[float] = None
     product_description: Optional[str] = None
     variant_updates: Optional[List[dict]] = None
 
@@ -444,6 +447,8 @@ class PriceUpdateHistoryResponse(BaseModel):
     new_cost: Optional[float] = None
     old_delivery_b: Optional[float] = None
     new_delivery_b: Optional[float] = None
+    old_list_price: Optional[float] = None
+    new_list_price: Optional[float] = None
     success: bool
     rows_affected: int
     error_message: Optional[str] = None

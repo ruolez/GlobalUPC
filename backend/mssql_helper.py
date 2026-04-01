@@ -4,6 +4,8 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 
+_mssql_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="mssql")
+
 # Chunk size for processing large tables (prevents timeout)
 CHUNK_SIZE = 1000
 
@@ -225,20 +227,18 @@ async def check_upc_exists(
     Returns:
         Tuple of (success: bool, error_message: Optional[str], results: List[Dict])
     """
-    # Run synchronous pyodbc code in thread pool to avoid blocking event loop
     loop = asyncio.get_event_loop()
-    with ThreadPoolExecutor() as executor:
-        return await loop.run_in_executor(
-            executor,
-            _check_upc_exists_sync,
-            host,
-            port,
-            database,
-            username,
-            password,
-            upc,
-            tds_version
-        )
+    return await loop.run_in_executor(
+        _mssql_executor,
+        _check_upc_exists_sync,
+        host,
+        port,
+        database,
+        username,
+        password,
+        upc,
+        tds_version
+    )
 
 def _search_products_by_upc_sync(
     host: str,
@@ -379,20 +379,18 @@ async def search_products_by_upc(
     Returns:
         Tuple of (success: bool, error_message: Optional[str], results: List[Dict])
     """
-    # Run synchronous pyodbc code in thread pool to avoid blocking event loop
     loop = asyncio.get_event_loop()
-    with ThreadPoolExecutor() as executor:
-        return await loop.run_in_executor(
-            executor,
-            _search_products_by_upc_sync,
-            host,
-            port,
-            database,
-            username,
-            password,
-            upc,
-            tds_version
-        )
+    return await loop.run_in_executor(
+        _mssql_executor,
+        _search_products_by_upc_sync,
+        host,
+        port,
+        database,
+        username,
+        password,
+        upc,
+        tds_version
+    )
 
 async def search_upc_across_mssql_stores(
     stores: List[Dict[str, Any]],
@@ -602,23 +600,21 @@ async def update_upc_in_table(
     Returns:
         Tuple of (success: bool, error_message: Optional[str], updated_count: int)
     """
-    # Run synchronous pyodbc code in thread pool to avoid blocking event loop
     loop = asyncio.get_event_loop()
-    with ThreadPoolExecutor() as executor:
-        return await loop.run_in_executor(
-            executor,
-            _update_upc_in_table_sync,
-            host,
-            port,
-            database,
-            username,
-            password,
-            table_name,
-            primary_key_field,
-            primary_keys,
-            new_upc,
-            tds_version
-        )
+    return await loop.run_in_executor(
+        _mssql_executor,
+        _update_upc_in_table_sync,
+        host,
+        port,
+        database,
+        username,
+        password,
+        table_name,
+        primary_key_field,
+        primary_keys,
+        new_upc,
+        tds_version
+    )
 
 async def update_upc_across_mssql_stores(
     store_updates: List[Dict[str, Any]]
@@ -1302,25 +1298,24 @@ async def audit_orphaned_upcs(
         Tuple of (success: bool, error_message: Optional[str], orphaned_records: List[Dict], tables_checked: int)
     """
     loop = asyncio.get_event_loop()
-    with ThreadPoolExecutor() as executor:
-        return await loop.run_in_executor(
-            executor,
-            _audit_orphaned_upcs_sync,
-            host,
-            port,
-            database,
-            username,
-            password,
-            progress_callback,
-            tds_version,
-            date_from,
-            date_to,
-            target_host,
-            target_port,
-            target_database,
-            target_username,
-            target_password
-        )
+    return await loop.run_in_executor(
+        _mssql_executor,
+        _audit_orphaned_upcs_sync,
+        host,
+        port,
+        database,
+        username,
+        password,
+        progress_callback,
+        tds_version,
+        date_from,
+        date_to,
+        target_host,
+        target_port,
+        target_database,
+        target_username,
+        target_password
+    )
 
 def find_matches_by_product_id_sync(
     host: str,
@@ -1694,18 +1689,17 @@ async def find_matches_by_product_id(
 ) -> tuple[bool, Optional[str], List[Dict[str, Any]]]:
     """Async wrapper for find_matches_by_product_id."""
     loop = asyncio.get_event_loop()
-    with ThreadPoolExecutor() as executor:
-        return await loop.run_in_executor(
-            executor,
-            find_matches_by_product_id_sync,
-            host,
-            port,
-            database,
-            username,
-            password,
-            orphaned_records,
-            tds_version
-        )
+    return await loop.run_in_executor(
+        _mssql_executor,
+        find_matches_by_product_id_sync,
+        host,
+        port,
+        database,
+        username,
+        password,
+        orphaned_records,
+        tds_version
+    )
 
 async def find_matches_by_description(
     host: str,
@@ -1718,18 +1712,17 @@ async def find_matches_by_description(
 ) -> tuple[bool, Optional[str], List[Dict[str, Any]]]:
     """Async wrapper for find_matches_by_description."""
     loop = asyncio.get_event_loop()
-    with ThreadPoolExecutor() as executor:
-        return await loop.run_in_executor(
-            executor,
-            find_matches_by_description_sync,
-            host,
-            port,
-            database,
-            username,
-            password,
-            orphaned_records,
-            tds_version
-        )
+    return await loop.run_in_executor(
+        _mssql_executor,
+        find_matches_by_description_sync,
+        host,
+        port,
+        database,
+        username,
+        password,
+        orphaned_records,
+        tds_version
+    )
 
 async def update_orphaned_upcs(
     host: str,
@@ -1742,18 +1735,17 @@ async def update_orphaned_upcs(
 ) -> tuple[bool, Optional[str], List[Dict[str, Any]]]:
     """Async wrapper for update_orphaned_upcs."""
     loop = asyncio.get_event_loop()
-    with ThreadPoolExecutor() as executor:
-        return await loop.run_in_executor(
-            executor,
-            update_orphaned_upcs_sync,
-            host,
-            port,
-            database,
-            username,
-            password,
-            updates,
-            tds_version
-        )
+    return await loop.run_in_executor(
+        _mssql_executor,
+        update_orphaned_upcs_sync,
+        host,
+        port,
+        database,
+        username,
+        password,
+        updates,
+        tds_version
+    )
 
 def get_item_prices(
     host: str,
@@ -1771,7 +1763,7 @@ def get_item_prices(
         cursor = conn.cursor()
 
         cursor.execute(
-            "SELECT ProductID, ProductUPC, ProductDescription, UnitPrice, UnitCost, UnitPriceC "
+            "SELECT ProductID, ProductUPC, ProductDescription, UnitPrice, UnitCost, UnitPriceC, MSRPrice "
             "FROM Items_tbl WHERE ProductUPC = ? AND Discontinued = 0",
             (upc,)
         )
@@ -1790,6 +1782,7 @@ def get_item_prices(
             "unit_price": float(row[3]) if row[3] is not None else None,
             "unit_cost": float(row[4]) if row[4] is not None else None,
             "unit_delivery_b": float(row[5]) if row[5] is not None else None,
+            "unit_list_price": float(row[6]) if row[6] is not None else None,
         }
 
     except Exception as e:
@@ -1806,11 +1799,10 @@ async def get_item_prices_async(
     tds_version: str = "7.4"
 ) -> tuple[bool, Optional[str], Optional[Dict[str, Any]]]:
     loop = asyncio.get_event_loop()
-    with ThreadPoolExecutor() as executor:
-        return await loop.run_in_executor(
-            executor,
-            lambda: get_item_prices(host, port, database, username, password, upc, tds_version)
-        )
+    return await loop.run_in_executor(
+        _mssql_executor,
+        lambda: get_item_prices(host, port, database, username, password, upc, tds_version)
+    )
 
 
 def get_item_prices_batch(
@@ -1837,7 +1829,7 @@ def get_item_prices_batch(
             batch = upcs[batch_start:batch_start + MAX_PARAMS]
             placeholders = ",".join(["?"] * len(batch))
             cursor.execute(
-                f"SELECT ProductID, ProductUPC, ProductDescription, UnitPrice, UnitCost, UnitPriceC "
+                f"SELECT ProductID, ProductUPC, ProductDescription, UnitPrice, UnitCost, UnitPriceC, MSRPrice "
                 f"FROM Items_tbl WHERE ProductUPC IN ({placeholders}){discontinued_filter}",
                 batch
             )
@@ -1850,6 +1842,7 @@ def get_item_prices_batch(
                     "unit_price": float(row[3]) if row[3] is not None else None,
                     "unit_cost": float(row[4]) if row[4] is not None else None,
                     "unit_delivery_b": float(row[5]) if row[5] is not None else None,
+                    "unit_list_price": float(row[6]) if row[6] is not None else None,
                 }
 
         cursor.close()
@@ -1872,11 +1865,10 @@ async def get_item_prices_batch_async(
     include_discontinued: bool = False
 ) -> tuple[bool, Optional[str], Dict[str, Dict[str, Any]]]:
     loop = asyncio.get_event_loop()
-    with ThreadPoolExecutor() as executor:
-        return await loop.run_in_executor(
-            executor,
-            lambda: get_item_prices_batch(host, port, database, username, password, upcs, tds_version, include_discontinued)
-        )
+    return await loop.run_in_executor(
+        _mssql_executor,
+        lambda: get_item_prices_batch(host, port, database, username, password, upcs, tds_version, include_discontinued)
+    )
 
 
 def update_item_prices(
@@ -1889,9 +1881,10 @@ def update_item_prices(
     unit_price: Optional[float] = None,
     unit_cost: Optional[float] = None,
     unit_delivery_b: Optional[float] = None,
+    unit_list_price: Optional[float] = None,
     tds_version: str = "7.4"
 ) -> tuple[bool, Optional[str], int, Optional[datetime]]:
-    if unit_price is None and unit_cost is None and unit_delivery_b is None:
+    if unit_price is None and unit_cost is None and unit_delivery_b is None and unit_list_price is None:
         return True, None, 0, None
 
     conn_str = get_mssql_connection_string(host, port, database, username, password, tds_version)
@@ -1911,6 +1904,9 @@ def update_item_prices(
         if unit_delivery_b is not None:
             set_clauses.append("UnitPriceC = ?")
             params.append(unit_delivery_b)
+        if unit_list_price is not None:
+            set_clauses.append("MSRPrice = ?")
+            params.append(unit_list_price)
 
         set_clauses.append("ExpDate = CAST(GETDATE() AS DATE)")
 
@@ -1943,14 +1939,14 @@ async def update_item_prices_async(
     unit_price: Optional[float] = None,
     unit_cost: Optional[float] = None,
     unit_delivery_b: Optional[float] = None,
+    unit_list_price: Optional[float] = None,
     tds_version: str = "7.4"
 ) -> tuple[bool, Optional[str], int]:
     loop = asyncio.get_event_loop()
-    with ThreadPoolExecutor() as executor:
-        return await loop.run_in_executor(
-            executor,
-            lambda: update_item_prices(host, port, database, username, password, upc, unit_price, unit_cost, unit_delivery_b, tds_version)
-        )
+    return await loop.run_in_executor(
+        _mssql_executor,
+        lambda: update_item_prices(host, port, database, username, password, upc, unit_price, unit_cost, unit_delivery_b, unit_list_price, tds_version)
+    )
 
 
 def get_active_products(
@@ -2024,11 +2020,10 @@ async def get_active_products_async(
     tds_version: str = "7.4"
 ) -> tuple[bool, Optional[str], list[Dict[str, Any]]]:
     loop = asyncio.get_event_loop()
-    with ThreadPoolExecutor() as executor:
-        return await loop.run_in_executor(
-            executor,
-            lambda: get_active_products(host, port, database, username, password, tds_version)
-        )
+    return await loop.run_in_executor(
+        _mssql_executor,
+        lambda: get_active_products(host, port, database, username, password, tds_version)
+    )
 
 
 def search_business_names(
@@ -2087,11 +2082,10 @@ async def search_business_names_async(
     tds_version: str = "7.4"
 ) -> tuple[bool, Optional[str], list[str]]:
     loop = asyncio.get_event_loop()
-    with ThreadPoolExecutor() as executor:
-        return await loop.run_in_executor(
-            executor,
-            lambda: search_business_names(host, port, database, username, password, query, tds_version)
-        )
+    return await loop.run_in_executor(
+        _mssql_executor,
+        lambda: search_business_names(host, port, database, username, password, query, tds_version)
+    )
 
 
 def get_aggregated_sales(
@@ -2173,11 +2167,10 @@ async def get_aggregated_sales_async(
     tds_version: str = "7.4"
 ) -> tuple[bool, Optional[str], Dict[str, float]]:
     loop = asyncio.get_event_loop()
-    with ThreadPoolExecutor() as executor:
-        return await loop.run_in_executor(
-            executor,
-            lambda: get_aggregated_sales(host, port, database, username, password, date_from, date_to, excluded_names, tds_version)
-        )
+    return await loop.run_in_executor(
+        _mssql_executor,
+        lambda: get_aggregated_sales(host, port, database, username, password, date_from, date_to, excluded_names, tds_version)
+    )
 
 
 def get_aggregated_returns(
@@ -2258,8 +2251,11 @@ async def get_aggregated_returns_async(
     tds_version: str = "7.4"
 ) -> tuple[bool, Optional[str], Dict[str, float]]:
     loop = asyncio.get_event_loop()
-    with ThreadPoolExecutor() as executor:
-        return await loop.run_in_executor(
-            executor,
-            lambda: get_aggregated_returns(host, port, database, username, password, date_from, date_to, excluded_names, tds_version)
-        )
+    return await loop.run_in_executor(
+        _mssql_executor,
+        lambda: get_aggregated_returns(host, port, database, username, password, date_from, date_to, excluded_names, tds_version)
+    )
+
+
+def shutdown_mssql_executor():
+    _mssql_executor.shutdown(wait=False)

@@ -159,6 +159,8 @@ class PriceUpdateHistory(Base):
     new_cost = Column(Numeric(10, 2))
     old_delivery_b = Column(Numeric(10, 2))
     new_delivery_b = Column(Numeric(10, 2))
+    old_list_price = Column(Numeric(10, 2))
+    new_list_price = Column(Numeric(10, 2))
     success = Column(Boolean, nullable=False)
     rows_affected = Column(Integer, default=0)
     error_message = Column(Text)

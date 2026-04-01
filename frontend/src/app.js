@@ -5576,9 +5576,11 @@ function displayPriceResults(upc, prices, siblingPrices) {
         const currentPrice = p.unit_price != null ? parseFloat(p.unit_price).toFixed(2) : "-";
         const currentCost = p.unit_cost != null ? parseFloat(p.unit_cost).toFixed(2) : "-";
         const currentDeliveryB = p.unit_delivery_b != null ? parseFloat(p.unit_delivery_b).toFixed(2) : "-";
+        const currentListPrice = p.unit_list_price != null ? parseFloat(p.unit_list_price).toFixed(2) : "-";
         tr.dataset.currentPrice = currentPrice;
         tr.dataset.currentCost = currentCost;
         tr.dataset.currentDeliveryB = currentDeliveryB;
+        tr.dataset.currentListPrice = currentListPrice;
         const mssqlDesc = p.product_description ? escapeHtml(p.product_description) : "-";
         const mPrice = p.unit_price != null ? parseFloat(p.unit_price) : null;
         const mCost = p.unit_cost != null ? parseFloat(p.unit_cost) : null;
@@ -5588,11 +5590,15 @@ function displayPriceResults(upc, prices, siblingPrices) {
         const deliveryBCell = isPrimary
           ? `<td>${currentValueSpan(currentDeliveryB)}<input type="number" class="dark-input price-input new-delivery-b" step="0.01" min="0" placeholder="${currentDeliveryB}"></td>`
           : `<td style="color: var(--text-tertiary)">-</td>`;
+        const listPriceCell = isPrimary
+          ? `<td>${currentValueSpan(currentListPrice)}<input type="number" class="dark-input price-input new-list-price" step="0.01" min="0" placeholder="${currentListPrice}"></td>`
+          : `<td style="color: var(--text-tertiary)">-</td>`;
         tr.innerHTML = `
           <td style="font-size: 0.875rem; color: var(--text-primary)">${mssqlDesc} [${escapeHtml(upc)}]</td>
           <td>${currentValueSpan(currentPrice)}<input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="${currentPrice}"></td>
           <td>${currentValueSpan(currentCost)}<input type="number" class="dark-input price-input new-cost" step="0.01" min="0" placeholder="${currentCost}"></td>
           ${deliveryBCell}
+          ${listPriceCell}
           ${markupTd(mMarkup)}
           ${markupTd(mCostMarkup)}
           <td class="price-exclude-cell"><button type="button" class="price-exclude-btn" title="Exclude from update"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></td>
@@ -5618,6 +5624,7 @@ function displayPriceResults(upc, prices, siblingPrices) {
           tr.dataset.currentPrice = vPrice;
           tr.dataset.currentCost = vCost;
           tr.dataset.currentDeliveryB = "-";
+          tr.dataset.currentListPrice = "-";
           const isDefaultVariant = !v.variant_title || v.variant_title === "Default Title";
           const variantLabel = escapeHtml(isDefaultVariant ? (v.product_title || "Default") : (v.product_title ? `${v.product_title} / ${v.variant_title}` : v.variant_title));
           const barcodeLabel = v.barcode ? ` [${escapeHtml(v.barcode)}]` : "";
@@ -5629,6 +5636,7 @@ function displayPriceResults(upc, prices, siblingPrices) {
             <td style="font-size: 0.875rem; color: var(--text-primary)">${variantLabel}${barcodeLabel}</td>
             <td>${currentValueSpan(vPrice)}<input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="${vPrice}"></td>
             <td>${currentValueSpan(vCost)}<input type="number" class="dark-input price-input new-cost" step="0.01" min="0" placeholder="${vCost}"></td>
+            <td style="color: var(--text-tertiary)">-</td>
             <td style="color: var(--text-tertiary)">-</td>
             ${markupTd(vMarkup)}
             ${markupTd(vCostMarkup)}
@@ -5652,9 +5660,11 @@ function displayPriceResults(upc, prices, siblingPrices) {
       const currentPrice = sp.unit_price != null ? parseFloat(sp.unit_price).toFixed(2) : "-";
       const currentCost = sp.unit_cost != null ? parseFloat(sp.unit_cost).toFixed(2) : "-";
       const currentDeliveryB = sp.unit_delivery_b != null ? parseFloat(sp.unit_delivery_b).toFixed(2) : "-";
+      const currentListPrice = sp.unit_list_price != null ? parseFloat(sp.unit_list_price).toFixed(2) : "-";
       tr.dataset.currentPrice = currentPrice;
       tr.dataset.currentCost = currentCost;
       tr.dataset.currentDeliveryB = currentDeliveryB;
+      tr.dataset.currentListPrice = currentListPrice;
       const spPrice = sp.unit_price != null ? parseFloat(sp.unit_price) : null;
       const spCost = sp.unit_cost != null ? parseFloat(sp.unit_cost) : null;
       const spMarkup = formatMarkup(spPrice, spCost);
@@ -5664,12 +5674,16 @@ function displayPriceResults(upc, prices, siblingPrices) {
       const siblingDeliveryBCell = isPrimarySibling
         ? `<td>${currentValueSpan(currentDeliveryB)}<input type="number" class="dark-input price-input new-delivery-b" step="0.01" min="0" placeholder="${currentDeliveryB}"></td>`
         : `<td style="color: var(--text-tertiary)">-</td>`;
+      const siblingListPriceCell = isPrimarySibling
+        ? `<td>${currentValueSpan(currentListPrice)}<input type="number" class="dark-input price-input new-list-price" step="0.01" min="0" placeholder="${currentListPrice}"></td>`
+        : `<td style="color: var(--text-tertiary)">-</td>`;
 
       tr.innerHTML = `
         <td style="color: var(--text-secondary); font-size: 0.875rem">${siblingLabel}</td>
         <td>${currentValueSpan(currentPrice)}<input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="${currentPrice}"></td>
         <td>${currentValueSpan(currentCost)}<input type="number" class="dark-input price-input new-cost" step="0.01" min="0" placeholder="${currentCost}"></td>
         ${siblingDeliveryBCell}
+        ${siblingListPriceCell}
         ${markupTd(spMarkup)}
         ${markupTd(spCostMarkup)}
         <td class="price-exclude-cell"><button type="button" class="price-exclude-btn" title="Exclude from update"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></td>
@@ -5712,6 +5726,9 @@ function displayPriceResults(upc, prices, siblingPrices) {
   if (lastPriceEl) lastPriceEl.textContent = savedFillPrice ? `Last: $${savedFillPrice}` : "";
   if (lastCostEl) lastCostEl.textContent = savedFillCost ? `Last: $${savedFillCost}` : "";
   if (lastDeliveryBEl) lastDeliveryBEl.textContent = savedFillDeliveryB ? `Last: $${savedFillDeliveryB}` : "";
+  const savedFillListPrice = localStorage.getItem("priceFillAllListPrice");
+  const lastListPriceEl = document.getElementById("price-fill-last-list-price");
+  if (lastListPriceEl) lastListPriceEl.textContent = savedFillListPrice ? `Last: $${savedFillListPrice}` : "";
   updateFillAllCount();
 
   // Auto-focus: after update re-search, focus description for next item; otherwise first price input
@@ -5773,13 +5790,18 @@ function updateDeliveryBColumnVisibility() {
 
   const th = document.getElementById("price-delivery-b-th");
   if (th) th.style.display = display;
+  const listPriceTh = document.getElementById("price-list-price-th");
+  if (listPriceTh) listPriceTh.style.display = display;
 
   const fillGroup = document.getElementById("price-delivery-b-fill-group");
   if (fillGroup) fillGroup.style.display = display;
+  const listPriceFillGroup = document.getElementById("price-list-price-fill-group");
+  if (listPriceFillGroup) listPriceFillGroup.style.display = display;
 
   document.querySelectorAll("#price-updates-tbody tr").forEach((tr) => {
     const cells = tr.children;
     if (cells.length >= 4) cells[3].style.display = display;
+    if (cells.length >= 5) cells[4].style.display = display;
   });
 }
 
@@ -5813,6 +5835,7 @@ function resetPriceUpdates() {
   document.getElementById("price-fill-all-price").value = "";
   document.getElementById("price-fill-all-cost").value = "";
   document.getElementById("price-fill-all-delivery-b").value = "";
+  document.getElementById("price-fill-all-list-price").value = "";
   closeModal("price-update-modal");
   hidePriceDescriptionDropdown();
   hideFsDescriptionDropdown();
@@ -5888,6 +5911,7 @@ function fillAllPrices() {
   const newPrice = document.getElementById("price-fill-all-price").value;
   const newCost = document.getElementById("price-fill-all-cost").value;
   const newDeliveryB = document.getElementById("price-fill-all-delivery-b").value;
+  const newListPrice = document.getElementById("price-fill-all-list-price").value;
 
   if (newPrice) {
     localStorage.setItem("priceFillAllPrice", newPrice);
@@ -5903,6 +5927,11 @@ function fillAllPrices() {
     localStorage.setItem("priceFillAllDeliveryB", newDeliveryB);
     const lbl = document.getElementById("price-fill-last-delivery-b");
     if (lbl) lbl.textContent = `Last: $${newDeliveryB}`;
+  }
+  if (newListPrice) {
+    localStorage.setItem("priceFillAllListPrice", newListPrice);
+    const lbl = document.getElementById("price-fill-last-list-price");
+    if (lbl) lbl.textContent = `Last: $${newListPrice}`;
   }
 
   const rowSelector = '#price-updates-tbody tr:not(.store-header-row):not([style*="display: none"]):not(.price-excluded)';
@@ -5978,6 +6007,14 @@ function fillAllPrices() {
         }
       }
 
+      if (newListPrice !== "") {
+        const listPriceInput = tr.querySelector(".new-list-price");
+        if (listPriceInput) {
+          listPriceInput.value = newListPrice;
+          filled = true;
+        }
+      }
+
       if (filled) {
         tr.dataset.filled = "true";
         tr.classList.add("filled-row");
@@ -6004,6 +6041,7 @@ function clearAllPrices() {
   document.getElementById("price-fill-all-price").value = "";
   document.getElementById("price-fill-all-cost").value = "";
   document.getElementById("price-fill-all-delivery-b").value = "";
+  document.getElementById("price-fill-all-list-price").value = "";
 
   document
     .querySelectorAll("#price-updates-tbody tr:not(.store-header-row)")
@@ -6136,12 +6174,14 @@ function collectPriceUpdates() {
     const priceInput = tr.querySelector(".new-price");
     const costInput = tr.querySelector(".new-cost");
     const deliveryBInput = tr.querySelector(".new-delivery-b");
+    const listPriceInput = tr.querySelector(".new-list-price");
 
     const newPrice = priceInput?.value ? parseFloat(priceInput.value) : null;
     const newCost = costInput?.value ? parseFloat(costInput.value) : null;
     const newDeliveryB = deliveryBInput?.value ? parseFloat(deliveryBInput.value) : null;
+    const newListPrice = listPriceInput?.value ? parseFloat(listPriceInput.value) : null;
 
-    if (newPrice === null && newCost === null && newDeliveryB === null) return;
+    if (newPrice === null && newCost === null && newDeliveryB === null && newListPrice === null) return;
 
     const oldPrice = priceInput?.placeholder && priceInput.placeholder !== "-"
       ? parseFloat(priceInput.placeholder) : null;
@@ -6149,6 +6189,8 @@ function collectPriceUpdates() {
       ? parseFloat(costInput.placeholder) : null;
     const oldDeliveryB = deliveryBInput?.placeholder && deliveryBInput.placeholder !== "-"
       ? parseFloat(deliveryBInput.placeholder) : null;
+    const oldListPrice = listPriceInput?.placeholder && listPriceInput.placeholder !== "-"
+      ? parseFloat(listPriceInput.placeholder) : null;
     const productDesc = tr.querySelector("td:first-child")?.textContent?.trim() || null;
 
     if (storeType === "mssql") {
@@ -6159,9 +6201,11 @@ function collectPriceUpdates() {
         new_price: newPrice,
         new_cost: newCost,
         new_delivery_b: newDeliveryB,
+        new_list_price: newListPrice,
         old_price: oldPrice,
         old_cost: oldCost,
         old_delivery_b: oldDeliveryB,
+        old_list_price: oldListPrice,
         product_description: productDesc,
         _store_name: tr.closest("tbody")?.querySelector(`.store-header-row[data-store-id="${storeId}"] td`)?.textContent || `Store ${storeId}`,
       });
@@ -6228,6 +6272,10 @@ function showUpdateConfirmation() {
         const old = u.old_delivery_b != null ? `$${u.old_delivery_b.toFixed(2)}` : "-";
         parts.push(`Delivery B ${old} \u2192 $${u.new_delivery_b.toFixed(2)}`);
       }
+      if (u.new_list_price != null) {
+        const old = u.old_list_price != null ? `$${u.old_list_price.toFixed(2)}` : "-";
+        parts.push(`List Price ${old} \u2192 $${u.new_list_price.toFixed(2)}`);
+      }
       const desc = u.product_description ? escapeHtml(u.product_description) : null;
       group.push({ desc, changes: parts.join(", ") });
     } else if (u.store_type === "shopify") {
@@ -6262,7 +6310,7 @@ function showUpdateConfirmation() {
       if (sourceItems) {
         const cloned = sourceItems.map((item) => ({
           desc: item.desc,
-          changes: item.changes.replace(/Delivery B [^,]+,?\s*/g, "").replace(/,\s*$/, ""),
+          changes: item.changes.replace(/Delivery B [^,]+,?\s*/g, "").replace(/List Price [^,]+,?\s*/g, "").replace(/,\s*$/, ""),
         })).filter((item) => item.changes);
         if (cloned.length > 0) {
           mirrorGroups.set(mirrorName, { items: cloned, sourceName: m.source_store_name });
@@ -6417,12 +6465,14 @@ async function executeUpdate() {
                 const priceInput = tr.querySelector(".new-price");
                 const costInput = tr.querySelector(".new-cost");
                 const deliveryBInput = tr.querySelector(".new-delivery-b");
+                const listPriceInput = tr.querySelector(".new-list-price");
                 let costUpdated = false;
 
                 [
                   { input: priceInput, dataKey: "currentPrice" },
                   { input: costInput, dataKey: "currentCost" },
                   { input: deliveryBInput, dataKey: "currentDeliveryB" },
+                  { input: listPriceInput, dataKey: "currentListPrice" },
                 ].forEach(({ input, dataKey }) => {
                   if (!input || !input.value) return;
                   const newVal = parseFloat(input.value).toFixed(2);
@@ -7728,6 +7778,16 @@ function displayPriceHistory(batches, total, targetConfig = null) {
           `<span class="ph-change-new">${newD}</span>`
         );
       }
+      if (entry.new_list_price != null) {
+        const oldL = entry.old_list_price != null ? `$${parseFloat(entry.old_list_price).toFixed(2)}` : "-";
+        const newL = `$${parseFloat(entry.new_list_price).toFixed(2)}`;
+        changeParts.push(
+          `<span class="ph-change-label">List Price:</span>` +
+          `<span class="ph-change-old">${oldL}</span>` +
+          `<span class="ph-change-arrow">\u2192</span>` +
+          `<span class="ph-change-new">${newL}</span>`
+        );
+      }
       changeCell.innerHTML = changeParts.length > 0
         ? changeParts.join('<span style="margin: 0 0.5rem; color: var(--text-tertiary)">|</span>')
         : "-";
@@ -7934,10 +7994,12 @@ function applyRecallData() {
     const priceInput = matchedRow.querySelector(".new-price");
     const costInput = matchedRow.querySelector(".new-cost");
     const deliveryBInput = matchedRow.querySelector(".new-delivery-b");
+    const listPriceInput = matchedRow.querySelector(".new-list-price");
 
     if (priceInput && entry.new_price != null) priceInput.value = parseFloat(entry.new_price).toFixed(2);
     if (costInput && entry.new_cost != null) costInput.value = parseFloat(entry.new_cost).toFixed(2);
     if (deliveryBInput && entry.new_delivery_b != null) deliveryBInput.value = parseFloat(entry.new_delivery_b).toFixed(2);
+    if (listPriceInput && entry.new_list_price != null) listPriceInput.value = parseFloat(entry.new_list_price).toFixed(2);
 
     matchedRow.classList.add("filled-row");
     recalculateRowMarkup(matchedRow);
