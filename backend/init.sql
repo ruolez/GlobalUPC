@@ -3,11 +3,15 @@
 -- Store types enum
 CREATE TYPE store_type AS ENUM ('mssql', 'shopify');
 
+-- Store category enum
+CREATE TYPE store_category AS ENUM ('wholesale', 'retail');
+
 -- Stores table - holds all configured database and Shopify store connections
 CREATE TABLE stores (
     id SERIAL PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
     store_type store_type NOT NULL,
+    store_category store_category NOT NULL DEFAULT 'retail',
     is_active BOOLEAN DEFAULT true,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP

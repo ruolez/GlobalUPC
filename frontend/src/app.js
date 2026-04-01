@@ -847,6 +847,9 @@ async function loadStores() {
 
     // Toggle/delete/edit-name button listeners
     document
+      .getElementById(`category-${store.id}`)
+      ?.addEventListener("click", () => toggleStoreCategory(store.id, store.store_category));
+    document
       .getElementById(`toggle-${store.id}`)
       ?.addEventListener("click", () => toggleStore(store.id));
     document
@@ -875,9 +878,13 @@ function createStoreCard(store, index) {
                         <h4 id="store-name-${store.id}">${store.name}</h4>
                         <button class="btn-edit-name" id="edit-name-${store.id}" title="Rename store">&#9998;</button>
                         <span class="store-type-badge ${store.store_type}">${store.store_type.toUpperCase()}</span>
+                        <span class="store-category-badge ${store.store_category || 'retail'}">${(store.store_category || 'retail').toUpperCase()}</span>
                     </div>
                 </div>
                 <div class="store-actions">
+                    <button class="btn btn-small btn-secondary" id="category-${store.id}" title="Toggle wholesale/retail">
+                        ${(store.store_category || 'retail') === 'retail' ? 'Set Wholesale' : 'Set Retail'}
+                    </button>
                     <button class="btn btn-small btn-secondary" id="toggle-${store.id}">
                         ${store.is_active ? "Disable" : "Enable"}
                     </button>
@@ -927,6 +934,16 @@ function createStoreCard(store, index) {
 
 async function toggleStore(storeId) {
   await apiRequest(`/stores/${storeId}/toggle`, { method: "PATCH" });
+  await loadStores();
+  await loadDashboard();
+}
+
+async function toggleStoreCategory(storeId, currentCategory) {
+  const newCategory = (currentCategory || 'retail') === 'retail' ? 'wholesale' : 'retail';
+  await apiRequest(`/stores/${storeId}/category`, {
+    method: "PATCH",
+    body: JSON.stringify({ store_category: newCategory }),
+  });
   await loadStores();
   await loadDashboard();
 }
@@ -1075,6 +1092,7 @@ document.getElementById("mssql-form").addEventListener("submit", async (e) => {
     name: formData.get("name"),
     store_type: "mssql",
     is_active: true,
+    store_category: formData.get("store_category"),
     connection: {
       host: formData.get("host"),
       port: parseInt(formData.get("port")),
@@ -1155,6 +1173,7 @@ document
       name: formData.get("name"),
       store_type: "shopify",
       is_active: true,
+      store_category: formData.get("store_category"),
       connection: {
         shop_domain: formData.get("shop_domain"),
         admin_api_key: formData.get("admin_api_key"),

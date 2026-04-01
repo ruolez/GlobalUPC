@@ -9,12 +9,17 @@ class StoreType(str, enum.Enum):
     mssql = "mssql"
     shopify = "shopify"
 
+class StoreCategory(str, enum.Enum):
+    wholesale = "wholesale"
+    retail = "retail"
+
 class Store(Base):
     __tablename__ = "stores"
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(255), nullable=False)
     store_type = Column(Enum(StoreType, name='store_type', create_type=False), nullable=False)
+    store_category = Column(Enum(StoreCategory, name='store_category', create_type=False), nullable=False, server_default='retail')
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

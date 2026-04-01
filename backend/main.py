@@ -4,6 +4,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from typing import List, Union, AsyncGenerator, Optional
 from pydantic import BaseModel
+from contextlib import asynccontextmanager
 from datetime import datetime, date, timedelta
 import uvicorn
 import asyncio
@@ -12,9 +13,9 @@ import uuid
 import os
 
 from database import get_db, engine
-from models import Store, MSSQLConnection, ShopifyConnection, Setting, StoreType, UPCUpdateHistory, UPCExclusion, ItemTrackerConfig, ItemTrackerExclusion, PriceUpdateHistory, StoreMirror, SalesConfig, SalesExclusion
+from models import Store, MSSQLConnection, ShopifyConnection, Setting, StoreType, StoreCategory, UPCUpdateHistory, UPCExclusion, ItemTrackerConfig, ItemTrackerExclusion, PriceUpdateHistory, StoreMirror, SalesConfig, SalesExclusion
 from schemas import (
-    MSSQLStoreCreate, ShopifyStoreCreate, StoreResponse, StoreNameUpdate,
+    MSSQLStoreCreate, ShopifyStoreCreate, StoreResponse, StoreNameUpdate, StoreCategoryUpdate,
     SettingCreate, SettingUpdate, SettingResponse,
     UPCSearchRequest, UPCSearchResponse, ProductVariantMatch,
     UPCUpdateRequest, UPCUpdateResult,
@@ -61,7 +62,20 @@ from item_tracker_helper import (
     search_products_by_description_async, get_inventory_recounts_async
 )
 
-app = FastAPI(title="Global UPC API", version="1.0.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+    print("[SHUTDOWN] Disposing database connections...")
+    engine.dispose()
+    print("[SHUTDOWN] Shutting down MSSQL thread pool...")
+    from mssql_helper import shutdown_mssql_executor
+    shutdown_mssql_executor()
+    print("[SHUTDOWN] Shutting down Item Tracker thread pool...")
+    from item_tracker_helper import shutdown_item_tracker_executor
+    shutdown_item_tracker_executor()
+    print("[SHUTDOWN] Cleanup complete.")
+
+app = FastAPI(title="Global UPC API", version="1.0.0", lifespan=lifespan)
 
 # Read SERVER_IP from environment variable
 SERVER_IP = os.getenv("SERVER_IP", "localhost")
@@ -206,108 +220,120 @@ async def search_upc_stream(request: UPCSearchRequest, db: Session = Depends(get
                 })
 
         all_matches = []
+        tasks = []
 
-        # Search Shopify stores in parallel
-        if shopify_stores:
-            yield f"event: progress\ndata: {json.dumps({'status': 'searching', 'store_type': 'shopify', 'count': len(shopify_stores)})}\n\n"
+        try:
+            # Search Shopify stores in parallel
+            if shopify_stores:
+                yield f"event: progress\ndata: {json.dumps({'status': 'searching', 'store_type': 'shopify', 'count': len(shopify_stores)})}\n\n"
 
-            # Create search tasks for all Shopify stores
-            async def search_shopify_store(store):
-                """Search single Shopify store and return store info + results."""
-                success, error, variants = await search_products_by_barcode(
-                    shop_domain=store["shop_domain"],
-                    admin_api_key=store["admin_api_key"],
-                    barcode=upc,
-                    api_version=store.get("api_version", "2025-01")
-                )
-                return store, success, error, variants
+                # Create search tasks for all Shopify stores
+                async def search_shopify_store(store):
+                    """Search single Shopify store and return store info + results."""
+                    success, error, variants = await search_products_by_barcode(
+                        shop_domain=store["shop_domain"],
+                        admin_api_key=store["admin_api_key"],
+                        barcode=upc,
+                        api_version=store.get("api_version", "2025-01")
+                    )
+                    return store, success, error, variants
 
-            # Start all store searches in parallel
-            tasks = [asyncio.create_task(search_shopify_store(store)) for store in shopify_stores]
+                # Start all store searches in parallel
+                tasks = [asyncio.create_task(search_shopify_store(store)) for store in shopify_stores]
 
-            # Process results as each store completes
-            for completed_task in asyncio.as_completed(tasks):
-                store, success, error, variants = await completed_task
+                # Process results as each store completes
+                for completed_task in asyncio.as_completed(tasks):
+                    store, success, error, variants = await completed_task
 
-                yield f"event: progress\ndata: {json.dumps({'status': 'searching_store', 'store_name': store['name'], 'store_type': 'shopify'})}\n\n"
+                    yield f"event: progress\ndata: {json.dumps({'status': 'searching_store', 'store_name': store['name'], 'store_type': 'shopify'})}\n\n"
 
-                if success and variants:
-                    for variant in variants:
-                        match = {
-                            "store_id": store["id"],
-                            "store_name": store["name"],
-                            "store_type": "shopify",
-                            "product_id": variant["product_id"],
-                            "product_title": variant["product_title"],
-                            "variant_id": variant["variant_id"],
-                            "variant_title": variant["variant_title"],
-                            "current_barcode": variant["barcode"],
-                            "sku": variant["sku"]
-                        }
-                        all_matches.append(match)
+                    if success and variants:
+                        for variant in variants:
+                            match = {
+                                "store_id": store["id"],
+                                "store_name": store["name"],
+                                "store_type": "shopify",
+                                "product_id": variant["product_id"],
+                                "product_title": variant["product_title"],
+                                "variant_id": variant["variant_id"],
+                                "variant_title": variant["variant_title"],
+                                "current_barcode": variant["barcode"],
+                                "sku": variant["sku"]
+                            }
+                            all_matches.append(match)
 
-                yield f"event: progress\ndata: {json.dumps({'status': 'completed_store', 'store_name': store['name'], 'found': len(variants) if success else 0})}\n\n"
+                    yield f"event: progress\ndata: {json.dumps({'status': 'completed_store', 'store_name': store['name'], 'found': len(variants) if success else 0})}\n\n"
 
-        # Search MSSQL stores in parallel
-        if mssql_stores:
-            print(f"[SEARCH] Starting MSSQL search for {len(mssql_stores)} stores")
-            yield f"event: progress\ndata: {json.dumps({'status': 'searching', 'store_type': 'mssql', 'count': len(mssql_stores)})}\n\n"
+            # Search MSSQL stores in parallel
+            if mssql_stores:
+                print(f"[SEARCH] Starting MSSQL search for {len(mssql_stores)} stores")
+                yield f"event: progress\ndata: {json.dumps({'status': 'searching', 'store_type': 'mssql', 'count': len(mssql_stores)})}\n\n"
 
-            # Create search tasks for all MSSQL stores
-            async def search_mssql_store(store):
-                """Search single MSSQL store and return store info + results."""
-                success, error, table_results = await search_products_by_upc(
-                    host=store["host"],
-                    port=store["port"],
-                    database=store["database_name"],
-                    username=store["username"],
-                    password=store["password"],
-                    upc=upc
-                )
-                return store, success, error, table_results
+                # Create search tasks for all MSSQL stores
+                async def search_mssql_store(store):
+                    """Search single MSSQL store and return store info + results."""
+                    success, error, table_results = await search_products_by_upc(
+                        host=store["host"],
+                        port=store["port"],
+                        database=store["database_name"],
+                        username=store["username"],
+                        password=store["password"],
+                        upc=upc
+                    )
+                    return store, success, error, table_results
 
-            # Start all store searches in parallel
-            tasks = [asyncio.create_task(search_mssql_store(store)) for store in mssql_stores]
+                # Start all store searches in parallel
+                tasks = [asyncio.create_task(search_mssql_store(store)) for store in mssql_stores]
 
-            # Track completed stores for logging
-            completed_count = 0
+                # Track completed stores for logging
+                completed_count = 0
 
-            # Process results as each store completes
-            for completed_task in asyncio.as_completed(tasks):
-                store, success, error, table_results = await completed_task
-                completed_count += 1
+                # Process results as each store completes
+                for completed_task in asyncio.as_completed(tasks):
+                    store, success, error, table_results = await completed_task
+                    completed_count += 1
 
-                print(f"[SEARCH] MSSQL store {completed_count}/{len(mssql_stores)}: {store['name']}")
-                yield f"event: progress\ndata: {json.dumps({'status': 'searching_store', 'store_name': store['name'], 'store_type': 'mssql'})}\n\n"
+                    print(f"[SEARCH] MSSQL store {completed_count}/{len(mssql_stores)}: {store['name']}")
+                    yield f"event: progress\ndata: {json.dumps({'status': 'searching_store', 'store_name': store['name'], 'store_type': 'mssql'})}\n\n"
 
-                if success and table_results:
-                    for table_result in table_results:
-                        # Send progress for each table found
-                        yield f"event: progress\ndata: {json.dumps({'status': 'found_in_table', 'table_name': table_result['table_name'], 'count': table_result['match_count']})}\n\n"
+                    if success and table_results:
+                        for table_result in table_results:
+                            # Send progress for each table found
+                            yield f"event: progress\ndata: {json.dumps({'status': 'found_in_table', 'table_name': table_result['table_name'], 'count': table_result['match_count']})}\n\n"
 
-                        match = {
-                            "store_id": store["id"],
-                            "store_name": store["name"],
-                            "store_type": "mssql",
-                            "product_id": str(table_result["primary_keys"][0]) if table_result["primary_keys"] else "",
-                            "product_title": table_result["product_description"],
-                            "variant_id": None,
-                            "variant_title": None,
-                            "current_barcode": table_result["upc"],
-                            "sku": None,
-                            "table_name": table_result["table_name"],
-                            "match_count": table_result["match_count"],
-                            "primary_keys": table_result["primary_keys"]
-                        }
-                        all_matches.append(match)
+                            match = {
+                                "store_id": store["id"],
+                                "store_name": store["name"],
+                                "store_type": "mssql",
+                                "product_id": str(table_result["primary_keys"][0]) if table_result["primary_keys"] else "",
+                                "product_title": table_result["product_description"],
+                                "variant_id": None,
+                                "variant_title": None,
+                                "current_barcode": table_result["upc"],
+                                "sku": None,
+                                "table_name": table_result["table_name"],
+                                "match_count": table_result["match_count"],
+                                "primary_keys": table_result["primary_keys"]
+                            }
+                            all_matches.append(match)
 
-                yield f"event: progress\ndata: {json.dumps({'status': 'completed_store', 'store_name': store['name'], 'found': len(table_results) if success else 0})}\n\n"
+                    yield f"event: progress\ndata: {json.dumps({'status': 'completed_store', 'store_name': store['name'], 'found': len(table_results) if success else 0})}\n\n"
 
-            print(f"[SEARCH] Completed MSSQL search for all {len(mssql_stores)} stores")
+                print(f"[SEARCH] Completed MSSQL search for all {len(mssql_stores)} stores")
 
-        # Send final results
-        print(f"[SEARCH] Search complete - found {len(all_matches)} total matches")
-        yield f"event: complete\ndata: {json.dumps({'upc': upc, 'matches': all_matches, 'total_found': len(all_matches), 'stores_searched': len(active_stores)})}\n\n"
+            # Send final results
+            print(f"[SEARCH] Search complete - found {len(all_matches)} total matches")
+            yield f"event: complete\ndata: {json.dumps({'upc': upc, 'matches': all_matches, 'total_found': len(all_matches), 'stores_searched': len(active_stores)})}\n\n"
+
+        except GeneratorExit:
+            print("[SEARCH] Client disconnected, cancelling search")
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            return
+        except Exception as e:
+            print(f"[SEARCH] Error: {e}")
+            yield f"event: error\ndata: {json.dumps({'message': str(e)})}\n\n"
 
     return StreamingResponse(
         generate_search_events(),
@@ -735,8 +761,16 @@ async def update_upc_stream(request: UPCUpdateRequest, db: Session = Depends(get
         # Send final results
         yield f"event: complete\ndata: {json.dumps({'old_upc': old_upc, 'new_upc': new_upc, 'results': all_results, 'total_updated': total_updated})}\n\n"
 
+    async def generate_update_events_safe() -> AsyncGenerator[str, None]:
+        try:
+            async for event in generate_update_events():
+                yield event
+        except GeneratorExit:
+            print("[UPDATE] Client disconnected")
+            return
+
     return StreamingResponse(
-        generate_update_events(),
+        generate_update_events_safe(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -826,98 +860,111 @@ async def audit_orphaned_upcs_stream(request: OrphanedUPCAuditRequest, db: Sessi
         from concurrent.futures import ThreadPoolExecutor
 
         loop = asyncio.get_event_loop()
-        executor = ThreadPoolExecutor(max_workers=1)
+        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="audit")
+        audit_future = None
 
-        # Run audit in executor
-        audit_future = loop.run_in_executor(
-            executor,
-            lambda: audit_orphaned_upcs_sync_wrapper(
-                conn.host,
-                conn.port,
-                conn.database_name,
-                conn.username,
-                conn.password,
-                progress_callback,
-                date_from,
-                date_to,
-                target_host,
-                target_port,
-                target_database,
-                target_username,
-                target_password
+        try:
+            # Run audit in executor
+            audit_future = loop.run_in_executor(
+                executor,
+                lambda: audit_orphaned_upcs_sync_wrapper(
+                    conn.host,
+                    conn.port,
+                    conn.database_name,
+                    conn.username,
+                    conn.password,
+                    progress_callback,
+                    date_from,
+                    date_to,
+                    target_host,
+                    target_port,
+                    target_database,
+                    target_username,
+                    target_password
+                )
             )
-        )
 
-        # Poll queue for progress updates while audit runs
-        # Track last event time for heartbeat
-        import time
-        last_event_time = time.time()
-        HEARTBEAT_INTERVAL = 15  # Send ping every 15 seconds
+            # Poll queue for progress updates while audit runs
+            # Track last event time for heartbeat
+            import time
+            last_event_time = time.time()
+            HEARTBEAT_INTERVAL = 15  # Send ping every 15 seconds
 
-        while not audit_future.done():
-            try:
-                # Check for progress updates (non-blocking)
-                progress_data = progress_queue.get_nowait()
+            while not audit_future.done():
+                try:
+                    # Check for progress updates (non-blocking)
+                    progress_data = progress_queue.get_nowait()
 
-                print(f"[AUDIT] Progress: {progress_data}")
+                    print(f"[AUDIT] Progress: {progress_data}")
 
-                # Send progress event
-                yield f"event: progress\ndata: {json.dumps(progress_data)}\n\n"
+                    # Send progress event
+                    yield f"event: progress\ndata: {json.dumps(progress_data)}\n\n"
 
-                # Update last event time
-                last_event_time = time.time()
+                    # Update last event time
+                    last_event_time = time.time()
 
-            except queue.Empty:
-                # No progress update, check if we need to send heartbeat
-                current_time = time.time()
-                if current_time - last_event_time >= HEARTBEAT_INTERVAL:
-                    # Send heartbeat ping to keep connection alive
-                    yield ":ping\n\n"
-                    last_event_time = current_time
+                except queue.Empty:
+                    # No progress update, check if we need to send heartbeat
+                    current_time = time.time()
+                    if current_time - last_event_time >= HEARTBEAT_INTERVAL:
+                        # Send heartbeat ping to keep connection alive
+                        yield ":ping\n\n"
+                        last_event_time = current_time
 
-                # Wait a bit before checking again
-                await asyncio.sleep(0.1)
+                    # Wait a bit before checking again
+                    await asyncio.sleep(0.1)
 
-        # Get final result
-        success, error, orphaned_records, tables_checked = await audit_future
+            # Get final result
+            success, error, orphaned_records, tables_checked = await audit_future
 
-        # Drain any remaining progress events
-        while not progress_queue.empty():
-            try:
-                progress_data = progress_queue.get_nowait()
-                yield f"event: progress\ndata: {json.dumps(progress_data)}\n\n"
-            except queue.Empty:
-                break
+            # Drain any remaining progress events
+            while not progress_queue.empty():
+                try:
+                    progress_data = progress_queue.get_nowait()
+                    yield f"event: progress\ndata: {json.dumps(progress_data)}\n\n"
+                except queue.Empty:
+                    break
 
-        print(f"[AUDIT] Completed audit for {store_name}: {len(orphaned_records)} orphaned UPCs found")
+            print(f"[AUDIT] Completed audit for {store_name}: {len(orphaned_records)} orphaned UPCs found")
 
-        if not success:
-            yield f"event: error\ndata: {json.dumps({'message': error or 'Audit failed'})}\n\n"
+            if not success:
+                yield f"event: error\ndata: {json.dumps({'message': error or 'Audit failed'})}\n\n"
+                return
+
+            # Filter out excluded UPCs for this store
+            exclusions = db.query(UPCExclusion).filter(UPCExclusion.store_id == store_id).all()
+            excluded_upcs = {exclusion.upc for exclusion in exclusions}
+
+            if excluded_upcs:
+                original_count = len(orphaned_records)
+                orphaned_records = [
+                    record for record in orphaned_records
+                    if record["upc"] not in excluded_upcs
+                ]
+                filtered_count = original_count - len(orphaned_records)
+                print(f"[AUDIT] Filtered {filtered_count} excluded UPCs from results")
+
+            # Send complete event with results
+            result_data = {
+                'store_id': store_id,
+                'store_name': store_name,
+                'orphaned_records': orphaned_records,
+                'total_orphaned': len(orphaned_records),
+                'tables_checked': tables_checked
+            }
+
+            yield f"event: complete\ndata: {json.dumps(result_data)}\n\n"
+
+        except GeneratorExit:
+            print("[AUDIT] Client disconnected, cancelling audit")
+            if audit_future and not audit_future.done():
+                audit_future.cancel()
             return
-
-        # Filter out excluded UPCs for this store
-        exclusions = db.query(UPCExclusion).filter(UPCExclusion.store_id == store_id).all()
-        excluded_upcs = {exclusion.upc for exclusion in exclusions}
-
-        if excluded_upcs:
-            original_count = len(orphaned_records)
-            orphaned_records = [
-                record for record in orphaned_records
-                if record["upc"] not in excluded_upcs
-            ]
-            filtered_count = original_count - len(orphaned_records)
-            print(f"[AUDIT] Filtered {filtered_count} excluded UPCs from results")
-
-        # Send complete event with results
-        result_data = {
-            'store_id': store_id,
-            'store_name': store_name,
-            'orphaned_records': orphaned_records,
-            'total_orphaned': len(orphaned_records),
-            'tables_checked': tables_checked
-        }
-
-        yield f"event: complete\ndata: {json.dumps(result_data)}\n\n"
+        except Exception as e:
+            print(f"[AUDIT] Error: {e}")
+            yield f"event: error\ndata: {json.dumps({'message': str(e)})}\n\n"
+        finally:
+            executor.shutdown(wait=False)
 
     return StreamingResponse(
         generate_audit_events(),
@@ -973,6 +1020,7 @@ def create_mssql_store(store_data: MSSQLStoreCreate, db: Session = Depends(get_d
     store = Store(
         name=store_data.name,
         store_type=StoreType.mssql,
+        store_category=store_data.store_category,
         is_active=store_data.is_active
     )
     db.add(store)
@@ -1006,6 +1054,7 @@ def create_shopify_store(store_data: ShopifyStoreCreate, db: Session = Depends(g
     store = Store(
         name=store_data.name,
         store_type=StoreType.shopify,
+        store_category=store_data.store_category,
         is_active=store_data.is_active
     )
     db.add(store)
@@ -1058,6 +1107,18 @@ def toggle_store_active(store_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Store not found")
 
     store.is_active = not store.is_active
+    db.commit()
+    db.refresh(store)
+
+    return store
+
+@app.patch("/api/stores/{store_id}/category", response_model=StoreResponse)
+def update_store_category(store_id: int, body: StoreCategoryUpdate, db: Session = Depends(get_db)):
+    store = db.query(Store).filter(Store.id == store_id).first()
+    if not store:
+        raise HTTPException(status_code=404, detail="Store not found")
+
+    store.store_category = body.store_category
     db.commit()
     db.refresh(store)
 
@@ -1136,6 +1197,7 @@ def export_configuration(db: Session = Depends(get_db)):
             mssql_stores.append(StoreExport(
                 name=store.name,
                 is_active=store.is_active,
+                store_category=store.store_category.value if store.store_category else "retail",
                 connection={
                     "host": store.mssql_connection.host,
                     "port": store.mssql_connection.port,
@@ -1148,6 +1210,7 @@ def export_configuration(db: Session = Depends(get_db)):
             shopify_stores.append(StoreExport(
                 name=store.name,
                 is_active=store.is_active,
+                store_category=store.store_category.value if store.store_category else "retail",
                 connection={
                     "shop_domain": store.shopify_connection.shop_domain,
                     "admin_api_key": store.shopify_connection.admin_api_key,
@@ -1198,6 +1261,7 @@ def import_configuration(config: ConfigImportRequest, db: Session = Depends(get_
             store = Store(
                 name=store_data.name,
                 store_type=StoreType.mssql,
+                store_category=getattr(store_data, 'store_category', 'retail') or 'retail',
                 is_active=store_data.is_active
             )
             db.add(store)
@@ -1254,6 +1318,7 @@ def import_configuration(config: ConfigImportRequest, db: Session = Depends(get_
             store = Store(
                 name=store_data.name,
                 store_type=StoreType.shopify,
+                store_category=getattr(store_data, 'store_category', 'retail') or 'retail',
                 is_active=store_data.is_active
             )
             db.add(store)
@@ -1429,19 +1494,19 @@ async def reconcile_orphaned_upcs_stream(request: ReconciliationRequest, db: Ses
 
     async def generate_reconciliation_events():
         """Generator for SSE events during reconciliation"""
+        import queue
+        import time
+        from concurrent.futures import ThreadPoolExecutor
+
+        progress_queue = queue.Queue()
+        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="reconcile")
+        reconcile_future = None
+
+        def progress_callback(data: dict):
+            progress_queue.put(data)
+
         try:
-            import queue
-            progress_queue = queue.Queue()
-
-            def progress_callback(data: dict):
-                progress_queue.put(data)
-
-            # Start reconciliation in background task
-            import asyncio
-            from concurrent.futures import ThreadPoolExecutor
-
             loop = asyncio.get_event_loop()
-            executor = ThreadPoolExecutor(max_workers=1)
 
             # Run reconciliation in executor
             reconcile_future = loop.run_in_executor(
@@ -1459,7 +1524,6 @@ async def reconcile_orphaned_upcs_stream(request: ReconciliationRequest, db: Ses
             )
 
             # Poll queue for progress updates
-            import time
             last_event_time = time.time()
             HEARTBEAT_INTERVAL = 15
 
@@ -1512,12 +1576,15 @@ async def reconcile_orphaned_upcs_stream(request: ReconciliationRequest, db: Ses
             yield f"event: complete\ndata: {json.dumps(result_data)}\n\n"
 
         except GeneratorExit:
-            # Client disconnected - clean shutdown
             print("[RECONCILIATION] Client disconnected, stopping reconciliation operation")
+            if reconcile_future and not reconcile_future.done():
+                reconcile_future.cancel()
             return
         except Exception as e:
             print(f"[RECONCILIATION] Error in streaming: {e}")
             yield f"event: error\ndata: {json.dumps({'message': str(e)})}\n\n"
+        finally:
+            executor.shutdown(wait=False)
 
     return StreamingResponse(
         generate_reconciliation_events(),
@@ -1587,19 +1654,19 @@ async def update_reconciled_upcs_stream(request: ReconciliationUpdateRequest, db
 
     async def generate_update_events():
         """Generator for SSE events during batch updates"""
+        import queue
+        import time
+        from concurrent.futures import ThreadPoolExecutor
+
+        progress_queue = queue.Queue()
+        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="reconcile_update")
+        update_future = None
+
+        def progress_callback(data: dict):
+            progress_queue.put(data)
+
         try:
-            import queue
-            progress_queue = queue.Queue()
-
-            def progress_callback(data: dict):
-                progress_queue.put(data)
-
-            # Start update in background task
-            import asyncio
-            from concurrent.futures import ThreadPoolExecutor
-
             loop = asyncio.get_event_loop()
-            executor = ThreadPoolExecutor(max_workers=1)
 
             # Run update in executor
             update_future = loop.run_in_executor(
@@ -1616,7 +1683,6 @@ async def update_reconciled_upcs_stream(request: ReconciliationUpdateRequest, db
             )
 
             # Poll queue for progress updates
-            import time
             last_event_time = time.time()
             HEARTBEAT_INTERVAL = 15
 
@@ -1670,12 +1736,15 @@ async def update_reconciled_upcs_stream(request: ReconciliationUpdateRequest, db
             yield f"event: complete\ndata: {json.dumps(result_data)}\n\n"
 
         except GeneratorExit:
-            # Client disconnected - clean shutdown
             print("[RECONCILIATION UPDATE] Client disconnected, stopping update operation")
+            if update_future and not update_future.done():
+                update_future.cancel()
             return
         except Exception as e:
             print(f"[RECONCILIATION UPDATE] Error in streaming: {e}")
             yield f"event: error\ndata: {json.dumps({'message': str(e)})}\n\n"
+        finally:
+            executor.shutdown(wait=False)
 
     return StreamingResponse(
         generate_update_events(),
@@ -3655,8 +3724,16 @@ async def fetch_prices_stream(request: PriceSearchRequest, db: Session = Depends
 
         yield f"event: complete\ndata: {json.dumps({'prices': prices, 'sibling_prices': sibling_prices})}\n\n"
 
+    async def generate_events_safe() -> AsyncGenerator[str, None]:
+        try:
+            async for event in generate_events():
+                yield event
+        except GeneratorExit:
+            print("[PRICE-FETCH] Client disconnected")
+            return
+
     return StreamingResponse(
-        generate_events(),
+        generate_events_safe(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
     )
@@ -4080,8 +4157,16 @@ async def update_prices_stream(request: PriceUpdateRequest, db: Session = Depend
 
         yield f"event: complete\ndata: {json.dumps({'results': results, 'batch_id': batch_id})}\n\n"
 
+    async def generate_events_safe() -> AsyncGenerator[str, None]:
+        try:
+            async for event in generate_events():
+                yield event
+        except GeneratorExit:
+            print("[PRICE-UPDATE] Client disconnected")
+            return
+
     return StreamingResponse(
-        generate_events(),
+        generate_events_safe(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
     )
@@ -4449,8 +4534,16 @@ async def shopify_sales_stream(request: ShopifySalesRequest, db: Session = Depen
 
         yield f"event: complete\ndata: {json.dumps({'results': results, 'summary': {'total_items': len(results), 'total_quantity': total_quantity, 'total_revenue': f'{total_revenue:.2f}', 'total_shipping': f'{total_shipping:.2f}', 'stores_searched': len(store_map), 'date_range': {'start': start_date, 'end': end_date}, 'excluded_products': excluded_products, 'excluded_total_revenue': f'{excluded_total_revenue:.2f}', 'excluded_total_quantity': excluded_total_quantity}})}\n\n"
 
+    async def generate_sales_events_safe() -> AsyncGenerator[str, None]:
+        try:
+            async for event in generate_sales_events():
+                yield event
+        except GeneratorExit:
+            print("[SHOPIFY-SALES] Client disconnected")
+            return
+
     return StreamingResponse(
-        generate_sales_events(),
+        generate_sales_events_safe(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -4823,8 +4916,16 @@ async def sales_report_stream(request: SalesReportRequest, db: Session = Depends
 
         yield f"event: complete\ndata: {json.dumps({'products': products, 'summary': summary, 'stores': store_names, 'subcategories': sorted(subcategories.keys())})}\n\n"
 
+    async def generate_report_events_safe() -> AsyncGenerator[str, None]:
+        try:
+            async for event in generate_report_events():
+                yield event
+        except GeneratorExit:
+            print("[SALES-REPORT] Client disconnected")
+            return
+
     return StreamingResponse(
-        generate_report_events(),
+        generate_report_events_safe(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

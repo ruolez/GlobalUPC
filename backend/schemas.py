@@ -6,6 +6,7 @@ from datetime import datetime, date
 class StoreBase(BaseModel):
     name: str
     is_active: bool = True
+    store_category: str = "retail"
 
 class MSSQLConnectionBase(BaseModel):
     host: str
@@ -126,6 +127,7 @@ class UPCUpdateResponse(BaseModel):
 class StoreExport(BaseModel):
     name: str
     is_active: bool
+    store_category: str = "retail"
     connection: dict
 
 class ConfigExportResponse(BaseModel):
@@ -521,6 +523,9 @@ class ItemTrackerExclusionListResponse(BaseModel):
 
 class StoreNameUpdate(BaseModel):
     name: str
+
+class StoreCategoryUpdate(BaseModel):
+    store_category: Literal["wholesale", "retail"]
 
 
 class ShopifySalesRequest(BaseModel):
