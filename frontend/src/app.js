@@ -7075,32 +7075,32 @@ function recalculateRowMarkup(tr) {
   const tds = tr.querySelectorAll("td");
   const hasTyped = priceInput.value || costInput.value;
 
-  // Markup (5th td, index 4)
+  // Markup (6th td, index 5)
   if (price != null && cost != null && cost !== 0) {
     const val = ((price - cost) / cost) * 100;
     const color = val > 0 ? "var(--success)" : val < 0 ? "var(--danger)" : "";
-    tds[4].textContent = val.toFixed(1) + "%";
-    tds[4].style.color = hasTyped ? (color || "var(--accent-primary)") : color;
-  } else {
-    tds[4].textContent = "-";
-    tds[4].style.color = "";
-  }
-
-  // Cost markup (6th td, index 5)
-  const pCost = priceUpdatesState.primaryCost;
-  const storeId = parseInt(tr.dataset.storeId);
-  const primaryStoreId = priceUpdatesState.config?.primaryStoreId;
-  if (storeId === primaryStoreId) {
-    tds[5].textContent = "-";
-    tds[5].style.color = "";
-  } else if (cost != null && pCost != null && pCost !== 0) {
-    const val = ((cost - pCost) / pCost) * 100;
-    const color = val > 0 ? "var(--danger)" : val < 0 ? "var(--success)" : "";
     tds[5].textContent = val.toFixed(1) + "%";
     tds[5].style.color = hasTyped ? (color || "var(--accent-primary)") : color;
   } else {
     tds[5].textContent = "-";
     tds[5].style.color = "";
+  }
+
+  // Cost markup (7th td, index 6)
+  const pCost = priceUpdatesState.primaryCost;
+  const storeId = parseInt(tr.dataset.storeId);
+  const primaryStoreId = priceUpdatesState.config?.primaryStoreId;
+  if (storeId === primaryStoreId) {
+    tds[6].textContent = "-";
+    tds[6].style.color = "";
+  } else if (cost != null && pCost != null && pCost !== 0) {
+    const val = ((cost - pCost) / pCost) * 100;
+    const color = val > 0 ? "var(--danger)" : val < 0 ? "var(--success)" : "";
+    tds[6].textContent = val.toFixed(1) + "%";
+    tds[6].style.color = hasTyped ? (color || "var(--accent-primary)") : color;
+  } else {
+    tds[6].textContent = "-";
+    tds[6].style.color = "";
   }
 }
 
