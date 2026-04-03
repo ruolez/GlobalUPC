@@ -135,7 +135,30 @@
   --accent-glow: rgba(245, 245, 245, 0.25);
 }
 
-/* Theme 6: Author's Light - Professional readability for long work sessions */
+/* Theme 6: Nord Aurora - Cool Arctic palette, gentle on eyes */
+[data-theme="nord"] {
+  --bg-primary: #2e3440;
+  --bg-secondary: #3b4252;
+  --bg-tertiary: #434c5e;
+  --bg-hover: #4c566a;
+
+  --border-color: #4c566a;
+  --border-focus: #5e6779;
+
+  --text-primary: #eceff4;
+  --text-secondary: #9da5b4;
+  --text-tertiary: #6c7689;
+
+  --accent-primary: #88c0d0;
+  --accent-hover: #7eb4c4;
+  --accent-glow: rgba(136, 192, 208, 0.25);
+
+  --success: #a3be8c;
+  --warning: #ebcb8b;
+  --danger: #bf616a;
+}
+
+/* Theme 7: Author's Light - Professional readability for long work sessions */
 [data-theme="author-light"] {
   --bg-primary: #faf9f7;
   --bg-secondary: #f5f4f1;
