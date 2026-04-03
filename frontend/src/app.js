@@ -5984,6 +5984,8 @@ function fillAllPrices() {
           } else {
             rowCost = roundUpTo5Cents(effectiveDeliveryB * 1.02).toFixed(2);
           }
+        } else if (newCost !== "") {
+          rowCost = newCost;
         }
       }
 
