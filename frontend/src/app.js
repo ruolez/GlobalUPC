@@ -1227,6 +1227,13 @@ document.addEventListener("click", (e) => {
   }
 });
 
+// Theme Toggle (Nord <-> Author's Light)
+document.getElementById("themeToggle").addEventListener("click", () => {
+  const current = localStorage.getItem("selectedTheme") || "author-light";
+  const next = current === "author-light" ? "nord" : "author-light";
+  setTheme(next);
+});
+
 // Default Landing Page Preference
 function setDefaultLandingPage(pageName) {
   localStorage.setItem("defaultLandingPage", pageName);
