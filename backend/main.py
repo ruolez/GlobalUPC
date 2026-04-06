@@ -2742,7 +2742,7 @@ async def search_item_tracker_stream(request: ItemTrackerSearchRequest, db: Sess
                         new_qty = event.extended_amount  # NewQty stored in extended_amount
                         event.running_balance = new_qty  # Absolute qty after recount
                         event.extended_amount = None  # Clear it, not needed in response
-                        balance -= (event.quantity or 0)  # Undo recount delta when walking backward
+                        balance = (new_qty or 0) - (event.quantity or 0)  # Reset to pre-recount qty
                     else:
                         event.running_balance = balance
                         qty = event.quantity or 0
@@ -3022,7 +3022,7 @@ async def get_item_tracker_summary(
                 new_qty = event.extended_amount
                 event.running_balance = new_qty
                 event.extended_amount = None
-                balance -= (event.quantity or 0)
+                balance = (new_qty or 0) - (event.quantity or 0)  # Reset to pre-recount qty
             else:
                 event.running_balance = balance
                 qty = event.quantity or 0
