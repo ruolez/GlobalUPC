@@ -3667,33 +3667,10 @@ async def fetch_prices_stream(request: PriceSearchRequest, db: Session = Depends
                     _, store_id, store, success, error, (matched, variants_by_pid) = result
 
                     if success and matched:
-                        searched_variant_ids = {v["variant_id"] for v in matched}
-
-                        searched_price = None
-                        for v in matched:
-                            if v.get("price") is not None:
-                                searched_price = str(v["price"])
-                                break
-
-                        seen = set()
                         merged_variants = []
                         for v in matched:
-                            vid = v["variant_id"]
-                            if vid not in seen:
-                                seen.add(vid)
-                                v["is_searched"] = True
-                                merged_variants.append(v)
-
-                        for pid, prod_variants in variants_by_pid.items():
-                            for v in prod_variants:
-                                vid = v["variant_id"]
-                                if vid in seen:
-                                    continue
-                                seen.add(vid)
-                                v["is_searched"] = vid in searched_variant_ids
-                                if v.get("barcode") and v["barcode"].strip():
-                                    if searched_price is not None and str(v.get("price")) == searched_price:
-                                        merged_variants.append(v)
+                            v["is_searched"] = True
+                            merged_variants.append(v)
 
                         prices.append({
                             "store_id": store.id,
