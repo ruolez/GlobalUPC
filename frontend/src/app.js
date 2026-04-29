@@ -9867,6 +9867,14 @@ const qipState = {
     sort_order: "desc",
     limit: 500,
   },
+  // Tracks total available options per multiselect, so the badge can
+  // compare "checked count vs total" and we can default to "all checked"
+  // on first populate.
+  multiselectMeta: {
+    source_dbs: { initialized: false, total: 0 },
+    packers: { initialized: false, total: 0 },
+    checkers: { initialized: false, total: 0 },
+  },
   results: [],
   selectedQuotation: null,
   productCache: new Map(),
@@ -10049,8 +10057,11 @@ function initQuotationsInProgressPage() {
       sort_order: qipState.filters.sort_order,
       limit: 500,
     };
+    // Re-default multiselects to "all checked" on next populate.
+    Object.keys(qipState.multiselectMeta).forEach((k) => {
+      qipState.multiselectMeta[k].initialized = false;
+    });
     qipUpdateSegmented();
-    qipUpdateMultiselectsTriggers();
     fetchQuotationsInProgress();
   });
 
@@ -10078,21 +10089,26 @@ function qipUpdateSegmented() {
   }
 }
 
-const QIP_MS_KEY_FIELD = {
-  source_dbs: "source_dbs",
-  packers: "packers",
-  checkers: "checkers",
-};
-
 function populateMultiselect(key, values) {
   const container = document.querySelector(`.qip-multiselect[data-key="${key}"]`);
   if (!container) return;
   const popover = container.querySelector(".qip-ms-popover");
-  const selectedSet = new Set(qipState.filters[key] || []);
-  // Drop selections that no longer exist in the data
-  qipState.filters[key] = (qipState.filters[key] || []).filter((v) =>
-    values.includes(v),
-  );
+
+  const meta = qipState.multiselectMeta[key];
+  meta.total = values.length;
+
+  if (!meta.initialized) {
+    // First time we see options for this filter -> default to all checked.
+    qipState.filters[key] = [...values];
+    meta.initialized = true;
+  } else {
+    // Drop any prior selections that no longer exist in the data.
+    qipState.filters[key] = (qipState.filters[key] || []).filter((v) =>
+      values.includes(v),
+    );
+  }
+
+  const selectedSet = new Set(qipState.filters[key]);
 
   popover.innerHTML = "";
   if (!values || values.length === 0) {
@@ -10130,15 +10146,21 @@ function qipUpdateMultiselectTrigger(key) {
   if (!container) return;
   const trigger = container.querySelector(".qip-ms-trigger");
   const countEl = trigger.querySelector(".qip-ms-count");
-  const count = (qipState.filters[key] || []).length;
-  if (count > 0) {
-    countEl.textContent = String(count);
-    countEl.hidden = false;
-    trigger.classList.add("has-selection");
-  } else {
+  const meta = qipState.multiselectMeta[key];
+  const checked = (qipState.filters[key] || []).length;
+  const total = meta ? meta.total : 0;
+
+  if (total === 0) {
     countEl.hidden = true;
     trigger.classList.remove("has-selection");
+    return;
   }
+
+  countEl.textContent = String(checked);
+  countEl.hidden = false;
+  // Highlight the trigger only when the user has actually filtered
+  // (i.e. some options are unchecked).
+  trigger.classList.toggle("has-selection", checked < total);
 }
 
 function qipUpdateMultiselectsTriggers() {
@@ -10503,7 +10525,7 @@ function renderQuotationProducts(products) {
 
   if (!products || products.length === 0) {
     countEl.textContent = "0";
-    tbody.innerHTML = `<tr><td colspan="5"><div class="qip-products-empty">No products on this quotation.</div></td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="4"><div class="qip-products-empty">No products on this quotation.</div></td></tr>`;
     return;
   }
 
@@ -10512,13 +10534,11 @@ function renderQuotationProducts(products) {
   tbody.innerHTML = "";
   products.forEach((p) => {
     const tr = document.createElement("tr");
-    const cat = [p.cate_id, p.sub_cate_id].filter((v) => v != null).join(" / ");
     tr.innerHTML = `
       <td class="qip-mono">${escapeHtml(p.product_upc || "—")}</td>
       <td class="qip-mono">${escapeHtml(p.product_sku || "—")}</td>
       <td class="qip-product-desc">${escapeHtml(p.product_description || "—")}</td>
       <td class="qip-num">${(p.qty || 0).toLocaleString()}</td>
-      <td class="qip-num">${escapeHtml(cat || "—")}</td>
     `;
     tbody.appendChild(tr);
   });
