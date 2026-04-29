@@ -3118,29 +3118,28 @@ body.no-scroll {
 
 .qip-card-index {
   font-family: var(--qip-mono);
-  font-size: 0.78rem;
+  font-size: 0.92rem;
   font-weight: 700;
-  color: var(--bg-primary);
+  color: var(--text-tertiary);
   font-variant-numeric: tabular-nums;
-  letter-spacing: 0.02em;
+  letter-spacing: -0.01em;
   flex-shrink: 0;
-  padding: 0.18rem 0.5rem;
-  min-width: 1.95rem;
-  text-align: center;
-  background: var(--text-secondary);
-  border: 1px solid var(--text-secondary);
-  border-radius: 5px;
+  min-width: 1.6rem;
+  text-align: right;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
   line-height: 1.1;
-  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.08);
+}
+
+.qip-card:hover .qip-card-index {
+  color: var(--text-secondary);
 }
 
 .qip-card.selected .qip-card-index {
-  background: var(--accent-primary);
-  border-color: var(--accent-primary);
-  color: var(--bg-primary);
-  box-shadow:
-    0 1px 0 rgba(0, 0, 0, 0.1),
-    0 0 0 2px color-mix(in srgb, var(--accent-primary) 25%, transparent);
+  color: var(--accent-primary);
 }
 
 .qip-card-num {
