@@ -8,17 +8,20 @@ from mssql_helper import get_mssql_connection_string
 
 _qip_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="qip")
 
-# Whitelist of sortable columns (alias -> SQL expression on the aggregated query)
+# Whitelist of sortable columns. We GROUP BY qip.QuotationNumber, so every
+# non-grouped column must be wrapped in an aggregate to be valid in ORDER BY.
 SORTABLE_COLUMNS = {
-    "start_date": "start_date",
+    "start_date":       "MIN(qip.StartDate)",
     "quotation_number": "qip.QuotationNumber",
-    "packer": "qs.Packer",
-    "checker": "qs.Checker",
-    "dop2": "qs.Dop2",
-    "dop3": "qs.Dop3",
-    "total_qty": "total_qty",
-    "business_name": "qs.BusinessName",
-    "source_db": "qip.SourceDB",
+    "packer":           "MAX(qs.Packer)",
+    "checker":          "MAX(qs.Checker)",
+    # Dop2/Dop3 are stored as varchar ("MM/DD/YYYY HH:MM AM/PM");
+    # cast to datetime so chronological sort behaves correctly.
+    "dop2":             "MAX(TRY_CONVERT(datetime, qs.Dop2))",
+    "dop3":             "MAX(TRY_CONVERT(datetime, qs.Dop3))",
+    "total_qty":        "MAX(qs.TotalQty)",
+    "business_name":    "MAX(qs.BusinessName)",
+    "source_db":        "MAX(qip.SourceDB)",
 }
 
 
