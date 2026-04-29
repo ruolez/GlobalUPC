@@ -10153,10 +10153,27 @@ async function fetchQuotationsInProgress(forceClearCache = false) {
   if (forceClearCache) qipState.productCache.clear();
 
   try {
+    // When every option of a multiselect is checked, treat it as "no
+    // filter on this dimension" -- send an empty array. Otherwise the
+    // backend's IN (...) clause would silently exclude rows whose value
+    // is NULL (e.g. unscanned quotations have no packer / checker row).
+    const payload = { ...qipState.filters };
+    ["source_dbs", "packers", "checkers"].forEach((k) => {
+      const meta = qipState.multiselectMeta[k];
+      if (
+        meta &&
+        meta.initialized &&
+        meta.total > 0 &&
+        (qipState.filters[k] || []).length === meta.total
+      ) {
+        payload[k] = [];
+      }
+    });
+
     const resp = await fetch(`${API_BASE}/quotations/in-progress`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(qipState.filters),
+      body: JSON.stringify(payload),
     });
 
     if (resp.status === 400) {
