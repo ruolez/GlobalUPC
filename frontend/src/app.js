@@ -10701,19 +10701,9 @@ function renderSearchSummary() {
 
   const rows = rowsData
     .map((r) => {
-      const descMatch = (r.product_description || "")
-        .toLowerCase()
-        .includes(term.toLowerCase());
-      const quotationLabel =
-        r.quotations.size > 1
-          ? `<span class="qip-summary-row-sub">in ${r.quotations.size} quotations</span>`
-          : "";
       return `
         <tr class="qip-summary-row">
-          <td class="qip-product-desc${descMatch ? " qip-summary-cell-match" : ""}">
-            <span class="qip-summary-row-desc">${escapeHtml(r.product_description || "—")}</span>
-            ${quotationLabel}
-          </td>
+          <td class="qip-product-desc">${escapeHtml(r.product_description || "—")}</td>
           <td class="qip-num"><strong>${r.qty.toLocaleString()}</strong></td>
         </tr>
       `;

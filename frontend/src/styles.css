@@ -3771,31 +3771,18 @@ body.no-scroll {
   font-weight: 700;
 }
 
-/* Summary table -- inherits .qip-products-table look */
-.qip-summary-cell-match {
-  background: color-mix(
-    in srgb,
-    var(--accent-primary) 14%,
-    transparent
-  );
-  font-weight: 600;
-  color: color-mix(in srgb, var(--accent-primary) 80%, var(--text-primary));
+/* Summary table -- inherits .qip-products-table look but every row is
+   by definition a search match, so we replace the neutral zebra with
+   a uniform accent tint that covers both the description and qty
+   cells. Subtle alternation keeps row separation legible. */
+.qip-products-table.qip-summary-table tbody tr:nth-child(odd) td {
+  background: color-mix(in srgb, var(--accent-primary) 6%, var(--bg-primary));
 }
-
-.qip-summary-row-desc {
-  display: block;
-  word-break: break-word;
+.qip-products-table.qip-summary-table tbody tr:nth-child(even) td {
+  background: color-mix(in srgb, var(--accent-primary) 12%, var(--bg-primary));
 }
-
-.qip-summary-row-sub {
-  display: block;
-  margin-top: 0.15rem;
-  font-family: var(--qip-mono);
-  font-size: 0.65rem;
-  font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--text-tertiary);
+.qip-products-table.qip-summary-table tbody tr:hover td {
+  background: color-mix(in srgb, var(--accent-primary) 18%, var(--bg-primary));
 }
 
 /* Toolbar Summary button */
