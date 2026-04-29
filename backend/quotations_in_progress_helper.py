@@ -33,21 +33,18 @@ def _row_to_dt(value: Any) -> Optional[str]:
     return str(value)
 
 
-def _build_scan_clause(show_all: bool, scan_in: bool, scan_out: bool) -> str:
+def _build_scan_clause(scan_filter: str) -> str:
     """
     Returns a SQL fragment (without leading AND) describing the scan-state filter,
     or an empty string when no filter applies.
     """
-    if show_all:
-        return ""
-
-    if scan_in and scan_out:
-        return "qs.Dop2 IS NOT NULL AND qs.Dop3 IS NOT NULL"
-    if scan_in and not scan_out:
-        return "qs.Dop2 IS NOT NULL AND qs.Dop3 IS NULL"
-    if not scan_in and scan_out:
-        return "qs.Dop2 IS NULL AND qs.Dop3 IS NOT NULL"
-    return "qs.Dop2 IS NULL AND qs.Dop3 IS NULL"
+    if scan_filter == "in":
+        return "qs.Dop2 IS NOT NULL"
+    if scan_filter == "out":
+        return "qs.Dop3 IS NOT NULL"
+    if scan_filter == "none":
+        return "qs.Dop2 IS NULL AND qs.Dop3 IS NULL"
+    return ""  # "all"
 
 
 def _list_quotations_in_progress_sync(
@@ -56,11 +53,7 @@ def _list_quotations_in_progress_sync(
     database: str,
     username: str,
     password: str,
-    show_all: bool,
-    scan_in: bool,
-    scan_out: bool,
-    date_from: Optional[date],
-    date_to: Optional[date],
+    scan_filter: str,
     source_dbs: List[str],
     packers: List[str],
     checkers: List[str],
@@ -78,17 +71,9 @@ def _list_quotations_in_progress_sync(
     where_clauses: List[str] = []
     params: List[Any] = []
 
-    scan_clause = _build_scan_clause(show_all, scan_in, scan_out)
+    scan_clause = _build_scan_clause(scan_filter)
     if scan_clause:
         where_clauses.append(scan_clause)
-
-    if date_from:
-        where_clauses.append("qip.StartDate >= ?")
-        params.append(date_from)
-    if date_to:
-        # Inclusive end-of-day
-        where_clauses.append("qip.StartDate < DATEADD(day, 1, CAST(? AS datetime))")
-        params.append(date_to)
 
     if source_dbs:
         placeholders = ",".join(["?"] * len(source_dbs))

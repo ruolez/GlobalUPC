@@ -9854,11 +9854,7 @@ const qipState = {
   initialized: false,
   loading: false,
   filters: {
-    show_all: true,
-    scan_in: false,
-    scan_out: false,
-    date_from: null,
-    date_to: null,
+    scan_filter: "all", // "all" | "in" | "out" | "none"
     source_dbs: [],
     packers: [],
     checkers: [],
@@ -9947,38 +9943,13 @@ function loadQuotationsInProgressPage() {
 }
 
 function initQuotationsInProgressPage() {
-  // ----- Segmented scan-status control -----
+  // ----- Segmented scan-status control (single-select) -----
   const segContainer = document.getElementById("qip-scan-segmented");
   segContainer.addEventListener("click", (e) => {
     const btn = e.target.closest("button[data-scan]");
     if (!btn) return;
-    const which = btn.dataset.scan;
-
-    if (which === "all") {
-      qipState.filters.show_all = true;
-      qipState.filters.scan_in = false;
-      qipState.filters.scan_out = false;
-    } else {
-      // Toggle the clicked one; turn off "all"
-      qipState.filters.show_all = false;
-      if (which === "in") qipState.filters.scan_in = !qipState.filters.scan_in;
-      if (which === "out") qipState.filters.scan_out = !qipState.filters.scan_out;
-      // If both off, snap back to "all"
-      if (!qipState.filters.scan_in && !qipState.filters.scan_out) {
-        qipState.filters.show_all = true;
-      }
-    }
+    qipState.filters.scan_filter = btn.dataset.scan;
     qipUpdateSegmented();
-    fetchQuotationsInProgress();
-  });
-
-  // ----- Date inputs -----
-  document.getElementById("qip-date-from").addEventListener("change", (e) => {
-    qipState.filters.date_from = e.target.value || null;
-    fetchQuotationsInProgress();
-  });
-  document.getElementById("qip-date-to").addEventListener("change", (e) => {
-    qipState.filters.date_to = e.target.value || null;
     fetchQuotationsInProgress();
   });
 
@@ -10040,15 +10011,9 @@ function initQuotationsInProgressPage() {
     .addEventListener("click", () => fetchQuotationsInProgress(true));
 
   document.getElementById("qip-clear-btn").addEventListener("click", () => {
-    document.getElementById("qip-date-from").value = "";
-    document.getElementById("qip-date-to").value = "";
     document.getElementById("qip-search").value = "";
     qipState.filters = {
-      show_all: true,
-      scan_in: false,
-      scan_out: false,
-      date_from: null,
-      date_to: null,
+      scan_filter: "all",
       source_dbs: [],
       packers: [],
       checkers: [],
@@ -10079,14 +10044,12 @@ function initQuotationsInProgressPage() {
 function qipUpdateSegmented() {
   const seg = document.getElementById("qip-scan-segmented");
   if (!seg) return;
-  const buttons = seg.querySelectorAll("button[data-scan]");
-  buttons.forEach((b) => b.classList.remove("active"));
-  if (qipState.filters.show_all) {
-    seg.querySelector('[data-scan="all"]').classList.add("active");
-  } else {
-    if (qipState.filters.scan_in) seg.querySelector('[data-scan="in"]').classList.add("active");
-    if (qipState.filters.scan_out) seg.querySelector('[data-scan="out"]').classList.add("active");
-  }
+  seg.querySelectorAll("button[data-scan]").forEach((b) => {
+    b.classList.toggle(
+      "active",
+      b.dataset.scan === qipState.filters.scan_filter,
+    );
+  });
 }
 
 function populateMultiselect(key, values) {
@@ -10286,7 +10249,8 @@ function renderQuotationsList(quotations) {
   }
 
   body.innerHTML = "";
-  quotations.forEach((q) => {
+  const indexWidth = String(quotations.length).length;
+  quotations.forEach((q, idx) => {
     const card = document.createElement("div");
     card.className = "qip-card";
     card.dataset.quotationNumber = q.quotation_number || "";
@@ -10305,9 +10269,11 @@ function renderQuotationsList(quotations) {
     const businessText = q.business_name || "—";
     const packerText = q.packer ? `· ${q.packer}` : "";
     const metaTitle = `${businessText}${packerText ? ` (${q.packer})` : ""}${startedAbs ? ` — started ${startedAbs}` : ""}`;
+    const indexLabel = String(idx + 1).padStart(indexWidth, "0");
 
     card.innerHTML = `
       <div class="qip-card-head">
+        <span class="qip-card-index">${escapeHtml(indexLabel)}</span>
         <span class="qip-card-num">${escapeHtml(q.quotation_number || "—")}</span>
         ${q.source_db ? `<span class="qip-card-tag">${escapeHtml(q.source_db)}</span>` : ""}
       </div>

@@ -592,11 +592,11 @@ class SalesConfigResponse(BaseModel):
 
 # Quotations In Progress Schemas
 class QuotationsInProgressFilter(BaseModel):
-    show_all: bool = True
-    scan_in: bool = False
-    scan_out: bool = False
-    date_from: Optional[date] = None
-    date_to: Optional[date] = None
+    # "all" -> no scan filter
+    # "in"  -> has scan-in (regardless of scan-out)
+    # "out" -> has scan-out (regardless of scan-in)
+    # "none" -> has neither scan-in nor scan-out
+    scan_filter: Literal["all", "in", "out", "none"] = "all"
     source_dbs: List[str] = []
     packers: List[str] = []
     checkers: List[str] = []
