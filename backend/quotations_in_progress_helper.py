@@ -33,17 +33,28 @@ def _row_to_dt(value: Any) -> Optional[str]:
     return str(value)
 
 
-def _build_scan_clause(scan_filter: str) -> str:
+def _build_scan_having(scan_filter: str) -> str:
     """
-    Returns a SQL fragment (without leading AND) describing the scan-state filter,
-    or an empty string when no filter applies.
+    Returns a HAVING fragment (without the HAVING keyword) describing the
+    scan-state filter against aggregated values, or an empty string when no
+    filter applies.
+
+    Uses MAX(...) so the test runs against the value displayed for the
+    quotation -- this is robust against multiple QuotationsStatus rows per
+    QuotationNumber. Treats empty / whitespace strings the same as NULL,
+    matching the frontend's "hasIn / hasOut" check.
     """
+    in_present = "MAX(qs.Dop2) IS NOT NULL AND LTRIM(RTRIM(MAX(qs.Dop2))) <> ''"
+    out_present = "MAX(qs.Dop3) IS NOT NULL AND LTRIM(RTRIM(MAX(qs.Dop3))) <> ''"
+    in_absent = "(MAX(qs.Dop2) IS NULL OR LTRIM(RTRIM(MAX(qs.Dop2))) = '')"
+    out_absent = "(MAX(qs.Dop3) IS NULL OR LTRIM(RTRIM(MAX(qs.Dop3))) = '')"
+
     if scan_filter == "in":
-        return "qs.Dop2 IS NOT NULL"
+        return in_present
     if scan_filter == "out":
-        return "qs.Dop3 IS NOT NULL"
+        return out_present
     if scan_filter == "none":
-        return "qs.Dop2 IS NULL AND qs.Dop3 IS NULL"
+        return f"{in_absent} AND {out_absent}"
     return ""  # "all"
 
 
@@ -69,11 +80,12 @@ def _list_quotations_in_progress_sync(
     direction = "DESC" if sort_order.lower() == "desc" else "ASC"
 
     where_clauses: List[str] = []
+    having_clauses: List[str] = []
     params: List[Any] = []
 
-    scan_clause = _build_scan_clause(scan_filter)
-    if scan_clause:
-        where_clauses.append(scan_clause)
+    scan_having = _build_scan_having(scan_filter)
+    if scan_having:
+        having_clauses.append(scan_having)
 
     if source_dbs:
         placeholders = ",".join(["?"] * len(source_dbs))
@@ -101,6 +113,7 @@ def _list_quotations_in_progress_sync(
         params.extend([like, like, like, like, like, like])
 
     where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+    having_sql = ("HAVING " + " AND ".join(having_clauses)) if having_clauses else ""
 
     query = f"""
         SELECT TOP (?)
@@ -131,6 +144,7 @@ def _list_quotations_in_progress_sync(
         LEFT JOIN QuotationsStatus qs ON qs.QuotationNumber = qip.QuotationNumber
         {where_sql}
         GROUP BY qip.QuotationNumber
+        {having_sql}
         ORDER BY {sort_sql} {direction}
     """
 
