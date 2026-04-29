@@ -2526,109 +2526,110 @@
         </div>
 
         <!-- Quotations In Progress Page -->
-        <div id="quotations-in-progress-page" class="page" style="display: none">
-          <header class="page-header">
-            <h2>In Progress</h2>
-            <p class="subtitle">
-              Quotations currently being shipped &mdash; filter by scan status,
-              date, source store, packer/checker, and product.
-            </p>
+        <div id="quotations-in-progress-page" class="page qip-page" style="display: none">
+          <header class="qip-header">
+            <div class="qip-header-text">
+              <div class="qip-eyebrow">Operations · Live</div>
+              <h2>In&nbsp;Progress</h2>
+            </div>
+            <div class="qip-header-meta" id="qip-header-meta">
+              <span class="qip-meta-cell"><span class="qip-meta-num" id="qip-meta-total">—</span><span class="qip-meta-label">tracked</span></span>
+              <span class="qip-meta-cell"><span class="qip-meta-num" id="qip-meta-pending">—</span><span class="qip-meta-label">pending scan</span></span>
+              <span class="qip-meta-cell"><span class="qip-meta-num" id="qip-meta-complete">—</span><span class="qip-meta-label">complete</span></span>
+            </div>
           </header>
 
           <!-- Unconfigured banner -->
-          <div
-            id="qip-not-configured"
-            class="card"
-            style="display: none"
-          >
-            <div class="card-body">
-              <p>
-                <strong>Admin store not configured.</strong>
-                Open
-                <a href="#" data-page="settings" class="page-link">Settings</a>
-                and pick the MSSQL store hosting the centralized DB_ADMIN
-                database (the one containing
-                <code>QuotationsInProgress</code> and
-                <code>QuotationsStatus</code>).
-              </p>
+          <div id="qip-not-configured" class="qip-banner" style="display: none">
+            <div class="qip-banner-mark">!</div>
+            <div class="qip-banner-body">
+              <strong>Admin database not configured.</strong>
+              Open
+              <a href="#" data-page="settings" class="qip-banner-link">Settings</a>
+              and select the MSSQL store hosting the centralized DB_ADMIN database
+              (containing <code>QuotationsInProgress</code> and <code>QuotationsStatus</code>).
             </div>
           </div>
 
-          <!-- Filter bar -->
-          <div id="qip-controls" class="card" style="display: none">
-            <div class="card-body">
-              <div class="qip-filter-grid">
-                <div class="qip-filter-group">
-                  <label class="qip-filter-label">Scan status</label>
-                  <div class="qip-checkbox-row">
-                    <label class="qip-checkbox">
-                      <input type="checkbox" id="qip-show-all" checked />
-                      <span>Show all</span>
-                    </label>
-                    <label class="qip-checkbox">
-                      <input type="checkbox" id="qip-scan-in" disabled />
-                      <span>Scan-in</span>
-                    </label>
-                    <label class="qip-checkbox">
-                      <input type="checkbox" id="qip-scan-out" disabled />
-                      <span>Scan-out</span>
-                    </label>
-                  </div>
-                </div>
+          <!-- Toolbar -->
+          <div id="qip-controls" class="qip-toolbar" style="display: none">
+            <div class="qip-segmented" id="qip-scan-segmented" role="group" aria-label="Scan status filter">
+              <button type="button" class="active" data-scan="all">All</button>
+              <button type="button" data-scan="in">
+                <span class="qip-seg-dot in"></span>Scan-in
+              </button>
+              <button type="button" data-scan="out">
+                <span class="qip-seg-dot out"></span>Scan-out
+              </button>
+            </div>
 
-                <div class="qip-filter-group">
-                  <label class="qip-filter-label" for="qip-date-from">Start date</label>
-                  <div class="qip-date-row">
-                    <input type="date" id="qip-date-from" />
-                    <span class="qip-date-sep">&rarr;</span>
-                    <input type="date" id="qip-date-to" />
-                  </div>
-                </div>
+            <div class="qip-date-range">
+              <input type="date" id="qip-date-from" aria-label="Start date from" />
+              <span class="qip-date-arrow">→</span>
+              <input type="date" id="qip-date-to" aria-label="Start date to" />
+            </div>
 
-                <div class="qip-filter-group qip-filter-search">
-                  <label class="qip-filter-label" for="qip-search">Search</label>
-                  <input
-                    type="text"
-                    id="qip-search"
-                    placeholder="Quot #, UPC, product, business name…"
-                  />
-                </div>
+            <div class="qip-search">
+              <svg class="qip-search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="11" cy="11" r="7"></circle>
+                <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+              </svg>
+              <input
+                type="text"
+                id="qip-search"
+                placeholder="Search quotation #, UPC, product, business…"
+              />
+            </div>
 
-                <div class="qip-filter-group">
-                  <label class="qip-filter-label" for="qip-source-db">Source store</label>
-                  <select id="qip-source-db" multiple size="3"></select>
-                </div>
-                <div class="qip-filter-group">
-                  <label class="qip-filter-label" for="qip-packer">Packer</label>
-                  <select id="qip-packer" multiple size="3"></select>
-                </div>
-                <div class="qip-filter-group">
-                  <label class="qip-filter-label" for="qip-checker">Checker</label>
-                  <select id="qip-checker" multiple size="3"></select>
-                </div>
+            <div class="qip-multiselect" data-key="source_dbs">
+              <button type="button" class="qip-ms-trigger">
+                <span class="qip-ms-label">Source</span>
+                <span class="qip-ms-count" hidden>0</span>
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+              </button>
+              <div class="qip-ms-popover" role="listbox"></div>
+            </div>
+            <div class="qip-multiselect" data-key="packers">
+              <button type="button" class="qip-ms-trigger">
+                <span class="qip-ms-label">Packer</span>
+                <span class="qip-ms-count" hidden>0</span>
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+              </button>
+              <div class="qip-ms-popover" role="listbox"></div>
+            </div>
+            <div class="qip-multiselect" data-key="checkers">
+              <button type="button" class="qip-ms-trigger">
+                <span class="qip-ms-label">Checker</span>
+                <span class="qip-ms-count" hidden>0</span>
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+              </button>
+              <div class="qip-ms-popover" role="listbox"></div>
+            </div>
 
-                <div class="qip-filter-group qip-filter-actions">
-                  <button class="btn btn-primary" id="qip-refresh-btn">
-                    Refresh
-                  </button>
-                  <button class="btn btn-secondary" id="qip-clear-btn">
-                    Clear filters
-                  </button>
-                </div>
-              </div>
+            <div class="qip-toolbar-actions">
+              <button type="button" class="qip-icon-btn" id="qip-clear-btn" title="Clear filters" aria-label="Clear filters">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+                </svg>
+              </button>
+              <button type="button" class="qip-icon-btn primary" id="qip-refresh-btn" title="Refresh" aria-label="Refresh">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/>
+                </svg>
+              </button>
             </div>
           </div>
 
           <!-- Two-pane results -->
           <div id="qip-results" class="qip-layout" style="display: none">
-            <!-- Left pane: quotation list -->
-            <div class="qip-list-pane card">
-              <div class="qip-list-header">
+            <section class="qip-list">
+              <header class="qip-list-head">
                 <div class="qip-list-title">
-                  <span id="qip-count">0</span> quotations
+                  <span id="qip-count">0</span>
+                  <span class="qip-list-title-label">quotations</span>
                 </div>
-                <div class="qip-sort-controls">
-                  <label class="qip-sort-label" for="qip-sort-by">Sort:</label>
+                <div class="qip-sort">
+                  <label for="qip-sort-by">Sort</label>
                   <select id="qip-sort-by">
                     <option value="start_date">Start date</option>
                     <option value="quotation_number">Quotation #</option>
@@ -2638,50 +2639,67 @@
                     <option value="dop2">Scan-in</option>
                     <option value="dop3">Scan-out</option>
                     <option value="total_qty">Total qty</option>
-                    <option value="source_db">Source store</option>
+                    <option value="source_db">Source</option>
                   </select>
                   <button
-                    class="btn btn-secondary qip-sort-dir"
+                    type="button"
                     id="qip-sort-dir"
+                    class="qip-sort-dir"
                     data-order="desc"
-                    title="Toggle sort direction"
+                    aria-label="Toggle sort direction"
                   >
-                    &darr;
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round">
+                      <line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/>
+                    </svg>
                   </button>
                 </div>
-              </div>
+              </header>
               <div class="qip-list-body" id="qip-list-body">
                 <div class="qip-empty">No quotations match these filters.</div>
               </div>
-            </div>
+            </section>
 
-            <!-- Right pane: detail / products -->
-            <div class="qip-detail-pane card">
+            <section class="qip-detail">
               <div id="qip-detail-empty" class="qip-detail-empty">
-                <p>Select a quotation on the left to view its products.</p>
+                <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                  <polyline points="14 2 14 8 20 8"/>
+                  <line x1="9" y1="13" x2="15" y2="13"/>
+                  <line x1="9" y1="17" x2="13" y2="17"/>
+                </svg>
+                <div class="qip-detail-empty-text">
+                  <strong>Select a quotation</strong>
+                  <span>Choose a record on the left to inspect line items, scan timeline, and shipment details.</span>
+                </div>
               </div>
               <div id="qip-detail-content" style="display: none">
-                <div id="qip-detail-header" class="qip-detail-header"></div>
-                <div class="qip-detail-products">
-                  <table class="data-table" id="qip-products-table">
+                <div id="qip-detail-header"></div>
+
+                <div class="qip-products">
+                  <header class="qip-products-head">
+                    <h3>Line items</h3>
+                    <span id="qip-products-count">0</span>
+                  </header>
+                  <table class="qip-products-table" id="qip-products-table">
                     <thead>
                       <tr>
                         <th>UPC</th>
                         <th>SKU</th>
                         <th>Description</th>
                         <th class="qip-num">Qty</th>
-                        <th>Cat / Sub</th>
+                        <th class="qip-num">Cat&nbsp;/&nbsp;Sub</th>
                       </tr>
                     </thead>
                     <tbody></tbody>
                   </table>
                 </div>
               </div>
-            </div>
+            </section>
           </div>
 
           <div id="qip-loading" class="qip-loading" style="display: none">
-            Loading…
+            <span class="qip-spinner"></span>
+            Loading quotations…
           </div>
           <div id="qip-error" class="qip-error" style="display: none"></div>
         </div>

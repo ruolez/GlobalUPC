@@ -9939,36 +9939,32 @@ function loadQuotationsInProgressPage() {
 }
 
 function initQuotationsInProgressPage() {
-  const showAll = document.getElementById("qip-show-all");
-  const scanIn = document.getElementById("qip-scan-in");
-  const scanOut = document.getElementById("qip-scan-out");
+  // ----- Segmented scan-status control -----
+  const segContainer = document.getElementById("qip-scan-segmented");
+  segContainer.addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-scan]");
+    if (!btn) return;
+    const which = btn.dataset.scan;
 
-  function syncScanCheckboxes() {
-    if (showAll.checked) {
-      scanIn.disabled = true;
-      scanOut.disabled = true;
+    if (which === "all") {
+      qipState.filters.show_all = true;
+      qipState.filters.scan_in = false;
+      qipState.filters.scan_out = false;
     } else {
-      scanIn.disabled = false;
-      scanOut.disabled = false;
+      // Toggle the clicked one; turn off "all"
+      qipState.filters.show_all = false;
+      if (which === "in") qipState.filters.scan_in = !qipState.filters.scan_in;
+      if (which === "out") qipState.filters.scan_out = !qipState.filters.scan_out;
+      // If both off, snap back to "all"
+      if (!qipState.filters.scan_in && !qipState.filters.scan_out) {
+        qipState.filters.show_all = true;
+      }
     }
-    qipState.filters.show_all = showAll.checked;
-    qipState.filters.scan_in = scanIn.checked;
-    qipState.filters.scan_out = scanOut.checked;
-  }
-
-  showAll.addEventListener("change", () => {
-    syncScanCheckboxes();
-    fetchQuotationsInProgress();
-  });
-  scanIn.addEventListener("change", () => {
-    syncScanCheckboxes();
-    fetchQuotationsInProgress();
-  });
-  scanOut.addEventListener("change", () => {
-    syncScanCheckboxes();
+    qipUpdateSegmented();
     fetchQuotationsInProgress();
   });
 
+  // ----- Date inputs -----
   document.getElementById("qip-date-from").addEventListener("change", (e) => {
     qipState.filters.date_from = e.target.value || null;
     fetchQuotationsInProgress();
@@ -9978,6 +9974,7 @@ function initQuotationsInProgressPage() {
     fetchQuotationsInProgress();
   });
 
+  // ----- Search (debounced) -----
   const search = document.getElementById("qip-search");
   search.addEventListener("input", (e) => {
     qipState.filters.search = e.target.value;
@@ -9985,20 +9982,37 @@ function initQuotationsInProgressPage() {
     qipSearchDebounce = setTimeout(fetchQuotationsInProgress, 300);
   });
 
-  ["qip-source-db", "qip-packer", "qip-checker"].forEach((id) => {
-    document.getElementById(id).addEventListener("change", (e) => {
-      const values = Array.from(e.target.selectedOptions).map((o) => o.value);
-      const key =
-        id === "qip-source-db"
-          ? "source_dbs"
-          : id === "qip-packer"
-            ? "packers"
-            : "checkers";
-      qipState.filters[key] = values;
-      fetchQuotationsInProgress();
+  // ----- Multi-select popovers -----
+  document.querySelectorAll(".qip-multiselect").forEach((ms) => {
+    const trigger = ms.querySelector(".qip-ms-trigger");
+    trigger.setAttribute("aria-expanded", "false");
+    trigger.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const popover = ms.querySelector(".qip-ms-popover");
+      const isOpen = popover.classList.contains("open");
+      // Close any other open popovers
+      document.querySelectorAll(".qip-ms-popover.open").forEach((p) => {
+        p.classList.remove("open");
+        p.parentElement.querySelector(".qip-ms-trigger").setAttribute("aria-expanded", "false");
+      });
+      if (!isOpen) {
+        popover.classList.add("open");
+        trigger.setAttribute("aria-expanded", "true");
+      }
     });
   });
 
+  // Click outside to close popovers
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest(".qip-multiselect")) {
+      document.querySelectorAll(".qip-ms-popover.open").forEach((p) => {
+        p.classList.remove("open");
+        p.parentElement.querySelector(".qip-ms-trigger").setAttribute("aria-expanded", "false");
+      });
+    }
+  });
+
+  // ----- Sort -----
   document.getElementById("qip-sort-by").addEventListener("change", (e) => {
     qipState.filters.sort_by = e.target.value;
     fetchQuotationsInProgress();
@@ -10009,26 +10023,18 @@ function initQuotationsInProgressPage() {
     const next = qipState.filters.sort_order === "desc" ? "asc" : "desc";
     qipState.filters.sort_order = next;
     sortDir.dataset.order = next;
-    sortDir.textContent = next === "desc" ? "↓" : "↑";
     fetchQuotationsInProgress();
   });
 
+  // ----- Refresh / Clear -----
   document
     .getElementById("qip-refresh-btn")
     .addEventListener("click", () => fetchQuotationsInProgress(true));
 
   document.getElementById("qip-clear-btn").addEventListener("click", () => {
-    showAll.checked = true;
-    scanIn.checked = false;
-    scanOut.checked = false;
     document.getElementById("qip-date-from").value = "";
     document.getElementById("qip-date-to").value = "";
     document.getElementById("qip-search").value = "";
-    ["qip-source-db", "qip-packer", "qip-checker"].forEach((id) => {
-      Array.from(document.getElementById(id).options).forEach(
-        (o) => (o.selected = false),
-      );
-    });
     qipState.filters = {
       show_all: true,
       scan_in: false,
@@ -10043,7 +10049,8 @@ function initQuotationsInProgressPage() {
       sort_order: qipState.filters.sort_order,
       limit: 500,
     };
-    syncScanCheckboxes();
+    qipUpdateSegmented();
+    qipUpdateMultiselectsTriggers();
     fetchQuotationsInProgress();
   });
 
@@ -10054,6 +10061,97 @@ function initQuotationsInProgressPage() {
       e.preventDefault();
       navigateTo("settings");
     });
+
+  qipUpdateSegmented();
+}
+
+function qipUpdateSegmented() {
+  const seg = document.getElementById("qip-scan-segmented");
+  if (!seg) return;
+  const buttons = seg.querySelectorAll("button[data-scan]");
+  buttons.forEach((b) => b.classList.remove("active"));
+  if (qipState.filters.show_all) {
+    seg.querySelector('[data-scan="all"]').classList.add("active");
+  } else {
+    if (qipState.filters.scan_in) seg.querySelector('[data-scan="in"]').classList.add("active");
+    if (qipState.filters.scan_out) seg.querySelector('[data-scan="out"]').classList.add("active");
+  }
+}
+
+const QIP_MS_KEY_FIELD = {
+  source_dbs: "source_dbs",
+  packers: "packers",
+  checkers: "checkers",
+};
+
+function populateMultiselect(key, values) {
+  const container = document.querySelector(`.qip-multiselect[data-key="${key}"]`);
+  if (!container) return;
+  const popover = container.querySelector(".qip-ms-popover");
+  const selectedSet = new Set(qipState.filters[key] || []);
+  // Drop selections that no longer exist in the data
+  qipState.filters[key] = (qipState.filters[key] || []).filter((v) =>
+    values.includes(v),
+  );
+
+  popover.innerHTML = "";
+  if (!values || values.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "qip-ms-empty";
+    empty.textContent = "No options available";
+    popover.appendChild(empty);
+  } else {
+    values.forEach((v) => {
+      const item = document.createElement("div");
+      item.className = "qip-ms-item" + (selectedSet.has(v) ? " selected" : "");
+      item.dataset.value = v;
+      item.innerHTML = `
+        <span class="qip-ms-check"></span>
+        <span class="qip-ms-item-label"></span>
+      `;
+      item.querySelector(".qip-ms-item-label").textContent = v;
+      item.addEventListener("click", () => {
+        const idx = qipState.filters[key].indexOf(v);
+        if (idx === -1) qipState.filters[key].push(v);
+        else qipState.filters[key].splice(idx, 1);
+        item.classList.toggle("selected");
+        qipUpdateMultiselectTrigger(key);
+        fetchQuotationsInProgress();
+      });
+      popover.appendChild(item);
+    });
+  }
+
+  qipUpdateMultiselectTrigger(key);
+}
+
+function qipUpdateMultiselectTrigger(key) {
+  const container = document.querySelector(`.qip-multiselect[data-key="${key}"]`);
+  if (!container) return;
+  const trigger = container.querySelector(".qip-ms-trigger");
+  const countEl = trigger.querySelector(".qip-ms-count");
+  const count = (qipState.filters[key] || []).length;
+  if (count > 0) {
+    countEl.textContent = String(count);
+    countEl.hidden = false;
+    trigger.classList.add("has-selection");
+  } else {
+    countEl.hidden = true;
+    trigger.classList.remove("has-selection");
+  }
+}
+
+function qipUpdateMultiselectsTriggers() {
+  ["source_dbs", "packers", "checkers"].forEach((k) => {
+    qipUpdateMultiselectTrigger(k);
+    // Sync visual selection of items inside the popover
+    const container = document.querySelector(`.qip-multiselect[data-key="${k}"]`);
+    if (!container) return;
+    container.querySelectorAll(".qip-ms-item").forEach((item) => {
+      const sel = (qipState.filters[k] || []).includes(item.dataset.value);
+      item.classList.toggle("selected", sel);
+    });
+  });
 }
 
 async function fetchQuotationsInProgress(forceClearCache = false) {
@@ -10064,7 +10162,7 @@ async function fetchQuotationsInProgress(forceClearCache = false) {
   const notConfigEl = document.getElementById("qip-not-configured");
 
   errorEl.style.display = "none";
-  loadingEl.style.display = "block";
+  loadingEl.style.display = "inline-flex";
   qipState.loading = true;
 
   if (forceClearCache) qipState.productCache.clear();
@@ -10080,16 +10178,17 @@ async function fetchQuotationsInProgress(forceClearCache = false) {
       const err = await resp.json();
       controlsEl.style.display = "none";
       resultsEl.style.display = "none";
-      notConfigEl.style.display = "block";
-      notConfigEl.querySelector(".card-body p").innerHTML =
-        `<strong>Admin store not configured.</strong> ${escapeHtml(err.detail || "")} `
-        + `Open <a href="#" data-page="settings" class="page-link">Settings</a> to set it.`;
-      notConfigEl
-        .querySelector('a[data-page="settings"]')
-        .addEventListener("click", (e) => {
+      notConfigEl.style.display = "flex";
+      const body = notConfigEl.querySelector(".qip-banner-body");
+      if (body) {
+        body.innerHTML =
+          `<strong>Admin database not configured.</strong> ${escapeHtml(err.detail || "")} `
+          + `Open <a href="#" data-page="settings" class="qip-banner-link">Settings</a> to set it.`;
+        body.querySelector('a[data-page="settings"]').addEventListener("click", (e) => {
           e.preventDefault();
           navigateTo("settings");
         });
+      }
       return;
     }
 
@@ -10102,21 +10201,23 @@ async function fetchQuotationsInProgress(forceClearCache = false) {
     qipState.results = data.quotations || [];
 
     notConfigEl.style.display = "none";
-    controlsEl.style.display = "block";
+    controlsEl.style.display = "flex";
     resultsEl.style.display = "grid";
 
-    populateFilterSelect("qip-source-db", data.filter_options.source_dbs, qipState.filters.source_dbs);
-    populateFilterSelect("qip-packer", data.filter_options.packers, qipState.filters.packers);
-    populateFilterSelect("qip-checker", data.filter_options.checkers, qipState.filters.checkers);
+    populateMultiselect("source_dbs", data.filter_options.source_dbs || []);
+    populateMultiselect("packers", data.filter_options.packers || []);
+    populateMultiselect("checkers", data.filter_options.checkers || []);
 
+    qipUpdateHeaderMeta(qipState.results);
     renderQuotationsList(qipState.results);
 
-    // Preserve selection if still in results, otherwise clear right pane
+    // Preserve selection if still in results
     if (
       qipState.selectedQuotation &&
-      qipState.results.some((q) => q.quotation_number === qipState.selectedQuotation)
+      qipState.results.some(
+        (q) => q.quotation_number === qipState.selectedQuotation,
+      )
     ) {
-      // Re-fetch products only if cache cleared
       if (forceClearCache) {
         selectQuotation(qipState.selectedQuotation, true);
       } else {
@@ -10124,13 +10225,13 @@ async function fetchQuotationsInProgress(forceClearCache = false) {
       }
     } else {
       qipState.selectedQuotation = null;
-      document.getElementById("qip-detail-empty").style.display = "block";
+      document.getElementById("qip-detail-empty").style.display = "flex";
       document.getElementById("qip-detail-content").style.display = "none";
     }
   } catch (error) {
     errorEl.style.display = "block";
     errorEl.textContent = `Error: ${error.message}`;
-    controlsEl.style.display = "block";
+    controlsEl.style.display = "flex";
     resultsEl.style.display = "none";
   } finally {
     loadingEl.style.display = "none";
@@ -10138,23 +10239,24 @@ async function fetchQuotationsInProgress(forceClearCache = false) {
   }
 }
 
-function populateFilterSelect(elementId, values, currentSelection) {
-  const select = document.getElementById(elementId);
-  if (!select) return;
-  const selectedSet = new Set(currentSelection || []);
-  select.innerHTML = "";
-  values.forEach((v) => {
-    const opt = document.createElement("option");
-    opt.value = v;
-    opt.textContent = v;
-    if (selectedSet.has(v)) opt.selected = true;
-    select.appendChild(opt);
+function qipUpdateHeaderMeta(quotations) {
+  const total = quotations.length;
+  let pending = 0;
+  let complete = 0;
+  quotations.forEach((q) => {
+    const hasIn = !!(q.dop2 && String(q.dop2).trim());
+    const hasOut = !!(q.dop3 && String(q.dop3).trim());
+    if (hasIn && hasOut) complete++;
+    else pending++;
   });
+  document.getElementById("qip-meta-total").textContent = total.toLocaleString();
+  document.getElementById("qip-meta-pending").textContent = pending.toLocaleString();
+  document.getElementById("qip-meta-complete").textContent = complete.toLocaleString();
 }
 
 function renderQuotationsList(quotations) {
   const body = document.getElementById("qip-list-body");
-  document.getElementById("qip-count").textContent = quotations.length;
+  document.getElementById("qip-count").textContent = quotations.length.toLocaleString();
 
   if (quotations.length === 0) {
     body.innerHTML = '<div class="qip-empty">No quotations match these filters.</div>';
@@ -10172,32 +10274,58 @@ function renderQuotationsList(quotations) {
 
     const hasIn = !!(q.dop2 && String(q.dop2).trim());
     const hasOut = !!(q.dop3 && String(q.dop3).trim());
+    const inTime = hasIn ? qipFormatTime(String(q.dop2)) : "—";
+    const outTime = hasOut ? qipFormatTime(String(q.dop3)) : "—";
+
+    let lineClass = "";
+    if (hasIn && hasOut) lineClass = "complete";
+    else if (hasIn) lineClass = "partial-in";
+
+    const startedRel = qipRelativeTime(q.start_date);
+    const startedAbs = q.start_date ? qipFormatDateTime(q.start_date) : "";
 
     card.innerHTML = `
       <div class="qip-card-row">
-        <div class="qip-card-quot">${escapeHtml(q.quotation_number || "—")}</div>
-        ${q.source_db ? `<div class="qip-card-source">${escapeHtml(q.source_db)}</div>` : ""}
+        <div class="qip-card-num">${escapeHtml(q.quotation_number || "—")}</div>
+        ${q.source_db ? `<span class="qip-card-tag">${escapeHtml(q.source_db)}</span>` : ""}
       </div>
       <div class="qip-card-business">${escapeHtml(q.business_name || "—")}</div>
-      <div class="qip-card-scans">
-        <span class="scan-badge ${hasIn ? "in" : "missing"}">
-          ${hasIn ? `✓ In: ${escapeHtml(String(q.dop2))}` : "— No scan-in"}
-        </span>
-        <span class="scan-badge ${hasOut ? "out" : "missing"}">
-          ${hasOut ? `✓ Out: ${escapeHtml(String(q.dop3))}` : "— No scan-out"}
-        </span>
+
+      <div class="qip-progress">
+        <div class="qip-progress-step in ${hasIn ? "complete" : ""}">
+          <span class="qip-progress-dot"></span>
+          <span class="qip-progress-step-label">
+            <span>In</span>
+            <span>${escapeHtml(inTime)}</span>
+          </span>
+        </div>
+        <div class="qip-progress-line ${lineClass}"></div>
+        <div class="qip-progress-step out ${hasOut ? "complete" : ""}">
+          <span class="qip-progress-dot"></span>
+          <span class="qip-progress-step-label">
+            <span>Out</span>
+            <span>${escapeHtml(outTime)}</span>
+          </span>
+        </div>
       </div>
-      <div class="qip-card-meta">
+
+      <div class="qip-card-foot">
         <div class="qip-card-people">
-          <span>Packer: <strong>${escapeHtml(q.packer || "—")}</strong></span>
-          <span>Checker: <strong>${escapeHtml(q.checker || "—")}</strong></span>
+          <span class="qip-card-person"><em>P</em><strong>${escapeHtml(q.packer || "—")}</strong></span>
+          <span class="qip-card-person-arrow">›</span>
+          <span class="qip-card-person"><em>C</em><strong>${escapeHtml(q.checker || "—")}</strong></span>
         </div>
-        <div class="qip-card-totals">
-          <span>${q.product_count} item${q.product_count === 1 ? "" : "s"}</span>
-          <span><strong>${(q.total_qty || 0).toLocaleString()}</strong> qty</span>
+        <div class="qip-card-stats">
+          <span class="qip-card-stat"><strong>${q.product_count}</strong><span>items</span></span>
+          <span class="qip-card-stat"><strong>${(q.total_qty || 0).toLocaleString()}</strong><span>qty</span></span>
         </div>
       </div>
-      ${q.start_date ? `<div class="qip-card-meta"><span>Started: ${escapeHtml(formatQipDate(q.start_date))}</span></div>` : ""}
+
+      ${
+        startedRel
+          ? `<div class="qip-card-time" title="${escapeHtml(startedAbs)}">Started ${escapeHtml(startedRel)}</div>`
+          : ""
+      }
     `;
 
     card.addEventListener("click", () => selectQuotation(q.quotation_number));
@@ -10228,7 +10356,14 @@ async function selectQuotation(quotationNumber, forceFetch = false) {
 
   emptyEl.style.display = "none";
   contentEl.style.display = "block";
-  headerEl.innerHTML = '<div class="qip-detail-empty">Loading…</div>';
+  headerEl.innerHTML = `
+    <div class="qip-hero">
+      <div class="qip-hero-left">
+        <div class="qip-hero-eyebrow">Loading…</div>
+        <h2>${escapeHtml(quotationNumber)}</h2>
+      </div>
+    </div>
+  `;
   tbody.innerHTML = "";
 
   let payload = qipState.productCache.get(quotationNumber);
@@ -10253,15 +10388,20 @@ async function selectQuotation(quotationNumber, forceFetch = false) {
   renderQuotationProducts(payload.products);
 }
 
+const QIP_CHECK_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+const QIP_DASH_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="6" y1="12" x2="18" y2="12"/></svg>';
+
 function renderQuotationDetailHeader(header, quotationNumber) {
   const headerEl = document.getElementById("qip-detail-header");
+
   if (!header) {
     headerEl.innerHTML = `
-      <div class="qip-detail-title">
-        <h3>${escapeHtml(quotationNumber)}</h3>
-      </div>
-      <div class="qip-detail-empty" style="padding: 0.5rem 0">
-        No matching record in QuotationsStatus.
+      <div class="qip-hero">
+        <div class="qip-hero-left">
+          <div class="qip-hero-eyebrow">No status record</div>
+          <h2>${escapeHtml(quotationNumber)}</h2>
+          <div class="qip-hero-business">No matching record in QuotationsStatus.</div>
+        </div>
       </div>
     `;
     return;
@@ -10269,50 +10409,88 @@ function renderQuotationDetailHeader(header, quotationNumber) {
 
   const hasIn = !!(header.dop2 && String(header.dop2).trim());
   const hasOut = !!(header.dop3 && String(header.dop3).trim());
+  const inTime = hasIn ? String(header.dop2) : "—";
+  const outTime = hasOut ? String(header.dop3) : "—";
+  let lineClass = "";
+  if (hasIn && hasOut) lineClass = "complete";
 
   const fields = [
-    ["Source store", header.source_db],
-    ["Status", header.status],
-    ["Business", header.business_name],
-    ["Account #", header.account_no],
-    ["Sales rep", header.sales_rep],
-    ["Packer", header.packer],
-    ["Checker", header.checker],
-    ["Invoice #", header.invoice_number],
-    ["Total qty", header.total_qty != null ? header.total_qty.toLocaleString() : null],
-    ["Quotation total", header.quotation_total],
-    ["Last update", header.last_update ? formatQipDate(header.last_update) : null],
-    ["Ship to", header.ship_to],
-    ["Ship address", [header.ship_address1, header.ship_address2].filter(Boolean).join(" ")],
-    ["Ship city", [header.ship_city, header.ship_state, header.ship_zip_code].filter(Boolean).join(" ")],
-    ["Ship phone", header.ship_phone_no],
-    ["Notes", header.notes],
-    ["Comment", header.comment],
-  ].filter(([, v]) => v != null && String(v).trim() !== "");
+    { label: "Source store", value: header.source_db, mono: true },
+    { label: "Status", value: header.status },
+    { label: "Account #", value: header.account_no, mono: true },
+    { label: "Invoice #", value: header.invoice_number, mono: true },
+    { label: "Sales rep", value: header.sales_rep },
+    { label: "Packer", value: header.packer },
+    { label: "Checker", value: header.checker },
+    {
+      label: "Total qty",
+      value: header.total_qty != null ? header.total_qty.toLocaleString() : null,
+      numeric: true,
+    },
+    { label: "Quotation total", value: header.quotation_total, numeric: true },
+    {
+      label: "Last update",
+      value: header.last_update ? qipFormatDateTime(header.last_update) : null,
+      mono: true,
+    },
+    { label: "Ship to", value: header.ship_to },
+    {
+      label: "Ship address",
+      value: [header.ship_address1, header.ship_address2].filter(Boolean).join(" "),
+    },
+    {
+      label: "City / State / Zip",
+      value: [header.ship_city, header.ship_state, header.ship_zip_code]
+        .filter(Boolean)
+        .join(", "),
+    },
+    { label: "Ship phone", value: header.ship_phone_no, mono: true },
+    { label: "Notes", value: header.notes },
+    { label: "Comment", value: header.comment },
+  ].filter((f) => f.value != null && String(f.value).trim() !== "");
 
   headerEl.innerHTML = `
-    <div class="qip-detail-title">
-      <h3>${escapeHtml(quotationNumber)}</h3>
-      <div class="qip-card-scans">
-        <span class="scan-badge ${hasIn ? "in" : "missing"}">
-          ${hasIn ? `✓ Scan-in: ${escapeHtml(String(header.dop2))}` : "— No scan-in"}
-        </span>
-        <span class="scan-badge ${hasOut ? "out" : "missing"}">
-          ${hasOut ? `✓ Scan-out: ${escapeHtml(String(header.dop3))}` : "— No scan-out"}
-        </span>
+    <div class="qip-hero">
+      <div class="qip-hero-left">
+        <div class="qip-hero-eyebrow">
+          <span>Quotation</span>
+          ${header.source_db ? `<span class="qip-hero-tag">${escapeHtml(header.source_db)}</span>` : ""}
+          ${header.status ? `<span class="qip-hero-tag">${escapeHtml(header.status)}</span>` : ""}
+        </div>
+        <h2>${escapeHtml(quotationNumber)}</h2>
+        <div class="qip-hero-business">${escapeHtml(header.business_name || "—")}</div>
+      </div>
+      <div class="qip-timeline" aria-label="Scan timeline">
+        <div class="qip-timeline-step in ${hasIn ? "complete" : ""}">
+          <div class="qip-timeline-icon">${hasIn ? QIP_CHECK_SVG : QIP_DASH_SVG}</div>
+          <div class="qip-timeline-text">
+            <span class="qip-timeline-label">Scan-in</span>
+            <span class="qip-timeline-time">${escapeHtml(inTime)}</span>
+          </div>
+        </div>
+        <div class="qip-timeline-line ${lineClass}"></div>
+        <div class="qip-timeline-step out ${hasOut ? "complete" : ""}">
+          <div class="qip-timeline-icon">${hasOut ? QIP_CHECK_SVG : QIP_DASH_SVG}</div>
+          <div class="qip-timeline-text">
+            <span class="qip-timeline-label">Scan-out</span>
+            <span class="qip-timeline-time">${escapeHtml(outTime)}</span>
+          </div>
+        </div>
       </div>
     </div>
-    <div class="qip-detail-grid">
-      ${fields
-        .map(
-          ([label, value]) => `
-        <div class="qip-detail-field">
-          <span class="qip-detail-field-label">${escapeHtml(label)}</span>
-          <span class="qip-detail-field-value">${escapeHtml(String(value))}</span>
-        </div>
-      `,
-        )
-        .join("")}
+    <div class="qip-meta-section">
+      <div class="qip-meta-grid">
+        ${fields
+          .map(
+            (f) => `
+          <div class="qip-field">
+            <span class="qip-field-label">${escapeHtml(f.label)}</span>
+            <span class="qip-field-value${f.mono ? " mono" : ""}${f.numeric ? " numeric" : ""}">${escapeHtml(String(f.value))}</span>
+          </div>
+        `,
+          )
+          .join("")}
+      </div>
     </div>
   `;
 }
@@ -10321,31 +10499,64 @@ function renderQuotationProducts(products) {
   const tbody = document
     .getElementById("qip-products-table")
     .querySelector("tbody");
+  const countEl = document.getElementById("qip-products-count");
 
   if (!products || products.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="5" style="text-align: center; color: var(--text-tertiary); padding: 1rem;">No products on this quotation.</td></tr>`;
+    countEl.textContent = "0";
+    tbody.innerHTML = `<tr><td colspan="5"><div class="qip-products-empty">No products on this quotation.</div></td></tr>`;
     return;
   }
+
+  countEl.textContent = `${products.length} ${products.length === 1 ? "item" : "items"}`;
 
   tbody.innerHTML = "";
   products.forEach((p) => {
     const tr = document.createElement("tr");
     const cat = [p.cate_id, p.sub_cate_id].filter((v) => v != null).join(" / ");
     tr.innerHTML = `
-      <td>${escapeHtml(p.product_upc || "—")}</td>
-      <td>${escapeHtml(p.product_sku || "—")}</td>
-      <td>${escapeHtml(p.product_description || "—")}</td>
+      <td class="qip-mono">${escapeHtml(p.product_upc || "—")}</td>
+      <td class="qip-mono">${escapeHtml(p.product_sku || "—")}</td>
+      <td class="qip-product-desc">${escapeHtml(p.product_description || "—")}</td>
       <td class="qip-num">${(p.qty || 0).toLocaleString()}</td>
-      <td>${escapeHtml(cat || "—")}</td>
+      <td class="qip-num">${escapeHtml(cat || "—")}</td>
     `;
     tbody.appendChild(tr);
   });
 }
 
-function formatQipDate(value) {
-  if (!value) return "—";
-  // ISO datetimes from backend; QuotationsStatus Dop2/Dop3 are raw strings
+function qipFormatDateTime(value) {
+  if (!value) return "";
   const d = new Date(value);
   if (isNaN(d.getTime())) return String(value);
   return d.toLocaleString();
+}
+
+function qipFormatTime(value) {
+  // QuotationsStatus Dop2/Dop3 are raw strings like "MM/DD/YYYY HH:MM AM/PM"
+  // — show the time portion to keep the card compact.
+  if (!value) return "";
+  const m = String(value).match(/(\d{1,2}:\d{2}\s*[AP]M)/i);
+  if (m) return m[1].toUpperCase().replace(/\s+/g, " ");
+  const d = new Date(value);
+  if (!isNaN(d.getTime())) {
+    return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  }
+  return String(value);
+}
+
+function qipRelativeTime(value) {
+  if (!value) return "";
+  const d = new Date(value);
+  if (isNaN(d.getTime())) return "";
+  const seconds = Math.max(0, (Date.now() - d.getTime()) / 1000);
+  if (seconds < 60) return "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `${months}mo ago`;
+  return `${Math.floor(months / 12)}y ago`;
 }
