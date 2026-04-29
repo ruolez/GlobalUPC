@@ -10299,55 +10299,35 @@ function renderQuotationsList(quotations) {
     const inTime = hasIn ? qipFormatTime(String(q.dop2)) : "—";
     const outTime = hasOut ? qipFormatTime(String(q.dop3)) : "—";
 
-    let lineClass = "";
-    if (hasIn && hasOut) lineClass = "complete";
-    else if (hasIn) lineClass = "partial-in";
-
-    const startedRel = qipRelativeTime(q.start_date);
+    const lineClass = hasIn && hasOut ? "complete" : "";
     const startedAbs = q.start_date ? qipFormatDateTime(q.start_date) : "";
 
+    const businessText = q.business_name || "—";
+    const packerText = q.packer ? `· ${q.packer}` : "";
+    const metaTitle = `${businessText}${packerText ? ` (${q.packer})` : ""}${startedAbs ? ` — started ${startedAbs}` : ""}`;
+
     card.innerHTML = `
-      <div class="qip-card-row">
-        <div class="qip-card-num">${escapeHtml(q.quotation_number || "—")}</div>
+      <div class="qip-card-head">
+        <span class="qip-card-num">${escapeHtml(q.quotation_number || "—")}</span>
         ${q.source_db ? `<span class="qip-card-tag">${escapeHtml(q.source_db)}</span>` : ""}
       </div>
-      <div class="qip-card-business">${escapeHtml(q.business_name || "—")}</div>
-
       <div class="qip-progress">
-        <div class="qip-progress-step in ${hasIn ? "complete" : ""}">
-          <span class="qip-progress-dot"></span>
-          <span class="qip-progress-step-label">
-            <span>In</span>
-            <span>${escapeHtml(inTime)}</span>
-          </span>
-        </div>
-        <div class="qip-progress-line ${lineClass}"></div>
-        <div class="qip-progress-step out ${hasOut ? "complete" : ""}">
-          <span class="qip-progress-dot"></span>
-          <span class="qip-progress-step-label">
-            <span>Out</span>
-            <span>${escapeHtml(outTime)}</span>
-          </span>
-        </div>
+        <span class="qip-progress-dot ${hasIn ? "in" : ""}"></span>
+        <span class="qip-progress-time ${hasIn ? "" : "empty"}">${escapeHtml(inTime)}</span>
+        <span class="qip-progress-line ${lineClass}"></span>
+        <span class="qip-progress-dot ${hasOut ? "out" : ""}"></span>
+        <span class="qip-progress-time ${hasOut ? "" : "empty"}">${escapeHtml(outTime)}</span>
       </div>
-
-      <div class="qip-card-foot">
-        <div class="qip-card-people">
-          <span class="qip-card-person"><em>P</em><strong>${escapeHtml(q.packer || "—")}</strong></span>
-          <span class="qip-card-person-arrow">›</span>
-          <span class="qip-card-person"><em>C</em><strong>${escapeHtml(q.checker || "—")}</strong></span>
-        </div>
-        <div class="qip-card-stats">
-          <span class="qip-card-stat"><strong>${q.product_count}</strong><span>items</span></span>
-          <span class="qip-card-stat"><strong>${(q.total_qty || 0).toLocaleString()}</strong><span>qty</span></span>
-        </div>
+      <div class="qip-card-meta" title="${escapeHtml(metaTitle)}">
+        <span class="qip-card-meta-info">
+          ${escapeHtml(businessText)}${q.packer ? ` <span class="qip-card-meta-sep">·</span> ${escapeHtml(q.packer)}` : ""}
+        </span>
+        <span class="qip-card-meta-stats">
+          <strong>${q.product_count}</strong>&nbsp;<span class="qip-card-meta-unit">items</span>
+          <span class="qip-card-meta-sep">·</span>
+          <strong>${(q.total_qty || 0).toLocaleString()}</strong>&nbsp;<span class="qip-card-meta-unit">qty</span>
+        </span>
       </div>
-
-      ${
-        startedRel
-          ? `<div class="qip-card-time" title="${escapeHtml(startedAbs)}">Started ${escapeHtml(startedRel)}</div>`
-          : ""
-      }
     `;
 
     card.addEventListener("click", () => selectQuotation(q.quotation_number));

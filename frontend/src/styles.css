@@ -3052,16 +3052,16 @@ body.no-scroll {
   background: var(--text-tertiary);
 }
 
-/* ---------- Card ---------- */
+/* ---------- Card (compact) ---------- */
 .qip-card {
   position: relative;
-  padding: 0.75rem 0.875rem 0.75rem 1.05rem;
+  padding: 0.5rem 0.75rem 0.5rem 0.875rem;
   background: var(--bg-primary);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
   cursor: pointer;
   transition: border-color 0.15s ease, transform 0.12s ease,
-    box-shadow 0.15s ease, background 0.15s ease;
+    background 0.15s ease;
 }
 
 .qip-card::before {
@@ -3070,7 +3070,7 @@ body.no-scroll {
   left: -1px;
   top: -1px;
   bottom: -1px;
-  width: 3px;
+  width: 2.5px;
   background: transparent;
   border-radius: var(--radius-md) 0 0 var(--radius-md);
   transition: background 0.15s ease;
@@ -3090,100 +3090,91 @@ body.no-scroll {
   background: var(--accent-primary);
 }
 
-.qip-card-row {
+.qip-card-head {
   display: flex;
   justify-content: space-between;
-  align-items: baseline;
+  align-items: center;
   gap: 0.5rem;
+  margin-bottom: 0.35rem;
 }
 
 .qip-card-num {
   font-family: var(--qip-mono);
-  font-size: 0.9rem;
+  font-size: 0.85rem;
   font-weight: 600;
   color: var(--text-primary);
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .qip-card-tag {
   display: inline-flex;
   align-items: center;
   font-family: var(--qip-mono);
-  font-size: 0.62rem;
+  font-size: 0.58rem;
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--text-secondary);
   background: var(--bg-tertiary);
   border: 1px solid var(--border-color);
-  padding: 0.18rem 0.45rem;
-  border-radius: 4px;
+  padding: 0.12rem 0.4rem;
+  border-radius: 3px;
   white-space: nowrap;
+  flex-shrink: 0;
 }
 
-.qip-card-business {
-  font-size: 0.825rem;
-  color: var(--text-secondary);
-  margin: 0.15rem 0 0.65rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* Scan-progression dots */
+/* Compact single-line scan strip */
 .qip-progress {
   display: flex;
   align-items: center;
-  gap: 0;
-  margin-bottom: 0.6rem;
-}
-
-.qip-progress-step {
-  display: inline-flex;
-  align-items: center;
   gap: 0.4rem;
+  margin-bottom: 0.35rem;
   font-family: var(--qip-mono);
-  font-size: 0.685rem;
-  color: var(--text-tertiary);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-.qip-progress-step.complete {
+  font-size: 0.7rem;
   color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
 }
 
 .qip-progress-dot {
-  width: 9px;
-  height: 9px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   border: 1.5px solid var(--border-color);
   background: var(--bg-secondary);
   flex-shrink: 0;
-  transition: all 0.18s ease;
+  transition: all 0.15s ease;
 }
 
-.qip-progress-step.complete.in .qip-progress-dot {
+.qip-progress-dot.in {
   background: var(--success);
   border-color: var(--success);
-  box-shadow: 0 0 0 2.5px color-mix(in srgb, var(--success) 22%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--success) 22%, transparent);
 }
 
-.qip-progress-step.complete.out .qip-progress-dot {
+.qip-progress-dot.out {
   background: var(--accent-primary);
   border-color: var(--accent-primary);
-  box-shadow: 0 0 0 2.5px color-mix(in srgb, var(--accent-primary) 22%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-primary) 22%, transparent);
+}
+
+.qip-progress-time {
+  white-space: nowrap;
+}
+
+.qip-progress-time.empty {
+  color: var(--text-tertiary);
 }
 
 .qip-progress-line {
   flex: 1;
-  height: 1.5px;
+  height: 1px;
   background: var(--border-color);
-  margin: 0 0.5rem;
-  position: relative;
-  overflow: hidden;
   border-radius: 1px;
+  min-width: 12px;
 }
 
 .qip-progress-line.complete {
@@ -3194,111 +3185,46 @@ body.no-scroll {
   );
 }
 
-.qip-progress-line.partial-in {
-  background: linear-gradient(
-    to right,
-    var(--success) 0%,
-    var(--success) 50%,
-    var(--border-color) 50%,
-    var(--border-color) 100%
-  );
-}
-
-.qip-progress-step-label {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  line-height: 1.1;
-}
-
-.qip-progress-step-label span:first-child {
-  font-size: 0.6rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--text-tertiary);
-}
-
-.qip-progress-step.complete .qip-progress-step-label span:last-child {
-  color: var(--text-primary);
-  font-weight: 500;
-}
-
-/* Card foot */
-.qip-card-foot {
+/* Card meta (single bottom row) */
+.qip-card-meta {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  font-size: 0.7rem;
-  color: var(--text-tertiary);
   gap: 0.5rem;
-  flex-wrap: wrap;
-}
-
-.qip-card-people {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  flex-wrap: wrap;
-}
-
-.qip-card-person {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  color: var(--text-tertiary);
-}
-
-.qip-card-person strong {
+  font-size: 0.7rem;
   color: var(--text-secondary);
-  font-weight: 500;
 }
 
-.qip-card-person em {
-  font-style: normal;
-  color: var(--text-tertiary);
-  font-family: var(--qip-mono);
-  font-size: 0.6rem;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+.qip-card-meta-info {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.qip-card-person-arrow {
-  color: var(--text-tertiary);
-  margin: 0 0.1rem;
-}
-
-.qip-card-stats {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.7rem;
+.qip-card-meta-stats {
+  flex-shrink: 0;
   font-family: var(--qip-mono);
   font-variant-numeric: tabular-nums;
+  color: var(--text-tertiary);
 }
 
-.qip-card-stat {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 0.2rem;
-}
-
-.qip-card-stat strong {
+.qip-card-meta-stats strong {
   color: var(--text-primary);
   font-weight: 600;
-  font-size: 0.8rem;
 }
 
-.qip-card-stat span {
-  font-size: 0.6rem;
+.qip-card-meta-unit {
+  font-size: 0.62rem;
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.06em;
   color: var(--text-tertiary);
 }
 
-.qip-card-time {
-  font-family: var(--qip-mono);
-  font-size: 0.685rem;
-  color: var(--text-tertiary);
-  font-variant-numeric: tabular-nums;
+.qip-card-meta-sep {
+  color: var(--border-color);
+  margin: 0 0.15rem;
 }
 
 .qip-empty {
