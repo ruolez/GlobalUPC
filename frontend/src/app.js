@@ -10294,16 +10294,17 @@ function renderQuotationsList(quotations) {
         <span class="qip-card-num">${escapeHtml(q.quotation_number || "—")}</span>
         ${statusChipHtml}
       </div>
-      <div class="qip-card-business-row">
-        <span class="qip-card-business">${escapeHtml(businessText)}</span>
-        ${q.source_db ? `<span class="qip-card-tag">${escapeHtml(q.source_db)}</span>` : ""}
-      </div>
-      <div class="qip-card-meta" title="${escapeHtml(metaTitle)}">
-        ${q.packer ? `<span class="qip-card-meta-pill">${escapeHtml(q.packer)}</span>` : ""}
-        <span class="qip-card-meta-stats">
-          <strong>${q.product_count}</strong>&nbsp;<span class="qip-card-meta-unit">items</span>
-          <span class="qip-card-meta-sep">·</span>
-          <strong>${(q.total_qty || 0).toLocaleString()}</strong>&nbsp;<span class="qip-card-meta-unit">qty</span>
+      <div class="qip-card-foot" title="${escapeHtml(metaTitle)}">
+        <span class="qip-card-business">
+          ${escapeHtml(businessText)}${q.packer ? ` <span class="qip-card-packer">· ${escapeHtml(q.packer)}</span>` : ""}
+        </span>
+        <span class="qip-card-foot-right">
+          <span class="qip-card-meta-stats">
+            <strong>${q.product_count}</strong>&nbsp;<span class="qip-card-meta-unit">items</span>
+            <span class="qip-card-meta-sep">·</span>
+            <strong>${(q.total_qty || 0).toLocaleString()}</strong>&nbsp;<span class="qip-card-meta-unit">qty</span>
+          </span>
+          ${q.source_db ? `<span class="qip-card-tag">${escapeHtml(q.source_db)}</span>` : ""}
         </span>
       </div>
     `;

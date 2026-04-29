@@ -2908,9 +2908,8 @@ body.no-scroll {
 /* ---------- Layout ---------- */
 .qip-layout {
   display: grid;
-  /* List pane gets equal-or-greater weight than the detail pane; the
-     detail pane only needs enough width for the products table. */
-  grid-template-columns: minmax(440px, 1.15fr) minmax(0, 1fr);
+  /* Narrow list, wider detail pane so the products table breathes. */
+  grid-template-columns: minmax(340px, 1fr) minmax(0, 1.55fr);
   gap: 1rem;
   align-items: start;
 }
@@ -3119,22 +3118,29 @@ body.no-scroll {
 
 .qip-card-index {
   font-family: var(--qip-mono);
-  font-size: 0.65rem;
-  font-weight: 500;
-  color: var(--text-tertiary);
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--bg-primary);
   font-variant-numeric: tabular-nums;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.02em;
   flex-shrink: 0;
-  padding: 0.05rem 0.35rem;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-color);
-  border-radius: 4px;
+  padding: 0.18rem 0.5rem;
+  min-width: 1.95rem;
+  text-align: center;
+  background: var(--text-secondary);
+  border: 1px solid var(--text-secondary);
+  border-radius: 5px;
+  line-height: 1.1;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.08);
 }
 
 .qip-card.selected .qip-card-index {
-  color: var(--text-secondary);
-  border-color: color-mix(in srgb, var(--accent-primary) 35%, var(--border-color));
-  background: var(--bg-primary);
+  background: var(--accent-primary);
+  border-color: var(--accent-primary);
+  color: var(--bg-primary);
+  box-shadow:
+    0 1px 0 rgba(0, 0, 0, 0.1),
+    0 0 0 2px color-mix(in srgb, var(--accent-primary) 25%, transparent);
 }
 
 .qip-card-num {
@@ -3233,57 +3239,43 @@ body.no-scroll {
   opacity: 0.55;
 }
 
-/* Business + source row */
-.qip-card-business-row {
+/* Card foot (single bottom row) */
+.qip-card-foot {
   display: flex;
   justify-content: space-between;
-  align-items: baseline;
+  align-items: center;
   gap: 0.55rem;
-  margin-bottom: 0.4rem;
+  font-size: 0.7rem;
 }
 
 .qip-card-business {
   flex: 1;
   min-width: 0;
-  font-size: 0.825rem;
+  font-size: 0.82rem;
   color: var(--text-secondary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-/* Card meta (single bottom row) */
-.qip-card-meta {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 0.5rem;
+.qip-card-packer {
+  color: var(--text-tertiary);
+  font-family: var(--qip-mono);
   font-size: 0.7rem;
-  color: var(--text-secondary);
+  font-weight: 500;
 }
 
-.qip-card-meta-pill {
+.qip-card-foot-right {
   display: inline-flex;
   align-items: center;
-  font-family: var(--qip-mono);
-  font-size: 0.65rem;
-  font-weight: 500;
-  letter-spacing: 0.04em;
-  color: var(--text-secondary);
-  background: var(--bg-tertiary);
-  border: 1px solid var(--border-color);
-  padding: 0.1rem 0.42rem;
-  border-radius: 3px;
-  white-space: nowrap;
+  gap: 0.55rem;
   flex-shrink: 0;
 }
 
 .qip-card-meta-stats {
-  flex-shrink: 0;
   font-family: var(--qip-mono);
   font-variant-numeric: tabular-nums;
   color: var(--text-tertiary);
-  margin-left: auto;
 }
 
 .qip-card-meta-stats strong {
@@ -3292,7 +3284,7 @@ body.no-scroll {
 }
 
 .qip-card-meta-unit {
-  font-size: 0.62rem;
+  font-size: 0.6rem;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--text-tertiary);
