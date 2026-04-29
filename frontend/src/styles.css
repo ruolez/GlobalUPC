@@ -3703,8 +3703,8 @@ body.no-scroll {
   color: var(--accent-primary);
 }
 
-/* Column widths -- description gets the flexible space, qty / price are
-   fixed-narrow so descriptions can breathe. */
+/* Column widths -- description gets the flexible space, qty / price /
+   total are fixed-narrow so descriptions can breathe. */
 .qip-products-table thead th:nth-child(2),
 .qip-products-table tbody td:nth-child(2) {
   width: 6ch;
@@ -3712,6 +3712,10 @@ body.no-scroll {
 .qip-products-table thead th:nth-child(3),
 .qip-products-table tbody td:nth-child(3) {
   width: 9ch;
+}
+.qip-products-table thead th:nth-child(4),
+.qip-products-table tbody td:nth-child(4) {
+  width: 11ch;
 }
 
 .qip-products-table tbody td {

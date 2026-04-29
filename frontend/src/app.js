@@ -10496,6 +10496,16 @@ function qipFormatPrice(value) {
   return QIP_PRICE_FORMATTER.format(value);
 }
 
+function qipLineTotal(row) {
+  // Grouped summary rows carry an aggregated line_total; per-quotation
+  // rows derive theirs on the fly from price * qty. Returns -Infinity
+  // for unpriced rows so sorting parks them on whichever end matches
+  // "missing last".
+  if (row.line_total != null) return row.line_total;
+  if (row.price == null) return -Infinity;
+  return row.price * (row.qty || 0);
+}
+
 function qipSortProducts(products) {
   const { column, order } = qipState.productSort;
   if (!column) return products;
@@ -10512,6 +10522,13 @@ function qipSortProducts(products) {
       const ap = a.price == null ? -Infinity : a.price;
       const bp = b.price == null ? -Infinity : b.price;
       return (ap - bp) * dir;
+    }
+    if (column === "line_total") {
+      // Per-quotation rows compute line_total inline (price * qty);
+      // grouped summary rows already carry it pre-computed.
+      const al = qipLineTotal(a);
+      const bl = qipLineTotal(b);
+      return (al - bl) * dir;
     }
     const ad = (a.product_description || "").toLowerCase();
     const bd = (b.product_description || "").toLowerCase();
@@ -10557,14 +10574,14 @@ function renderQuotationProducts(products, matchTerm) {
 
   if (!products || products.length === 0) {
     countEl.textContent = "0";
-    tbody.innerHTML = `<tr><td colspan="3"><div class="qip-products-empty">No products on this quotation.</div></td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="4"><div class="qip-products-empty">No products on this quotation.</div></td></tr>`;
     return;
   }
 
   const sortedProducts = qipSortProducts(products);
   const term = (matchTerm || "").trim().toLowerCase();
   let matchCount = 0;
-  let lineTotal = 0;
+  let lineTotalSum = 0;
 
   tbody.innerHTML = "";
   sortedProducts.forEach((p) => {
@@ -10580,14 +10597,16 @@ function renderQuotationProducts(products, matchTerm) {
       matchCount++;
     }
 
-    if (p.price != null) {
-      lineTotal += p.price * (p.qty || 0);
+    const rowTotal = p.price != null ? p.price * (p.qty || 0) : null;
+    if (rowTotal != null) {
+      lineTotalSum += rowTotal;
     }
 
     tr.innerHTML = `
       <td class="qip-product-desc">${escapeHtml(p.product_description || "—")}</td>
       <td class="qip-num">${(p.qty || 0).toLocaleString()}</td>
       <td class="qip-num">${qipFormatPrice(p.price)}</td>
+      <td class="qip-num"><strong>${qipFormatPrice(rowTotal)}</strong></td>
     `;
     tbody.appendChild(tr);
   });
@@ -10596,8 +10615,8 @@ function renderQuotationProducts(products, matchTerm) {
   if (term && matchCount > 0) {
     countText += ` · ${matchCount} match${matchCount === 1 ? "" : "es"}`;
   }
-  if (lineTotal > 0) {
-    countText += ` · ${qipFormatPrice(lineTotal)} total`;
+  if (lineTotalSum > 0) {
+    countText += ` · ${qipFormatPrice(lineTotalSum)} total`;
   }
   countEl.textContent = countText;
 }
@@ -10831,6 +10850,7 @@ function renderSearchSummary() {
           <td class="qip-product-desc">${escapeHtml(r.product_description || "—")}</td>
           <td class="qip-num"><strong>${r.qty.toLocaleString()}</strong></td>
           <td class="qip-num">${qipFormatPrice(r.price)}</td>
+          <td class="qip-num"><strong>${qipFormatPrice(r.line_total > 0 ? r.line_total : null)}</strong></td>
         </tr>
       `;
     })
@@ -10867,6 +10887,10 @@ function renderSearchSummary() {
           </th>
           <th class="qip-num qip-sortable" data-sort="price">
             <span>Price</span>
+            <span class="qip-sort-arrow"></span>
+          </th>
+          <th class="qip-num qip-sortable" data-sort="line_total">
+            <span>Total</span>
             <span class="qip-sort-arrow"></span>
           </th>
         </tr>
