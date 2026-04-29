@@ -3704,6 +3704,163 @@ body.no-scroll {
   font-size: 0.85rem;
 }
 
+/* ---------- Search summary + match highlight ---------- */
+
+/* Highlight matched product rows inside the per-quotation table */
+.qip-products-table tbody tr.qip-product-match td {
+  background: color-mix(in srgb, var(--accent-primary) 10%, var(--bg-primary));
+  position: relative;
+}
+
+.qip-products-table tbody tr.qip-product-match td:first-child {
+  box-shadow: inset 3px 0 0 var(--accent-primary);
+}
+
+.qip-products-table tbody tr.qip-product-match:hover td {
+  background: color-mix(in srgb, var(--accent-primary) 16%, var(--bg-primary));
+}
+
+/* Summary section in the right pane */
+#qip-search-summary {
+  padding: 1rem 1.25rem 1.5rem;
+}
+
+.qip-search-summary-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 0.75rem;
+  padding-bottom: 0.85rem;
+  margin-bottom: 0.85rem;
+  border-bottom: 1px solid var(--border-color);
+  flex-wrap: wrap;
+}
+
+.qip-search-summary-title {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.qip-search-summary-eyebrow {
+  font-family: var(--qip-mono);
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--text-tertiary);
+}
+
+.qip-search-summary-title strong {
+  font-family: var(--qip-mono);
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+.qip-search-summary-count {
+  font-family: var(--qip-mono);
+  font-size: 0.85rem;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.qip-search-summary-count strong {
+  color: var(--text-primary);
+  font-weight: 700;
+}
+
+/* Summary table -- inherits .qip-products-table look */
+.qip-summary-table tbody tr.qip-summary-row {
+  cursor: pointer;
+}
+
+.qip-summary-table tbody tr.qip-summary-row:hover td {
+  background: color-mix(in srgb, var(--accent-primary) 10%, var(--bg-primary));
+}
+
+.qip-summary-cell-match {
+  background: color-mix(
+    in srgb,
+    var(--accent-primary) 14%,
+    transparent
+  );
+  font-weight: 600;
+  color: color-mix(in srgb, var(--accent-primary) 80%, var(--text-primary));
+}
+
+.qip-summary-quotation-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  line-height: 1.25;
+}
+
+.qip-summary-quotation-cell strong {
+  font-family: var(--qip-mono);
+  font-size: 0.85rem;
+  color: var(--text-primary);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.qip-summary-quotation-cell span {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
+}
+
+/* Toolbar Summary button */
+.qip-summary-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  height: 36px;
+  padding: 0 0.75rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.qip-summary-btn:hover {
+  color: var(--text-primary);
+  border-color: color-mix(in srgb, var(--accent-primary) 35%, var(--border-color));
+}
+
+.qip-summary-btn[aria-pressed="true"] {
+  color: color-mix(in srgb, var(--accent-primary) 80%, var(--text-primary));
+  background: color-mix(in srgb, var(--accent-primary) 14%, var(--bg-primary));
+  border-color: color-mix(in srgb, var(--accent-primary) 50%, var(--border-color));
+}
+
+.qip-summary-btn-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  font-family: var(--qip-mono);
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--bg-primary);
+  background: var(--accent-primary);
+  border-radius: 9px;
+  font-variant-numeric: tabular-nums;
+}
+
 /* ---------- Loading / error ---------- */
 .qip-loading {
   display: inline-flex;

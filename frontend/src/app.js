@@ -9874,6 +9874,12 @@ const qipState = {
   results: [],
   selectedQuotation: null,
   productCache: new Map(),
+
+  // Right pane mode
+  viewMode: "empty",          // "empty" | "summary" | "quotation"
+  searchProducts: [],         // matched product rows for the active search
+  searchProductsCount: 0,
+  searchActiveQuery: "",      // term currently driving summary + highlights
 };
 
 let qipSearchDebounce = null;
@@ -9958,8 +9964,18 @@ function initQuotationsInProgressPage() {
   search.addEventListener("input", (e) => {
     qipState.filters.search = e.target.value;
     if (qipSearchDebounce) clearTimeout(qipSearchDebounce);
-    qipSearchDebounce = setTimeout(fetchQuotationsInProgress, 300);
+    qipSearchDebounce = setTimeout(qipHandleSearchChange, 300);
   });
+
+  // ----- Summary button -----
+  document
+    .getElementById("qip-summary-btn")
+    .addEventListener("click", () => {
+      if (!qipState.searchActiveQuery) return;
+      qipState.viewMode = "summary";
+      qipUpdateSummaryButton();
+      qipRenderRightPane();
+    });
 
   // ----- Multi-select popovers -----
   document.querySelectorAll(".qip-multiselect").forEach((ms) => {
@@ -10026,7 +10042,15 @@ function initQuotationsInProgressPage() {
     Object.keys(qipState.multiselectMeta).forEach((k) => {
       qipState.multiselectMeta[k].initialized = false;
     });
+    // Clear the active search summary state too.
+    qipState.searchActiveQuery = "";
+    qipState.searchProducts = [];
+    qipState.searchProductsCount = 0;
+    if (qipState.viewMode === "summary") {
+      qipState.viewMode = qipState.selectedQuotation ? "quotation" : "empty";
+    }
     qipUpdateSegmented();
+    qipUpdateSummaryButton();
     fetchQuotationsInProgress();
   });
 
@@ -10213,23 +10237,22 @@ async function fetchQuotationsInProgress(forceClearCache = false) {
     qipUpdateHeaderMeta(qipState.results);
     renderQuotationsList(qipState.results);
 
-    // Preserve selection if still in results
+    // Drop the selection if it no longer appears in the narrowed list.
     if (
       qipState.selectedQuotation &&
-      qipState.results.some(
+      !qipState.results.some(
         (q) => q.quotation_number === qipState.selectedQuotation,
       )
     ) {
-      if (forceClearCache) {
-        selectQuotation(qipState.selectedQuotation, true);
-      } else {
-        highlightSelectedCard();
+      qipState.selectedQuotation = null;
+      if (qipState.viewMode === "quotation") {
+        qipState.viewMode = qipState.searchActiveQuery ? "summary" : "empty";
       }
     } else {
-      qipState.selectedQuotation = null;
-      document.getElementById("qip-detail-empty").style.display = "flex";
-      document.getElementById("qip-detail-content").style.display = "none";
+      highlightSelectedCard();
     }
+
+    qipRenderRightPane({ forceClearCache });
   } catch (error) {
     errorEl.style.display = "block";
     errorEl.textContent = `Error: ${error.message}`;
@@ -10326,17 +10349,16 @@ function highlightSelectedCard() {
 async function selectQuotation(quotationNumber, forceFetch = false) {
   if (!quotationNumber) return;
   qipState.selectedQuotation = quotationNumber;
+  qipState.viewMode = "quotation";
   highlightSelectedCard();
+  qipUpdateSummaryButton();
 
-  const emptyEl = document.getElementById("qip-detail-empty");
-  const contentEl = document.getElementById("qip-detail-content");
+  qipShowQuotationViewShell();
   const headerEl = document.getElementById("qip-detail-header");
   const tbody = document
     .getElementById("qip-products-table")
     .querySelector("tbody");
 
-  emptyEl.style.display = "none";
-  contentEl.style.display = "block";
   headerEl.innerHTML = `
     <div class="qip-hero">
       <div class="qip-hero-left">
@@ -10365,8 +10387,11 @@ async function selectQuotation(quotationNumber, forceFetch = false) {
     }
   }
 
+  // Bail if user navigated away or cleared while we were fetching.
+  if (qipState.selectedQuotation !== quotationNumber) return;
+
   renderQuotationDetailHeader(payload.header, quotationNumber);
-  renderQuotationProducts(payload.products);
+  renderQuotationProducts(payload.products, qipState.searchActiveQuery);
 }
 
 const QIP_CHECK_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
@@ -10430,7 +10455,7 @@ function renderQuotationDetailHeader(header, quotationNumber) {
   `;
 }
 
-function renderQuotationProducts(products) {
+function renderQuotationProducts(products, matchTerm) {
   const tbody = document
     .getElementById("qip-products-table")
     .querySelector("tbody");
@@ -10442,11 +10467,25 @@ function renderQuotationProducts(products) {
     return;
   }
 
+  const term = (matchTerm || "").trim().toLowerCase();
+  let matchCount = 0;
+
   countEl.textContent = `${products.length} ${products.length === 1 ? "item" : "items"}`;
 
   tbody.innerHTML = "";
   products.forEach((p) => {
     const tr = document.createElement("tr");
+
+    const isMatch =
+      term &&
+      (((p.product_upc || "").toLowerCase().includes(term)) ||
+        ((p.product_sku || "").toLowerCase().includes(term)) ||
+        ((p.product_description || "").toLowerCase().includes(term)));
+    if (isMatch) {
+      tr.classList.add("qip-product-match");
+      matchCount++;
+    }
+
     tr.innerHTML = `
       <td class="qip-mono">${escapeHtml(p.product_upc || "—")}</td>
       <td class="qip-mono">${escapeHtml(p.product_sku || "—")}</td>
@@ -10455,6 +10494,12 @@ function renderQuotationProducts(products) {
     `;
     tbody.appendChild(tr);
   });
+
+  if (term && matchCount > 0) {
+    countEl.textContent =
+      `${products.length} ${products.length === 1 ? "item" : "items"} · `
+      + `${matchCount} match${matchCount === 1 ? "" : "es"}`;
+  }
 }
 
 function qipStatusFor(hasIn, hasOut) {
@@ -10487,6 +10532,229 @@ function qipRenderStatusChip(status, inTime, outTime) {
     timeHtml = `<span class="qip-status-time">${escapeHtml(inTime || "—")}<span class="qip-status-time-sep">→</span>${escapeHtml(outTime || "—")}</span>`;
   }
   return `<span class="qip-status-chip ${status}">${QIP_STATUS_ICON[status]}<span class="qip-status-label">${label}</span>${timeHtml}</span>`;
+}
+
+function qipShowQuotationViewShell() {
+  // Hide summary, show the original quotation hero + products section.
+  const summaryEl = document.getElementById("qip-search-summary");
+  if (summaryEl) summaryEl.style.display = "none";
+  document.getElementById("qip-detail-empty").style.display = "none";
+  document.getElementById("qip-detail-content").style.display = "block";
+}
+
+function qipShowEmptyShell() {
+  const summaryEl = document.getElementById("qip-search-summary");
+  if (summaryEl) summaryEl.style.display = "none";
+  document.getElementById("qip-detail-empty").style.display = "flex";
+  document.getElementById("qip-detail-content").style.display = "none";
+}
+
+function qipShowSummaryShell() {
+  document.getElementById("qip-detail-empty").style.display = "none";
+  document.getElementById("qip-detail-content").style.display = "none";
+  let summaryEl = document.getElementById("qip-search-summary");
+  if (!summaryEl) {
+    const detailPane = document.querySelector(".qip-detail");
+    summaryEl = document.createElement("div");
+    summaryEl.id = "qip-search-summary";
+    detailPane.appendChild(summaryEl);
+  }
+  summaryEl.style.display = "block";
+  return summaryEl;
+}
+
+function qipRenderRightPane({ forceClearCache = false } = {}) {
+  if (qipState.viewMode === "summary") {
+    renderSearchSummary();
+  } else if (qipState.viewMode === "quotation" && qipState.selectedQuotation) {
+    selectQuotation(qipState.selectedQuotation, forceClearCache);
+  } else {
+    qipState.viewMode = "empty";
+    qipShowEmptyShell();
+  }
+  qipUpdateSummaryButton();
+}
+
+async function qipHandleSearchChange() {
+  const term = (qipState.filters.search || "").trim();
+
+  if (!term) {
+    // Cleared: drop summary state, snap right pane back to selection or empty.
+    qipState.searchActiveQuery = "";
+    qipState.searchProducts = [];
+    qipState.searchProductsCount = 0;
+    if (qipState.viewMode === "summary") {
+      qipState.viewMode = qipState.selectedQuotation ? "quotation" : "empty";
+    }
+    qipUpdateSummaryButton();
+    fetchQuotationsInProgress();
+    return;
+  }
+
+  // Active search: switch right pane to summary mode and fire both fetches.
+  qipState.searchActiveQuery = term;
+  qipState.viewMode = "summary";
+  qipUpdateSummaryButton();
+
+  // Fire both in parallel; each calls qipRenderRightPane (via the fetch
+  // chain) so the summary materializes as soon as products arrive.
+  fetchQuotationsInProgress();
+  fetchSearchProducts();
+}
+
+async function fetchSearchProducts() {
+  const errorEl = document.getElementById("qip-error");
+  errorEl.style.display = "none";
+
+  try {
+    // Mirror the same "all-checked = no filter" payload transform used
+    // by fetchQuotationsInProgress so summary results stay consistent
+    // with the narrowed list.
+    const payload = { ...qipState.filters };
+    ["source_dbs", "packers", "checkers"].forEach((k) => {
+      const meta = qipState.multiselectMeta[k];
+      if (
+        meta &&
+        meta.initialized &&
+        meta.total > 0 &&
+        (qipState.filters[k] || []).length === meta.total
+      ) {
+        payload[k] = [];
+      }
+    });
+
+    const resp = await fetch(`${API_BASE}/quotations/in-progress/search-products`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.detail || `Request failed (${resp.status})`);
+    }
+    const data = await resp.json();
+    qipState.searchProducts = data.products || [];
+    qipState.searchProductsCount = data.products ? data.products.length : 0;
+
+    // The list-quotations request narrows the left pane separately;
+    // we only re-render the right pane here.
+    if (qipState.viewMode === "summary") {
+      renderSearchSummary();
+    }
+    qipUpdateSummaryButton();
+  } catch (error) {
+    errorEl.style.display = "block";
+    errorEl.textContent = `Search error: ${error.message}`;
+  }
+}
+
+function renderSearchSummary() {
+  const root = qipShowSummaryShell();
+  const products = qipState.searchProducts || [];
+  const term = qipState.searchActiveQuery || "";
+  const quotationCount = new Set(
+    products.map((p) => p.quotation_number).filter(Boolean),
+  ).size;
+
+  if (products.length === 0) {
+    root.innerHTML = `
+      <header class="qip-search-summary-head">
+        <div class="qip-search-summary-title">
+          <span class="qip-search-summary-eyebrow">Search</span>
+          <strong>${escapeHtml(term)}</strong>
+        </div>
+        <div class="qip-search-summary-count">
+          <strong>0</strong>&nbsp;<span class="qip-card-meta-unit">products</span>
+        </div>
+      </header>
+      <div class="qip-products-empty" style="padding: 2rem 1rem;">
+        No products matched <strong>${escapeHtml(term)}</strong>.<br/>
+        Quotations whose number, business, or account matches may still appear in the list — click one to view its products.
+      </div>
+    `;
+    return;
+  }
+
+  const rows = products
+    .map((p) => {
+      const upcMatch = (p.product_upc || "").toLowerCase().includes(term.toLowerCase());
+      const skuMatch = (p.product_sku || "").toLowerCase().includes(term.toLowerCase());
+      const descMatch = (p.product_description || "")
+        .toLowerCase()
+        .includes(term.toLowerCase());
+      return `
+        <tr class="qip-summary-row" data-quotation-number="${escapeHtml(p.quotation_number || "")}">
+          <td class="qip-mono${upcMatch ? " qip-summary-cell-match" : ""}">${escapeHtml(p.product_upc || "—")}</td>
+          <td class="qip-mono${skuMatch ? " qip-summary-cell-match" : ""}">${escapeHtml(p.product_sku || "—")}</td>
+          <td class="qip-product-desc${descMatch ? " qip-summary-cell-match" : ""}">${escapeHtml(p.product_description || "—")}</td>
+          <td class="qip-num">${(p.qty || 0).toLocaleString()}</td>
+          <td class="qip-summary-quotation-cell">
+            <strong>${escapeHtml(p.quotation_number || "—")}</strong>
+            <span>${escapeHtml(p.business_name || "")}</span>
+          </td>
+        </tr>
+      `;
+    })
+    .join("");
+
+  root.innerHTML = `
+    <header class="qip-search-summary-head">
+      <div class="qip-search-summary-title">
+        <span class="qip-search-summary-eyebrow">Search</span>
+        <strong>${escapeHtml(term)}</strong>
+      </div>
+      <div class="qip-search-summary-count">
+        <strong>${products.length}</strong>&nbsp;<span class="qip-card-meta-unit">${products.length === 1 ? "product" : "products"}</span>
+        <span class="qip-card-meta-sep">·</span>
+        <strong>${quotationCount}</strong>&nbsp;<span class="qip-card-meta-unit">${quotationCount === 1 ? "quotation" : "quotations"}</span>
+      </div>
+    </header>
+    <table class="qip-products-table qip-summary-table">
+      <thead>
+        <tr>
+          <th>UPC</th>
+          <th>SKU</th>
+          <th>Description</th>
+          <th class="qip-num">Qty</th>
+          <th>Quot · Business</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+
+  // Wire row clicks to switch into quotation view.
+  root.querySelectorAll(".qip-summary-row").forEach((tr) => {
+    tr.addEventListener("click", () => {
+      const qnum = tr.dataset.quotationNumber;
+      if (qnum) selectQuotation(qnum);
+    });
+  });
+}
+
+function qipUpdateSummaryButton() {
+  const btn = document.getElementById("qip-summary-btn");
+  const countEl = document.getElementById("qip-summary-btn-count");
+  if (!btn) return;
+
+  const hasSearch = !!(qipState.searchActiveQuery || "").trim();
+  if (!hasSearch) {
+    btn.hidden = true;
+    btn.setAttribute("aria-pressed", "false");
+    countEl.hidden = true;
+    return;
+  }
+  btn.hidden = false;
+  btn.setAttribute(
+    "aria-pressed",
+    qipState.viewMode === "summary" ? "true" : "false",
+  );
+  if (qipState.searchProductsCount > 0) {
+    countEl.textContent = String(qipState.searchProductsCount);
+    countEl.hidden = false;
+  } else {
+    countEl.hidden = true;
+  }
 }
 
 function qipFormatDateTime(value) {

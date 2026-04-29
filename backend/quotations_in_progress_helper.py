@@ -307,6 +307,123 @@ def _get_quotation_products_sync(
         return False, str(e), {"products": [], "header": None}
 
 
+def _search_products_sync(
+    host: str,
+    port: int,
+    database: str,
+    username: str,
+    password: str,
+    search: str,
+    scan_filter: str,
+    source_dbs: List[str],
+    packers: List[str],
+    checkers: List[str],
+    limit: int,
+) -> Tuple[bool, Optional[str], Dict[str, Any]]:
+    """
+    Flat product-level search across QuotationsInProgress.
+
+    Each row is a unique product line that matches the search term in
+    UPC / SKU / ProductDescription. Rows include the quotation context
+    (number, source, business) so the frontend can display a flat
+    "search summary" view.
+
+    Applies the same scan / source-db / packer / checker filters as the
+    main list endpoint so the summary is consistent with the narrowed
+    quotation list.
+    """
+    conn_str = get_mssql_connection_string(host, port, database, username, password)
+
+    if not search or not search.strip():
+        return False, "Search term is required", {"products": [], "quotation_count": 0}
+
+    like = f"%{search.strip()}%"
+
+    where_clauses: List[str] = [
+        "(qip.ProductUPC LIKE ? OR qip.ProductSKU LIKE ? OR qip.ProductDescription LIKE ?)"
+    ]
+    having_clauses: List[str] = []
+    params: List[Any] = [like, like, like]
+
+    if source_dbs:
+        placeholders = ",".join(["?"] * len(source_dbs))
+        where_clauses.append(f"qip.SourceDB IN ({placeholders})")
+        params.extend(source_dbs)
+    if packers:
+        placeholders = ",".join(["?"] * len(packers))
+        where_clauses.append(f"qs.Packer IN ({placeholders})")
+        params.extend(packers)
+    if checkers:
+        placeholders = ",".join(["?"] * len(checkers))
+        where_clauses.append(f"qs.Checker IN ({placeholders})")
+        params.extend(checkers)
+
+    scan_having = _build_scan_having(scan_filter)
+    if scan_having:
+        having_clauses.append(scan_having)
+
+    where_sql = "WHERE " + " AND ".join(where_clauses)
+    having_sql = ("HAVING " + " AND ".join(having_clauses)) if having_clauses else ""
+
+    # GROUP BY product line so duplicate rows in QuotationsInProgress for
+    # the same product collapse, while still letting us aggregate the
+    # joined QuotationsStatus columns (Dop2/Dop3/business).
+    query = f"""
+        SELECT TOP (?)
+            qip.QuotationNumber,
+            MAX(qip.SourceDB)               AS source_db,
+            qip.ProductUPC                  AS product_upc,
+            qip.ProductSKU                  AS product_sku,
+            qip.ProductDescription          AS product_description,
+            SUM(ISNULL(qip.Qty, 0))         AS qty,
+            MAX(qs.BusinessName)            AS business_name,
+            MAX(qs.Dop2)                    AS dop2,
+            MAX(qs.Dop3)                    AS dop3
+        FROM QuotationsInProgress qip
+        LEFT JOIN QuotationsStatus qs ON qs.QuotationNumber = qip.QuotationNumber
+        {where_sql}
+        GROUP BY qip.QuotationNumber, qip.ProductUPC, qip.ProductSKU,
+                 qip.ProductDescription
+        {having_sql}
+        ORDER BY qip.QuotationNumber, qip.ProductDescription
+    """
+
+    full_params: List[Any] = [int(limit)] + params
+
+    try:
+        with pyodbc.connect(conn_str, timeout=30) as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, full_params)
+            cols = [c[0] for c in cursor.description]
+            rows = cursor.fetchall()
+
+        products: List[Dict[str, Any]] = []
+        seen_quotations = set()
+        for row in rows:
+            d = dict(zip(cols, row))
+            qnum = d.get("QuotationNumber")
+            if qnum:
+                seen_quotations.add(qnum)
+            products.append({
+                "quotation_number": qnum,
+                "source_db": d.get("source_db"),
+                "business_name": d.get("business_name"),
+                "product_upc": d.get("product_upc"),
+                "product_sku": d.get("product_sku"),
+                "product_description": d.get("product_description"),
+                "qty": int(d.get("qty") or 0),
+                "dop2": d.get("dop2"),
+                "dop3": d.get("dop3"),
+            })
+
+        return True, None, {
+            "products": products,
+            "quotation_count": len(seen_quotations),
+        }
+    except Exception as e:
+        return False, str(e), {"products": [], "quotation_count": 0}
+
+
 def _list_distinct_filter_values_sync(
     host: str,
     port: int,
@@ -384,6 +501,14 @@ async def list_distinct_filter_values_async(**kwargs) -> Tuple[bool, Optional[st
     return await loop.run_in_executor(
         _qip_executor,
         lambda: _list_distinct_filter_values_sync(**kwargs),
+    )
+
+
+async def search_products_async(**kwargs) -> Tuple[bool, Optional[str], Dict[str, Any]]:
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        _qip_executor,
+        lambda: _search_products_sync(**kwargs),
     )
 
 

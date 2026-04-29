@@ -40,7 +40,8 @@ from schemas import (
     SalesExclusionCreate, SalesExclusionResponse, SalesExclusionListResponse,
     QuotationsInProgressFilter, QuotationsInProgressListResponse,
     QuotationsInProgressFilterOptions, QuotationInProgressSummary,
-    QuotationProductsResponse, QuotationInProgressHeader, QuotationProductLine
+    QuotationProductsResponse, QuotationInProgressHeader, QuotationProductLine,
+    QuotationSearchProduct, QuotationSearchResponse,
 )
 from mssql_helper import (
     test_mssql_connection, search_upc_across_mssql_stores, search_products_by_upc,
@@ -68,6 +69,7 @@ from quotations_in_progress_helper import (
     list_quotations_in_progress_async,
     get_quotation_products_async,
     list_distinct_filter_values_async,
+    search_products_async,
 )
 
 @asynccontextmanager
@@ -5044,6 +5046,53 @@ async def get_quotation_in_progress_products(
     return QuotationProductsResponse(
         products=[QuotationProductLine(**p) for p in payload["products"]],
         header=QuotationInProgressHeader(**payload["header"]) if payload["header"] else None,
+    )
+
+
+@app.post(
+    "/api/quotations/in-progress/search-products",
+    response_model=QuotationSearchResponse,
+)
+async def search_quotation_in_progress_products(
+    filters: QuotationsInProgressFilter,
+    db: Session = Depends(get_db),
+):
+    """
+    Flat product-level search across in-progress quotations.
+
+    Returns one row per matched product (UPC / SKU / description LIKE the
+    search term), annotated with quotation context and scan timestamps.
+    Honors the same scan / source-DB / packer / checker filters as the
+    list endpoint so the summary stays consistent with the narrowed list.
+    """
+    if not filters.search or not filters.search.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Search term is required for product search",
+        )
+
+    store = _resolve_admin_store(db)
+    conn = store.mssql_connection
+
+    success, error, payload = await search_products_async(
+        host=conn.host,
+        port=conn.port,
+        database=conn.database_name,
+        username=conn.username,
+        password=conn.password,
+        search=filters.search,
+        scan_filter=filters.scan_filter,
+        source_dbs=filters.source_dbs,
+        packers=filters.packers,
+        checkers=filters.checkers,
+        limit=filters.limit,
+    )
+    if not success:
+        raise HTTPException(status_code=502, detail=f"MSSQL query failed: {error}")
+
+    return QuotationSearchResponse(
+        products=[QuotationSearchProduct(**p) for p in payload["products"]],
+        quotation_count=payload["quotation_count"],
     )
 
 

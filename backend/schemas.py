@@ -706,3 +706,20 @@ class QuotationInProgressHeader(BaseModel):
 class QuotationProductsResponse(BaseModel):
     products: List[QuotationProductLine]
     header: Optional[QuotationInProgressHeader] = None
+
+
+class QuotationSearchProduct(BaseModel):
+    quotation_number: Optional[str] = None
+    source_db: Optional[str] = None
+    business_name: Optional[str] = None
+    product_upc: Optional[str] = None
+    product_sku: Optional[str] = None
+    product_description: Optional[str] = None
+    qty: int = 0
+    dop2: Optional[str] = None
+    dop3: Optional[str] = None
+
+
+class QuotationSearchResponse(BaseModel):
+    products: List[QuotationSearchProduct]
+    quotation_count: int = 0
