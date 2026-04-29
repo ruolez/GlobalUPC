@@ -4947,6 +4947,87 @@ async def sales_report_stream(request: SalesReportRequest, db: Session = Depends
 # Quotations In Progress endpoints (DB_ADMIN-backed)
 ADMIN_STORE_SETTING_KEY = "admin_store_id"
 
+# Markup applied to Items_tbl.UnitCost when computing the displayed Price
+# in the In Progress section. cost * PRICE_MARKUP -> displayed price.
+PRICE_MARKUP = 1.05
+
+
+def _resolve_item_tracker_s2s_conn(db: Session):
+    """
+    Soft variant of get_item_tracker_stores(). Returns the s2s
+    MSSQLConnection if Item Tracker is configured with an active MSSQL
+    s2s store, otherwise returns None -- so missing config doesn't break
+    the In Progress page; prices simply render blank.
+    """
+    config = db.query(ItemTrackerConfig).first()
+    if not config or not config.s2s_store_id:
+        return None
+    store = db.query(Store).filter(
+        Store.id == config.s2s_store_id,
+        Store.store_type == StoreType.mssql,
+        Store.is_active == True,
+    ).first()
+    if not store or not store.mssql_connection:
+        return None
+    return store.mssql_connection
+
+
+async def _enrich_products_with_prices(products, s2s_conn):
+    """
+    Attach `unit_cost` and `price` to every product dict in `products`
+    in place. `price` = `unit_cost * PRICE_MARKUP`, rounded to 2dp.
+
+    No-op (sets both fields to None) when:
+      - s2s_conn is None (Item Tracker not configured)
+      - the products list has no usable UPCs
+      - the batch lookup against Items_tbl fails for any reason
+    """
+    def _set_blank():
+        for p in products or []:
+            p["unit_cost"] = None
+            p["price"] = None
+
+    if not products:
+        return
+    if s2s_conn is None:
+        _set_blank()
+        return
+
+    upcs = sorted(
+        {
+            (p.get("product_upc") or "").strip()
+            for p in products
+            if (p.get("product_upc") or "").strip()
+        }
+    )
+    if not upcs:
+        _set_blank()
+        return
+
+    success, _err, by_upc = await get_item_prices_batch_async(
+        host=s2s_conn.host,
+        port=s2s_conn.port,
+        database=s2s_conn.database_name,
+        username=s2s_conn.username,
+        password=s2s_conn.password,
+        upcs=upcs,
+        include_discontinued=True,
+    )
+    if not success or not isinstance(by_upc, dict):
+        _set_blank()
+        return
+
+    for p in products:
+        upc = (p.get("product_upc") or "").strip()
+        entry = by_upc.get(upc) if upc else None
+        cost = entry.get("unit_cost") if entry else None
+        if cost is None:
+            p["unit_cost"] = None
+            p["price"] = None
+        else:
+            p["unit_cost"] = float(cost)
+            p["price"] = round(float(cost) * PRICE_MARKUP, 2)
+
 
 def _resolve_admin_store(db: Session) -> Store:
     """
@@ -5043,6 +5124,11 @@ async def get_quotation_in_progress_products(
     if not success:
         raise HTTPException(status_code=502, detail=f"MSSQL query failed: {error}")
 
+    # Enrich each product line with unit_cost / price from the Item
+    # Tracker s2s store. Soft-fails to None when not configured.
+    s2s_conn = _resolve_item_tracker_s2s_conn(db)
+    await _enrich_products_with_prices(payload["products"], s2s_conn)
+
     return QuotationProductsResponse(
         products=[QuotationProductLine(**p) for p in payload["products"]],
         header=QuotationInProgressHeader(**payload["header"]) if payload["header"] else None,
@@ -5089,6 +5175,11 @@ async def search_quotation_in_progress_products(
     )
     if not success:
         raise HTTPException(status_code=502, detail=f"MSSQL query failed: {error}")
+
+    # Enrich each matched product with unit_cost / price from the Item
+    # Tracker s2s store. Soft-fails to None when not configured.
+    s2s_conn = _resolve_item_tracker_s2s_conn(db)
+    await _enrich_products_with_prices(payload["products"], s2s_conn)
 
     return QuotationSearchResponse(
         products=[QuotationSearchProduct(**p) for p in payload["products"]],

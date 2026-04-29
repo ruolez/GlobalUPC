@@ -668,6 +668,8 @@ class QuotationProductLine(BaseModel):
     flag1: Optional[bool] = None
     flag2: Optional[bool] = None
     flag3: Optional[bool] = None
+    unit_cost: Optional[float] = None
+    price: Optional[float] = None
 
 
 class QuotationInProgressHeader(BaseModel):
@@ -718,6 +720,8 @@ class QuotationSearchProduct(BaseModel):
     qty: int = 0
     dop2: Optional[str] = None
     dop3: Optional[str] = None
+    unit_cost: Optional[float] = None
+    price: Optional[float] = None
 
 
 class QuotationSearchResponse(BaseModel):

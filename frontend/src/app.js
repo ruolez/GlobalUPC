@@ -10484,6 +10484,18 @@ function renderQuotationDetailHeader(header, quotationNumber) {
   `;
 }
 
+const QIP_PRICE_FORMATTER = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+
+function qipFormatPrice(value) {
+  if (value == null || isNaN(value)) return "—";
+  return QIP_PRICE_FORMATTER.format(value);
+}
+
 function qipSortProducts(products) {
   const { column, order } = qipState.productSort;
   if (!column) return products;
@@ -10492,6 +10504,14 @@ function qipSortProducts(products) {
   sorted.sort((a, b) => {
     if (column === "qty") {
       return ((a.qty || 0) - (b.qty || 0)) * dir;
+    }
+    if (column === "price") {
+      // Treat null prices as -Infinity so they sink to the bottom on
+      // descending and to the top on ascending (consistent with the
+      // common "missing values last when you care most" expectation).
+      const ap = a.price == null ? -Infinity : a.price;
+      const bp = b.price == null ? -Infinity : b.price;
+      return (ap - bp) * dir;
     }
     const ad = (a.product_description || "").toLowerCase();
     const bd = (b.product_description || "").toLowerCase();
@@ -10537,15 +10557,14 @@ function renderQuotationProducts(products, matchTerm) {
 
   if (!products || products.length === 0) {
     countEl.textContent = "0";
-    tbody.innerHTML = `<tr><td colspan="2"><div class="qip-products-empty">No products on this quotation.</div></td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="3"><div class="qip-products-empty">No products on this quotation.</div></td></tr>`;
     return;
   }
 
   const sortedProducts = qipSortProducts(products);
   const term = (matchTerm || "").trim().toLowerCase();
   let matchCount = 0;
-
-  countEl.textContent = `${sortedProducts.length} ${sortedProducts.length === 1 ? "item" : "items"}`;
+  let lineTotal = 0;
 
   tbody.innerHTML = "";
   sortedProducts.forEach((p) => {
@@ -10561,18 +10580,26 @@ function renderQuotationProducts(products, matchTerm) {
       matchCount++;
     }
 
+    if (p.price != null) {
+      lineTotal += p.price * (p.qty || 0);
+    }
+
     tr.innerHTML = `
       <td class="qip-product-desc">${escapeHtml(p.product_description || "—")}</td>
       <td class="qip-num">${(p.qty || 0).toLocaleString()}</td>
+      <td class="qip-num">${qipFormatPrice(p.price)}</td>
     `;
     tbody.appendChild(tr);
   });
 
+  let countText = `${products.length} ${products.length === 1 ? "item" : "items"}`;
   if (term && matchCount > 0) {
-    countEl.textContent =
-      `${products.length} ${products.length === 1 ? "item" : "items"} · `
-      + `${matchCount} match${matchCount === 1 ? "" : "es"}`;
+    countText += ` · ${matchCount} match${matchCount === 1 ? "" : "es"}`;
   }
+  if (lineTotal > 0) {
+    countText += ` · ${qipFormatPrice(lineTotal)} total`;
+  }
+  countEl.textContent = countText;
 }
 
 function qipStatusFor(hasIn, hasOut) {
@@ -10757,6 +10784,9 @@ function renderSearchSummary() {
 
   // Group rows by ProductUPC (fall back to description when UPC is blank
   // so unrelated null-UPC products don't all collapse into one row).
+  // Per-group fields: summed qty, the unit price (same UPC -> same price
+  // by definition), the running line total (sum price*qty), and the set
+  // of quotations the group spans.
   const grouped = new Map();
   for (const p of products) {
     const upc = (p.product_upc || "").trim();
@@ -10768,11 +10798,19 @@ function renderSearchSummary() {
         product_upc: upc || null,
         product_description: p.product_description || "",
         qty: 0,
+        price: null,
+        line_total: 0,
         quotations: new Set(),
       });
     }
     const g = grouped.get(key);
     g.qty += p.qty || 0;
+    if (p.price != null) {
+      // Latest non-null price wins -- same UPC should map to the same
+      // price since the lookup is by UPC, but be defensive.
+      g.price = p.price;
+      g.line_total += p.price * (p.qty || 0);
+    }
     if (p.quotation_number) g.quotations.add(p.quotation_number);
   }
 
@@ -10784,6 +10822,7 @@ function renderSearchSummary() {
   const totalQuotations = new Set(
     products.map((p) => p.quotation_number).filter(Boolean),
   ).size;
+  const grandTotal = rowsData.reduce((acc, r) => acc + (r.line_total || 0), 0);
 
   const rows = rowsData
     .map((r) => {
@@ -10791,10 +10830,16 @@ function renderSearchSummary() {
         <tr class="qip-summary-row">
           <td class="qip-product-desc">${escapeHtml(r.product_description || "—")}</td>
           <td class="qip-num"><strong>${r.qty.toLocaleString()}</strong></td>
+          <td class="qip-num">${qipFormatPrice(r.price)}</td>
         </tr>
       `;
     })
     .join("");
+
+  const totalChip = grandTotal > 0
+    ? `<span class="qip-card-meta-sep">·</span>
+       <strong>${qipFormatPrice(grandTotal)}</strong>&nbsp;<span class="qip-card-meta-unit">total</span>`
+    : "";
 
   root.innerHTML = `
     <header class="qip-search-summary-head">
@@ -10806,6 +10851,7 @@ function renderSearchSummary() {
         <strong>${rowsData.length}</strong>&nbsp;<span class="qip-card-meta-unit">${rowsData.length === 1 ? "product" : "products"}</span>
         <span class="qip-card-meta-sep">·</span>
         <strong>${totalQuotations}</strong>&nbsp;<span class="qip-card-meta-unit">${totalQuotations === 1 ? "quotation" : "quotations"}</span>
+        ${totalChip}
       </div>
     </header>
     <table class="qip-products-table qip-summary-table">
@@ -10817,6 +10863,10 @@ function renderSearchSummary() {
           </th>
           <th class="qip-num qip-sortable" data-sort="qty">
             <span>Qty</span>
+            <span class="qip-sort-arrow"></span>
+          </th>
+          <th class="qip-num qip-sortable" data-sort="price">
+            <span>Price</span>
             <span class="qip-sort-arrow"></span>
           </th>
         </tr>
