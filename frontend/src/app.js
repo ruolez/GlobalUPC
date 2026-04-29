@@ -10650,9 +10650,6 @@ function renderSearchSummary() {
   const root = qipShowSummaryShell();
   const products = qipState.searchProducts || [];
   const term = qipState.searchActiveQuery || "";
-  const quotationCount = new Set(
-    products.map((p) => p.quotation_number).filter(Boolean),
-  ).size;
 
   if (products.length === 0) {
     root.innerHTML = `
@@ -10673,19 +10670,51 @@ function renderSearchSummary() {
     return;
   }
 
-  const rows = products
-    .map((p) => {
-      const descMatch = (p.product_description || "")
+  // Group rows by ProductUPC (fall back to description when UPC is blank
+  // so unrelated null-UPC products don't all collapse into one row).
+  const grouped = new Map();
+  for (const p of products) {
+    const upc = (p.product_upc || "").trim();
+    const key = upc
+      ? `upc:${upc}`
+      : `desc:${(p.product_description || "").trim()}`;
+    if (!grouped.has(key)) {
+      grouped.set(key, {
+        product_upc: upc || null,
+        product_description: p.product_description || "",
+        qty: 0,
+        quotations: new Set(),
+      });
+    }
+    const g = grouped.get(key);
+    g.qty += p.qty || 0;
+    if (p.quotation_number) g.quotations.add(p.quotation_number);
+  }
+
+  const rowsData = [...grouped.values()].sort((a, b) =>
+    (a.product_description || "").localeCompare(b.product_description || ""),
+  );
+
+  const totalQuotations = new Set(
+    products.map((p) => p.quotation_number).filter(Boolean),
+  ).size;
+
+  const rows = rowsData
+    .map((r) => {
+      const descMatch = (r.product_description || "")
         .toLowerCase()
         .includes(term.toLowerCase());
+      const quotationLabel =
+        r.quotations.size > 1
+          ? `<span class="qip-summary-row-sub">in ${r.quotations.size} quotations</span>`
+          : "";
       return `
-        <tr class="qip-summary-row" data-quotation-number="${escapeHtml(p.quotation_number || "")}">
-          <td class="qip-product-desc${descMatch ? " qip-summary-cell-match" : ""}">${escapeHtml(p.product_description || "—")}</td>
-          <td class="qip-num">${(p.qty || 0).toLocaleString()}</td>
-          <td class="qip-summary-quotation-cell">
-            <strong>${escapeHtml(p.quotation_number || "—")}</strong>
-            <span>${escapeHtml(p.business_name || "")}</span>
+        <tr class="qip-summary-row">
+          <td class="qip-product-desc${descMatch ? " qip-summary-cell-match" : ""}">
+            <span class="qip-summary-row-desc">${escapeHtml(r.product_description || "—")}</span>
+            ${quotationLabel}
           </td>
+          <td class="qip-num"><strong>${r.qty.toLocaleString()}</strong></td>
         </tr>
       `;
     })
@@ -10698,9 +10727,9 @@ function renderSearchSummary() {
         <strong>${escapeHtml(term)}</strong>
       </div>
       <div class="qip-search-summary-count">
-        <strong>${products.length}</strong>&nbsp;<span class="qip-card-meta-unit">${products.length === 1 ? "product" : "products"}</span>
+        <strong>${rowsData.length}</strong>&nbsp;<span class="qip-card-meta-unit">${rowsData.length === 1 ? "product" : "products"}</span>
         <span class="qip-card-meta-sep">·</span>
-        <strong>${quotationCount}</strong>&nbsp;<span class="qip-card-meta-unit">${quotationCount === 1 ? "quotation" : "quotations"}</span>
+        <strong>${totalQuotations}</strong>&nbsp;<span class="qip-card-meta-unit">${totalQuotations === 1 ? "quotation" : "quotations"}</span>
       </div>
     </header>
     <table class="qip-products-table qip-summary-table">
@@ -10708,20 +10737,11 @@ function renderSearchSummary() {
         <tr>
           <th>Description</th>
           <th class="qip-num">Qty</th>
-          <th>Quot · Business</th>
         </tr>
       </thead>
       <tbody>${rows}</tbody>
     </table>
   `;
-
-  // Wire row clicks to switch into quotation view.
-  root.querySelectorAll(".qip-summary-row").forEach((tr) => {
-    tr.addEventListener("click", () => {
-      const qnum = tr.dataset.quotationNumber;
-      if (qnum) selectQuotation(qnum);
-    });
-  });
 }
 
 function qipUpdateSummaryButton() {

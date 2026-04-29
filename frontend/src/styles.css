@@ -3653,12 +3653,6 @@ body.no-scroll {
 .qip-products-table tbody td:nth-child(2) {
   width: 6ch;
 }
-/* Summary table has a third column (Quot · Business) -- bound it so
-   the description still gets most of the width. */
-.qip-products-table.qip-summary-table thead th:nth-child(3),
-.qip-products-table.qip-summary-table tbody td:nth-child(3) {
-  width: 18ch;
-}
 
 .qip-products-table tbody td {
   padding: 0.55rem 0.85rem;
@@ -3778,14 +3772,6 @@ body.no-scroll {
 }
 
 /* Summary table -- inherits .qip-products-table look */
-.qip-summary-table tbody tr.qip-summary-row {
-  cursor: pointer;
-}
-
-.qip-summary-table tbody tr.qip-summary-row:hover td {
-  background: color-mix(in srgb, var(--accent-primary) 10%, var(--bg-primary));
-}
-
 .qip-summary-cell-match {
   background: color-mix(
     in srgb,
@@ -3796,28 +3782,20 @@ body.no-scroll {
   color: color-mix(in srgb, var(--accent-primary) 80%, var(--text-primary));
 }
 
-.qip-summary-quotation-cell {
-  display: flex;
-  flex-direction: column;
-  gap: 0.1rem;
-  line-height: 1.25;
+.qip-summary-row-desc {
+  display: block;
+  word-break: break-word;
 }
 
-.qip-summary-quotation-cell strong {
+.qip-summary-row-sub {
+  display: block;
+  margin-top: 0.15rem;
   font-family: var(--qip-mono);
-  font-size: 0.85rem;
-  color: var(--text-primary);
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-
-.qip-summary-quotation-cell span {
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 220px;
+  font-size: 0.65rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-tertiary);
 }
 
 /* Toolbar Summary button */
