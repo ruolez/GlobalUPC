@@ -10416,41 +10416,6 @@ function renderQuotationDetailHeader(header, quotationNumber) {
   let lineClass = "";
   if (hasIn && hasOut) lineClass = "complete";
 
-  const fields = [
-    { label: "Source store", value: header.source_db, mono: true },
-    { label: "Status", value: header.status },
-    { label: "Account #", value: header.account_no, mono: true },
-    { label: "Invoice #", value: header.invoice_number, mono: true },
-    { label: "Sales rep", value: header.sales_rep },
-    { label: "Packer", value: header.packer },
-    { label: "Checker", value: header.checker },
-    {
-      label: "Total qty",
-      value: header.total_qty != null ? header.total_qty.toLocaleString() : null,
-      numeric: true,
-    },
-    { label: "Quotation total", value: header.quotation_total, numeric: true },
-    {
-      label: "Last update",
-      value: header.last_update ? qipFormatDateTime(header.last_update) : null,
-      mono: true,
-    },
-    { label: "Ship to", value: header.ship_to },
-    {
-      label: "Ship address",
-      value: [header.ship_address1, header.ship_address2].filter(Boolean).join(" "),
-    },
-    {
-      label: "City / State / Zip",
-      value: [header.ship_city, header.ship_state, header.ship_zip_code]
-        .filter(Boolean)
-        .join(", "),
-    },
-    { label: "Ship phone", value: header.ship_phone_no, mono: true },
-    { label: "Notes", value: header.notes },
-    { label: "Comment", value: header.comment },
-  ].filter((f) => f.value != null && String(f.value).trim() !== "");
-
   headerEl.innerHTML = `
     <div class="qip-hero">
       <div class="qip-hero-left">
@@ -10460,7 +10425,10 @@ function renderQuotationDetailHeader(header, quotationNumber) {
           ${header.status ? `<span class="qip-hero-tag">${escapeHtml(header.status)}</span>` : ""}
         </div>
         <h2>${escapeHtml(quotationNumber)}</h2>
-        <div class="qip-hero-business">${escapeHtml(header.business_name || "—")}</div>
+        <div class="qip-hero-business">
+          ${escapeHtml(header.business_name || "—")}
+          ${header.packer ? ` <span class="qip-hero-sep">·</span> Packer <strong>${escapeHtml(header.packer)}</strong>` : ""}
+        </div>
       </div>
       <div class="qip-timeline" aria-label="Scan timeline">
         <div class="qip-timeline-step in ${hasIn ? "complete" : ""}">
@@ -10478,20 +10446,6 @@ function renderQuotationDetailHeader(header, quotationNumber) {
             <span class="qip-timeline-time">${escapeHtml(outTime)}</span>
           </div>
         </div>
-      </div>
-    </div>
-    <div class="qip-meta-section">
-      <div class="qip-meta-grid">
-        ${fields
-          .map(
-            (f) => `
-          <div class="qip-field">
-            <span class="qip-field-label">${escapeHtml(f.label)}</span>
-            <span class="qip-field-value${f.mono ? " mono" : ""}${f.numeric ? " numeric" : ""}">${escapeHtml(String(f.value))}</span>
-          </div>
-        `,
-          )
-          .join("")}
       </div>
     </div>
   `;

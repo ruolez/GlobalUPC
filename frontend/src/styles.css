@@ -3341,6 +3341,16 @@ body.no-scroll {
   margin-top: 0.15rem;
 }
 
+.qip-hero-business strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.qip-hero-sep {
+  color: var(--border-color);
+  margin: 0 0.3rem;
+}
+
 /* Scan timeline */
 .qip-timeline {
   display: flex;
@@ -3477,7 +3487,7 @@ body.no-scroll {
 
 /* Products section */
 .qip-products {
-  padding: 1.25rem 1.5rem 1.5rem;
+  padding: 1rem 1.5rem 1.5rem;
 }
 
 .qip-products-head {
