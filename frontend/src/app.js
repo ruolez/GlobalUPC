@@ -10463,7 +10463,7 @@ function renderQuotationProducts(products, matchTerm) {
 
   if (!products || products.length === 0) {
     countEl.textContent = "0";
-    tbody.innerHTML = `<tr><td colspan="4"><div class="qip-products-empty">No products on this quotation.</div></td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="2"><div class="qip-products-empty">No products on this quotation.</div></td></tr>`;
     return;
   }
 
@@ -10487,8 +10487,6 @@ function renderQuotationProducts(products, matchTerm) {
     }
 
     tr.innerHTML = `
-      <td class="qip-mono">${escapeHtml(p.product_upc || "—")}</td>
-      <td class="qip-mono">${escapeHtml(p.product_sku || "—")}</td>
       <td class="qip-product-desc">${escapeHtml(p.product_description || "—")}</td>
       <td class="qip-num">${(p.qty || 0).toLocaleString()}</td>
     `;
@@ -10677,15 +10675,11 @@ function renderSearchSummary() {
 
   const rows = products
     .map((p) => {
-      const upcMatch = (p.product_upc || "").toLowerCase().includes(term.toLowerCase());
-      const skuMatch = (p.product_sku || "").toLowerCase().includes(term.toLowerCase());
       const descMatch = (p.product_description || "")
         .toLowerCase()
         .includes(term.toLowerCase());
       return `
         <tr class="qip-summary-row" data-quotation-number="${escapeHtml(p.quotation_number || "")}">
-          <td class="qip-mono${upcMatch ? " qip-summary-cell-match" : ""}">${escapeHtml(p.product_upc || "—")}</td>
-          <td class="qip-mono${skuMatch ? " qip-summary-cell-match" : ""}">${escapeHtml(p.product_sku || "—")}</td>
           <td class="qip-product-desc${descMatch ? " qip-summary-cell-match" : ""}">${escapeHtml(p.product_description || "—")}</td>
           <td class="qip-num">${(p.qty || 0).toLocaleString()}</td>
           <td class="qip-summary-quotation-cell">
@@ -10712,8 +10706,6 @@ function renderSearchSummary() {
     <table class="qip-products-table qip-summary-table">
       <thead>
         <tr>
-          <th>UPC</th>
-          <th>SKU</th>
           <th>Description</th>
           <th class="qip-num">Qty</th>
           <th>Quot · Business</th>
