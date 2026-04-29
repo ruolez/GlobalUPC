@@ -10277,34 +10277,29 @@ function renderQuotationsList(quotations) {
 
     const hasIn = !!(q.dop2 && String(q.dop2).trim());
     const hasOut = !!(q.dop3 && String(q.dop3).trim());
-    const inTime = hasIn ? qipFormatTime(String(q.dop2)) : "—";
-    const outTime = hasOut ? qipFormatTime(String(q.dop3)) : "—";
-
-    const lineClass = hasIn && hasOut ? "complete" : "";
-    const startedAbs = q.start_date ? qipFormatDateTime(q.start_date) : "";
+    const inTime = hasIn ? qipFormatTime(String(q.dop2)) : "";
+    const outTime = hasOut ? qipFormatTime(String(q.dop3)) : "";
 
     const businessText = q.business_name || "—";
-    const packerText = q.packer ? `· ${q.packer}` : "";
-    const metaTitle = `${businessText}${packerText ? ` (${q.packer})` : ""}${startedAbs ? ` — started ${startedAbs}` : ""}`;
+    const startedAbs = q.start_date ? qipFormatDateTime(q.start_date) : "";
     const indexLabel = String(idx + 1).padStart(indexWidth, "0");
+    const status = qipStatusFor(hasIn, hasOut);
+    const statusChipHtml = qipRenderStatusChip(status, inTime, outTime);
+
+    const metaTitle = `${businessText}${q.packer ? ` (${q.packer})` : ""}${startedAbs ? ` — started ${startedAbs}` : ""}`;
 
     card.innerHTML = `
       <div class="qip-card-head">
         <span class="qip-card-index">${escapeHtml(indexLabel)}</span>
         <span class="qip-card-num">${escapeHtml(q.quotation_number || "—")}</span>
+        ${statusChipHtml}
+      </div>
+      <div class="qip-card-business-row">
+        <span class="qip-card-business">${escapeHtml(businessText)}</span>
         ${q.source_db ? `<span class="qip-card-tag">${escapeHtml(q.source_db)}</span>` : ""}
       </div>
-      <div class="qip-progress">
-        <span class="qip-progress-dot ${hasIn ? "in" : ""}"></span>
-        <span class="qip-progress-time ${hasIn ? "" : "empty"}">${escapeHtml(inTime)}</span>
-        <span class="qip-progress-line ${lineClass}"></span>
-        <span class="qip-progress-dot ${hasOut ? "out" : ""}"></span>
-        <span class="qip-progress-time ${hasOut ? "" : "empty"}">${escapeHtml(outTime)}</span>
-      </div>
       <div class="qip-card-meta" title="${escapeHtml(metaTitle)}">
-        <span class="qip-card-meta-info">
-          ${escapeHtml(businessText)}${q.packer ? ` <span class="qip-card-meta-sep">·</span> ${escapeHtml(q.packer)}` : ""}
-        </span>
+        ${q.packer ? `<span class="qip-card-meta-pill">${escapeHtml(q.packer)}</span>` : ""}
         <span class="qip-card-meta-stats">
           <strong>${q.product_count}</strong>&nbsp;<span class="qip-card-meta-unit">items</span>
           <span class="qip-card-meta-sep">·</span>
@@ -10459,6 +10454,38 @@ function renderQuotationProducts(products) {
     `;
     tbody.appendChild(tr);
   });
+}
+
+function qipStatusFor(hasIn, hasOut) {
+  if (hasIn && hasOut) return "complete";
+  if (hasIn) return "picking";
+  if (hasOut) return "complete"; // edge case: out without in — treat as complete
+  return "pending";
+}
+
+const QIP_STATUS_ICON = {
+  pending:
+    '<svg class="qip-status-icon" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>',
+  picking:
+    '<svg class="qip-status-icon" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>',
+  complete:
+    '<svg class="qip-status-icon" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.25" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>',
+};
+
+function qipRenderStatusChip(status, inTime, outTime) {
+  const labels = {
+    pending: "Pending",
+    picking: "Picking",
+    complete: "Complete",
+  };
+  const label = labels[status];
+  let timeHtml = "";
+  if (status === "picking" && inTime) {
+    timeHtml = `<span class="qip-status-time">${escapeHtml(inTime)}</span>`;
+  } else if (status === "complete" && (inTime || outTime)) {
+    timeHtml = `<span class="qip-status-time">${escapeHtml(inTime || "—")}<span class="qip-status-time-sep">→</span>${escapeHtml(outTime || "—")}</span>`;
+  }
+  return `<span class="qip-status-chip ${status}">${QIP_STATUS_ICON[status]}<span class="qip-status-label">${label}</span>${timeHtml}</span>`;
 }
 
 function qipFormatDateTime(value) {
