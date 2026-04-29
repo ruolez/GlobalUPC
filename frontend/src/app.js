@@ -9880,6 +9880,10 @@ const qipState = {
   searchProducts: [],         // matched product rows for the active search
   searchProductsCount: 0,
   searchActiveQuery: "",      // term currently driving summary + highlights
+
+  // Sort applied to the products table (both quotation view and summary).
+  // column: null | "description" | "qty"; order: "asc" | "desc"
+  productSort: { column: null, order: "asc" },
 };
 
 let qipSearchDebounce = null;
@@ -10061,6 +10065,31 @@ function initQuotationsInProgressPage() {
       e.preventDefault();
       navigateTo("settings");
     });
+
+  // Delegate clicks on sortable column headers anywhere in the right
+  // detail pane -- works for both the per-quotation products table
+  // (whose thead lives in the HTML) and the dynamic summary table
+  // (whose thead is recreated by renderSearchSummary).
+  const detailPane = document.querySelector(".qip-detail");
+  if (detailPane) {
+    detailPane.addEventListener("click", (e) => {
+      const th = e.target.closest("th.qip-sortable");
+      if (!th) return;
+      const col = th.dataset.sort;
+      if (!col) return;
+      const cur = qipState.productSort;
+      let next;
+      if (cur.column !== col) {
+        next = { column: col, order: "asc" };
+      } else if (cur.order === "asc") {
+        next = { column: col, order: "desc" };
+      } else {
+        next = { column: null, order: "asc" }; // third click clears
+      }
+      qipState.productSort = next;
+      qipRefreshProductsTable();
+    });
+  }
 
   qipUpdateSegmented();
 }
@@ -10455,11 +10484,56 @@ function renderQuotationDetailHeader(header, quotationNumber) {
   `;
 }
 
+function qipSortProducts(products) {
+  const { column, order } = qipState.productSort;
+  if (!column) return products;
+  const dir = order === "desc" ? -1 : 1;
+  const sorted = [...products];
+  sorted.sort((a, b) => {
+    if (column === "qty") {
+      return ((a.qty || 0) - (b.qty || 0)) * dir;
+    }
+    const ad = (a.product_description || "").toLowerCase();
+    const bd = (b.product_description || "").toLowerCase();
+    if (ad < bd) return -1 * dir;
+    if (ad > bd) return 1 * dir;
+    return 0;
+  });
+  return sorted;
+}
+
+function qipUpdateSortIndicators(thead) {
+  if (!thead) return;
+  const { column, order } = qipState.productSort;
+  thead.querySelectorAll("th.qip-sortable").forEach((th) => {
+    th.classList.remove("qip-sort-asc", "qip-sort-desc");
+    if (column && th.dataset.sort === column) {
+      th.classList.add(order === "desc" ? "qip-sort-desc" : "qip-sort-asc");
+    }
+  });
+}
+
+function qipRefreshProductsTable() {
+  if (qipState.viewMode === "summary") {
+    renderSearchSummary();
+  } else if (
+    qipState.viewMode === "quotation" &&
+    qipState.selectedQuotation
+  ) {
+    const cached = qipState.productCache.get(qipState.selectedQuotation);
+    if (cached && cached.products) {
+      renderQuotationProducts(cached.products, qipState.searchActiveQuery);
+    }
+  }
+}
+
 function renderQuotationProducts(products, matchTerm) {
-  const tbody = document
-    .getElementById("qip-products-table")
-    .querySelector("tbody");
+  const table = document.getElementById("qip-products-table");
+  const tbody = table.querySelector("tbody");
+  const thead = table.querySelector("thead");
   const countEl = document.getElementById("qip-products-count");
+
+  qipUpdateSortIndicators(thead);
 
   if (!products || products.length === 0) {
     countEl.textContent = "0";
@@ -10467,13 +10541,14 @@ function renderQuotationProducts(products, matchTerm) {
     return;
   }
 
+  const sortedProducts = qipSortProducts(products);
   const term = (matchTerm || "").trim().toLowerCase();
   let matchCount = 0;
 
-  countEl.textContent = `${products.length} ${products.length === 1 ? "item" : "items"}`;
+  countEl.textContent = `${sortedProducts.length} ${sortedProducts.length === 1 ? "item" : "items"}`;
 
   tbody.innerHTML = "";
-  products.forEach((p) => {
+  sortedProducts.forEach((p) => {
     const tr = document.createElement("tr");
 
     const isMatch =
@@ -10604,6 +10679,11 @@ async function fetchSearchProducts() {
   const errorEl = document.getElementById("qip-error");
   errorEl.style.display = "none";
 
+  // Snapshot the query that triggered this fetch so a stale response
+  // can't overwrite state after the user has cleared / typed something
+  // newer.
+  const expectedQuery = qipState.searchActiveQuery;
+
   try {
     // Mirror the same "all-checked = no filter" payload transform used
     // by fetchQuotationsInProgress so summary results stay consistent
@@ -10631,6 +10711,10 @@ async function fetchSearchProducts() {
       throw new Error(err.detail || `Request failed (${resp.status})`);
     }
     const data = await resp.json();
+
+    // Drop the response if the user has moved on.
+    if (qipState.searchActiveQuery !== expectedQuery) return;
+
     qipState.searchProducts = data.products || [];
     qipState.searchProductsCount = data.products ? data.products.length : 0;
 
@@ -10641,6 +10725,7 @@ async function fetchSearchProducts() {
     }
     qipUpdateSummaryButton();
   } catch (error) {
+    if (qipState.searchActiveQuery !== expectedQuery) return;
     errorEl.style.display = "block";
     errorEl.textContent = `Search error: ${error.message}`;
   }
@@ -10691,9 +10776,10 @@ function renderSearchSummary() {
     if (p.quotation_number) g.quotations.add(p.quotation_number);
   }
 
-  const rowsData = [...grouped.values()].sort((a, b) =>
+  let rowsData = [...grouped.values()].sort((a, b) =>
     (a.product_description || "").localeCompare(b.product_description || ""),
   );
+  rowsData = qipSortProducts(rowsData);
 
   const totalQuotations = new Set(
     products.map((p) => p.quotation_number).filter(Boolean),
@@ -10725,13 +10811,21 @@ function renderSearchSummary() {
     <table class="qip-products-table qip-summary-table">
       <thead>
         <tr>
-          <th>Description</th>
-          <th class="qip-num">Qty</th>
+          <th class="qip-sortable" data-sort="description">
+            <span>Description</span>
+            <span class="qip-sort-arrow"></span>
+          </th>
+          <th class="qip-num qip-sortable" data-sort="qty">
+            <span>Qty</span>
+            <span class="qip-sort-arrow"></span>
+          </th>
         </tr>
       </thead>
       <tbody>${rows}</tbody>
     </table>
   `;
+
+  qipUpdateSortIndicators(root.querySelector("thead"));
 }
 
 function qipUpdateSummaryButton() {
@@ -10743,7 +10837,10 @@ function qipUpdateSummaryButton() {
   if (!hasSearch) {
     btn.hidden = true;
     btn.setAttribute("aria-pressed", "false");
-    countEl.hidden = true;
+    if (countEl) {
+      countEl.hidden = true;
+      countEl.textContent = "";
+    }
     return;
   }
   btn.hidden = false;
@@ -10755,6 +10852,7 @@ function qipUpdateSummaryButton() {
     countEl.textContent = String(qipState.searchProductsCount);
     countEl.hidden = false;
   } else {
+    countEl.textContent = "";
     countEl.hidden = true;
   }
 }

@@ -3648,6 +3648,61 @@ body.no-scroll {
   text-align: right;
 }
 
+/* Sortable column headers */
+.qip-products-table thead th.qip-sortable {
+  cursor: pointer;
+  user-select: none;
+  position: relative;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+
+.qip-products-table thead th.qip-sortable:hover {
+  color: var(--text-primary);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--accent-primary) 6%, var(--bg-tertiary)) 0%,
+    color-mix(in srgb, var(--accent-primary) 4%, var(--bg-secondary)) 100%
+  );
+}
+
+.qip-products-table thead th.qip-sortable > span:first-child {
+  display: inline-flex;
+  align-items: center;
+}
+
+/* Sort arrow: faint chevron when idle, accent + filled when active */
+.qip-sort-arrow {
+  display: inline-block;
+  width: 0;
+  height: 0;
+  margin-left: 0.4rem;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid var(--text-tertiary);
+  opacity: 0.35;
+  transition: opacity 0.12s ease, border-color 0.12s ease, transform 0.12s ease;
+  vertical-align: middle;
+}
+
+.qip-products-table thead th.qip-sortable:hover .qip-sort-arrow {
+  opacity: 0.7;
+}
+
+.qip-products-table thead th.qip-sort-asc .qip-sort-arrow,
+.qip-products-table thead th.qip-sort-desc .qip-sort-arrow {
+  opacity: 1;
+  border-top-color: var(--accent-primary);
+}
+
+.qip-products-table thead th.qip-sort-asc .qip-sort-arrow {
+  transform: rotate(180deg);
+}
+
+.qip-products-table thead th.qip-sort-asc,
+.qip-products-table thead th.qip-sort-desc {
+  color: var(--accent-primary);
+}
+
 /* Column widths -- description gets the flexible space, qty is fixed-narrow */
 .qip-products-table thead th:nth-child(2),
 .qip-products-table tbody td:nth-child(2) {
