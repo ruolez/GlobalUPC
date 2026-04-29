@@ -2463,3 +2463,360 @@ body.no-scroll {
   background: var(--accent-primary);
   color: #fff;
 }
+
+/* ===== Quotations In Progress ===== */
+.qip-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
+  align-items: start;
+}
+
+.qip-filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  min-width: 0;
+}
+
+.qip-filter-search {
+  grid-column: span 2;
+}
+
+.qip-filter-actions {
+  flex-direction: row;
+  align-items: flex-end;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.qip-filter-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.qip-checkbox-row {
+  display: flex;
+  gap: 0.875rem;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 0.4rem 0;
+}
+
+.qip-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.875rem;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.qip-checkbox input[type="checkbox"]:disabled + span {
+  color: var(--text-tertiary);
+}
+
+.qip-date-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.qip-date-row input[type="date"] {
+  flex: 1;
+  min-width: 0;
+}
+
+.qip-date-sep {
+  color: var(--text-tertiary);
+  font-size: 0.875rem;
+}
+
+#qip-source-db,
+#qip-packer,
+#qip-checker {
+  width: 100%;
+  font-size: 0.8125rem;
+}
+
+#qip-search {
+  width: 100%;
+}
+
+.qip-layout {
+  display: grid;
+  grid-template-columns: minmax(360px, 1fr) 1.6fr;
+  gap: 1rem;
+  margin-top: 1rem;
+  align-items: start;
+}
+
+@media (max-width: 1100px) {
+  .qip-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.qip-list-pane {
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 280px);
+  min-height: 400px;
+}
+
+.qip-list-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border-color);
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.qip-list-title {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.qip-sort-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.qip-sort-label {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.qip-sort-controls select {
+  font-size: 0.8125rem;
+  padding: 0.3rem 0.5rem;
+}
+
+.qip-sort-dir {
+  padding: 0.25rem 0.55rem;
+  font-size: 0.875rem;
+  line-height: 1;
+}
+
+.qip-list-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.qip-empty {
+  padding: 2rem 1rem;
+  text-align: center;
+  color: var(--text-tertiary);
+  font-size: 0.875rem;
+}
+
+.qip-card {
+  padding: 0.75rem 0.875rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.qip-card:hover {
+  background: var(--bg-hover);
+}
+
+.qip-card.selected {
+  border-color: var(--accent-primary);
+  background: var(--bg-hover);
+  box-shadow: 0 0 0 1px var(--accent-primary) inset;
+}
+
+.qip-card-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.qip-card-quot {
+  font-weight: 700;
+  color: var(--text-primary);
+  font-size: 0.95rem;
+}
+
+.qip-card-source {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  padding: 0.15rem 0.4rem;
+  border-radius: var(--radius-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+
+.qip-card-business {
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  margin-top: 0.25rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.qip-card-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 0.5rem;
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.qip-card-people {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.qip-card-people span {
+  color: var(--text-secondary);
+}
+
+.qip-card-totals {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.qip-card-totals strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.qip-card-scans {
+  display: flex;
+  gap: 0.4rem;
+  margin-top: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.scan-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.15rem 0.5rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+}
+
+.scan-badge.in {
+  color: var(--success);
+  border-color: var(--success);
+}
+
+.scan-badge.out {
+  color: var(--accent-primary);
+  border-color: var(--accent-primary);
+}
+
+.scan-badge.missing {
+  color: var(--text-tertiary);
+}
+
+.qip-detail-pane {
+  padding: 1rem;
+  max-height: calc(100vh - 280px);
+  overflow-y: auto;
+  min-height: 400px;
+}
+
+.qip-detail-empty {
+  padding: 3rem 1rem;
+  text-align: center;
+  color: var(--text-tertiary);
+  font-size: 0.875rem;
+}
+
+.qip-detail-header {
+  margin-bottom: 1rem;
+  padding-bottom: 0.875rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.qip-detail-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.5rem;
+}
+
+.qip-detail-title h3 {
+  margin: 0;
+  font-size: 1.125rem;
+  color: var(--text-primary);
+}
+
+.qip-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.5rem 1rem;
+  margin-top: 0.5rem;
+}
+
+.qip-detail-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  font-size: 0.8125rem;
+}
+
+.qip-detail-field-label {
+  font-size: 0.7rem;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.qip-detail-field-value {
+  color: var(--text-primary);
+}
+
+.qip-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.qip-loading {
+  margin-top: 1rem;
+  padding: 1rem;
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+}
+
+.qip-error {
+  margin-top: 1rem;
+  padding: 0.75rem 1rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  border-radius: var(--radius-md);
+  font-size: 0.875rem;
+}

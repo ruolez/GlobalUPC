@@ -47,6 +47,9 @@
           <a href="#" class="nav-item" data-page="item-tracker">
             <span>Item Tracker</span>
           </a>
+          <a href="#" class="nav-item" data-page="quotations-in-progress">
+            <span>In Progress</span>
+          </a>
           <a href="#" class="nav-item" data-page="sales">
             <span>Sales</span>
           </a>
@@ -935,6 +938,20 @@
               </div>
               <small style="color: var(--text-tertiary); font-size: 0.75rem; margin-top: 0.5rem; display: block;">
                 Select an MSSQL store to look up product cost (UnitPriceC) by barcode. Costs appear in the "Cost" column.
+              </small>
+            </div>
+            <div class="form-group" style="margin-top: 1.25rem">
+              <label for="qip-admin-store">In Progress &mdash; Admin DB Store</label>
+              <div style="display: flex; gap: 0.5rem; max-width: 500px">
+                <select id="qip-admin-store" style="flex: 1">
+                  <option value="">— None —</option>
+                </select>
+                <button type="button" class="btn btn-primary" id="qip-admin-store-save">Save</button>
+              </div>
+              <small style="color: var(--text-tertiary); font-size: 0.75rem; margin-top: 0.5rem; display: block;">
+                MSSQL store hosting the centralized DB_ADMIN database (containing
+                <code>QuotationsInProgress</code> and <code>QuotationsStatus</code>).
+                Required for the &quot;In Progress&quot; page.
               </small>
             </div>
           </section>
@@ -2506,6 +2523,167 @@
               </div>
             </div>
           </div>
+        </div>
+
+        <!-- Quotations In Progress Page -->
+        <div id="quotations-in-progress-page" class="page" style="display: none">
+          <header class="page-header">
+            <h2>In Progress</h2>
+            <p class="subtitle">
+              Quotations currently being shipped &mdash; filter by scan status,
+              date, source store, packer/checker, and product.
+            </p>
+          </header>
+
+          <!-- Unconfigured banner -->
+          <div
+            id="qip-not-configured"
+            class="card"
+            style="display: none"
+          >
+            <div class="card-body">
+              <p>
+                <strong>Admin store not configured.</strong>
+                Open
+                <a href="#" data-page="settings" class="page-link">Settings</a>
+                and pick the MSSQL store hosting the centralized DB_ADMIN
+                database (the one containing
+                <code>QuotationsInProgress</code> and
+                <code>QuotationsStatus</code>).
+              </p>
+            </div>
+          </div>
+
+          <!-- Filter bar -->
+          <div id="qip-controls" class="card" style="display: none">
+            <div class="card-body">
+              <div class="qip-filter-grid">
+                <div class="qip-filter-group">
+                  <label class="qip-filter-label">Scan status</label>
+                  <div class="qip-checkbox-row">
+                    <label class="qip-checkbox">
+                      <input type="checkbox" id="qip-show-all" checked />
+                      <span>Show all</span>
+                    </label>
+                    <label class="qip-checkbox">
+                      <input type="checkbox" id="qip-scan-in" disabled />
+                      <span>Scan-in</span>
+                    </label>
+                    <label class="qip-checkbox">
+                      <input type="checkbox" id="qip-scan-out" disabled />
+                      <span>Scan-out</span>
+                    </label>
+                  </div>
+                </div>
+
+                <div class="qip-filter-group">
+                  <label class="qip-filter-label" for="qip-date-from">Start date</label>
+                  <div class="qip-date-row">
+                    <input type="date" id="qip-date-from" />
+                    <span class="qip-date-sep">&rarr;</span>
+                    <input type="date" id="qip-date-to" />
+                  </div>
+                </div>
+
+                <div class="qip-filter-group qip-filter-search">
+                  <label class="qip-filter-label" for="qip-search">Search</label>
+                  <input
+                    type="text"
+                    id="qip-search"
+                    placeholder="Quot #, UPC, product, business name…"
+                  />
+                </div>
+
+                <div class="qip-filter-group">
+                  <label class="qip-filter-label" for="qip-source-db">Source store</label>
+                  <select id="qip-source-db" multiple size="3"></select>
+                </div>
+                <div class="qip-filter-group">
+                  <label class="qip-filter-label" for="qip-packer">Packer</label>
+                  <select id="qip-packer" multiple size="3"></select>
+                </div>
+                <div class="qip-filter-group">
+                  <label class="qip-filter-label" for="qip-checker">Checker</label>
+                  <select id="qip-checker" multiple size="3"></select>
+                </div>
+
+                <div class="qip-filter-group qip-filter-actions">
+                  <button class="btn btn-primary" id="qip-refresh-btn">
+                    Refresh
+                  </button>
+                  <button class="btn btn-secondary" id="qip-clear-btn">
+                    Clear filters
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Two-pane results -->
+          <div id="qip-results" class="qip-layout" style="display: none">
+            <!-- Left pane: quotation list -->
+            <div class="qip-list-pane card">
+              <div class="qip-list-header">
+                <div class="qip-list-title">
+                  <span id="qip-count">0</span> quotations
+                </div>
+                <div class="qip-sort-controls">
+                  <label class="qip-sort-label" for="qip-sort-by">Sort:</label>
+                  <select id="qip-sort-by">
+                    <option value="start_date">Start date</option>
+                    <option value="quotation_number">Quotation #</option>
+                    <option value="business_name">Business</option>
+                    <option value="packer">Packer</option>
+                    <option value="checker">Checker</option>
+                    <option value="dop2">Scan-in</option>
+                    <option value="dop3">Scan-out</option>
+                    <option value="total_qty">Total qty</option>
+                    <option value="source_db">Source store</option>
+                  </select>
+                  <button
+                    class="btn btn-secondary qip-sort-dir"
+                    id="qip-sort-dir"
+                    data-order="desc"
+                    title="Toggle sort direction"
+                  >
+                    &darr;
+                  </button>
+                </div>
+              </div>
+              <div class="qip-list-body" id="qip-list-body">
+                <div class="qip-empty">No quotations match these filters.</div>
+              </div>
+            </div>
+
+            <!-- Right pane: detail / products -->
+            <div class="qip-detail-pane card">
+              <div id="qip-detail-empty" class="qip-detail-empty">
+                <p>Select a quotation on the left to view its products.</p>
+              </div>
+              <div id="qip-detail-content" style="display: none">
+                <div id="qip-detail-header" class="qip-detail-header"></div>
+                <div class="qip-detail-products">
+                  <table class="data-table" id="qip-products-table">
+                    <thead>
+                      <tr>
+                        <th>UPC</th>
+                        <th>SKU</th>
+                        <th>Description</th>
+                        <th class="qip-num">Qty</th>
+                        <th>Cat / Sub</th>
+                      </tr>
+                    </thead>
+                    <tbody></tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div id="qip-loading" class="qip-loading" style="display: none">
+            Loading…
+          </div>
+          <div id="qip-error" class="qip-error" style="display: none"></div>
         </div>
 
         <!-- Price Updates Page -->

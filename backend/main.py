@@ -37,7 +37,10 @@ from schemas import (
     ShopifySalesRequest,
     SalesReportRequest,
     SalesConfigCreate, SalesConfigResponse,
-    SalesExclusionCreate, SalesExclusionResponse, SalesExclusionListResponse
+    SalesExclusionCreate, SalesExclusionResponse, SalesExclusionListResponse,
+    QuotationsInProgressFilter, QuotationsInProgressListResponse,
+    QuotationsInProgressFilterOptions, QuotationInProgressSummary,
+    QuotationProductsResponse, QuotationInProgressHeader, QuotationProductLine
 )
 from mssql_helper import (
     test_mssql_connection, search_upc_across_mssql_stores, search_products_by_upc,
@@ -61,6 +64,11 @@ from item_tracker_helper import (
     get_customer_returns_async, get_vendor_returns_async,
     search_products_by_description_async, get_inventory_recounts_async
 )
+from quotations_in_progress_helper import (
+    list_quotations_in_progress_async,
+    get_quotation_products_async,
+    list_distinct_filter_values_async,
+)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -73,6 +81,9 @@ async def lifespan(app: FastAPI):
     print("[SHUTDOWN] Shutting down Item Tracker thread pool...")
     from item_tracker_helper import shutdown_item_tracker_executor
     shutdown_item_tracker_executor()
+    print("[SHUTDOWN] Shutting down Quotations-In-Progress thread pool...")
+    from quotations_in_progress_helper import shutdown_qip_executor
+    shutdown_qip_executor()
     print("[SHUTDOWN] Cleanup complete.")
 
 app = FastAPI(title="Global UPC API", version="1.0.0", lifespan=lifespan)
@@ -4928,6 +4939,115 @@ async def sales_report_stream(request: SalesReportRequest, db: Session = Depends
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
         }
+    )
+
+
+# Quotations In Progress endpoints (DB_ADMIN-backed)
+ADMIN_STORE_SETTING_KEY = "admin_store_id"
+
+
+def _resolve_admin_store(db: Session) -> Store:
+    """
+    Look up the configured DB_ADMIN store via the `admin_store_id` setting.
+    Raises HTTPException if unset, missing, or not an active MSSQL store.
+    """
+    setting = db.query(Setting).filter(Setting.key == ADMIN_STORE_SETTING_KEY).first()
+    if not setting or not setting.value:
+        raise HTTPException(
+            status_code=400,
+            detail="Admin (DB_ADMIN) store is not configured. Set it under Settings."
+        )
+
+    try:
+        store_id = int(setting.value)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Admin store setting is invalid.")
+
+    store = db.query(Store).filter(Store.id == store_id, Store.is_active == True).first()
+    if not store or store.store_type != StoreType.mssql or not store.mssql_connection:
+        raise HTTPException(
+            status_code=400,
+            detail="Configured admin store is missing, inactive, or not an MSSQL store."
+        )
+    return store
+
+
+@app.post("/api/quotations/in-progress", response_model=QuotationsInProgressListResponse)
+async def list_quotations_in_progress(
+    filters: QuotationsInProgressFilter,
+    db: Session = Depends(get_db)
+):
+    """List quotations from QuotationsInProgress + QuotationsStatus on the admin DB."""
+    store = _resolve_admin_store(db)
+    conn = store.mssql_connection
+
+    success, error, rows = await list_quotations_in_progress_async(
+        host=conn.host,
+        port=conn.port,
+        database=conn.database_name,
+        username=conn.username,
+        password=conn.password,
+        show_all=filters.show_all,
+        scan_in=filters.scan_in,
+        scan_out=filters.scan_out,
+        date_from=filters.date_from,
+        date_to=filters.date_to,
+        source_dbs=filters.source_dbs,
+        packers=filters.packers,
+        checkers=filters.checkers,
+        search=filters.search,
+        sort_by=filters.sort_by,
+        sort_order=filters.sort_order,
+        limit=filters.limit,
+    )
+    if not success:
+        raise HTTPException(status_code=502, detail=f"MSSQL query failed: {error}")
+
+    opt_success, opt_error, options = await list_distinct_filter_values_async(
+        host=conn.host,
+        port=conn.port,
+        database=conn.database_name,
+        username=conn.username,
+        password=conn.password,
+    )
+    if not opt_success:
+        # Non-fatal — return empty options
+        options = {"source_dbs": [], "packers": [], "checkers": [], "statuses": []}
+
+    return QuotationsInProgressListResponse(
+        quotations=[QuotationInProgressSummary(**r) for r in rows],
+        filter_options=QuotationsInProgressFilterOptions(**options),
+        admin_store_id=store.id,
+        admin_store_name=store.name,
+    )
+
+
+@app.get(
+    "/api/quotations/in-progress/{quotation_number}/products",
+    response_model=QuotationProductsResponse,
+)
+async def get_quotation_in_progress_products(
+    quotation_number: str,
+    db: Session = Depends(get_db),
+):
+    """Return all product line items + header for a single quotation in progress."""
+    store = _resolve_admin_store(db)
+    conn = store.mssql_connection
+
+    success, error, payload = await get_quotation_products_async(
+        host=conn.host,
+        port=conn.port,
+        database=conn.database_name,
+        username=conn.username,
+        password=conn.password,
+        quotation_number=quotation_number,
+    )
+    if not success:
+        raise HTTPException(status_code=502, detail=f"MSSQL query failed: {error}")
+
+    return QuotationProductsResponse(
+        products=[QuotationProductLine(**p) for p in payload["products"]],
+        header=QuotationInProgressHeader(**payload["header"]) if payload["header"] else None,
     )
 
 

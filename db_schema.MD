@@ -388,10 +388,10 @@ CREATE TABLE [Items_BinLocations] (
 	[color_code] [varchar](25) NULL,
 	[key_Postion] [int] NULL,
 
-***S2S DB TABLES END
+***S2S DB TABLES END***
 
 
-***DB_ADMIN DB TABLES
+***DB_ADMIN DB TABLES***
 [dbo].[QuotationDetails](
 	[id] [int] IDENTITY(1,1) NOT NULL,
 	[DateCreate] [datetime] NULL,
@@ -447,6 +447,32 @@ CREATE TABLE [Items_BinLocations] (
 	[Dop2] [varchar](255) NULL,
 	[Dop3] [varchar](255) NULL,
 
+[dbo].[QuotationsInProgress](
+	[id] [int] IDENTITY(1,1) NOT NULL,
+	[StartDate] [datetime] NULL,
+	[EndDate] [datetime] NULL,
+	[Status] [varchar](255) NULL,
+	[SourceDB] [varchar](255) NULL,
+	[QuotationNumber] [varchar](255) NULL,
+	[Packer] [varchar](255) NULL,
+	[Checker] [varchar](255) NULL,
+	[PauseDate] [datetime] NULL,
+	[PauseReason] [varchar](255) NULL,
+	[AccountNo] [varchar](255) NULL,
+	[SalesRepID] [int] NULL,
+	[ProductDescription] [varchar](255) NULL,
+	[ProductUPC] [varchar](255) NULL,
+	[ProductSKU] [varchar](255) NULL,
+	[Qty] [int] NULL,
+	[CateID] [int] NULL,
+	[SubCateID] [int] NULL,
+	[tempField1] [varchar](255) NULL,
+	[tempField2] [varchar](255) NULL,
+	[tempField3] [varchar](255) NULL,
+	[flag1] [bit] NULL,
+	[flag2] [bit] NULL,
+	[flag3] [bit] NULL,
+
 
 	[dbo].[ManualInventoryUpdate](
 	[id] [int] IDENTITY(1,1) NOT NULL,
@@ -483,11 +509,11 @@ CREATE TABLE [Items_BinLocations] (
 	[flag3] [bit] NULL,
 
 
-***DB ADMIN DB END
+***DB ADMIN DB END***
 
 
 
-***ShihpperPlatform DB TABLES
+***ShihpperPlatform DB TABLES***
 [dbo].[pick_lists](
 	[id] [int] IDENTITY(1,1) NOT NULL,
 	[date_from] [datetime2](7) NOT NULL,

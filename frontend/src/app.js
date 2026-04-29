@@ -75,6 +75,8 @@ function navigateTo(page) {
     loadSalesPage();
   } else if (page === "shopify-sales") {
     loadShopifySalesPage();
+  } else if (page === "quotations-in-progress") {
+    loadQuotationsInProgressPage();
   }
 }
 
@@ -186,6 +188,7 @@ async function loadSettings() {
   await loadStoreMirrors();
   await loadItemTrackerExclusions();
   await loadShopifySalesSettings();
+  await loadAdminStoreSetting();
 
   // Set dropdown value to saved preference
   const savedLandingPage = getDefaultLandingPage();
@@ -9842,3 +9845,507 @@ document.addEventListener("DOMContentLoaded", () => {
     navigateTo(defaultPage);
   }
 });
+
+// ===== Quotations In Progress =====
+
+const QIP_ADMIN_STORE_KEY = "admin_store_id";
+
+const qipState = {
+  initialized: false,
+  loading: false,
+  filters: {
+    show_all: true,
+    scan_in: false,
+    scan_out: false,
+    date_from: null,
+    date_to: null,
+    source_dbs: [],
+    packers: [],
+    checkers: [],
+    search: "",
+    sort_by: "start_date",
+    sort_order: "desc",
+    limit: 500,
+  },
+  results: [],
+  selectedQuotation: null,
+  productCache: new Map(),
+};
+
+let qipSearchDebounce = null;
+
+async function loadAdminStoreSetting() {
+  const select = document.getElementById("qip-admin-store");
+  if (!select) return;
+
+  try {
+    const stores = await apiRequest("/stores");
+    const mssqlStores = stores.filter(
+      (s) => s.store_type === "mssql" && s.is_active,
+    );
+    select.innerHTML = '<option value="">— None —</option>';
+    mssqlStores.forEach((store) => {
+      const opt = document.createElement("option");
+      opt.value = store.id;
+      opt.textContent = store.name;
+      select.appendChild(opt);
+    });
+
+    const resp = await fetch(`${API_BASE}/settings/${QIP_ADMIN_STORE_KEY}`);
+    if (resp.ok) {
+      const setting = await resp.json();
+      if (setting.value) select.value = setting.value;
+    }
+  } catch {}
+}
+
+async function saveAdminStoreSetting() {
+  const select = document.getElementById("qip-admin-store");
+  if (!select) return;
+  const value = select.value;
+
+  try {
+    const patchResp = await fetch(`${API_BASE}/settings/${QIP_ADMIN_STORE_KEY}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ value }),
+    });
+    if (!patchResp.ok) {
+      await apiRequest("/settings", {
+        method: "POST",
+        body: JSON.stringify({
+          key: QIP_ADMIN_STORE_KEY,
+          value,
+          description: "MSSQL store hosting the centralized DB_ADMIN database (QuotationsInProgress / QuotationsStatus).",
+        }),
+      });
+    }
+    showToast("✓ Admin store saved", "success");
+  } catch (error) {
+    showToast(`✗ Failed to save: ${error.message}`, "error");
+  }
+}
+
+document
+  .getElementById("qip-admin-store-save")
+  ?.addEventListener("click", saveAdminStoreSetting);
+
+function loadQuotationsInProgressPage() {
+  if (!qipState.initialized) {
+    initQuotationsInProgressPage();
+    qipState.initialized = true;
+  }
+  fetchQuotationsInProgress();
+}
+
+function initQuotationsInProgressPage() {
+  const showAll = document.getElementById("qip-show-all");
+  const scanIn = document.getElementById("qip-scan-in");
+  const scanOut = document.getElementById("qip-scan-out");
+
+  function syncScanCheckboxes() {
+    if (showAll.checked) {
+      scanIn.disabled = true;
+      scanOut.disabled = true;
+    } else {
+      scanIn.disabled = false;
+      scanOut.disabled = false;
+    }
+    qipState.filters.show_all = showAll.checked;
+    qipState.filters.scan_in = scanIn.checked;
+    qipState.filters.scan_out = scanOut.checked;
+  }
+
+  showAll.addEventListener("change", () => {
+    syncScanCheckboxes();
+    fetchQuotationsInProgress();
+  });
+  scanIn.addEventListener("change", () => {
+    syncScanCheckboxes();
+    fetchQuotationsInProgress();
+  });
+  scanOut.addEventListener("change", () => {
+    syncScanCheckboxes();
+    fetchQuotationsInProgress();
+  });
+
+  document.getElementById("qip-date-from").addEventListener("change", (e) => {
+    qipState.filters.date_from = e.target.value || null;
+    fetchQuotationsInProgress();
+  });
+  document.getElementById("qip-date-to").addEventListener("change", (e) => {
+    qipState.filters.date_to = e.target.value || null;
+    fetchQuotationsInProgress();
+  });
+
+  const search = document.getElementById("qip-search");
+  search.addEventListener("input", (e) => {
+    qipState.filters.search = e.target.value;
+    if (qipSearchDebounce) clearTimeout(qipSearchDebounce);
+    qipSearchDebounce = setTimeout(fetchQuotationsInProgress, 300);
+  });
+
+  ["qip-source-db", "qip-packer", "qip-checker"].forEach((id) => {
+    document.getElementById(id).addEventListener("change", (e) => {
+      const values = Array.from(e.target.selectedOptions).map((o) => o.value);
+      const key =
+        id === "qip-source-db"
+          ? "source_dbs"
+          : id === "qip-packer"
+            ? "packers"
+            : "checkers";
+      qipState.filters[key] = values;
+      fetchQuotationsInProgress();
+    });
+  });
+
+  document.getElementById("qip-sort-by").addEventListener("change", (e) => {
+    qipState.filters.sort_by = e.target.value;
+    fetchQuotationsInProgress();
+  });
+
+  const sortDir = document.getElementById("qip-sort-dir");
+  sortDir.addEventListener("click", () => {
+    const next = qipState.filters.sort_order === "desc" ? "asc" : "desc";
+    qipState.filters.sort_order = next;
+    sortDir.dataset.order = next;
+    sortDir.textContent = next === "desc" ? "↓" : "↑";
+    fetchQuotationsInProgress();
+  });
+
+  document
+    .getElementById("qip-refresh-btn")
+    .addEventListener("click", () => fetchQuotationsInProgress(true));
+
+  document.getElementById("qip-clear-btn").addEventListener("click", () => {
+    showAll.checked = true;
+    scanIn.checked = false;
+    scanOut.checked = false;
+    document.getElementById("qip-date-from").value = "";
+    document.getElementById("qip-date-to").value = "";
+    document.getElementById("qip-search").value = "";
+    ["qip-source-db", "qip-packer", "qip-checker"].forEach((id) => {
+      Array.from(document.getElementById(id).options).forEach(
+        (o) => (o.selected = false),
+      );
+    });
+    qipState.filters = {
+      show_all: true,
+      scan_in: false,
+      scan_out: false,
+      date_from: null,
+      date_to: null,
+      source_dbs: [],
+      packers: [],
+      checkers: [],
+      search: "",
+      sort_by: qipState.filters.sort_by,
+      sort_order: qipState.filters.sort_order,
+      limit: 500,
+    };
+    syncScanCheckboxes();
+    fetchQuotationsInProgress();
+  });
+
+  // Settings page-link inside the unconfigured banner
+  document
+    .querySelector('#qip-not-configured a[data-page="settings"]')
+    ?.addEventListener("click", (e) => {
+      e.preventDefault();
+      navigateTo("settings");
+    });
+}
+
+async function fetchQuotationsInProgress(forceClearCache = false) {
+  const errorEl = document.getElementById("qip-error");
+  const loadingEl = document.getElementById("qip-loading");
+  const resultsEl = document.getElementById("qip-results");
+  const controlsEl = document.getElementById("qip-controls");
+  const notConfigEl = document.getElementById("qip-not-configured");
+
+  errorEl.style.display = "none";
+  loadingEl.style.display = "block";
+  qipState.loading = true;
+
+  if (forceClearCache) qipState.productCache.clear();
+
+  try {
+    const resp = await fetch(`${API_BASE}/quotations/in-progress`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(qipState.filters),
+    });
+
+    if (resp.status === 400) {
+      const err = await resp.json();
+      controlsEl.style.display = "none";
+      resultsEl.style.display = "none";
+      notConfigEl.style.display = "block";
+      notConfigEl.querySelector(".card-body p").innerHTML =
+        `<strong>Admin store not configured.</strong> ${escapeHtml(err.detail || "")} `
+        + `Open <a href="#" data-page="settings" class="page-link">Settings</a> to set it.`;
+      notConfigEl
+        .querySelector('a[data-page="settings"]')
+        .addEventListener("click", (e) => {
+          e.preventDefault();
+          navigateTo("settings");
+        });
+      return;
+    }
+
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.detail || `Request failed (${resp.status})`);
+    }
+
+    const data = await resp.json();
+    qipState.results = data.quotations || [];
+
+    notConfigEl.style.display = "none";
+    controlsEl.style.display = "block";
+    resultsEl.style.display = "grid";
+
+    populateFilterSelect("qip-source-db", data.filter_options.source_dbs, qipState.filters.source_dbs);
+    populateFilterSelect("qip-packer", data.filter_options.packers, qipState.filters.packers);
+    populateFilterSelect("qip-checker", data.filter_options.checkers, qipState.filters.checkers);
+
+    renderQuotationsList(qipState.results);
+
+    // Preserve selection if still in results, otherwise clear right pane
+    if (
+      qipState.selectedQuotation &&
+      qipState.results.some((q) => q.quotation_number === qipState.selectedQuotation)
+    ) {
+      // Re-fetch products only if cache cleared
+      if (forceClearCache) {
+        selectQuotation(qipState.selectedQuotation, true);
+      } else {
+        highlightSelectedCard();
+      }
+    } else {
+      qipState.selectedQuotation = null;
+      document.getElementById("qip-detail-empty").style.display = "block";
+      document.getElementById("qip-detail-content").style.display = "none";
+    }
+  } catch (error) {
+    errorEl.style.display = "block";
+    errorEl.textContent = `Error: ${error.message}`;
+    controlsEl.style.display = "block";
+    resultsEl.style.display = "none";
+  } finally {
+    loadingEl.style.display = "none";
+    qipState.loading = false;
+  }
+}
+
+function populateFilterSelect(elementId, values, currentSelection) {
+  const select = document.getElementById(elementId);
+  if (!select) return;
+  const selectedSet = new Set(currentSelection || []);
+  select.innerHTML = "";
+  values.forEach((v) => {
+    const opt = document.createElement("option");
+    opt.value = v;
+    opt.textContent = v;
+    if (selectedSet.has(v)) opt.selected = true;
+    select.appendChild(opt);
+  });
+}
+
+function renderQuotationsList(quotations) {
+  const body = document.getElementById("qip-list-body");
+  document.getElementById("qip-count").textContent = quotations.length;
+
+  if (quotations.length === 0) {
+    body.innerHTML = '<div class="qip-empty">No quotations match these filters.</div>';
+    return;
+  }
+
+  body.innerHTML = "";
+  quotations.forEach((q) => {
+    const card = document.createElement("div");
+    card.className = "qip-card";
+    card.dataset.quotationNumber = q.quotation_number || "";
+    if (q.quotation_number === qipState.selectedQuotation) {
+      card.classList.add("selected");
+    }
+
+    const hasIn = !!(q.dop2 && String(q.dop2).trim());
+    const hasOut = !!(q.dop3 && String(q.dop3).trim());
+
+    card.innerHTML = `
+      <div class="qip-card-row">
+        <div class="qip-card-quot">${escapeHtml(q.quotation_number || "—")}</div>
+        ${q.source_db ? `<div class="qip-card-source">${escapeHtml(q.source_db)}</div>` : ""}
+      </div>
+      <div class="qip-card-business">${escapeHtml(q.business_name || "—")}</div>
+      <div class="qip-card-scans">
+        <span class="scan-badge ${hasIn ? "in" : "missing"}">
+          ${hasIn ? `✓ In: ${escapeHtml(String(q.dop2))}` : "— No scan-in"}
+        </span>
+        <span class="scan-badge ${hasOut ? "out" : "missing"}">
+          ${hasOut ? `✓ Out: ${escapeHtml(String(q.dop3))}` : "— No scan-out"}
+        </span>
+      </div>
+      <div class="qip-card-meta">
+        <div class="qip-card-people">
+          <span>Packer: <strong>${escapeHtml(q.packer || "—")}</strong></span>
+          <span>Checker: <strong>${escapeHtml(q.checker || "—")}</strong></span>
+        </div>
+        <div class="qip-card-totals">
+          <span>${q.product_count} item${q.product_count === 1 ? "" : "s"}</span>
+          <span><strong>${(q.total_qty || 0).toLocaleString()}</strong> qty</span>
+        </div>
+      </div>
+      ${q.start_date ? `<div class="qip-card-meta"><span>Started: ${escapeHtml(formatQipDate(q.start_date))}</span></div>` : ""}
+    `;
+
+    card.addEventListener("click", () => selectQuotation(q.quotation_number));
+    body.appendChild(card);
+  });
+}
+
+function highlightSelectedCard() {
+  document.querySelectorAll("#qip-list-body .qip-card").forEach((c) => {
+    c.classList.toggle(
+      "selected",
+      c.dataset.quotationNumber === qipState.selectedQuotation,
+    );
+  });
+}
+
+async function selectQuotation(quotationNumber, forceFetch = false) {
+  if (!quotationNumber) return;
+  qipState.selectedQuotation = quotationNumber;
+  highlightSelectedCard();
+
+  const emptyEl = document.getElementById("qip-detail-empty");
+  const contentEl = document.getElementById("qip-detail-content");
+  const headerEl = document.getElementById("qip-detail-header");
+  const tbody = document
+    .getElementById("qip-products-table")
+    .querySelector("tbody");
+
+  emptyEl.style.display = "none";
+  contentEl.style.display = "block";
+  headerEl.innerHTML = '<div class="qip-detail-empty">Loading…</div>';
+  tbody.innerHTML = "";
+
+  let payload = qipState.productCache.get(quotationNumber);
+  if (!payload || forceFetch) {
+    try {
+      const resp = await fetch(
+        `${API_BASE}/quotations/in-progress/${encodeURIComponent(quotationNumber)}/products`,
+      );
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.detail || `Request failed (${resp.status})`);
+      }
+      payload = await resp.json();
+      qipState.productCache.set(quotationNumber, payload);
+    } catch (error) {
+      headerEl.innerHTML = `<div class="qip-error">Error: ${escapeHtml(error.message)}</div>`;
+      return;
+    }
+  }
+
+  renderQuotationDetailHeader(payload.header, quotationNumber);
+  renderQuotationProducts(payload.products);
+}
+
+function renderQuotationDetailHeader(header, quotationNumber) {
+  const headerEl = document.getElementById("qip-detail-header");
+  if (!header) {
+    headerEl.innerHTML = `
+      <div class="qip-detail-title">
+        <h3>${escapeHtml(quotationNumber)}</h3>
+      </div>
+      <div class="qip-detail-empty" style="padding: 0.5rem 0">
+        No matching record in QuotationsStatus.
+      </div>
+    `;
+    return;
+  }
+
+  const hasIn = !!(header.dop2 && String(header.dop2).trim());
+  const hasOut = !!(header.dop3 && String(header.dop3).trim());
+
+  const fields = [
+    ["Source store", header.source_db],
+    ["Status", header.status],
+    ["Business", header.business_name],
+    ["Account #", header.account_no],
+    ["Sales rep", header.sales_rep],
+    ["Packer", header.packer],
+    ["Checker", header.checker],
+    ["Invoice #", header.invoice_number],
+    ["Total qty", header.total_qty != null ? header.total_qty.toLocaleString() : null],
+    ["Quotation total", header.quotation_total],
+    ["Last update", header.last_update ? formatQipDate(header.last_update) : null],
+    ["Ship to", header.ship_to],
+    ["Ship address", [header.ship_address1, header.ship_address2].filter(Boolean).join(" ")],
+    ["Ship city", [header.ship_city, header.ship_state, header.ship_zip_code].filter(Boolean).join(" ")],
+    ["Ship phone", header.ship_phone_no],
+    ["Notes", header.notes],
+    ["Comment", header.comment],
+  ].filter(([, v]) => v != null && String(v).trim() !== "");
+
+  headerEl.innerHTML = `
+    <div class="qip-detail-title">
+      <h3>${escapeHtml(quotationNumber)}</h3>
+      <div class="qip-card-scans">
+        <span class="scan-badge ${hasIn ? "in" : "missing"}">
+          ${hasIn ? `✓ Scan-in: ${escapeHtml(String(header.dop2))}` : "— No scan-in"}
+        </span>
+        <span class="scan-badge ${hasOut ? "out" : "missing"}">
+          ${hasOut ? `✓ Scan-out: ${escapeHtml(String(header.dop3))}` : "— No scan-out"}
+        </span>
+      </div>
+    </div>
+    <div class="qip-detail-grid">
+      ${fields
+        .map(
+          ([label, value]) => `
+        <div class="qip-detail-field">
+          <span class="qip-detail-field-label">${escapeHtml(label)}</span>
+          <span class="qip-detail-field-value">${escapeHtml(String(value))}</span>
+        </div>
+      `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function renderQuotationProducts(products) {
+  const tbody = document
+    .getElementById("qip-products-table")
+    .querySelector("tbody");
+
+  if (!products || products.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="5" style="text-align: center; color: var(--text-tertiary); padding: 1rem;">No products on this quotation.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = "";
+  products.forEach((p) => {
+    const tr = document.createElement("tr");
+    const cat = [p.cate_id, p.sub_cate_id].filter((v) => v != null).join(" / ");
+    tr.innerHTML = `
+      <td>${escapeHtml(p.product_upc || "—")}</td>
+      <td>${escapeHtml(p.product_sku || "—")}</td>
+      <td>${escapeHtml(p.product_description || "—")}</td>
+      <td class="qip-num">${(p.qty || 0).toLocaleString()}</td>
+      <td>${escapeHtml(cat || "—")}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+function formatQipDate(value) {
+  if (!value) return "—";
+  // ISO datetimes from backend; QuotationsStatus Dop2/Dop3 are raw strings
+  const d = new Date(value);
+  if (isNaN(d.getTime())) return String(value);
+  return d.toLocaleString();
+}

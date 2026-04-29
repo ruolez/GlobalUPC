@@ -588,3 +588,121 @@ class SalesConfigResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# Quotations In Progress Schemas
+class QuotationsInProgressFilter(BaseModel):
+    show_all: bool = True
+    scan_in: bool = False
+    scan_out: bool = False
+    date_from: Optional[date] = None
+    date_to: Optional[date] = None
+    source_dbs: List[str] = []
+    packers: List[str] = []
+    checkers: List[str] = []
+    search: Optional[str] = None
+    sort_by: Literal[
+        "start_date", "quotation_number", "packer", "checker",
+        "dop2", "dop3", "total_qty", "business_name", "source_db"
+    ] = "start_date"
+    sort_order: Literal["asc", "desc"] = "desc"
+    limit: int = Field(default=500, ge=1, le=5000)
+
+
+class QuotationInProgressSummary(BaseModel):
+    quotation_number: Optional[str] = None
+    source_db: Optional[str] = None
+    status: Optional[str] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    pause_date: Optional[str] = None
+    pause_reason: Optional[str] = None
+    account_no: Optional[str] = None
+    sales_rep: Optional[str] = None
+    sales_rep_id: Optional[int] = None
+    product_count: int = 0
+    total_qty: int = 0
+    packer: Optional[str] = None
+    checker: Optional[str] = None
+    business_name: Optional[str] = None
+    dop2: Optional[str] = None
+    dop3: Optional[str] = None
+    last_update: Optional[str] = None
+    user_status: Optional[str] = None
+    invoice_number: Optional[str] = None
+
+
+class QuotationsInProgressFilterOptions(BaseModel):
+    source_dbs: List[str] = []
+    packers: List[str] = []
+    checkers: List[str] = []
+    statuses: List[str] = []
+
+
+class QuotationsInProgressListResponse(BaseModel):
+    quotations: List[QuotationInProgressSummary]
+    filter_options: QuotationsInProgressFilterOptions
+    admin_store_id: Optional[int] = None
+    admin_store_name: Optional[str] = None
+
+
+class QuotationProductLine(BaseModel):
+    id: int
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    status: Optional[str] = None
+    source_db: Optional[str] = None
+    quotation_number: Optional[str] = None
+    packer: Optional[str] = None
+    checker: Optional[str] = None
+    pause_date: Optional[str] = None
+    pause_reason: Optional[str] = None
+    account_no: Optional[str] = None
+    sales_rep_id: Optional[int] = None
+    product_description: Optional[str] = None
+    product_upc: Optional[str] = None
+    product_sku: Optional[str] = None
+    qty: int = 0
+    cate_id: Optional[int] = None
+    sub_cate_id: Optional[int] = None
+    flag1: Optional[bool] = None
+    flag2: Optional[bool] = None
+    flag3: Optional[bool] = None
+
+
+class QuotationInProgressHeader(BaseModel):
+    quotation_number: Optional[str] = None
+    status: Optional[str] = None
+    source_db: Optional[str] = None
+    invoice_number: Optional[str] = None
+    business_name: Optional[str] = None
+    account_no: Optional[str] = None
+    sales_rep: Optional[str] = None
+    packer: Optional[str] = None
+    checker: Optional[str] = None
+    username: Optional[str] = None
+    user_status: Optional[str] = None
+    last_update: Optional[str] = None
+    total_qty: Optional[int] = None
+    ship_to: Optional[str] = None
+    ship_address1: Optional[str] = None
+    ship_address2: Optional[str] = None
+    ship_contact: Optional[str] = None
+    ship_city: Optional[str] = None
+    ship_state: Optional[str] = None
+    ship_zip_code: Optional[str] = None
+    ship_phone_no: Optional[str] = None
+    shipper_id: Optional[str] = None
+    term_id: Optional[str] = None
+    quotation_total: Optional[str] = None
+    comment: Optional[str] = None
+    notes: Optional[str] = None
+    dop1: Optional[str] = None
+    dop2: Optional[str] = None
+    dop3: Optional[str] = None
+    date_create: Optional[str] = None
+
+
+class QuotationProductsResponse(BaseModel):
+    products: List[QuotationProductLine]
+    header: Optional[QuotationInProgressHeader] = None
