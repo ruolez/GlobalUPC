@@ -43,14 +43,20 @@ def _build_scan_having(scan_filter: str) -> str:
     quotation -- this is robust against multiple QuotationsStatus rows per
     QuotationNumber. Treats empty / whitespace strings the same as NULL,
     matching the frontend's "hasIn / hasOut" check.
+
+    Workflow semantics:
+      - "in"   = picking in progress (Dop2 set, Dop3 not yet)
+      - "out"  = scan-out present (which in real data means complete,
+                 since scan-out always follows scan-in)
+      - "none" = pending, no scans
     """
-    in_present = "MAX(qs.Dop2) IS NOT NULL AND LTRIM(RTRIM(MAX(qs.Dop2))) <> ''"
-    out_present = "MAX(qs.Dop3) IS NOT NULL AND LTRIM(RTRIM(MAX(qs.Dop3))) <> ''"
+    in_present = "(MAX(qs.Dop2) IS NOT NULL AND LTRIM(RTRIM(MAX(qs.Dop2))) <> '')"
+    out_present = "(MAX(qs.Dop3) IS NOT NULL AND LTRIM(RTRIM(MAX(qs.Dop3))) <> '')"
     in_absent = "(MAX(qs.Dop2) IS NULL OR LTRIM(RTRIM(MAX(qs.Dop2))) = '')"
     out_absent = "(MAX(qs.Dop3) IS NULL OR LTRIM(RTRIM(MAX(qs.Dop3))) = '')"
 
     if scan_filter == "in":
-        return in_present
+        return f"{in_present} AND {out_absent}"
     if scan_filter == "out":
         return out_present
     if scan_filter == "none":
