@@ -191,7 +191,7 @@ async function loadDashboard() {
   bindDashboardOnce();
   setDashboardRefreshSpinner(true);
   try {
-    await Promise.all([loadDashboardStats(), loadDashboardActivity()]);
+    await loadDashboardStats();
     setDashboardUpdatedNow();
   } catch (e) {
     console.error("Dashboard load failed", e);
@@ -269,7 +269,6 @@ async function loadDashboardStats() {
     throw e;
   }
   renderDashboardKpi(stats);
-  renderDashboardHealth(stats.config_health || []);
 }
 
 function renderDashboardStatsError() {
@@ -347,122 +346,6 @@ function renderDashboardKpi(stats) {
       ? `${formatPct(price.success_rate)} success`
       : "no batches",
   );
-}
-
-function renderDashboardHealth(checks) {
-  const list = document.getElementById("dashboard-health-list");
-  if (!list) return;
-
-  const labelByKey = {
-    admin_store_id: "Admin DB Store",
-    item_tracker_s2s: "Item Tracker S2S",
-    shopify_sales_s2s: "Shopify Sales Cost Lookup",
-  };
-  const okDetailByKey = {
-    admin_store_id: (n) => `Admin: ${n}`,
-    item_tracker_s2s: (n) => `S2S: ${n}`,
-    shopify_sales_s2s: (n) => `Cost from ${n}`,
-  };
-  const badDetailByKey = {
-    admin_store_id: "Not configured · In Progress unavailable",
-    item_tracker_s2s: "Not configured · cost columns blank",
-    shopify_sales_s2s: "Not configured · Shopify cost column blank",
-  };
-
-  list.innerHTML = checks
-    .map((c) => {
-      const title = labelByKey[c.key] || c.key;
-      const cls = c.ok ? "" : "warn";
-      const icon = c.ok ? "✓" : "!";
-      const detail = c.ok
-        ? escapeHtml((okDetailByKey[c.key] || ((n) => n))(c.store_name || ""))
-        : escapeHtml(badDetailByKey[c.key] || "Not configured");
-      const link = c.ok
-        ? ""
-        : `<a class="dashboard-health-link" href="#" data-page="settings">Open Settings →</a>`;
-      return `
-        <div class="dashboard-health-row ${cls}">
-          <span class="dashboard-health-icon" aria-hidden="true">${icon}</span>
-          <div class="dashboard-health-body">
-            <div class="dashboard-health-title">${escapeHtml(title)}</div>
-            <div class="dashboard-health-detail">${detail}</div>
-            ${link}
-          </div>
-        </div>`;
-    })
-    .join("");
-}
-
-async function loadDashboardActivity() {
-  const list = document.getElementById("dashboard-activity-list");
-  if (!list) return;
-  const limit = 12;
-  let upcResp, priceResp;
-  try {
-    [upcResp, priceResp] = await Promise.all([
-      apiRequest(`/history/updates?limit=${limit}&offset=0`),
-      apiRequest(`/price-updates/history?limit=${limit}&offset=0`),
-    ]);
-  } catch (e) {
-    list.innerHTML = `<div class="dashboard-empty-state">Failed to load recent activity.</div>`;
-    return;
-  }
-
-  const items = [];
-  for (const b of upcResp?.batches || []) {
-    items.push({
-      kind: "upc",
-      created_at: b.created_at,
-      total_stores: b.total_stores || 0,
-      successful_stores: b.successful_stores || 0,
-      failed_stores: b.failed_stores || 0,
-      title: `UPC update · ${b.old_upc || ""} → ${b.new_upc || ""}`,
-      sub: `${b.successful_stores || 0}/${b.total_stores || 0} stores · ${b.total_items_updated || 0} items`,
-      page: "history",
-    });
-  }
-  for (const b of priceResp?.batches || []) {
-    items.push({
-      kind: "price",
-      created_at: b.created_at,
-      total_stores: b.total_stores || 0,
-      successful_stores: b.successful_stores || 0,
-      failed_stores: b.failed_stores || 0,
-      title: `Price update · ${b.upc || ""}${b.product_description ? " · " + b.product_description : ""}`,
-      sub: `${b.successful_stores || 0}/${b.total_stores || 0} stores`,
-      page: "price-updates",
-    });
-  }
-
-  items.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-  const top = items.slice(0, limit);
-
-  if (top.length === 0) {
-    list.innerHTML = `<div class="dashboard-empty-state">No recent UPC or price updates.</div>`;
-    return;
-  }
-
-  list.innerHTML = top
-    .map((it) => {
-      const ok = it.failed_stores === 0 && it.successful_stores > 0;
-      const partial = it.failed_stores > 0 && it.successful_stores > 0;
-      const statusCls = ok ? "ok" : partial ? "warn" : "fail";
-      const statusLabel = ok ? "ok" : partial ? "partial" : "failed";
-      const iconSvg =
-        it.kind === "upc"
-          ? `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M2 3v8M4 3v8M6 3v8M8 3v8M10 3v8M12 3v8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>`
-          : `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="m2 8 3-3 2 2 3-4 2 2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
-      return `
-        <a class="dashboard-activity-row kind-${it.kind}" href="#" data-page="${escapeHtml(it.page)}">
-          <span class="dashboard-activity-icon" aria-hidden="true">${iconSvg}</span>
-          <div class="dashboard-activity-body">
-            <div class="dashboard-activity-title">${escapeHtml(it.title)}</div>
-            <div class="dashboard-activity-sub">${escapeHtml(it.sub)} · ${escapeHtml(formatRelative(it.created_at))}</div>
-          </div>
-          <span class="dashboard-activity-status ${statusCls}">${statusLabel}</span>
-        </a>`;
-    })
-    .join("");
 }
 
 function setText(id, value) {
