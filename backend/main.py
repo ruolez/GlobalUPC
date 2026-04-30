@@ -2765,10 +2765,15 @@ async def search_item_tracker_stream(request: ItemTrackerSearchRequest, db: Sess
                     errors.append(f"In Progress: {error}")
                 else:
                     for r in in_progress_rows:
+                        # Use the originating store's name (SourceDB column
+                        # in QuotationsInProgress) so the timeline reflects
+                        # which store the reservation came from, not the
+                        # central DB_ADMIN store we queried.
+                        source_db = (r.get("source_db") or "").strip()
                         event = ItemTrackerEvent(
                             event_type="in_progress",
                             event_date=r["event_date"],
-                            store_name=admin_store.name,
+                            store_name=source_db or admin_store.name,
                             document_number=r["document_number"],
                             quantity=r["quantity"],
                             price_or_cost=None,

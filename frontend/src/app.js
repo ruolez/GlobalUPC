@@ -4180,6 +4180,7 @@ function displayItemTrackerResults(data) {
     { key: "customer_return", label: "Cust. Returns", color: "#f59e0b" },
     { key: "vendor_return", label: "Vendor Returns", color: "#ef4444" },
     { key: "inventory_recount", label: "Inv. Recounts", color: "#a855f7" },
+    { key: "in_progress", label: "In Progress", color: "#06b6d4" },
   ];
 
   eventTypes.forEach((type) => {

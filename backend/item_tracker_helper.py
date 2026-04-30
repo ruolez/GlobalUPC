@@ -677,6 +677,7 @@ def get_in_progress(
                 qip.QuotationNumber AS document_number,
                 qip.StartDate     AS event_date,
                 qip.Qty           AS quantity,
+                qip.SourceDB      AS source_db,
                 qs.BusinessName   AS business_name
             FROM QuotationsInProgress qip
             LEFT JOIN QuotationsStatus qs ON qs.QuotationNumber = qip.QuotationNumber
@@ -709,7 +710,8 @@ def get_in_progress(
                 "document_number": str(row[1]) if row[1] is not None else None,
                 "event_date": row[2],
                 "quantity": float(row[3]) if row[3] is not None else None,
-                "business_name": row[4],
+                "source_db": row[4],
+                "business_name": row[5],
             })
 
         return True, None, results
