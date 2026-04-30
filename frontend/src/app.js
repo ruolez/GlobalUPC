@@ -81,6 +81,8 @@ function navigateTo(page) {
     loadSalesPage();
   } else if (page === "shopify-sales") {
     loadShopifySalesPage();
+  } else if (page === "shopify-analytics") {
+    loadShopifyAnalyticsPage();
   } else if (page === "quotations-in-progress") {
     loadQuotationsInProgressPage();
   }
@@ -11313,4 +11315,379 @@ function qipRelativeTime(value) {
   const months = Math.floor(days / 30);
   if (months < 12) return `${months}mo ago`;
   return `${Math.floor(months / 12)}y ago`;
+}
+
+// ============================================================================
+// Shopify Analytics
+// ============================================================================
+
+const shopifyAnalyticsState = {
+  initialized: false,
+  loading: false,
+  shopifyStores: [],
+  rows: [],
+  summary: null,
+  sortColumn: "subsequent_count",
+  sortOrder: "desc",
+  abortController: null,
+};
+
+const SA_NUMERIC_COLUMNS = new Set([
+  "first_order_amount",
+  "subsequent_count",
+  "subsequent_amount",
+]);
+
+async function loadShopifyAnalyticsPage() {
+  if (shopifyAnalyticsState.initialized) {
+    return;
+  }
+  shopifyAnalyticsState.initialized = true;
+
+  try {
+    const stores = await apiRequest("/stores");
+    shopifyAnalyticsState.shopifyStores = (stores || []).filter(
+      (s) => s.store_type === "shopify" && s.is_active,
+    );
+  } catch (e) {
+    shopifyAnalyticsState.shopifyStores = [];
+  }
+
+  const select = document.getElementById("sa-store");
+  if (select) {
+    select.innerHTML = "";
+    if (shopifyAnalyticsState.shopifyStores.length === 0) {
+      const opt = document.createElement("option");
+      opt.value = "";
+      opt.textContent = "(no active Shopify stores)";
+      select.appendChild(opt);
+      select.disabled = true;
+    } else {
+      const placeholder = document.createElement("option");
+      placeholder.value = "";
+      placeholder.textContent = "Select a store...";
+      select.appendChild(placeholder);
+      for (const s of shopifyAnalyticsState.shopifyStores) {
+        const opt = document.createElement("option");
+        opt.value = String(s.id);
+        opt.textContent = s.name;
+        select.appendChild(opt);
+      }
+    }
+  }
+
+  // Default date range: last 30 days
+  const startInput = document.getElementById("sa-start-date");
+  const endInput = document.getElementById("sa-end-date");
+  if (startInput && !startInput.value) {
+    const today = new Date();
+    const start = new Date(today);
+    start.setDate(today.getDate() - 30);
+    startInput.value = start.toISOString().slice(0, 10);
+    endInput.value = today.toISOString().slice(0, 10);
+  }
+
+  // Date range presets
+  document.querySelectorAll("[data-sa-range]").forEach((btn) => {
+    btn.addEventListener("click", () => saApplyDatePreset(btn.dataset.saRange));
+  });
+
+  // Enable/disable Run button on input change
+  const updateRunBtn = () => {
+    const runBtn = document.getElementById("sa-run-btn");
+    if (!runBtn) return;
+    const storeId = document.getElementById("sa-store").value;
+    const startVal = startInput.value;
+    const endVal = endInput.value;
+    runBtn.disabled = !(storeId && startVal && endVal && startVal <= endVal);
+  };
+
+  document.getElementById("sa-store")?.addEventListener("change", updateRunBtn);
+  startInput?.addEventListener("change", updateRunBtn);
+  endInput?.addEventListener("change", updateRunBtn);
+  updateRunBtn();
+
+  document
+    .getElementById("sa-run-btn")
+    ?.addEventListener("click", runFirstCustomerReturnsReport);
+  document
+    .getElementById("sa-cancel-btn")
+    ?.addEventListener("click", () => {
+      if (shopifyAnalyticsState.abortController) {
+        shopifyAnalyticsState.abortController.abort();
+      }
+    });
+
+  // Sortable headers
+  const table = document.getElementById("sa-table");
+  table?.addEventListener("click", (e) => {
+    const th = e.target.closest("th.qip-sortable");
+    if (!th) return;
+    const col = th.dataset.sort;
+    if (!col) return;
+    if (shopifyAnalyticsState.sortColumn === col) {
+      if (shopifyAnalyticsState.sortOrder === "asc") {
+        shopifyAnalyticsState.sortOrder = "desc";
+      } else if (shopifyAnalyticsState.sortOrder === "desc") {
+        shopifyAnalyticsState.sortColumn = null;
+        shopifyAnalyticsState.sortOrder = "asc";
+      } else {
+        shopifyAnalyticsState.sortOrder = "asc";
+      }
+    } else {
+      shopifyAnalyticsState.sortColumn = col;
+      shopifyAnalyticsState.sortOrder = "asc";
+    }
+    saApplySortHeaders();
+    renderShopifyAnalyticsTable();
+  });
+
+  saApplySortHeaders();
+}
+
+function saApplySortHeaders() {
+  const ths = document
+    .getElementById("sa-table")
+    ?.querySelectorAll("th.qip-sortable");
+  if (!ths) return;
+  ths.forEach((th) => {
+    th.classList.remove("qip-sort-asc", "qip-sort-desc");
+    if (th.dataset.sort === shopifyAnalyticsState.sortColumn) {
+      th.classList.add(
+        shopifyAnalyticsState.sortOrder === "asc"
+          ? "qip-sort-asc"
+          : "qip-sort-desc",
+      );
+    }
+  });
+}
+
+function saApplyDatePreset(range) {
+  const startInput = document.getElementById("sa-start-date");
+  const endInput = document.getElementById("sa-end-date");
+  if (!startInput || !endInput) return;
+  const today = new Date();
+  let start, end;
+  if (range === "7" || range === "30") {
+    end = today;
+    start = new Date(today);
+    start.setDate(today.getDate() - parseInt(range, 10));
+  } else if (range === "this-month") {
+    start = new Date(today.getFullYear(), today.getMonth(), 1);
+    end = today;
+  } else if (range === "last-month") {
+    start = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+    end = new Date(today.getFullYear(), today.getMonth(), 0);
+  } else {
+    return;
+  }
+  startInput.value = start.toISOString().slice(0, 10);
+  endInput.value = end.toISOString().slice(0, 10);
+  startInput.dispatchEvent(new Event("change"));
+  endInput.dispatchEvent(new Event("change"));
+}
+
+async function runFirstCustomerReturnsReport() {
+  if (shopifyAnalyticsState.loading) return;
+
+  const storeId = parseInt(document.getElementById("sa-store").value, 10);
+  const startDate = document.getElementById("sa-start-date").value;
+  const endDate = document.getElementById("sa-end-date").value;
+  if (!storeId || !startDate || !endDate) return;
+
+  const runBtn = document.getElementById("sa-run-btn");
+  const cancelBtn = document.getElementById("sa-cancel-btn");
+  const progressEl = document.getElementById("sa-progress");
+  const progressBar = document.getElementById("sa-progress-bar");
+  const progressStatus = document.getElementById("sa-progress-status");
+  const resultsEl = document.getElementById("sa-results");
+  const emptyEl = document.getElementById("sa-empty");
+  const tbody = document.getElementById("sa-tbody");
+  const tfoot = document.getElementById("sa-tfoot");
+
+  shopifyAnalyticsState.loading = true;
+  shopifyAnalyticsState.rows = [];
+  shopifyAnalyticsState.summary = null;
+  shopifyAnalyticsState.abortController = new AbortController();
+
+  runBtn.disabled = true;
+  runBtn.textContent = "Running...";
+  cancelBtn.style.display = "inline-flex";
+  progressEl.style.display = "block";
+  progressBar.style.width = "0%";
+  progressStatus.textContent = "Connecting to Shopify...";
+  resultsEl.style.display = "none";
+  emptyEl.style.display = "none";
+  if (tbody) tbody.innerHTML = "";
+  if (tfoot) tfoot.style.display = "none";
+
+  try {
+    const response = await fetch(
+      `${API_BASE}/shopify-analytics/first-customer-returns/stream`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          store_id: storeId,
+          start_date: startDate,
+          end_date: endDate,
+        }),
+        signal: shopifyAnalyticsState.abortController.signal,
+      },
+    );
+
+    if (!response.ok || !response.body) {
+      const text = await response.text().catch(() => "");
+      throw new Error(`HTTP ${response.status}: ${text || response.statusText}`);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const messages = buffer.split("\n\n");
+      buffer = messages.pop();
+
+      for (const msg of messages) {
+        if (!msg.trim()) continue;
+        if (msg.startsWith(":")) continue; // heartbeat comment
+
+        const eventMatch = msg.match(/event: (\w+)\ndata: (.+)/s);
+        if (!eventMatch) continue;
+        const [, eventType, dataStr] = eventMatch;
+        let data;
+        try {
+          data = JSON.parse(dataStr);
+        } catch {
+          continue;
+        }
+
+        if (eventType === "progress") {
+          if (data.phase === "started") {
+            progressStatus.textContent = `Fetching tagged orders for ${data.store_name || "store"}...`;
+          } else if (data.phase === "tagged_orders_complete") {
+            progressStatus.textContent = `${data.first_time_customers} first-time customer(s) found — looking up subsequent orders...`;
+            progressBar.style.width = "20%";
+          } else if (data.phase === "customer_error") {
+            progressStatus.textContent = `Customer ${data.completed} of ${data.total} (error: ${data.message})`;
+          }
+        } else if (eventType === "customer") {
+          if (data.row) {
+            shopifyAnalyticsState.rows.push(data.row);
+          }
+          const completed = data.completed || shopifyAnalyticsState.rows.length;
+          const total = data.total || completed;
+          const pct = 20 + Math.round((completed / Math.max(total, 1)) * 75);
+          progressBar.style.width = `${Math.min(pct, 95)}%`;
+          progressStatus.textContent = `Processed ${completed} of ${total} customer(s)...`;
+          renderShopifyAnalyticsTable();
+          resultsEl.style.display = "block";
+        } else if (eventType === "complete") {
+          progressBar.style.width = "100%";
+          progressStatus.textContent = "Done";
+          shopifyAnalyticsState.summary = data.summary || null;
+          if (Array.isArray(data.rows) && data.rows.length > 0) {
+            shopifyAnalyticsState.rows = data.rows;
+          }
+          if (shopifyAnalyticsState.rows.length === 0) {
+            resultsEl.style.display = "none";
+            emptyEl.style.display = "block";
+          } else {
+            resultsEl.style.display = "block";
+            renderShopifyAnalyticsTable();
+          }
+        } else if (eventType === "error") {
+          progressStatus.textContent = `Error: ${data.message || "unknown"}`;
+          progressBar.style.background = "var(--danger)";
+        }
+      }
+    }
+  } catch (e) {
+    if (e.name === "AbortError") {
+      progressStatus.textContent = "Cancelled";
+    } else {
+      progressStatus.textContent = `Error: ${e.message || e}`;
+      console.error("Shopify Analytics error:", e);
+    }
+  } finally {
+    shopifyAnalyticsState.loading = false;
+    shopifyAnalyticsState.abortController = null;
+    runBtn.disabled = false;
+    runBtn.textContent = "Run Report";
+    cancelBtn.style.display = "none";
+  }
+}
+
+function renderShopifyAnalyticsTable() {
+  const tbody = document.getElementById("sa-tbody");
+  const tfoot = document.getElementById("sa-tfoot");
+  const summaryEl = document.getElementById("sa-summary");
+  if (!tbody) return;
+
+  const rows = [...shopifyAnalyticsState.rows];
+  const col = shopifyAnalyticsState.sortColumn;
+  const dir = shopifyAnalyticsState.sortOrder === "asc" ? 1 : -1;
+
+  if (col) {
+    const numeric = SA_NUMERIC_COLUMNS.has(col);
+    rows.sort((a, b) => {
+      const av = a[col];
+      const bv = b[col];
+      if (numeric) {
+        const an = parseFloat(av) || 0;
+        const bn = parseFloat(bv) || 0;
+        return (an - bn) * dir;
+      }
+      const as = (av || "").toString().toLowerCase();
+      const bs = (bv || "").toString().toLowerCase();
+      if (as < bs) return -1 * dir;
+      if (as > bs) return 1 * dir;
+      return 0;
+    });
+  }
+
+  tbody.innerHTML = rows
+    .map(
+      (r) => `
+        <tr>
+          <td>${escapeHtml(r.customer_name || "")}</td>
+          <td>${escapeHtml(r.customer_email || "")}</td>
+          <td>${escapeHtml(r.first_order_name || "")}</td>
+          <td>${escapeHtml(r.first_order_date || "")}</td>
+          <td style="text-align: right;">${escapeHtml(r.first_order_amount || "0.00")} ${escapeHtml(r.first_order_currency || "")}</td>
+          <td style="text-align: right; font-weight: 600;">${r.subsequent_count}</td>
+          <td style="text-align: right;">${escapeHtml(r.subsequent_amount || "0.00")} ${escapeHtml(r.subsequent_currency || "")}</td>
+        </tr>
+      `,
+    )
+    .join("");
+
+  // Totals
+  const totalCount = rows.reduce((s, r) => s + (r.subsequent_count || 0), 0);
+  const totalAmount = rows.reduce(
+    (s, r) => s + (parseFloat(r.subsequent_amount) || 0),
+    0,
+  );
+  const currency =
+    (rows.find((r) => r.subsequent_currency) || {}).subsequent_currency || "";
+  const totalCountEl = document.getElementById("sa-total-count");
+  const totalAmountEl = document.getElementById("sa-total-amount");
+  if (totalCountEl) totalCountEl.textContent = totalCount.toLocaleString();
+  if (totalAmountEl)
+    totalAmountEl.textContent = `${totalAmount.toFixed(2)} ${currency}`.trim();
+  if (tfoot) tfoot.style.display = rows.length > 0 ? "" : "none";
+
+  if (summaryEl) {
+    const s = shopifyAnalyticsState.summary;
+    if (s) {
+      summaryEl.textContent = `${s.first_time_customers} first-time customer(s) — ${s.customers_with_returns} returned (${s.total_subsequent_orders} subsequent successful order(s), ${s.total_subsequent_amount} ${s.currency || ""})`;
+    } else {
+      summaryEl.textContent = `${rows.length} row(s) — streaming...`;
+    }
+  }
 }

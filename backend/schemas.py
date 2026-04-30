@@ -590,6 +590,35 @@ class SalesConfigResponse(BaseModel):
         from_attributes = True
 
 
+# Shopify Analytics Schemas
+class FirstCustomerReturnsRequest(BaseModel):
+    store_id: int
+    start_date: str  # YYYY-MM-DD
+    end_date: str    # YYYY-MM-DD
+
+
+class FirstCustomerReturnsRow(BaseModel):
+    customer_id: Optional[str] = None
+    customer_name: str
+    customer_email: Optional[str] = None
+    first_order_id: Optional[str] = None
+    first_order_name: str
+    first_order_date: Optional[str] = None
+    first_order_amount: str
+    first_order_currency: str
+    subsequent_count: int
+    subsequent_amount: str
+    subsequent_currency: str
+
+
+class FirstCustomerReturnsSummary(BaseModel):
+    first_time_customers: int
+    customers_with_returns: int
+    total_subsequent_orders: int
+    total_subsequent_amount: str
+    currency: str
+
+
 # Quotations In Progress Schemas
 class QuotationsInProgressFilter(BaseModel):
     # "all" -> no scan filter

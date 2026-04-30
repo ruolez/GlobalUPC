@@ -751,18 +751,18 @@ async def search_product_prices_with_siblings(
             "Content-Type": "application/json"
         }
 
-        for batch_start in range(0, len(barcodes), BATCH_SIZE):
-            batch = barcodes[batch_start:batch_start + BATCH_SIZE]
+        async with aiohttp.ClientSession() as session:
+            for batch_start in range(0, len(barcodes), BATCH_SIZE):
+                batch = barcodes[batch_start:batch_start + BATCH_SIZE]
 
-            if len(batch) == 1:
-                query_str = f"barcode:{batch[0]}"
-            else:
-                or_parts = " OR ".join(f"barcode:{bc}" for bc in batch)
-                query_str = f"({or_parts})"
+                if len(batch) == 1:
+                    query_str = f"barcode:{batch[0]}"
+                else:
+                    or_parts = " OR ".join(f"barcode:{bc}" for bc in batch)
+                    query_str = f"({or_parts})"
 
-            variables = {"query": query_str}
+                variables = {"query": query_str}
 
-            async with aiohttp.ClientSession() as session:
                 async with session.post(
                     url,
                     json={"query": search_query, "variables": variables},
@@ -810,46 +810,45 @@ async def search_product_prices_with_siblings(
                         if product_id:
                             unique_product_ids[product_id] = product.get("title")
 
-        if not all_matched_variants:
-            return True, None, [], {}
+            if not all_matched_variants:
+                return True, None, [], {}
 
-        # Call 2: Batch-fetch all variants for each unique product using aliases
-        variants_by_product_id: Dict[str, List[Dict[str, Any]]] = {}
-        product_id_list = list(unique_product_ids.keys())
-        PRODUCTS_PER_QUERY = 8
+            # Call 2: Batch-fetch all variants for each unique product using aliases
+            variants_by_product_id: Dict[str, List[Dict[str, Any]]] = {}
+            product_id_list = list(unique_product_ids.keys())
+            PRODUCTS_PER_QUERY = 8
 
-        for chunk_start in range(0, len(product_id_list), PRODUCTS_PER_QUERY):
-            chunk = product_id_list[chunk_start:chunk_start + PRODUCTS_PER_QUERY]
+            for chunk_start in range(0, len(product_id_list), PRODUCTS_PER_QUERY):
+                chunk = product_id_list[chunk_start:chunk_start + PRODUCTS_PER_QUERY]
 
-            alias_parts = []
-            for i, pid in enumerate(chunk):
-                alias_parts.append(f"""
-                    p{i}: product(id: "{pid}") {{
-                        id
-                        title
-                        status
-                        variants(first: 100) {{
-                            edges {{
-                                node {{
-                                    id
-                                    barcode
-                                    sku
-                                    displayName
-                                    title
-                                    price
-                                    inventoryItem {{
+                alias_parts = []
+                for i, pid in enumerate(chunk):
+                    alias_parts.append(f"""
+                        p{i}: product(id: "{pid}") {{
+                            id
+                            title
+                            status
+                            variants(first: 100) {{
+                                edges {{
+                                    node {{
                                         id
-                                        unitCost {{ amount currencyCode }}
+                                        barcode
+                                        sku
+                                        displayName
+                                        title
+                                        price
+                                        inventoryItem {{
+                                            id
+                                            unitCost {{ amount currencyCode }}
+                                        }}
                                     }}
                                 }}
                             }}
                         }}
-                    }}
-                """)
+                    """)
 
-            alias_query = "query {\n" + "\n".join(alias_parts) + "\n}"
+                alias_query = "query {\n" + "\n".join(alias_parts) + "\n}"
 
-            async with aiohttp.ClientSession() as session:
                 async with session.post(
                     url,
                     json={"query": alias_query},
@@ -1239,3 +1238,265 @@ async def update_barcodes_across_shopify_stores(
     results = await asyncio.gather(*tasks)
 
     return results
+
+
+async def fetch_orders_with_tag(
+    shop_domain: str,
+    admin_api_key: str,
+    start_date: str,
+    end_date: str,
+    tag: str,
+    api_version: str = "2025-01",
+) -> tuple[bool, Optional[str], List[Dict[str, Any]]]:
+    """
+    Fetch orders matching a tag within a created_at date range.
+
+    Returns a list of normalized order dicts with: id, name, processed_at,
+    created_at, total_amount, currency, customer_id, customer_email,
+    customer_first_name, customer_last_name.
+    """
+    try:
+        shop_domain = validate_shop_domain(shop_domain)
+
+        query_gql = """
+        query fetchTaggedOrders($query: String!, $first: Int!, $after: String) {
+          orders(first: $first, after: $after, query: $query) {
+            pageInfo { hasNextPage endCursor }
+            edges {
+              node {
+                id
+                name
+                createdAt
+                processedAt
+                totalPriceSet { shopMoney { amount currencyCode } }
+                customer { id email firstName lastName }
+              }
+            }
+          }
+        }
+        """
+
+        safe_tag = (tag or "").replace('"', '\\"')
+        query_filter = f'tag:"{safe_tag}" created_at:>={start_date} created_at:<={end_date}'
+
+        url = f"https://{shop_domain}/admin/api/{api_version}/graphql.json"
+        headers = {
+            "X-Shopify-Access-Token": admin_api_key,
+            "Content-Type": "application/json",
+        }
+
+        results: List[Dict[str, Any]] = []
+        has_next_page = True
+        cursor: Optional[str] = None
+        max_retries = 3
+        backoff_seconds = [1, 2, 4]
+
+        async with aiohttp.ClientSession() as session:
+            while has_next_page:
+                variables: Dict[str, Any] = {"query": query_filter, "first": 250}
+                if cursor:
+                    variables["after"] = cursor
+
+                response_data = None
+                for attempt in range(max_retries + 1):
+                    async with session.post(
+                        url,
+                        json={"query": query_gql, "variables": variables},
+                        headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=60),
+                    ) as response:
+                        if response.status == 429:
+                            if attempt < max_retries:
+                                await asyncio.sleep(backoff_seconds[attempt])
+                                continue
+                            return False, "Shopify rate limit exceeded after retries", []
+
+                        if response.status != 200:
+                            error_text = await response.text()
+                            return False, f"HTTP {response.status}: {error_text}", []
+
+                        response_data = await response.json()
+
+                        if "errors" in response_data:
+                            errors = response_data["errors"]
+                            error_msg = "; ".join([e.get("message", str(e)) for e in errors])
+                            if "throttl" in error_msg.lower() and attempt < max_retries:
+                                await asyncio.sleep(backoff_seconds[attempt])
+                                continue
+                            return False, f"GraphQL errors: {error_msg}", []
+
+                        break
+
+                if not response_data:
+                    return False, "No response received", []
+
+                orders_data = response_data.get("data", {}).get("orders", {}) or {}
+                page_info = orders_data.get("pageInfo", {}) or {}
+                has_next_page = page_info.get("hasNextPage", False)
+                cursor = page_info.get("endCursor")
+
+                for edge in orders_data.get("edges", []) or []:
+                    order = edge.get("node") or {}
+                    total_set = (order.get("totalPriceSet") or {}).get("shopMoney") or {}
+                    customer = order.get("customer") or {}
+                    results.append({
+                        "id": order.get("id"),
+                        "name": order.get("name", ""),
+                        "created_at": order.get("createdAt"),
+                        "processed_at": order.get("processedAt"),
+                        "total_amount": total_set.get("amount", "0"),
+                        "currency": total_set.get("currencyCode", "USD"),
+                        "customer_id": customer.get("id"),
+                        "customer_email": customer.get("email"),
+                        "customer_first_name": customer.get("firstName"),
+                        "customer_last_name": customer.get("lastName"),
+                    })
+
+        return True, None, results
+
+    except aiohttp.ClientError as e:
+        return False, f"Network error: {str(e)}", []
+    except Exception as e:
+        return False, f"Unexpected error: {str(e)}", []
+
+
+async def fetch_customer_orders_after(
+    shop_domain: str,
+    admin_api_key: str,
+    customer_id: str,
+    after_date_iso: str,
+    api_version: str = "2025-01",
+) -> tuple[bool, Optional[str], List[Dict[str, Any]]]:
+    """
+    Fetch all orders for a customer placed strictly after the given ISO datetime.
+
+    Returns normalized order dicts including status fields needed to apply
+    a "successful order" filter at the call site:
+        id, name, processed_at, created_at, cancelled_at,
+        display_financial_status, total_amount, currency,
+        has_tracking (bool — at least one fulfillment with a non-empty tracking number).
+
+    The Shopify search index uses date precision (not full datetime), so we
+    pass a YYYY-MM-DD prefix and let the caller drop ties via after_date_iso
+    if precise ordering matters.
+    """
+    try:
+        shop_domain = validate_shop_domain(shop_domain)
+
+        # Extract Shopify customer numeric ID from gid if necessary
+        cid = (customer_id or "").rsplit("/", 1)[-1]
+
+        # Shopify's `created_at:>` filter is date-resolution; use date prefix.
+        after_date = (after_date_iso or "")[:10]
+        if not after_date:
+            return False, "Missing after_date_iso", []
+
+        query_gql = """
+        query fetchCustomerOrders($query: String!, $first: Int!, $after: String) {
+          orders(first: $first, after: $after, query: $query) {
+            pageInfo { hasNextPage endCursor }
+            edges {
+              node {
+                id
+                name
+                createdAt
+                processedAt
+                cancelledAt
+                displayFinancialStatus
+                totalPriceSet { shopMoney { amount currencyCode } }
+                fulfillments(first: 20) {
+                  trackingInfo { number }
+                }
+              }
+            }
+          }
+        }
+        """
+
+        query_filter = f"customer_id:{cid} created_at:>={after_date}"
+
+        url = f"https://{shop_domain}/admin/api/{api_version}/graphql.json"
+        headers = {
+            "X-Shopify-Access-Token": admin_api_key,
+            "Content-Type": "application/json",
+        }
+
+        results: List[Dict[str, Any]] = []
+        has_next_page = True
+        cursor: Optional[str] = None
+        max_retries = 3
+        backoff_seconds = [1, 2, 4]
+
+        async with aiohttp.ClientSession() as session:
+            while has_next_page:
+                variables: Dict[str, Any] = {"query": query_filter, "first": 100}
+                if cursor:
+                    variables["after"] = cursor
+
+                response_data = None
+                for attempt in range(max_retries + 1):
+                    async with session.post(
+                        url,
+                        json={"query": query_gql, "variables": variables},
+                        headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=60),
+                    ) as response:
+                        if response.status == 429:
+                            if attempt < max_retries:
+                                await asyncio.sleep(backoff_seconds[attempt])
+                                continue
+                            return False, "Shopify rate limit exceeded after retries", []
+
+                        if response.status != 200:
+                            error_text = await response.text()
+                            return False, f"HTTP {response.status}: {error_text}", []
+
+                        response_data = await response.json()
+
+                        if "errors" in response_data:
+                            errors = response_data["errors"]
+                            error_msg = "; ".join([e.get("message", str(e)) for e in errors])
+                            if "throttl" in error_msg.lower() and attempt < max_retries:
+                                await asyncio.sleep(backoff_seconds[attempt])
+                                continue
+                            return False, f"GraphQL errors: {error_msg}", []
+
+                        break
+
+                if not response_data:
+                    return False, "No response received", []
+
+                orders_data = response_data.get("data", {}).get("orders", {}) or {}
+                page_info = orders_data.get("pageInfo", {}) or {}
+                has_next_page = page_info.get("hasNextPage", False)
+                cursor = page_info.get("endCursor")
+
+                for edge in orders_data.get("edges", []) or []:
+                    order = edge.get("node") or {}
+                    total_set = (order.get("totalPriceSet") or {}).get("shopMoney") or {}
+                    has_tracking = False
+                    for f in order.get("fulfillments") or []:
+                        for t in f.get("trackingInfo") or []:
+                            if (t or {}).get("number"):
+                                has_tracking = True
+                                break
+                        if has_tracking:
+                            break
+                    results.append({
+                        "id": order.get("id"),
+                        "name": order.get("name", ""),
+                        "created_at": order.get("createdAt"),
+                        "processed_at": order.get("processedAt"),
+                        "cancelled_at": order.get("cancelledAt"),
+                        "display_financial_status": order.get("displayFinancialStatus"),
+                        "total_amount": total_set.get("amount", "0"),
+                        "currency": total_set.get("currencyCode", "USD"),
+                        "has_tracking": has_tracking,
+                    })
+
+        return True, None, results
+
+    except aiohttp.ClientError as e:
+        return False, f"Network error: {str(e)}", []
+    except Exception as e:
+        return False, f"Unexpected error: {str(e)}", []

@@ -2,7 +2,7 @@ from fastapi import FastAPI, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from typing import List, Union, AsyncGenerator, Optional
+from typing import List, Union, AsyncGenerator, Optional, Dict, Any
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
 from datetime import datetime, date, timedelta
@@ -38,6 +38,7 @@ from schemas import (
     SalesReportRequest,
     SalesConfigCreate, SalesConfigResponse,
     SalesExclusionCreate, SalesExclusionResponse, SalesExclusionListResponse,
+    FirstCustomerReturnsRequest,
     QuotationsInProgressFilter, QuotationsInProgressListResponse,
     QuotationsInProgressFilterOptions, QuotationInProgressSummary,
     QuotationProductsResponse, QuotationInProgressHeader, QuotationProductLine,
@@ -61,7 +62,8 @@ from shopify_helper import (
     search_products_by_barcode, update_barcodes_across_shopify_stores,
     check_barcode_exists, search_product_prices_by_barcode, update_variant_prices,
     get_all_product_variant_prices, search_product_prices_with_siblings,
-    fetch_fulfilled_orders
+    fetch_fulfilled_orders,
+    fetch_orders_with_tag, fetch_customer_orders_after
 )
 from item_tracker_helper import (
     get_item_info_async, get_purchases_async, get_sales_async,
@@ -5409,6 +5411,201 @@ async def get_dashboard_stats(db: Session = Depends(get_db)):
         in_progress=in_progress,
         config_health=config_health,
         generated_at=datetime.utcnow(),
+    )
+
+
+# ============================================================================
+# Shopify Analytics
+# ============================================================================
+
+SHOPIFY_ANALYTICS_FIRST_ORDER_TAG = "First order"
+
+
+@app.post("/api/shopify-analytics/first-customer-returns/stream")
+async def shopify_analytics_first_customer_returns_stream(
+    request: FirstCustomerReturnsRequest,
+    db: Session = Depends(get_db),
+):
+    async def generate() -> AsyncGenerator[str, None]:
+        store_id = request.store_id
+        start_date = request.start_date
+        end_date = request.end_date
+
+        store = db.query(Store).filter(
+            Store.id == store_id,
+            Store.store_type == StoreType.shopify,
+            Store.is_active == True,
+        ).first()
+
+        if not store or not store.shopify_connection:
+            yield f"event: error\ndata: {json.dumps({'message': 'Shopify store not found or inactive'})}\n\n"
+            return
+
+        conn = store.shopify_connection
+        shop_domain = conn.shop_domain
+        admin_api_key = conn.admin_api_key
+        api_version = conn.api_version
+
+        yield f"event: progress\ndata: {json.dumps({'phase': 'started', 'store_name': store.name, 'start_date': start_date, 'end_date': end_date})}\n\n"
+
+        # Phase 1: fetch all "First order"-tagged orders in the date range
+        success, error, tagged_orders = await fetch_orders_with_tag(
+            shop_domain=shop_domain,
+            admin_api_key=admin_api_key,
+            start_date=start_date,
+            end_date=end_date,
+            tag=SHOPIFY_ANALYTICS_FIRST_ORDER_TAG,
+            api_version=api_version,
+        )
+
+        if not success:
+            yield f"event: error\ndata: {json.dumps({'message': error or 'Failed to fetch tagged orders'})}\n\n"
+            return
+
+        # Dedupe by customer_id; track unmatched (no customer) count separately
+        first_orders_by_customer: Dict[str, Dict[str, Any]] = {}
+        no_customer_count = 0
+        for o in tagged_orders:
+            cid = o.get("customer_id")
+            if not cid:
+                no_customer_count += 1
+                continue
+            # Keep the earliest first-order per customer (defensive — should be 1 anyway)
+            existing = first_orders_by_customer.get(cid)
+            o_date = o.get("processed_at") or o.get("created_at") or ""
+            if existing is None:
+                first_orders_by_customer[cid] = o
+            else:
+                e_date = existing.get("processed_at") or existing.get("created_at") or ""
+                if o_date and (not e_date or o_date < e_date):
+                    first_orders_by_customer[cid] = o
+
+        total_customers = len(first_orders_by_customer)
+
+        yield f"event: progress\ndata: {json.dumps({'phase': 'tagged_orders_complete', 'tagged_orders': len(tagged_orders), 'first_time_customers': total_customers, 'orders_without_customer': no_customer_count})}\n\n"
+
+        if total_customers == 0:
+            yield f"event: complete\ndata: {json.dumps({'summary': {'first_time_customers': 0, 'customers_with_returns': 0, 'total_subsequent_orders': 0, 'total_subsequent_amount': '0.00', 'currency': 'USD'}, 'rows': []})}\n\n"
+            return
+
+        # Phase 2: per-customer fan-out with bounded concurrency
+        semaphore = asyncio.Semaphore(5)
+        rows: List[Dict[str, Any]] = []
+        completed = 0
+        last_heartbeat = asyncio.get_event_loop().time()
+
+        async def process_customer(cid: str, first_order: Dict[str, Any]) -> Dict[str, Any]:
+            async with semaphore:
+                after_iso = first_order.get("processed_at") or first_order.get("created_at") or ""
+                ok, err, orders = await fetch_customer_orders_after(
+                    shop_domain=shop_domain,
+                    admin_api_key=admin_api_key,
+                    customer_id=cid,
+                    after_date_iso=after_iso,
+                    api_version=api_version,
+                )
+                if not ok:
+                    return {"_error": err, "_customer_id": cid, "_first_order": first_order}
+
+                first_order_id = first_order.get("id")
+                subsequent_count = 0
+                subsequent_amount = 0.0
+                subsequent_currency = first_order.get("currency", "USD")
+
+                for o in orders:
+                    if o.get("id") == first_order_id:
+                        continue  # exclude the first order itself
+                    # Lenient success rule (confirmed):
+                    #   not cancelled AND not fully REFUNDED AND has tracking
+                    if o.get("cancelled_at"):
+                        continue
+                    if (o.get("display_financial_status") or "").upper() == "REFUNDED":
+                        continue
+                    if not o.get("has_tracking"):
+                        continue
+                    subsequent_count += 1
+                    try:
+                        subsequent_amount += float(o.get("total_amount") or 0)
+                    except (TypeError, ValueError):
+                        pass
+                    if o.get("currency"):
+                        subsequent_currency = o["currency"]
+
+                first_name = first_order.get("customer_first_name") or ""
+                last_name = first_order.get("customer_last_name") or ""
+                customer_name = (first_name + " " + last_name).strip()
+                if not customer_name:
+                    customer_name = first_order.get("customer_email") or "(unknown)"
+
+                first_date_iso = first_order.get("processed_at") or first_order.get("created_at")
+                first_date_short = (first_date_iso or "")[:10] or None
+
+                return {
+                    "customer_id": cid,
+                    "customer_name": customer_name,
+                    "customer_email": first_order.get("customer_email"),
+                    "first_order_id": first_order_id,
+                    "first_order_name": first_order.get("name", ""),
+                    "first_order_date": first_date_short,
+                    "first_order_amount": f"{float(first_order.get('total_amount') or 0):.2f}",
+                    "first_order_currency": first_order.get("currency", "USD"),
+                    "subsequent_count": subsequent_count,
+                    "subsequent_amount": f"{subsequent_amount:.2f}",
+                    "subsequent_currency": subsequent_currency,
+                }
+
+        tasks = [
+            asyncio.create_task(process_customer(cid, fo))
+            for cid, fo in first_orders_by_customer.items()
+        ]
+
+        try:
+            for fut in asyncio.as_completed(tasks):
+                result = await fut
+                completed += 1
+
+                if "_error" in result:
+                    yield f"event: progress\ndata: {json.dumps({'phase': 'customer_error', 'completed': completed, 'total': total_customers, 'message': result.get('_error') or 'Unknown error'})}\n\n"
+                else:
+                    rows.append(result)
+                    yield f"event: customer\ndata: {json.dumps({'row': result, 'completed': completed, 'total': total_customers})}\n\n"
+
+                now = asyncio.get_event_loop().time()
+                if now - last_heartbeat > 15:
+                    yield f": heartbeat\n\n"
+                    last_heartbeat = now
+        except GeneratorExit:
+            print("[SHOPIFY-ANALYTICS] Client disconnected — cancelling pending tasks")
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+            raise
+
+        # Final summary
+        customers_with_returns = sum(1 for r in rows if r["subsequent_count"] > 0)
+        total_subseq_orders = sum(r["subsequent_count"] for r in rows)
+        total_subseq_amount = sum(float(r["subsequent_amount"]) for r in rows)
+        currency_top = rows[0]["subsequent_currency"] if rows else "USD"
+
+        rows.sort(key=lambda r: r["subsequent_count"], reverse=True)
+
+        yield f"event: complete\ndata: {json.dumps({'summary': {'first_time_customers': total_customers, 'customers_with_returns': customers_with_returns, 'total_subsequent_orders': total_subseq_orders, 'total_subsequent_amount': f'{total_subseq_amount:.2f}', 'currency': currency_top}, 'rows': rows})}\n\n"
+
+    async def generate_safe() -> AsyncGenerator[str, None]:
+        try:
+            async for event in generate():
+                yield event
+        except GeneratorExit:
+            print("[SHOPIFY-ANALYTICS] Stream cancelled")
+            return
+
+    return StreamingResponse(
+        generate_safe(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        },
     )
 
 

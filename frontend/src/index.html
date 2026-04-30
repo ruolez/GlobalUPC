@@ -56,6 +56,9 @@
           <a href="#" class="nav-item" data-page="shopify-sales">
             <span>Shopify Sales</span>
           </a>
+          <a href="#" class="nav-item" data-page="shopify-analytics">
+            <span>Shopify Analytics</span>
+          </a>
           <a href="#" class="nav-item" data-page="sql-audit">
             <span>Orphan UPCs</span>
           </a>
@@ -3569,6 +3572,96 @@
               </table>
             </div>
           </div>
+        </div>
+
+        <div id="shopify-analytics-page" class="page sa-page" style="display: none">
+          <header class="page-header">
+            <h2>Shopify Analytics</h2>
+            <p class="subtitle">Customer cohort and retention analyses across Shopify stores</p>
+          </header>
+
+          <nav class="sa-subnav" role="tablist" aria-label="Shopify Analytics reports">
+            <button type="button" class="sa-subnav-item active" data-sa-tab="first-customer-returns" role="tab" aria-selected="true">
+              First-Time Customer Returns
+            </button>
+          </nav>
+
+          <section class="sa-panel" data-sa-panel="first-customer-returns">
+            <div class="card" style="margin-bottom: 1.5rem">
+              <div class="card-header"><h3>Select Store & Date Range</h3></div>
+              <div style="padding: 1rem 1.5rem 1.5rem">
+                <div class="form-group">
+                  <label for="sa-store">Shopify Store</label>
+                  <select id="sa-store" style="max-width: 360px"></select>
+                </div>
+
+                <div class="form-group" style="margin-top: 1rem">
+                  <label>First-Order Date Range</label>
+                  <div style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
+                    <input type="date" id="sa-start-date" style="max-width: 180px" />
+                    <span style="color: var(--text-secondary)">to</span>
+                    <input type="date" id="sa-end-date" style="max-width: 180px" />
+                  </div>
+                  <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem; flex-wrap: wrap;">
+                    <button type="button" class="btn btn-secondary" data-sa-range="7" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Last 7 Days</button>
+                    <button type="button" class="btn btn-secondary" data-sa-range="30" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Last 30 Days</button>
+                    <button type="button" class="btn btn-secondary" data-sa-range="this-month" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">This Month</button>
+                    <button type="button" class="btn btn-secondary" data-sa-range="last-month" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Last Month</button>
+                  </div>
+                  <small style="color: var(--text-tertiary); font-size: 0.75rem; margin-top: 0.5rem; display: block;">
+                    Filters orders tagged "First order" by their <code>created_at</code>. Subsequent orders are queried from each customer's first-order date through today.
+                  </small>
+                </div>
+
+                <div style="margin-top: 1.25rem; display: flex; gap: 0.5rem;">
+                  <button type="button" class="btn btn-primary" id="sa-run-btn" disabled>Run Report</button>
+                  <button type="button" class="btn btn-secondary" id="sa-cancel-btn" style="display: none;">Cancel</button>
+                </div>
+              </div>
+            </div>
+
+            <div id="sa-progress" style="display: none; margin-bottom: 1.5rem;">
+              <div class="card" style="padding: 1rem 1.5rem">
+                <div id="sa-progress-status" style="font-size: 0.8125rem; color: var(--text-secondary); margin-bottom: 0.75rem;">Connecting...</div>
+                <div style="width: 100%; height: 6px; background: var(--bg-tertiary); border-radius: 3px; overflow: hidden;">
+                  <div id="sa-progress-bar" style="width: 0%; height: 100%; background: var(--accent-primary); border-radius: 3px; transition: width 0.4s ease;"></div>
+                </div>
+              </div>
+            </div>
+
+            <div id="sa-empty" style="display: none; text-align: center; padding: 3rem 1rem; color: var(--text-secondary);">
+              <p>No first-time customers found for the selected store and date range.</p>
+            </div>
+
+            <div id="sa-results" style="display: none;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.5rem;">
+                <div id="sa-summary" style="font-size: 0.8125rem; color: var(--text-secondary);"></div>
+              </div>
+              <div class="table-container">
+                <table class="data-table" id="sa-table">
+                  <thead>
+                    <tr>
+                      <th class="qip-sortable" data-sort="customer_name">Customer <span class="qip-sort-arrow"></span></th>
+                      <th class="qip-sortable" data-sort="customer_email">Email <span class="qip-sort-arrow"></span></th>
+                      <th class="qip-sortable" data-sort="first_order_name">First Order <span class="qip-sort-arrow"></span></th>
+                      <th class="qip-sortable" data-sort="first_order_date">First Date <span class="qip-sort-arrow"></span></th>
+                      <th class="qip-sortable" data-sort="first_order_amount" style="text-align: right;">First $ <span class="qip-sort-arrow"></span></th>
+                      <th class="qip-sortable qip-sort-desc" data-sort="subsequent_count" style="text-align: right;">Subsequent # <span class="qip-sort-arrow"></span></th>
+                      <th class="qip-sortable" data-sort="subsequent_amount" style="text-align: right;">Subsequent $ <span class="qip-sort-arrow"></span></th>
+                    </tr>
+                  </thead>
+                  <tbody id="sa-tbody"></tbody>
+                  <tfoot id="sa-tfoot" style="display: none;">
+                    <tr>
+                      <td colspan="5" style="text-align: right; font-weight: 600;">Totals</td>
+                      <td style="text-align: right; font-weight: 600;" id="sa-total-count"></td>
+                      <td style="text-align: right; font-weight: 600;" id="sa-total-amount"></td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            </div>
+          </section>
         </div>
 
       </main>
