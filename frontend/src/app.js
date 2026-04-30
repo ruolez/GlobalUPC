@@ -11341,6 +11341,50 @@ const SA_NUMERIC_COLUMNS = new Set([
   "subsequent_amount",
 ]);
 
+// Faster than escapeHtml() (which builds a DOM node) — meaningful on
+// streaming renders that touch thousands of cells per pass.
+const SA_ESCAPE_MAP = {
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  '"': "&quot;",
+  "'": "&#39;",
+};
+function saEscape(s) {
+  if (s == null) return "";
+  return String(s).replace(/[&<>"']/g, (c) => SA_ESCAPE_MAP[c]);
+}
+
+// Render coalescer: customer events arrive faster than we can usefully
+// repaint a 10k-row table. Trailing-edge throttle keeps the main thread
+// responsive; forced render flushes pending work (used on `complete`).
+let saRenderTimer = null;
+let saRenderPending = false;
+const SA_RENDER_THROTTLE_MS = 200;
+
+function requestSaRender(force) {
+  if (force) {
+    if (saRenderTimer) clearTimeout(saRenderTimer);
+    saRenderTimer = null;
+    saRenderPending = false;
+    renderShopifyAnalyticsTable();
+    return;
+  }
+  if (saRenderPending) return;
+  saRenderPending = true;
+  saRenderTimer = setTimeout(() => {
+    saRenderTimer = null;
+    saRenderPending = false;
+    renderShopifyAnalyticsTable();
+  }, SA_RENDER_THROTTLE_MS);
+}
+
+function cancelSaRender() {
+  if (saRenderTimer) clearTimeout(saRenderTimer);
+  saRenderTimer = null;
+  saRenderPending = false;
+}
+
 async function loadShopifyAnalyticsPage() {
   if (shopifyAnalyticsState.initialized) {
     return;
@@ -11730,7 +11774,7 @@ async function runFirstCustomerReturnsReport() {
           const pct = 20 + Math.round((completed / Math.max(total, 1)) * 75);
           progressBar.style.width = `${Math.min(pct, 95)}%`;
           progressStatus.textContent = `Processed ${completed} of ${total} customer(s)...`;
-          renderShopifyAnalyticsTable();
+          requestSaRender();
           resultsEl.style.display = "block";
           document.getElementById("sa-kpi-strip")?.removeAttribute("hidden");
           document.getElementById("sa-filter-bar")?.removeAttribute("hidden");
@@ -11742,6 +11786,7 @@ async function runFirstCustomerReturnsReport() {
             shopifyAnalyticsState.rows = data.rows;
           }
           if (shopifyAnalyticsState.rows.length === 0) {
+            cancelSaRender();
             resultsEl.style.display = "none";
             emptyEl.style.display = "block";
             document.getElementById("sa-kpi-strip")?.setAttribute("hidden", "");
@@ -11750,7 +11795,7 @@ async function runFirstCustomerReturnsReport() {
             resultsEl.style.display = "block";
             document.getElementById("sa-kpi-strip")?.removeAttribute("hidden");
             document.getElementById("sa-filter-bar")?.removeAttribute("hidden");
-            renderShopifyAnalyticsTable();
+            requestSaRender(true);
           }
         } else if (eventType === "error") {
           progressStatus.textContent = `Error: ${data.message || "unknown"}`;
@@ -11768,6 +11813,11 @@ async function runFirstCustomerReturnsReport() {
   } finally {
     shopifyAnalyticsState.loading = false;
     shopifyAnalyticsState.abortController = null;
+    cancelSaRender();
+    // Final flush in case streaming was cut short by an error or abort
+    if (shopifyAnalyticsState.rows.length > 0) {
+      renderShopifyAnalyticsTable();
+    }
     runBtn.disabled = false;
     runBtn.textContent = "Run Report";
     cancelBtn.style.display = "none";
@@ -11894,18 +11944,18 @@ function renderShopifyAnalyticsTable() {
           : "";
       return `
         <tr${stagger}>
-          <td>${escapeHtml(r.customer_name || "")}</td>
-          <td>${escapeHtml(r.customer_email || "")}</td>
-          <td>${escapeHtml(r.first_order_name || "")}</td>
-          <td>${escapeHtml(r.first_order_date || "")}</td>
-          <td class="sa-num">${escapeHtml(r.first_order_amount || "0.00")} ${escapeHtml(r.first_order_currency || "")}</td>
+          <td>${saEscape(r.customer_name)}</td>
+          <td>${saEscape(r.customer_email)}</td>
+          <td>${saEscape(r.first_order_name)}</td>
+          <td>${saEscape(r.first_order_date)}</td>
+          <td class="sa-num">${saEscape(r.first_order_amount || "0.00")} ${saEscape(r.first_order_currency)}</td>
           <td class="sa-num">
             <span class="sa-count-cell">
               <span class="sa-count-bar" style="--sa-bar:${pct}%"></span>
               <span class="sa-count-num">${c.toLocaleString()}</span>
             </span>
           </td>
-          <td class="sa-num">${escapeHtml(r.subsequent_amount || "0.00")} ${escapeHtml(r.subsequent_currency || "")}</td>
+          <td class="sa-num">${saEscape(r.subsequent_amount || "0.00")} ${saEscape(r.subsequent_currency)}</td>
         </tr>
       `;
     })
