@@ -198,6 +198,121 @@ async function loadSettings() {
   }
 }
 
+// ===== Settings sub-navigation =====
+
+const SETTINGS_TAB_KEY = "settingsActiveTab";
+const settingsCounts = { stores: 0, exclusionsUpc: 0, exclusionsIt: 0 };
+
+function setSettingsBadge(elId, count) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  if (count > 0) {
+    el.textContent = String(count);
+    el.classList.add("has-value");
+  } else {
+    el.textContent = "";
+    el.classList.remove("has-value");
+  }
+}
+
+function refreshExclusionsCombinedBadge() {
+  const total = settingsCounts.exclusionsUpc + settingsCounts.exclusionsIt;
+  setSettingsBadge("settings-badge-exclusions", total);
+}
+
+function activateSettingsTab(tabId) {
+  if (!tabId) return;
+  const items = document.querySelectorAll(".settings-subnav-item");
+  if (items.length === 0) return;
+  const valid = Array.from(items).some(
+    (b) => b.dataset.settingsTab === tabId,
+  );
+  const target = valid ? tabId : "stores";
+  items.forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.settingsTab === target);
+  });
+  document.querySelectorAll(".settings-panel").forEach((panel) => {
+    panel.style.display =
+      panel.dataset.settingsPanel === target ? "" : "none";
+  });
+  try {
+    localStorage.setItem(SETTINGS_TAB_KEY, target);
+  } catch (e) {
+    /* ignore quota / private mode errors */
+  }
+}
+
+function activateExclusionTab(tabId) {
+  const buttons = document.querySelectorAll(".tab-pill[data-exclusion-tab]");
+  if (buttons.length === 0) return;
+  buttons.forEach((b) =>
+    b.classList.toggle("active", b.dataset.exclusionTab === tabId),
+  );
+  document
+    .querySelectorAll(".tab-pill-panel[data-exclusion-panel]")
+    .forEach((p) => {
+      p.style.display = p.dataset.exclusionPanel === tabId ? "" : "none";
+    });
+}
+
+function bindStoresSearch() {
+  const input = document.getElementById("stores-search");
+  if (!input || input.dataset.bound === "1") return;
+  input.dataset.bound = "1";
+
+  const applyFilter = () => {
+    const q = input.value.trim().toLowerCase();
+    const cards = document.querySelectorAll("#stores-list .store-card");
+    let visible = 0;
+    cards.forEach((card) => {
+      const text = card.textContent.toLowerCase();
+      const match = q === "" || text.includes(q);
+      card.style.display = match ? "" : "none";
+      if (match) visible += 1;
+    });
+    const emptyMsg = document.getElementById("stores-empty-search");
+    if (emptyMsg) {
+      emptyMsg.style.display =
+        q !== "" && visible === 0 && cards.length > 0 ? "block" : "none";
+    }
+  };
+
+  input.addEventListener("input", applyFilter);
+}
+
+function initSettingsTabs() {
+  const subnav = document.querySelector(".settings-subnav");
+  if (subnav && subnav.dataset.bound !== "1") {
+    subnav.dataset.bound = "1";
+    subnav.addEventListener("click", (e) => {
+      const btn = e.target.closest(".settings-subnav-item");
+      if (!btn) return;
+      activateSettingsTab(btn.dataset.settingsTab);
+    });
+  }
+
+  const pills = document.querySelector(".tab-pills");
+  if (pills && pills.dataset.bound !== "1") {
+    pills.dataset.bound = "1";
+    pills.addEventListener("click", (e) => {
+      const btn = e.target.closest(".tab-pill[data-exclusion-tab]");
+      if (!btn) return;
+      activateExclusionTab(btn.dataset.exclusionTab);
+    });
+  }
+
+  bindStoresSearch();
+
+  let initial = "stores";
+  try {
+    const saved = localStorage.getItem(SETTINGS_TAB_KEY);
+    if (saved) initial = saved;
+  } catch (e) {
+    /* ignore */
+  }
+  activateSettingsTab(initial);
+}
+
 // Store Mirrors Functions
 async function loadStoreMirrors() {
   const loadingEl = document.getElementById("mirrors-loading");
@@ -406,6 +521,10 @@ async function loadExclusions(storeId = null) {
 
     loadingEl.style.display = "none";
 
+    settingsCounts.exclusionsUpc = data.total || 0;
+    setSettingsBadge("badge-exclusion-upc", data.total || 0);
+    refreshExclusionsCombinedBadge();
+
     if (data.total === 0) {
       emptyEl.style.display = "block";
       return;
@@ -542,6 +661,10 @@ async function loadItemTrackerExclusions() {
     const data = await apiRequest("/item-tracker/exclusions");
 
     loadingEl.style.display = "none";
+
+    settingsCounts.exclusionsIt = data.total || 0;
+    setSettingsBadge("badge-exclusion-it", data.total || 0);
+    refreshExclusionsCombinedBadge();
 
     if (data.total === 0) {
       emptyEl.style.display = "block";
@@ -812,6 +935,18 @@ async function loadStores() {
   const stores = await apiRequest("/stores");
   const storesList = document.getElementById("stores-list");
 
+  settingsCounts.stores = stores.length;
+  setSettingsBadge("settings-badge-stores", stores.length);
+  const subtitle = document.getElementById("stores-subtitle");
+  if (subtitle) {
+    if (stores.length === 0) {
+      subtitle.textContent = "MSSQL databases and Shopify storefronts";
+    } else {
+      const active = stores.filter((s) => s.is_active).length;
+      subtitle.textContent = `${stores.length} configured · ${active} active`;
+    }
+  }
+
   if (stores.length === 0) {
     storesList.innerHTML = `
             <div class="empty-state">
@@ -833,6 +968,12 @@ async function loadStores() {
   storesList.innerHTML = stores
     .map((store, index) => createStoreCard(store, index + 1))
     .join("");
+
+  // Re-apply any active search filter after re-render
+  const searchInput = document.getElementById("stores-search");
+  if (searchInput && searchInput.value) {
+    searchInput.dispatchEvent(new Event("input"));
+  }
 
   // Attach event listeners
   stores.forEach((store) => {
@@ -9837,6 +9978,8 @@ async function deleteSalesExclusion(id) {
 document.addEventListener("DOMContentLoaded", () => {
   const savedTheme = localStorage.getItem("selectedTheme") || "author-light";
   setTheme(savedTheme);
+
+  initSettingsTabs();
 
   const params = new URLSearchParams(window.location.search);
   const trackerUpc = params.get("tracker");

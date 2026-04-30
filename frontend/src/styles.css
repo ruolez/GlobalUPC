@@ -488,6 +488,423 @@ body {
   gap: 0.75rem;
 }
 
+/* ─────────────────────────────────────────────────────────
+   Settings: tabbed shell (sub-nav rail + panels)
+   ───────────────────────────────────────────────────────── */
+.settings-shell {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  gap: 2rem;
+  align-items: start;
+}
+
+.settings-subnav {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.75rem 0.5rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+}
+
+.settings-subnav-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.625rem 0.75rem;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 0.875rem;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  transition: var(--transition);
+  width: 100%;
+}
+
+.settings-subnav-item:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.settings-subnav-item.active {
+  background: color-mix(in srgb, var(--accent-primary) 12%, var(--bg-secondary));
+  color: var(--accent-primary);
+  border-color: color-mix(in srgb, var(--accent-primary) 35%, transparent);
+}
+
+.settings-subnav-item svg {
+  flex-shrink: 0;
+}
+
+.settings-subnav-label {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.settings-subnav-badge {
+  display: none;
+  min-width: 1.5rem;
+  padding: 0 0.4rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1.25rem;
+  text-align: center;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  border-radius: 999px;
+}
+
+.settings-subnav-badge.has-value {
+  display: inline-block;
+}
+
+.settings-subnav-item.active .settings-subnav-badge {
+  background: color-mix(in srgb, var(--accent-primary) 22%, var(--bg-secondary));
+  color: var(--accent-primary);
+}
+
+/* Panels */
+.settings-panels {
+  min-width: 0;
+  max-width: 1100px;
+}
+
+.settings-panel {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  padding: 1.75rem;
+}
+
+.settings-panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+  padding-bottom: 1.25rem;
+  border-bottom: 1px solid var(--border-color);
+  flex-wrap: wrap;
+}
+
+.settings-panel-heading h3 {
+  margin: 0 0 0.25rem;
+  font-size: 1.25rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.settings-panel-subtitle {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  max-width: 56ch;
+}
+
+.settings-panel-help {
+  margin: 0 0 1rem;
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  max-width: 64ch;
+}
+
+.settings-input-help {
+  display: block;
+  margin-top: 0.5rem;
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+}
+
+.settings-subsection {
+  margin-top: 1.75rem;
+}
+
+.settings-subsection:first-of-type {
+  margin-top: 0;
+}
+
+.settings-subsection-title {
+  margin: 0 0 1rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: -0.005em;
+}
+
+.settings-empty-state {
+  text-align: center;
+  padding: 2rem 1rem;
+  color: var(--text-tertiary);
+  background: color-mix(in srgb, var(--bg-tertiary) 60%, var(--bg-secondary));
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius-md);
+}
+
+.settings-empty-state p {
+  margin: 0;
+  font-size: 0.875rem;
+}
+
+.settings-empty-state-hint {
+  margin-top: 0.5rem !important;
+  font-size: 0.75rem !important;
+}
+
+/* Stores panel */
+.stores-search-row {
+  position: relative;
+  margin-bottom: 1.25rem;
+}
+
+.stores-search-icon {
+  position: absolute;
+  top: 50%;
+  left: 0.875rem;
+  transform: translateY(-50%);
+  color: var(--text-tertiary);
+  pointer-events: none;
+}
+
+.stores-search {
+  width: 100%;
+  padding: 0.625rem 0.875rem 0.625rem 2.5rem;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  transition: var(--transition);
+}
+
+.stores-search:focus {
+  outline: none;
+  border-color: var(--accent-primary);
+  background: var(--bg-primary);
+}
+
+.stores-search::placeholder {
+  color: var(--text-tertiary);
+}
+
+/* Role cards (Roles & Mirrors panel, Backup panel) */
+.role-card {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 1.25rem;
+  margin-bottom: 1rem;
+  transition: var(--transition);
+}
+
+.role-card:hover {
+  border-color: color-mix(in srgb, var(--accent-primary) 40%, var(--border-color));
+}
+
+.role-card:last-child {
+  margin-bottom: 0;
+}
+
+.role-card-wide {
+  /* For cards containing tables / multi-row content */
+}
+
+.role-card-head {
+  display: flex;
+  gap: 0.875rem;
+  align-items: flex-start;
+  margin-bottom: 1rem;
+}
+
+.role-card-icon {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--accent-primary) 12%, var(--bg-tertiary));
+  color: var(--accent-primary);
+}
+
+.role-card-title-block {
+  flex: 1;
+  min-width: 0;
+}
+
+.role-card-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 0.25rem;
+}
+
+.role-card-help {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  max-width: 64ch;
+}
+
+.role-card-help code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8125rem;
+  padding: 0.05rem 0.3rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+}
+
+.role-card-control {
+  display: flex;
+  align-items: stretch;
+  gap: 0.5rem;
+  max-width: 540px;
+}
+
+.role-card-control select,
+.role-card-control input[type="text"] {
+  flex: 1;
+  min-width: 0;
+}
+
+.role-card-control-wide {
+  max-width: none;
+  justify-content: flex-end;
+}
+
+/* Store mirrors add-row (lives inside a wide role-card) */
+.mirror-add-row {
+  display: flex;
+  gap: 0.75rem;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  padding: 1rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  margin-bottom: 0.5rem;
+}
+
+.mirror-arrow {
+  padding-bottom: 0.5rem;
+  color: var(--text-tertiary);
+  font-size: 1.25rem;
+  user-select: none;
+}
+
+#add-mirror-btn {
+  font-size: 0.8125rem;
+  padding: 0.5rem 1rem;
+  white-space: nowrap;
+}
+
+/* Pill tabs (Exclusions sub-tabs) */
+.tab-pills {
+  display: flex;
+  gap: 0.375rem;
+  padding: 0.25rem;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  margin-bottom: 1.25rem;
+  flex-wrap: wrap;
+}
+
+.tab-pill {
+  flex: 1 1 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.875rem;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: var(--transition);
+  white-space: nowrap;
+}
+
+.tab-pill:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.tab-pill.active {
+  background: var(--bg-primary);
+  color: var(--accent-primary);
+  box-shadow: 0 1px 2px color-mix(in srgb, black 10%, transparent);
+}
+
+.tab-pill-badge {
+  display: none;
+  min-width: 1.25rem;
+  padding: 0 0.375rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1.125rem;
+  text-align: center;
+  background: var(--bg-secondary);
+  color: var(--text-tertiary);
+  border-radius: 999px;
+}
+
+.tab-pill-badge.has-value {
+  display: inline-block;
+}
+
+.tab-pill.active .tab-pill-badge {
+  background: color-mix(in srgb, var(--accent-primary) 18%, var(--bg-primary));
+  color: var(--accent-primary);
+}
+
+.tab-pill-panel {
+  /* Content panel below pill tabs - inherits panel padding */
+}
+
+/* Mobile / narrow viewport: collapse sub-nav rail to top strip */
+@media (max-width: 900px) {
+  .settings-shell {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1rem;
+  }
+  .settings-subnav {
+    position: static;
+    flex-direction: row;
+    overflow-x: auto;
+    padding: 0.5rem;
+  }
+  .settings-subnav-item {
+    flex: 0 0 auto;
+    width: auto;
+  }
+  .settings-panel {
+    padding: 1.25rem;
+  }
+  .settings-panel-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .role-card-control {
+    flex-wrap: wrap;
+  }
+}
+
 .btn {
   display: inline-flex;
   align-items: center;

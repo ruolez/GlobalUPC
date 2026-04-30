@@ -403,641 +403,714 @@
             </p>
           </header>
 
-          <!-- Stores Section -->
-          <section class="settings-section">
-            <div class="section-header">
-              <h3>Store Connections</h3>
-              <div class="button-group">
-                <button class="btn btn-primary" id="add-mssql-btn">
-                  <svg
-                    width="16"
-                    height="16"
-                    viewBox="0 0 16 16"
-                    fill="none"
-                    xmlns="http://www.w3.org/2000/svg"
-                  >
-                    <path
-                      d="M8 3V13M3 8H13"
-                      stroke="currentColor"
-                      stroke-width="2"
-                      stroke-linecap="round"
-                    />
-                  </svg>
-                  Add MSSQL Database
-                </button>
-                <button class="btn btn-primary" id="add-shopify-btn">
-                  <svg
-                    width="16"
-                    height="16"
-                    viewBox="0 0 16 16"
-                    fill="none"
-                    xmlns="http://www.w3.org/2000/svg"
-                  >
-                    <path
-                      d="M8 3V13M3 8H13"
-                      stroke="currentColor"
-                      stroke-width="2"
-                      stroke-linecap="round"
-                    />
-                  </svg>
-                  Add Shopify Store
-                </button>
-                <button class="btn btn-secondary" id="export-config-btn">
-                  <svg
-                    width="16"
-                    height="16"
-                    viewBox="0 0 16 16"
-                    fill="none"
-                    xmlns="http://www.w3.org/2000/svg"
-                  >
-                    <path
-                      d="M8 2V10M8 10L5 7M8 10L11 7"
-                      stroke="currentColor"
-                      stroke-width="2"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                    />
-                    <path
-                      d="M2 12V13C2 13.5523 2.44772 14 3 14H13C13.5523 14 14 13.5523 14 13V12"
-                      stroke="currentColor"
-                      stroke-width="2"
-                      stroke-linecap="round"
-                    />
-                  </svg>
-                  Export
-                </button>
-                <button class="btn btn-secondary" id="import-config-btn">
-                  <svg
-                    width="16"
-                    height="16"
-                    viewBox="0 0 16 16"
-                    fill="none"
-                    xmlns="http://www.w3.org/2000/svg"
-                  >
-                    <path
-                      d="M8 10V2M8 2L5 5M8 2L11 5"
-                      stroke="currentColor"
-                      stroke-width="2"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                    />
-                    <path
-                      d="M2 12V13C2 13.5523 2.44772 14 3 14H13C13.5523 14 14 13.5523 14 13V12"
-                      stroke="currentColor"
-                      stroke-width="2"
-                      stroke-linecap="round"
-                    />
-                  </svg>
-                  Import
-                </button>
-              </div>
-            </div>
-            <div id="stores-list" class="stores-list"></div>
-            <!-- Hidden file input for import -->
-            <input
-              type="file"
-              id="import-config-file"
-              accept=".json"
-              style="display: none"
-            />
-          </section>
-
-          <!-- User Preferences Section -->
-          <section class="settings-section">
-            <div class="section-header">
-              <h3>User Preferences</h3>
-            </div>
-            <div class="form-group">
-              <label for="default-landing-page">Default Landing Page</label>
-              <select id="default-landing-page" style="max-width: 300px">
-                <option value="dashboard">Dashboard</option>
-                <option value="update-upc">Update UPC</option>
-                <option value="sql-audit">Orphan UPCs</option>
-                <option value="item-tracker">Item Tracker</option>
-                <option value="sales">Sales</option>
-                <option value="history">History</option>
-                <option value="settings">Settings</option>
-              </select>
-              <small
-                style="
-                  color: var(--text-tertiary);
-                  font-size: 0.75rem;
-                  margin-top: 0.5rem;
-                  display: block;
-                "
-              >
-                Choose which page loads when you visit the application. This
-                setting is saved locally on your device.
-              </small>
-            </div>
-          </section>
-
-          <!-- Theme Selector Section -->
-          <section class="settings-section">
-            <div class="section-header">
-              <h3>Color Theme</h3>
-            </div>
-            <div class="theme-selector">
-              <div class="theme-option" data-theme-name="current">
-                <div class="theme-preview">
-                  <div class="theme-colors">
-                    <span style="background: #0a0a0f"></span>
-                    <span style="background: #121218"></span>
-                    <span style="background: #1a1a24"></span>
-                    <span style="background: #6366f1"></span>
-                  </div>
-                </div>
-                <div class="theme-info">
-                  <div class="theme-name">Current (Purple Accent)</div>
-                  <div class="theme-description">
-                    Original rainbow gradient theme
-                  </div>
-                </div>
-              </div>
-
-              <div class="theme-option" data-theme-name="monochrome">
-                <div class="theme-preview">
-                  <div class="theme-colors">
-                    <span style="background: #0d0d0d"></span>
-                    <span style="background: #171717"></span>
-                    <span style="background: #1f1f1f"></span>
-                    <span style="background: #e5e5e5"></span>
-                  </div>
-                </div>
-                <div class="theme-info">
-                  <div class="theme-name">Monochrome Slate</div>
-                  <div class="theme-description">
-                    Pure grayscale, corporate feel
-                  </div>
-                </div>
-              </div>
-
-              <div class="theme-option" data-theme-name="charcoal">
-                <div class="theme-preview">
-                  <div class="theme-colors">
-                    <span style="background: #0f0e0e"></span>
-                    <span style="background: #1a1918"></span>
-                    <span style="background: #242321"></span>
-                    <span style="background: #d4d2cf"></span>
-                  </div>
-                </div>
-                <div class="theme-info">
-                  <div class="theme-name">Charcoal Gray</div>
-                  <div class="theme-description">
-                    Warm undertones, sophisticated
-                  </div>
-                </div>
-              </div>
-
-              <div class="theme-option" data-theme-name="steel">
-                <div class="theme-preview">
-                  <div class="theme-colors">
-                    <span style="background: #0e0f11"></span>
-                    <span style="background: #16181b"></span>
-                    <span style="background: #1e2125"></span>
-                    <span style="background: #cbd5e0"></span>
-                  </div>
-                </div>
-                <div class="theme-info">
-                  <div class="theme-name">Steel Gray</div>
-                  <div class="theme-description">
-                    Cool blue undertones, technical
-                  </div>
-                </div>
-              </div>
-
-              <div class="theme-option" data-theme-name="minimal">
-                <div class="theme-preview">
-                  <div class="theme-colors">
-                    <span style="background: #121214"></span>
-                    <span style="background: #1a1a1d"></span>
-                    <span style="background: #222226"></span>
-                    <span style="background: #c8c8cc"></span>
-                  </div>
-                </div>
-                <div class="theme-info">
-                  <div class="theme-name">Minimal Contrast</div>
-                  <div class="theme-description">
-                    Low contrast, easy on eyes
-                  </div>
-                </div>
-              </div>
-
-              <div class="theme-option" data-theme-name="graphite">
-                <div class="theme-preview">
-                  <div class="theme-colors">
-                    <span style="background: #000000"></span>
-                    <span style="background: #0a0a0a"></span>
-                    <span style="background: #141414"></span>
-                    <span style="background: #f5f5f5"></span>
-                  </div>
-                </div>
-                <div class="theme-info">
-                  <div class="theme-name">Dark Graphite</div>
-                  <div class="theme-description">
-                    True black, maximum contrast
-                  </div>
-                </div>
-              </div>
-
-              <div class="theme-option" data-theme-name="nord">
-                <div class="theme-preview">
-                  <div class="theme-colors">
-                    <span style="background: #2e3440"></span>
-                    <span style="background: #3b4252"></span>
-                    <span style="background: #434c5e"></span>
-                    <span style="background: #88c0d0"></span>
-                  </div>
-                </div>
-                <div class="theme-info">
-                  <div class="theme-name">Nord Aurora</div>
-                  <div class="theme-description">
-                    Cool Arctic palette, gentle on eyes
-                  </div>
-                </div>
-              </div>
-
-              <div class="theme-option" data-theme-name="author-light">
-                <div class="theme-preview">
-                  <div class="theme-colors">
-                    <span style="background: #faf9f7"></span>
-                    <span style="background: #f5f4f1"></span>
-                    <span style="background: #ffffff"></span>
-                    <span style="background: #4a7c59"></span>
-                  </div>
-                </div>
-                <div class="theme-info">
-                  <div class="theme-name">Author's Light</div>
-                  <div class="theme-description">
-                    Professional light theme for easy readability
-                  </div>
-                </div>
-              </div>
-            </div>
-          </section>
-
-          <!-- UPC Exclusions Section -->
-          <section class="settings-section">
-            <div class="section-header">
-              <h3>UPC Exclusions</h3>
-            </div>
-            <p
-              style="
-                margin: 0 0 1rem;
-                font-size: 0.875rem;
-                color: var(--text-secondary);
-              "
-            >
-              Manage UPCs excluded from orphaned UPC audits. Excluded UPCs will
-              not appear in future audit results.
-            </p>
-
-            <!-- Filter by Store -->
-            <div class="form-group">
-              <label for="exclusions-store-filter">Filter by Store</label>
-              <select id="exclusions-store-filter" style="max-width: 300px">
-                <option value="">All Stores</option>
-              </select>
-            </div>
-
-            <!-- Loading State -->
-            <div
-              id="exclusions-loading"
-              class="test-status"
-              style="display: none; margin-top: 1rem"
-            >
-              <div class="loading">Loading exclusions...</div>
-            </div>
-
-            <!-- Empty State -->
-            <div
-              id="exclusions-empty"
-              style="
-                display: none;
-                text-align: center;
-                padding: 2rem 1rem;
-                color: var(--text-tertiary);
-                margin-top: 1rem;
-                background: var(--bg-secondary);
-                border-radius: var(--radius-md);
-              "
-            >
-              <p style="margin: 0; font-size: 0.875rem">
-                No UPC exclusions found
-              </p>
-              <p style="margin: 0.5rem 0 0; font-size: 0.75rem">
-                Excluded UPCs will appear here after you exclude them from audit
-                results
-              </p>
-            </div>
-
-            <!-- Exclusions Table -->
-            <div
-              id="exclusions-results"
-              style="display: none; margin-top: 1rem"
-            >
-              <div style="margin-bottom: 1rem">
-                <p
-                  style="
-                    margin: 0;
-                    font-size: 0.875rem;
-                    color: var(--text-secondary);
-                  "
-                >
-                  <strong id="exclusions-count">0</strong> excluded UPCs
-                </p>
-              </div>
-              <div style="overflow-x: auto">
-                <table class="data-table">
-                  <thead>
-                    <tr>
-                      <th style="width: 25%">Store Name</th>
-                      <th style="width: 20%">UPC</th>
-                      <th style="width: 20%">Excluded Date</th>
-                      <th style="width: 25%">Notes</th>
-                      <th style="width: 10%">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody id="exclusions-table-body">
-                    <!-- Exclusions will be populated here by JavaScript -->
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </section>
-
-          <!-- Store Mirrors Section -->
-          <section class="settings-section">
-            <div class="section-header">
-              <h3>Store Mirrors</h3>
-            </div>
-            <p
-              style="
-                margin: 0 0 1rem;
-                font-size: 0.875rem;
-                color: var(--text-secondary);
-              "
-            >
-              Configure mirror relationships between stores. When a source
-              store is updated during price updates, its mirrors
-              automatically receive the same values.
-            </p>
-
-            <!-- Add Mirror Form -->
-            <div
-              style="
-                display: flex;
-                gap: 0.75rem;
-                align-items: flex-end;
-                flex-wrap: wrap;
-                margin-bottom: 1rem;
-              "
-            >
-              <div class="form-group" style="margin: 0; flex: 1; min-width: 160px">
-                <label for="mirror-source-store" style="font-size: 0.75rem">Source Store</label>
-                <select id="mirror-source-store">
-                  <option value="">Select source...</option>
-                </select>
-              </div>
-              <div style="padding-bottom: 0.5rem; color: var(--text-tertiary); font-size: 1.25rem">&rarr;</div>
-              <div class="form-group" style="margin: 0; flex: 1; min-width: 160px">
-                <label for="mirror-mirror-store" style="font-size: 0.75rem">Mirror Store</label>
-                <select id="mirror-mirror-store">
-                  <option value="">Select mirror...</option>
-                </select>
-              </div>
+          <div class="settings-shell">
+            <!-- Sub-navigation rail -->
+            <nav class="settings-subnav" aria-label="Settings sections">
               <button
                 type="button"
-                class="btn btn-primary"
-                id="add-mirror-btn"
-                style="font-size: 0.8125rem; padding: 0.5rem 1rem; white-space: nowrap"
-                onclick="addStoreMirror()"
+                class="settings-subnav-item active"
+                data-settings-tab="stores"
               >
-                Add Mirror
+                <svg width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <ellipse cx="9" cy="4" rx="6" ry="2" stroke="currentColor" stroke-width="1.6"/>
+                  <path d="M3 4v5c0 1.1 2.69 2 6 2s6-.9 6-2V4" stroke="currentColor" stroke-width="1.6"/>
+                  <path d="M3 9v5c0 1.1 2.69 2 6 2s6-.9 6-2V9" stroke="currentColor" stroke-width="1.6"/>
+                </svg>
+                <span class="settings-subnav-label">Stores</span>
+                <span class="settings-subnav-badge" id="settings-badge-stores"></span>
               </button>
-            </div>
-
-            <!-- Loading State -->
-            <div
-              id="mirrors-loading"
-              class="test-status"
-              style="display: none; margin-top: 1rem"
-            >
-              <div class="loading">Loading mirrors...</div>
-            </div>
-
-            <!-- Empty State -->
-            <div
-              id="mirrors-empty"
-              style="
-                display: none;
-                text-align: center;
-                padding: 2rem 1rem;
-                color: var(--text-tertiary);
-                margin-top: 1rem;
-                background: var(--bg-secondary);
-                border-radius: var(--radius-md);
-              "
-            >
-              <p style="margin: 0; font-size: 0.875rem">
-                No store mirrors configured
-              </p>
-              <p style="margin: 0.5rem 0 0; font-size: 0.75rem">
-                Add a mirror to automatically propagate price updates
-                between stores
-              </p>
-            </div>
-
-            <!-- Mirrors Table -->
-            <div
-              id="mirrors-results"
-              style="display: none; margin-top: 1rem"
-            >
-              <div style="margin-bottom: 1rem">
-                <p
-                  style="
-                    margin: 0;
-                    font-size: 0.875rem;
-                    color: var(--text-secondary);
-                  "
-                >
-                  <strong id="mirrors-count">0</strong> mirror(s) configured
-                </p>
-              </div>
-              <div style="overflow-x: auto">
-                <table class="data-table">
-                  <thead>
-                    <tr>
-                      <th style="width: 30%">Source Store</th>
-                      <th style="width: 10%"></th>
-                      <th style="width: 30%">Mirror Store</th>
-                      <th style="width: 20%">Created</th>
-                      <th style="width: 10%">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody id="mirrors-table-body">
-                    <!-- Mirrors will be populated here by JavaScript -->
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </section>
-
-          <!-- Shopify Sales Settings Section -->
-          <section class="settings-section">
-            <div class="section-header">
-              <h3>Shopify Sales</h3>
-            </div>
-            <p
-              style="
-                margin: 0 0 1rem;
-                font-size: 0.875rem;
-                color: var(--text-secondary);
-              "
-            >
-              Configure exclusions for Shopify Sales reports.
-            </p>
-            <div class="form-group">
-              <label for="shopify-sales-sku-prefixes"
-                >Exclude SKUs Starting With</label
+              <button
+                type="button"
+                class="settings-subnav-item"
+                data-settings-tab="roles"
               >
-              <div style="display: flex; gap: 0.5rem; max-width: 500px">
+                <svg width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M7.2 10.8 5 13a3 3 0 1 1-4.2-4.2L3 6.6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                  <path d="M10.8 7.2 13 5a3 3 0 1 1 4.2 4.2L15 11.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                  <path d="M6.5 11.5 11.5 6.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                </svg>
+                <span class="settings-subnav-label">Roles &amp; Mirrors</span>
+              </button>
+              <button
+                type="button"
+                class="settings-subnav-item"
+                data-settings-tab="exclusions"
+              >
+                <svg width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M2 3h14l-5.5 7v5L7.5 13.5V10z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+                </svg>
+                <span class="settings-subnav-label">Exclusions</span>
+                <span class="settings-subnav-badge" id="settings-badge-exclusions"></span>
+              </button>
+              <button
+                type="button"
+                class="settings-subnav-item"
+                data-settings-tab="appearance"
+              >
+                <svg width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M9 2a7 7 0 1 0 0 14c.83 0 1.5-.67 1.5-1.5 0-.4-.15-.76-.4-1.03-.24-.27-.39-.62-.39-1.02 0-.83.67-1.5 1.5-1.5h1.79A3 3 0 0 0 16 8c0-3.31-3.13-6-7-6z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+                  <circle cx="5.5" cy="7.5" r=".9" fill="currentColor"/>
+                  <circle cx="9" cy="5" r=".9" fill="currentColor"/>
+                  <circle cx="12.5" cy="7.5" r=".9" fill="currentColor"/>
+                </svg>
+                <span class="settings-subnav-label">Appearance</span>
+              </button>
+              <button
+                type="button"
+                class="settings-subnav-item"
+                data-settings-tab="backup"
+              >
+                <svg width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M9 2v9m0 0L6 8m3 3 3-3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+                  <path d="M3 12v2a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2v-2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                </svg>
+                <span class="settings-subnav-label">Backup</span>
+              </button>
+            </nav>
+
+            <!-- Panels -->
+            <div class="settings-panels">
+
+              <!-- ──────────── Stores Panel ──────────── -->
+              <section
+                class="settings-panel"
+                data-settings-panel="stores"
+              >
+                <header class="settings-panel-header">
+                  <div class="settings-panel-heading">
+                    <h3>Stores</h3>
+                    <p class="settings-panel-subtitle" id="stores-subtitle">
+                      MSSQL databases and Shopify storefronts
+                    </p>
+                  </div>
+                  <div class="button-group">
+                    <button class="btn btn-primary" id="add-mssql-btn">
+                      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M8 3V13M3 8H13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                      </svg>
+                      MSSQL Database
+                    </button>
+                    <button class="btn btn-primary" id="add-shopify-btn">
+                      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M8 3V13M3 8H13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                      </svg>
+                      Shopify Store
+                    </button>
+                  </div>
+                </header>
+
+                <div class="stores-search-row">
+                  <svg class="stores-search-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                    <circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.6"/>
+                    <path d="m11 11 3 3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                  </svg>
+                  <input
+                    type="search"
+                    id="stores-search"
+                    class="stores-search"
+                    placeholder="Search by name, host, or domain…"
+                    autocomplete="off"
+                  />
+                </div>
+
+                <div id="stores-list" class="stores-list"></div>
+                <div
+                  id="stores-empty-search"
+                  class="settings-empty-state"
+                  style="display: none"
+                >
+                  <p>No stores match that search.</p>
+                </div>
+
+                <!-- Hidden file input for import (used from Backup panel) -->
                 <input
-                  type="text"
-                  id="shopify-sales-sku-prefixes"
-                  placeholder="e.g. SHIP, GC-, INTERNAL"
-                  style="flex: 1"
+                  type="file"
+                  id="import-config-file"
+                  accept=".json"
+                  style="display: none"
                 />
-                <button
-                  type="button"
-                  class="btn btn-primary"
-                  id="shopify-sales-sku-prefixes-save"
-                >
-                  Save
-                </button>
-              </div>
-              <small
-                style="
-                  color: var(--text-tertiary);
-                  font-size: 0.75rem;
-                  margin-top: 0.5rem;
-                  display: block;
-                "
+              </section>
+
+              <!-- ──────────── Roles &amp; Mirrors Panel ──────────── -->
+              <section
+                class="settings-panel"
+                data-settings-panel="roles"
+                style="display: none"
               >
-                Comma-separated prefixes. Line items with SKUs matching any
-                prefix will be excluded from sales reports. Case-insensitive.
-              </small>
-            </div>
-            <div class="form-group" style="margin-top: 1.25rem">
-              <label for="shopify-sales-s2s-store">Cost Lookup Store (S2S)</label>
-              <div style="display: flex; gap: 0.5rem; max-width: 500px">
-                <select id="shopify-sales-s2s-store" style="flex: 1">
-                  <option value="">— None —</option>
-                </select>
-                <button type="button" class="btn btn-primary" id="shopify-sales-s2s-store-save">Save</button>
-              </div>
-              <small style="color: var(--text-tertiary); font-size: 0.75rem; margin-top: 0.5rem; display: block;">
-                Select an MSSQL store to look up product cost (UnitPriceC) by barcode. Costs appear in the "Cost" column.
-              </small>
-            </div>
-            <div class="form-group" style="margin-top: 1.25rem">
-              <label for="qip-admin-store">In Progress &mdash; Admin DB Store</label>
-              <div style="display: flex; gap: 0.5rem; max-width: 500px">
-                <select id="qip-admin-store" style="flex: 1">
-                  <option value="">— None —</option>
-                </select>
-                <button type="button" class="btn btn-primary" id="qip-admin-store-save">Save</button>
-              </div>
-              <small style="color: var(--text-tertiary); font-size: 0.75rem; margin-top: 0.5rem; display: block;">
-                MSSQL store hosting the centralized DB_ADMIN database (containing
-                <code>QuotationsInProgress</code> and <code>QuotationsStatus</code>).
-                Required for the &quot;In Progress&quot; page.
-              </small>
-            </div>
-          </section>
+                <header class="settings-panel-header">
+                  <div class="settings-panel-heading">
+                    <h3>Roles &amp; Mirrors</h3>
+                    <p class="settings-panel-subtitle">
+                      Choose which store plays which role, and configure
+                      cross-store price mirroring.
+                    </p>
+                  </div>
+                </header>
 
-          <!-- Item Tracker Exclusions Section -->
-          <section class="settings-section">
-            <div class="section-header">
-              <h3>Item Tracker Exclusions</h3>
-            </div>
-            <p
-              style="
-                margin: 0 0 1rem;
-                font-size: 0.875rem;
-                color: var(--text-secondary);
-              "
-            >
-              Manage excluded customers/suppliers from Item Tracker results.
-              Excluded business names will not appear in future searches.
-            </p>
+                <!-- Admin DB Store role -->
+                <div class="role-card">
+                  <div class="role-card-head">
+                    <span class="role-card-icon" aria-hidden="true">
+                      <svg width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <ellipse cx="9" cy="4" rx="6" ry="2" stroke="currentColor" stroke-width="1.6"/>
+                        <path d="M3 4v10c0 1.1 2.69 2 6 2s6-.9 6-2V4" stroke="currentColor" stroke-width="1.6"/>
+                      </svg>
+                    </span>
+                    <div class="role-card-title-block">
+                      <div class="role-card-title">In Progress — Admin Database</div>
+                      <p class="role-card-help">
+                        MSSQL store hosting the centralized DB_ADMIN database
+                        (<code>QuotationsInProgress</code> + <code>QuotationsStatus</code>).
+                        Required for the In Progress page.
+                      </p>
+                    </div>
+                  </div>
+                  <div class="role-card-control">
+                    <select id="qip-admin-store">
+                      <option value="">— None —</option>
+                    </select>
+                    <button type="button" class="btn btn-primary" id="qip-admin-store-save">Save</button>
+                  </div>
+                </div>
 
-            <!-- Loading State -->
-            <div
-              id="item-tracker-exclusions-loading"
-              class="test-status"
-              style="display: none; margin-top: 1rem"
-            >
-              <div class="loading">Loading exclusions...</div>
-            </div>
+                <!-- Cost Lookup S2S Store role -->
+                <div class="role-card">
+                  <div class="role-card-head">
+                    <span class="role-card-icon" aria-hidden="true">
+                      <svg width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <circle cx="9" cy="9" r="6.5" stroke="currentColor" stroke-width="1.6"/>
+                        <path d="M9 5v8M11.5 7H8.25A1.25 1.25 0 0 0 7 8.25v0A1.25 1.25 0 0 0 8.25 9.5h1.5A1.25 1.25 0 0 1 11 10.75v0A1.25 1.25 0 0 1 9.75 12H6.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                      </svg>
+                    </span>
+                    <div class="role-card-title-block">
+                      <div class="role-card-title">Cost Lookup Store (S2S)</div>
+                      <p class="role-card-help">
+                        MSSQL store used to look up product cost
+                        (<code>UnitPriceC</code> / <code>UnitCost</code>) by barcode.
+                        Powers cost columns in Shopify Sales and the In&nbsp;Progress price column.
+                      </p>
+                    </div>
+                  </div>
+                  <div class="role-card-control">
+                    <select id="shopify-sales-s2s-store">
+                      <option value="">— None —</option>
+                    </select>
+                    <button type="button" class="btn btn-primary" id="shopify-sales-s2s-store-save">Save</button>
+                  </div>
+                </div>
 
-            <!-- Empty State -->
-            <div
-              id="item-tracker-exclusions-empty"
-              style="
-                display: none;
-                text-align: center;
-                padding: 2rem 1rem;
-                color: var(--text-tertiary);
-                margin-top: 1rem;
-                background: var(--bg-secondary);
-                border-radius: var(--radius-md);
-              "
-            >
-              <p style="margin: 0; font-size: 0.875rem">
-                No customer/supplier exclusions found
-              </p>
-              <p style="margin: 0.5rem 0 0; font-size: 0.75rem">
-                Excluded business names will appear here after you exclude them
-                from Item Tracker results
-              </p>
-            </div>
+                <!-- Store Mirrors -->
+                <div class="role-card role-card-wide">
+                  <div class="role-card-head">
+                    <span class="role-card-icon" aria-hidden="true">
+                      <svg width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M7.2 10.8 5 13a3 3 0 1 1-4.2-4.2L3 6.6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                        <path d="M10.8 7.2 13 5a3 3 0 1 1 4.2 4.2L15 11.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                        <path d="M6.5 11.5 11.5 6.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                      </svg>
+                    </span>
+                    <div class="role-card-title-block">
+                      <div class="role-card-title">Store Mirrors</div>
+                      <p class="role-card-help">
+                        When a source store is updated during price updates, its
+                        mirrors automatically receive the same values.
+                      </p>
+                    </div>
+                  </div>
 
-            <!-- Exclusions Table -->
-            <div
-              id="item-tracker-exclusions-results"
-              style="display: none; margin-top: 1rem"
-            >
-              <div style="margin-bottom: 1rem">
-                <p
-                  style="
-                    margin: 0;
-                    font-size: 0.875rem;
-                    color: var(--text-secondary);
-                  "
+                  <div class="mirror-add-row">
+                    <div class="form-group" style="margin: 0; flex: 1; min-width: 160px">
+                      <label for="mirror-source-store" style="font-size: 0.75rem">Source Store</label>
+                      <select id="mirror-source-store">
+                        <option value="">Select source...</option>
+                      </select>
+                    </div>
+                    <div class="mirror-arrow" aria-hidden="true">&rarr;</div>
+                    <div class="form-group" style="margin: 0; flex: 1; min-width: 160px">
+                      <label for="mirror-mirror-store" style="font-size: 0.75rem">Mirror Store</label>
+                      <select id="mirror-mirror-store">
+                        <option value="">Select mirror...</option>
+                      </select>
+                    </div>
+                    <button
+                      type="button"
+                      class="btn btn-primary"
+                      id="add-mirror-btn"
+                      onclick="addStoreMirror()"
+                    >
+                      Add Mirror
+                    </button>
+                  </div>
+
+                  <div
+                    id="mirrors-loading"
+                    class="test-status"
+                    style="display: none; margin-top: 1rem"
+                  >
+                    <div class="loading">Loading mirrors...</div>
+                  </div>
+
+                  <div
+                    id="mirrors-empty"
+                    class="settings-empty-state"
+                    style="display: none; margin-top: 1rem"
+                  >
+                    <p>No store mirrors configured</p>
+                    <p class="settings-empty-state-hint">
+                      Add a mirror to automatically propagate price updates
+                      between stores
+                    </p>
+                  </div>
+
+                  <div
+                    id="mirrors-results"
+                    style="display: none; margin-top: 1rem"
+                  >
+                    <div style="margin-bottom: 0.75rem">
+                      <p style="margin: 0; font-size: 0.875rem; color: var(--text-secondary)">
+                        <strong id="mirrors-count">0</strong> mirror(s) configured
+                      </p>
+                    </div>
+                    <div style="overflow-x: auto">
+                      <table class="data-table">
+                        <thead>
+                          <tr>
+                            <th style="width: 30%">Source Store</th>
+                            <th style="width: 10%"></th>
+                            <th style="width: 30%">Mirror Store</th>
+                            <th style="width: 20%">Created</th>
+                            <th style="width: 10%">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody id="mirrors-table-body">
+                          <!-- Mirrors will be populated here by JavaScript -->
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <!-- ──────────── Exclusions Panel ──────────── -->
+              <section
+                class="settings-panel"
+                data-settings-panel="exclusions"
+                style="display: none"
+              >
+                <header class="settings-panel-header">
+                  <div class="settings-panel-heading">
+                    <h3>Exclusions</h3>
+                    <p class="settings-panel-subtitle">
+                      Lists that filter what shows up across the app.
+                    </p>
+                  </div>
+                </header>
+
+                <div class="tab-pills" role="tablist" aria-label="Exclusion type">
+                  <button
+                    type="button"
+                    class="tab-pill active"
+                    data-exclusion-tab="upc"
+                    role="tab"
+                  >
+                    UPC
+                    <span class="tab-pill-badge" id="badge-exclusion-upc"></span>
+                  </button>
+                  <button
+                    type="button"
+                    class="tab-pill"
+                    data-exclusion-tab="item-tracker"
+                    role="tab"
+                  >
+                    Item Tracker
+                    <span class="tab-pill-badge" id="badge-exclusion-it"></span>
+                  </button>
+                  <button
+                    type="button"
+                    class="tab-pill"
+                    data-exclusion-tab="sku-prefix"
+                    role="tab"
+                  >
+                    Sales SKU Prefixes
+                  </button>
+                </div>
+
+                <!-- UPC exclusions sub-panel -->
+                <div
+                  class="tab-pill-panel"
+                  data-exclusion-panel="upc"
+                  role="tabpanel"
                 >
-                  <strong id="item-tracker-exclusions-count">0</strong> excluded
-                  customers/suppliers
-                </p>
-              </div>
-              <div style="overflow-x: auto">
-                <table class="data-table">
-                  <thead>
-                    <tr>
-                      <th style="width: 30%">Customer/Supplier</th>
-                      <th style="width: 15%">Scope</th>
-                      <th style="width: 20%">Excluded Date</th>
-                      <th style="width: 25%">Notes</th>
-                      <th style="width: 10%">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody id="item-tracker-exclusions-table-body">
-                    <!-- Exclusions will be populated here by JavaScript -->
-                  </tbody>
-                </table>
-              </div>
+                  <p class="settings-panel-help">
+                    UPCs excluded from orphaned UPC audits. Excluded UPCs will not
+                    appear in future audit results.
+                  </p>
+
+                  <div class="form-group">
+                    <label for="exclusions-store-filter">Filter by Store</label>
+                    <select id="exclusions-store-filter" style="max-width: 300px">
+                      <option value="">All Stores</option>
+                    </select>
+                  </div>
+
+                  <div
+                    id="exclusions-loading"
+                    class="test-status"
+                    style="display: none; margin-top: 1rem"
+                  >
+                    <div class="loading">Loading exclusions...</div>
+                  </div>
+
+                  <div
+                    id="exclusions-empty"
+                    class="settings-empty-state"
+                    style="display: none; margin-top: 1rem"
+                  >
+                    <p>No UPC exclusions found</p>
+                    <p class="settings-empty-state-hint">
+                      Excluded UPCs will appear here after you exclude them from
+                      audit results
+                    </p>
+                  </div>
+
+                  <div
+                    id="exclusions-results"
+                    style="display: none; margin-top: 1rem"
+                  >
+                    <div style="margin-bottom: 0.75rem">
+                      <p style="margin: 0; font-size: 0.875rem; color: var(--text-secondary)">
+                        <strong id="exclusions-count">0</strong> excluded UPCs
+                      </p>
+                    </div>
+                    <div style="overflow-x: auto">
+                      <table class="data-table">
+                        <thead>
+                          <tr>
+                            <th style="width: 25%">Store Name</th>
+                            <th style="width: 20%">UPC</th>
+                            <th style="width: 20%">Excluded Date</th>
+                            <th style="width: 25%">Notes</th>
+                            <th style="width: 10%">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody id="exclusions-table-body">
+                          <!-- Exclusions will be populated here by JavaScript -->
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Item Tracker exclusions sub-panel -->
+                <div
+                  class="tab-pill-panel"
+                  data-exclusion-panel="item-tracker"
+                  role="tabpanel"
+                  style="display: none"
+                >
+                  <p class="settings-panel-help">
+                    Excluded customers/suppliers from Item Tracker results.
+                    Excluded business names will not appear in future searches.
+                  </p>
+
+                  <div
+                    id="item-tracker-exclusions-loading"
+                    class="test-status"
+                    style="display: none; margin-top: 1rem"
+                  >
+                    <div class="loading">Loading exclusions...</div>
+                  </div>
+
+                  <div
+                    id="item-tracker-exclusions-empty"
+                    class="settings-empty-state"
+                    style="display: none; margin-top: 1rem"
+                  >
+                    <p>No customer/supplier exclusions found</p>
+                    <p class="settings-empty-state-hint">
+                      Excluded business names will appear here after you exclude
+                      them from Item Tracker results
+                    </p>
+                  </div>
+
+                  <div
+                    id="item-tracker-exclusions-results"
+                    style="display: none; margin-top: 1rem"
+                  >
+                    <div style="margin-bottom: 0.75rem">
+                      <p style="margin: 0; font-size: 0.875rem; color: var(--text-secondary)">
+                        <strong id="item-tracker-exclusions-count">0</strong>
+                        excluded customers/suppliers
+                      </p>
+                    </div>
+                    <div style="overflow-x: auto">
+                      <table class="data-table">
+                        <thead>
+                          <tr>
+                            <th style="width: 30%">Customer/Supplier</th>
+                            <th style="width: 15%">Scope</th>
+                            <th style="width: 20%">Excluded Date</th>
+                            <th style="width: 25%">Notes</th>
+                            <th style="width: 10%">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody id="item-tracker-exclusions-table-body">
+                          <!-- Exclusions will be populated here by JavaScript -->
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- SKU prefix exclusions sub-panel -->
+                <div
+                  class="tab-pill-panel"
+                  data-exclusion-panel="sku-prefix"
+                  role="tabpanel"
+                  style="display: none"
+                >
+                  <p class="settings-panel-help">
+                    Line items with SKUs starting with any of these prefixes
+                    will be excluded from Shopify Sales reports.
+                  </p>
+                  <div class="form-group">
+                    <label for="shopify-sales-sku-prefixes">
+                      Exclude SKUs Starting With
+                    </label>
+                    <div class="role-card-control" style="max-width: 540px">
+                      <input
+                        type="text"
+                        id="shopify-sales-sku-prefixes"
+                        placeholder="e.g. SHIP, GC-, INTERNAL"
+                      />
+                      <button
+                        type="button"
+                        class="btn btn-primary"
+                        id="shopify-sales-sku-prefixes-save"
+                      >
+                        Save
+                      </button>
+                    </div>
+                    <small class="settings-input-help">
+                      Comma-separated prefixes. Case-insensitive.
+                    </small>
+                  </div>
+                </div>
+              </section>
+
+              <!-- ──────────── Appearance Panel ──────────── -->
+              <section
+                class="settings-panel"
+                data-settings-panel="appearance"
+                style="display: none"
+              >
+                <header class="settings-panel-header">
+                  <div class="settings-panel-heading">
+                    <h3>Appearance</h3>
+                    <p class="settings-panel-subtitle">
+                      Theme and personal preferences (saved on this device).
+                    </p>
+                  </div>
+                </header>
+
+                <div class="settings-subsection">
+                  <h4 class="settings-subsection-title">Theme</h4>
+                  <div class="theme-selector">
+                    <div class="theme-option" data-theme-name="current">
+                      <div class="theme-preview">
+                        <div class="theme-colors">
+                          <span style="background: #0a0a0f"></span>
+                          <span style="background: #121218"></span>
+                          <span style="background: #1a1a24"></span>
+                          <span style="background: #6366f1"></span>
+                        </div>
+                      </div>
+                      <div class="theme-info">
+                        <div class="theme-name">Current (Purple Accent)</div>
+                        <div class="theme-description">Original rainbow gradient theme</div>
+                      </div>
+                    </div>
+
+                    <div class="theme-option" data-theme-name="monochrome">
+                      <div class="theme-preview">
+                        <div class="theme-colors">
+                          <span style="background: #0d0d0d"></span>
+                          <span style="background: #171717"></span>
+                          <span style="background: #1f1f1f"></span>
+                          <span style="background: #e5e5e5"></span>
+                        </div>
+                      </div>
+                      <div class="theme-info">
+                        <div class="theme-name">Monochrome Slate</div>
+                        <div class="theme-description">Pure grayscale, corporate feel</div>
+                      </div>
+                    </div>
+
+                    <div class="theme-option" data-theme-name="charcoal">
+                      <div class="theme-preview">
+                        <div class="theme-colors">
+                          <span style="background: #0f0e0e"></span>
+                          <span style="background: #1a1918"></span>
+                          <span style="background: #242321"></span>
+                          <span style="background: #d4d2cf"></span>
+                        </div>
+                      </div>
+                      <div class="theme-info">
+                        <div class="theme-name">Charcoal Gray</div>
+                        <div class="theme-description">Warm undertones, sophisticated</div>
+                      </div>
+                    </div>
+
+                    <div class="theme-option" data-theme-name="steel">
+                      <div class="theme-preview">
+                        <div class="theme-colors">
+                          <span style="background: #0e0f11"></span>
+                          <span style="background: #16181b"></span>
+                          <span style="background: #1e2125"></span>
+                          <span style="background: #cbd5e0"></span>
+                        </div>
+                      </div>
+                      <div class="theme-info">
+                        <div class="theme-name">Steel Gray</div>
+                        <div class="theme-description">Cool blue undertones, technical</div>
+                      </div>
+                    </div>
+
+                    <div class="theme-option" data-theme-name="minimal">
+                      <div class="theme-preview">
+                        <div class="theme-colors">
+                          <span style="background: #121214"></span>
+                          <span style="background: #1a1a1d"></span>
+                          <span style="background: #222226"></span>
+                          <span style="background: #c8c8cc"></span>
+                        </div>
+                      </div>
+                      <div class="theme-info">
+                        <div class="theme-name">Minimal Contrast</div>
+                        <div class="theme-description">Low contrast, easy on eyes</div>
+                      </div>
+                    </div>
+
+                    <div class="theme-option" data-theme-name="graphite">
+                      <div class="theme-preview">
+                        <div class="theme-colors">
+                          <span style="background: #000000"></span>
+                          <span style="background: #0a0a0a"></span>
+                          <span style="background: #141414"></span>
+                          <span style="background: #f5f5f5"></span>
+                        </div>
+                      </div>
+                      <div class="theme-info">
+                        <div class="theme-name">Dark Graphite</div>
+                        <div class="theme-description">True black, maximum contrast</div>
+                      </div>
+                    </div>
+
+                    <div class="theme-option" data-theme-name="nord">
+                      <div class="theme-preview">
+                        <div class="theme-colors">
+                          <span style="background: #2e3440"></span>
+                          <span style="background: #3b4252"></span>
+                          <span style="background: #434c5e"></span>
+                          <span style="background: #88c0d0"></span>
+                        </div>
+                      </div>
+                      <div class="theme-info">
+                        <div class="theme-name">Nord Aurora</div>
+                        <div class="theme-description">Cool Arctic palette, gentle on eyes</div>
+                      </div>
+                    </div>
+
+                    <div class="theme-option" data-theme-name="author-light">
+                      <div class="theme-preview">
+                        <div class="theme-colors">
+                          <span style="background: #faf9f7"></span>
+                          <span style="background: #f5f4f1"></span>
+                          <span style="background: #ffffff"></span>
+                          <span style="background: #4a7c59"></span>
+                        </div>
+                      </div>
+                      <div class="theme-info">
+                        <div class="theme-name">Author's Light</div>
+                        <div class="theme-description">Professional light theme for easy readability</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="settings-subsection">
+                  <h4 class="settings-subsection-title">Default Landing Page</h4>
+                  <div class="form-group">
+                    <select id="default-landing-page" style="max-width: 320px">
+                      <option value="dashboard">Dashboard</option>
+                      <option value="update-upc">Update UPC</option>
+                      <option value="sql-audit">Orphan UPCs</option>
+                      <option value="item-tracker">Item Tracker</option>
+                      <option value="sales">Sales</option>
+                      <option value="history">History</option>
+                      <option value="settings">Settings</option>
+                    </select>
+                    <small class="settings-input-help">
+                      The page that loads when you open the app.
+                    </small>
+                  </div>
+                </div>
+              </section>
+
+              <!-- ──────────── Backup Panel ──────────── -->
+              <section
+                class="settings-panel"
+                data-settings-panel="backup"
+                style="display: none"
+              >
+                <header class="settings-panel-header">
+                  <div class="settings-panel-heading">
+                    <h3>Backup</h3>
+                    <p class="settings-panel-subtitle">
+                      Export and restore your store configuration.
+                    </p>
+                  </div>
+                </header>
+
+                <div class="role-card role-card-wide">
+                  <div class="role-card-head">
+                    <span class="role-card-icon" aria-hidden="true">
+                      <svg width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <rect x="2.5" y="3" width="13" height="12" rx="2" stroke="currentColor" stroke-width="1.6"/>
+                        <path d="M2.5 7h13" stroke="currentColor" stroke-width="1.6"/>
+                        <path d="M6 11h6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                      </svg>
+                    </span>
+                    <div class="role-card-title-block">
+                      <div class="role-card-title">Configuration Backup</div>
+                      <p class="role-card-help">
+                        Export and import all stores, MSSQL connections, and
+                        Shopify connections (including credentials) as a single
+                        JSON file. Importing merges by store name.
+                      </p>
+                    </div>
+                  </div>
+                  <div class="role-card-control role-card-control-wide">
+                    <button class="btn btn-secondary" id="export-config-btn">
+                      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M8 2V10M8 10L5 7M8 10L11 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        <path d="M2 12V13C2 13.5523 2.44772 14 3 14H13C13.5523 14 14 13.5523 14 13V12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                      </svg>
+                      Export
+                    </button>
+                    <button class="btn btn-secondary" id="import-config-btn">
+                      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M8 10V2M8 2L5 5M8 2L11 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        <path d="M2 12V13C2 13.5523 2.44772 14 3 14H13C13.5523 14 14 13.5523 14 13V12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                      </svg>
+                      Import
+                    </button>
+                  </div>
+                </div>
+              </section>
+
             </div>
-          </section>
+          </div>
         </div>
 
         <!-- Update UPC Page -->
