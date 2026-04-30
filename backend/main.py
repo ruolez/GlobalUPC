@@ -39,6 +39,7 @@ from schemas import (
     SalesConfigCreate, SalesConfigResponse,
     SalesExclusionCreate, SalesExclusionResponse, SalesExclusionListResponse,
     FirstCustomerReturnsRequest,
+    ShopifyFirstOrderTagUpdate,
     QuotationsInProgressFilter, QuotationsInProgressListResponse,
     QuotationsInProgressFilterOptions, QuotationInProgressSummary,
     QuotationProductsResponse, QuotationInProgressHeader, QuotationProductLine,
@@ -5418,7 +5419,31 @@ async def get_dashboard_stats(db: Session = Depends(get_db)):
 # Shopify Analytics
 # ============================================================================
 
-SHOPIFY_ANALYTICS_FIRST_ORDER_TAG = "First order"
+DEFAULT_FIRST_ORDER_TAG = "First order"
+
+
+@app.put("/api/shopify-analytics/stores/{store_id}/tag")
+async def shopify_analytics_set_first_order_tag(
+    store_id: int,
+    body: ShopifyFirstOrderTagUpdate,
+    db: Session = Depends(get_db),
+):
+    store = db.query(Store).filter(
+        Store.id == store_id,
+        Store.store_type == StoreType.shopify,
+    ).first()
+    if not store or not store.shopify_connection:
+        raise HTTPException(status_code=404, detail="Shopify store not found")
+
+    new_tag = (body.first_order_tag or "").strip()
+    if not new_tag:
+        raise HTTPException(status_code=400, detail="first_order_tag must not be empty")
+    if len(new_tag) > 100:
+        raise HTTPException(status_code=400, detail="first_order_tag exceeds 100 characters")
+
+    store.shopify_connection.first_order_tag = new_tag
+    db.commit()
+    return {"store_id": store_id, "first_order_tag": new_tag}
 
 
 @app.post("/api/shopify-analytics/first-customer-returns/stream")
@@ -5446,15 +5471,20 @@ async def shopify_analytics_first_customer_returns_stream(
         admin_api_key = conn.admin_api_key
         api_version = conn.api_version
 
-        yield f"event: progress\ndata: {json.dumps({'phase': 'started', 'store_name': store.name, 'start_date': start_date, 'end_date': end_date})}\n\n"
+        # Tag resolution: explicit request override > store's saved tag > default.
+        request_tag = (request.tag or "").strip() if request.tag is not None else ""
+        saved_tag = (conn.first_order_tag or "").strip()
+        tag = request_tag or saved_tag or DEFAULT_FIRST_ORDER_TAG
 
-        # Phase 1: fetch all "First order"-tagged orders in the date range
+        yield f"event: progress\ndata: {json.dumps({'phase': 'started', 'store_name': store.name, 'tag': tag, 'start_date': start_date, 'end_date': end_date})}\n\n"
+
+        # Phase 1: fetch all tagged orders in the date range
         success, error, tagged_orders = await fetch_orders_with_tag(
             shop_domain=shop_domain,
             admin_api_key=admin_api_key,
             start_date=start_date,
             end_date=end_date,
-            tag=SHOPIFY_ANALYTICS_FIRST_ORDER_TAG,
+            tag=tag,
             api_version=api_version,
         )
 

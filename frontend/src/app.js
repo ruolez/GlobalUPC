@@ -11376,6 +11376,70 @@ async function loadShopifyAnalyticsPage() {
     }
   }
 
+  // Tag input: auto-fill from selected store's saved tag; track dirty state.
+  const tagInput = document.getElementById("sa-tag");
+  const tagSaveBtn = document.getElementById("sa-tag-save-btn");
+  const tagStatus = document.getElementById("sa-tag-status");
+
+  const refreshTagFromStore = () => {
+    const storeId = parseInt(select?.value, 10);
+    if (!storeId) {
+      tagInput.value = "";
+      tagInput.disabled = true;
+      tagSaveBtn.disabled = true;
+      if (tagStatus) tagStatus.textContent = "";
+      return;
+    }
+    const s = shopifyAnalyticsState.shopifyStores.find((x) => x.id === storeId);
+    const saved = (s && s.shopify_connection && s.shopify_connection.first_order_tag) || "First order";
+    tagInput.value = saved;
+    tagInput.disabled = false;
+    tagInput.dataset.saved = saved;
+    tagSaveBtn.disabled = true;
+    if (tagStatus) tagStatus.textContent = "";
+  };
+
+  tagInput?.addEventListener("input", () => {
+    const dirty = tagInput.value.trim() !== (tagInput.dataset.saved || "");
+    tagSaveBtn.disabled = !dirty || !tagInput.value.trim();
+    if (tagStatus) tagStatus.textContent = dirty ? "unsaved" : "";
+  });
+
+  tagSaveBtn?.addEventListener("click", async () => {
+    const storeId = parseInt(select.value, 10);
+    const newTag = tagInput.value.trim();
+    if (!storeId || !newTag) return;
+    tagSaveBtn.disabled = true;
+    tagSaveBtn.textContent = "Saving...";
+    try {
+      const res = await fetch(
+        `${API_BASE}/shopify-analytics/stores/${storeId}/tag`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ first_order_tag: newTag }),
+        },
+      );
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || `HTTP ${res.status}`);
+      }
+      tagInput.dataset.saved = newTag;
+      const s = shopifyAnalyticsState.shopifyStores.find((x) => x.id === storeId);
+      if (s) {
+        s.shopify_connection = s.shopify_connection || {};
+        s.shopify_connection.first_order_tag = newTag;
+      }
+      if (tagStatus) tagStatus.textContent = "saved";
+      tagSaveBtn.disabled = true;
+    } catch (e) {
+      if (tagStatus) tagStatus.textContent = `error: ${e.message || e}`;
+      tagSaveBtn.disabled = false;
+    } finally {
+      tagSaveBtn.textContent = "Save for this store";
+    }
+  });
+
   // Default date range: last 30 days
   const startInput = document.getElementById("sa-start-date");
   const endInput = document.getElementById("sa-end-date");
@@ -11402,9 +11466,13 @@ async function loadShopifyAnalyticsPage() {
     runBtn.disabled = !(storeId && startVal && endVal && startVal <= endVal);
   };
 
-  document.getElementById("sa-store")?.addEventListener("change", updateRunBtn);
+  document.getElementById("sa-store")?.addEventListener("change", () => {
+    refreshTagFromStore();
+    updateRunBtn();
+  });
   startInput?.addEventListener("change", updateRunBtn);
   endInput?.addEventListener("change", updateRunBtn);
+  refreshTagFromStore();
   updateRunBtn();
 
   document
@@ -11493,6 +11561,7 @@ async function runFirstCustomerReturnsReport() {
   const storeId = parseInt(document.getElementById("sa-store").value, 10);
   const startDate = document.getElementById("sa-start-date").value;
   const endDate = document.getElementById("sa-end-date").value;
+  const tag = (document.getElementById("sa-tag")?.value || "").trim();
   if (!storeId || !startDate || !endDate) return;
 
   const runBtn = document.getElementById("sa-run-btn");
@@ -11531,6 +11600,7 @@ async function runFirstCustomerReturnsReport() {
           store_id: storeId,
           start_date: startDate,
           end_date: endDate,
+          tag: tag || undefined,
         }),
         signal: shopifyAnalyticsState.abortController.signal,
       },

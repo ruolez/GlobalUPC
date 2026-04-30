@@ -39,6 +39,7 @@ CREATE TABLE shopify_connections (
     admin_api_key VARCHAR(512) NOT NULL,
     api_version VARCHAR(50) DEFAULT '2025-01',
     update_sku_with_barcode BOOLEAN DEFAULT false,
+    first_order_tag VARCHAR(100) NOT NULL DEFAULT 'First order',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(store_id),

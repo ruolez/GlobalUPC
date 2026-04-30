@@ -20,6 +20,7 @@ class ShopifyConnectionBase(BaseModel):
     admin_api_key: str
     api_version: str = "2025-01"
     update_sku_with_barcode: bool = False
+    first_order_tag: str = "First order"
 
 class MSSQLStoreCreate(StoreBase):
     store_type: Literal["mssql"] = "mssql"
@@ -595,6 +596,11 @@ class FirstCustomerReturnsRequest(BaseModel):
     store_id: int
     start_date: str  # YYYY-MM-DD
     end_date: str    # YYYY-MM-DD
+    tag: Optional[str] = None  # if omitted, falls back to the store's saved tag
+
+
+class ShopifyFirstOrderTagUpdate(BaseModel):
+    first_order_tag: str
 
 
 class FirstCustomerReturnsRow(BaseModel):

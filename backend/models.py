@@ -51,6 +51,7 @@ class ShopifyConnection(Base):
     admin_api_key = Column(String(512), nullable=False)
     api_version = Column(String(50), default="2025-01")
     update_sku_with_barcode = Column(Boolean, default=False)
+    first_order_tag = Column(String(100), nullable=False, server_default="First order")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
