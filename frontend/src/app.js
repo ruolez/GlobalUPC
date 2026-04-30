@@ -4240,6 +4240,11 @@ function renderItemTrackerTable(events) {
       color: "#a855f7",
       label: "Inv. Recount",
     },
+    in_progress: {
+      bg: "#06b6d420",
+      color: "#06b6d4",
+      label: "In Progress",
+    },
   };
 
   events.forEach((event, index) => {

@@ -63,7 +63,8 @@ from shopify_helper import (
 from item_tracker_helper import (
     get_item_info_async, get_purchases_async, get_sales_async,
     get_customer_returns_async, get_vendor_returns_async,
-    search_products_by_description_async, get_inventory_recounts_async
+    search_products_by_description_async, get_inventory_recounts_async,
+    get_in_progress_async,
 )
 from quotations_in_progress_helper import (
     list_quotations_in_progress_async,
@@ -2316,7 +2317,8 @@ def apply_exclusion_filter(all_events, event_counts, db: Session):
             "sale": 0,
             "customer_return": 0,
             "vendor_return": 0,
-            "inventory_recount": 0
+            "inventory_recount": 0,
+            "in_progress": 0,
         }
         for event in all_events:
             event_counts[event.event_type] += 1
@@ -2330,7 +2332,8 @@ def compute_quantity_totals(all_events):
         "sale": 0.0,
         "customer_return": 0.0,
         "vendor_return": 0.0,
-        "inventory_recount": 0.0
+        "inventory_recount": 0.0,
+        "in_progress": 0.0,
     }
     for event in all_events:
         totals[event.event_type] += event.quantity or 0.0
@@ -2471,7 +2474,8 @@ async def search_item_tracker_stream(request: ItemTrackerSearchRequest, db: Sess
             "sale": 0,
             "customer_return": 0,
             "vendor_return": 0,
-            "inventory_recount": 0
+            "inventory_recount": 0,
+            "in_progress": 0,
         }
         stores_searched = 1  # S2S store
         item_info = None
@@ -2733,6 +2737,48 @@ async def search_item_tracker_stream(request: ItemTrackerSearchRequest, db: Sess
                         event_counts["inventory_recount"] = len(recounts)
 
                         yield f"event: progress\ndata: {json.dumps({'status': 'completed', 'message': f'Found {len(recounts)} inventory recounts'})}\n\n"
+
+            # In-progress reservations from the centralized DB_ADMIN store
+            # (QuotationsInProgress). Informational only -- these events do
+            # NOT contribute to the running balance walk; they are simply
+            # surfaced in the timeline at their StartDate so the user can
+            # see when the UPC was reserved by a quotation.
+            admin_store = _resolve_admin_store_soft(db)
+            if admin_store and admin_store.mssql_connection:
+                stores_searched += 1
+                admin_conn = admin_store.mssql_connection
+
+                yield f"event: progress\ndata: {json.dumps({'status': 'searching', 'message': f'Fetching in-progress reservations from {admin_store.name}...'})}\n\n"
+
+                success, error, in_progress_rows = await get_in_progress_async(
+                    host=admin_conn.host,
+                    port=admin_conn.port,
+                    database=admin_conn.database_name,
+                    username=admin_conn.username,
+                    password=admin_conn.password,
+                    upc=upc,
+                    date_from=date_from,
+                    date_to=date_to
+                )
+
+                if not success:
+                    errors.append(f"In Progress: {error}")
+                else:
+                    for r in in_progress_rows:
+                        event = ItemTrackerEvent(
+                            event_type="in_progress",
+                            event_date=r["event_date"],
+                            store_name=admin_store.name,
+                            document_number=r["document_number"],
+                            quantity=r["quantity"],
+                            price_or_cost=None,
+                            business_name=r.get("business_name"),
+                            line_id=r["line_id"],
+                        )
+                        all_events.append(event)
+                    event_counts["in_progress"] = len(in_progress_rows)
+
+                    yield f"event: progress\ndata: {json.dumps({'status': 'completed', 'message': f'Found {len(in_progress_rows)} in-progress reservations'})}\n\n"
 
             # Filter out excluded business names (void-aware)
             all_events, event_counts = apply_exclusion_filter(all_events, event_counts, db)
@@ -5052,6 +5098,26 @@ def _resolve_admin_store(db: Session) -> Store:
             status_code=400,
             detail="Configured admin store is missing, inactive, or not an MSSQL store."
         )
+    return store
+
+
+def _resolve_admin_store_soft(db: Session) -> Optional[Store]:
+    """
+    Soft variant of _resolve_admin_store -- returns None instead of
+    raising when DB_ADMIN is unconfigured / invalid. Used by Item
+    Tracker so the timeline still works for users who never configured
+    the admin store; in_progress events are simply skipped.
+    """
+    setting = db.query(Setting).filter(Setting.key == ADMIN_STORE_SETTING_KEY).first()
+    if not setting or not setting.value:
+        return None
+    try:
+        store_id = int(setting.value)
+    except (TypeError, ValueError):
+        return None
+    store = db.query(Store).filter(Store.id == store_id, Store.is_active == True).first()
+    if not store or store.store_type != StoreType.mssql or not store.mssql_connection:
+        return None
     return store
 
 

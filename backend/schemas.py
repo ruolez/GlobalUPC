@@ -320,7 +320,7 @@ class ItemInfo(BaseModel):
     quant_on_hand: Optional[float] = None
 
 class ItemTrackerEvent(BaseModel):
-    event_type: Literal["purchase", "sale", "customer_return", "vendor_return", "inventory_recount"]
+    event_type: Literal["purchase", "sale", "customer_return", "vendor_return", "inventory_recount", "in_progress"]
     event_date: Optional[datetime] = None
     store_name: str
     document_number: Optional[str] = None

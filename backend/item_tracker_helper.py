@@ -4,6 +4,8 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 
+_item_tracker_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="item_tracker")
+
 from mssql_helper import get_mssql_connection_string
 
 
@@ -385,12 +387,11 @@ async def get_item_info_async(
 ) -> Tuple[bool, Optional[str], Optional[Dict[str, Any]]]:
     """Async wrapper for get_item_info."""
     loop = asyncio.get_event_loop()
-    with ThreadPoolExecutor() as executor:
-        return await loop.run_in_executor(
-            executor,
-            get_item_info,
-            host, port, database, username, password, upc
-        )
+    return await loop.run_in_executor(
+        _item_tracker_executor,
+        get_item_info,
+        host, port, database, username, password, upc
+    )
 
 
 async def get_purchases_async(
@@ -406,11 +407,10 @@ async def get_purchases_async(
 ) -> Tuple[bool, Optional[str], List[Dict[str, Any]]]:
     """Async wrapper for get_purchases."""
     loop = asyncio.get_event_loop()
-    with ThreadPoolExecutor() as executor:
-        return await loop.run_in_executor(
-            executor,
-            lambda: get_purchases(host, port, database, username, password, upc, date_from, date_to, limit)
-        )
+    return await loop.run_in_executor(
+        _item_tracker_executor,
+        lambda: get_purchases(host, port, database, username, password, upc, date_from, date_to, limit)
+    )
 
 
 async def get_sales_async(
@@ -427,11 +427,10 @@ async def get_sales_async(
 ) -> Tuple[bool, Optional[str], List[Dict[str, Any]]]:
     """Async wrapper for get_sales."""
     loop = asyncio.get_event_loop()
-    with ThreadPoolExecutor() as executor:
-        return await loop.run_in_executor(
-            executor,
-            lambda: get_sales(host, port, database, username, password, upc, date_from, date_to, limit, show_voided)
-        )
+    return await loop.run_in_executor(
+        _item_tracker_executor,
+        lambda: get_sales(host, port, database, username, password, upc, date_from, date_to, limit, show_voided)
+    )
 
 
 async def get_customer_returns_async(
@@ -447,11 +446,10 @@ async def get_customer_returns_async(
 ) -> Tuple[bool, Optional[str], List[Dict[str, Any]]]:
     """Async wrapper for get_customer_returns."""
     loop = asyncio.get_event_loop()
-    with ThreadPoolExecutor() as executor:
-        return await loop.run_in_executor(
-            executor,
-            lambda: get_customer_returns(host, port, database, username, password, upc, date_from, date_to, limit)
-        )
+    return await loop.run_in_executor(
+        _item_tracker_executor,
+        lambda: get_customer_returns(host, port, database, username, password, upc, date_from, date_to, limit)
+    )
 
 
 async def get_vendor_returns_async(
@@ -467,11 +465,10 @@ async def get_vendor_returns_async(
 ) -> Tuple[bool, Optional[str], List[Dict[str, Any]]]:
     """Async wrapper for get_vendor_returns."""
     loop = asyncio.get_event_loop()
-    with ThreadPoolExecutor() as executor:
-        return await loop.run_in_executor(
-            executor,
-            lambda: get_vendor_returns(host, port, database, username, password, upc, date_from, date_to, limit)
-        )
+    return await loop.run_in_executor(
+        _item_tracker_executor,
+        lambda: get_vendor_returns(host, port, database, username, password, upc, date_from, date_to, limit)
+    )
 
 
 def search_products_by_description(
@@ -534,11 +531,10 @@ async def search_products_by_description_async(
 ) -> Tuple[bool, Optional[str], List[Dict[str, Any]]]:
     """Async wrapper for search_products_by_description."""
     loop = asyncio.get_event_loop()
-    with ThreadPoolExecutor() as executor:
-        return await loop.run_in_executor(
-            executor,
-            lambda: search_products_by_description(host, port, database, username, password, query, limit)
-        )
+    return await loop.run_in_executor(
+        _item_tracker_executor,
+        lambda: search_products_by_description(host, port, database, username, password, query, limit)
+    )
 
 
 def get_inventory_recounts(
@@ -628,8 +624,118 @@ async def get_inventory_recounts_async(
 ) -> Tuple[bool, Optional[str], List[Dict[str, Any]]]:
     """Async wrapper for get_inventory_recounts."""
     loop = asyncio.get_event_loop()
-    with ThreadPoolExecutor() as executor:
-        return await loop.run_in_executor(
-            executor,
-            lambda: get_inventory_recounts(host, port, database, username, password, upc, date_from, date_to, limit)
-        )
+    return await loop.run_in_executor(
+        _item_tracker_executor,
+        lambda: get_inventory_recounts(host, port, database, username, password, upc, date_from, date_to, limit)
+    )
+
+
+def get_in_progress(
+    host: str,
+    port: int,
+    database: str,
+    username: str,
+    password: str,
+    upc: str,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    limit: int = 1000
+) -> Tuple[bool, Optional[str], List[Dict[str, Any]]]:
+    """
+    Get in-progress quotation reservations from QuotationsInProgress
+    (DB_ADMIN). Each row represents the moment a quotation reserved a
+    specific UPC; informational only -- it does NOT move stock and is
+    excluded from the running-balance walk in the caller.
+
+    Joined to QuotationsStatus (LEFT JOIN) to attach BusinessName when
+    a status row exists.
+
+    Returns: (success, error_message, rows)
+    Each row dict matches the shape consumed by /api/item-tracker/search/stream:
+      line_id, document_number, event_date, quantity, business_name
+    """
+    conn_str = get_mssql_connection_string(host, port, database, username, password)
+
+    try:
+        conn = pyodbc.connect(conn_str, timeout=30)
+        cursor = conn.cursor()
+
+        # Required tables live in DB_ADMIN; degrade gracefully if missing.
+        cursor.execute("""
+            SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES
+            WHERE TABLE_NAME = 'QuotationsInProgress'
+        """)
+        table_exists = cursor.fetchone()[0] > 0
+        if not table_exists:
+            cursor.close()
+            conn.close()
+            return True, None, []
+
+        query = """
+            SELECT TOP (?)
+                qip.id            AS line_id,
+                qip.QuotationNumber AS document_number,
+                qip.StartDate     AS event_date,
+                qip.Qty           AS quantity,
+                qs.BusinessName   AS business_name
+            FROM QuotationsInProgress qip
+            LEFT JOIN QuotationsStatus qs ON qs.QuotationNumber = qip.QuotationNumber
+            WHERE qip.ProductUPC = ?
+              AND qip.StartDate IS NOT NULL
+        """
+
+        params = [limit, upc]
+
+        if date_from:
+            query += " AND qip.StartDate >= ?"
+            params.append(date_from)
+
+        if date_to:
+            query += " AND qip.StartDate <= ?"
+            params.append(date_to)
+
+        query += " ORDER BY qip.StartDate DESC"
+
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+
+        cursor.close()
+        conn.close()
+
+        results = []
+        for row in rows:
+            results.append({
+                "line_id": row[0],
+                "document_number": str(row[1]) if row[1] is not None else None,
+                "event_date": row[2],
+                "quantity": float(row[3]) if row[3] is not None else None,
+                "business_name": row[4],
+            })
+
+        return True, None, results
+
+    except Exception as e:
+        return False, str(e), []
+
+
+async def get_in_progress_async(
+    host: str,
+    port: int,
+    database: str,
+    username: str,
+    password: str,
+    upc: str,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    limit: int = 1000
+) -> Tuple[bool, Optional[str], List[Dict[str, Any]]]:
+    """Async wrapper for get_in_progress."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        _item_tracker_executor,
+        lambda: get_in_progress(host, port, database, username, password, upc, date_from, date_to, limit)
+    )
+
+
+def shutdown_item_tracker_executor():
+    _item_tracker_executor.shutdown(wait=False)
