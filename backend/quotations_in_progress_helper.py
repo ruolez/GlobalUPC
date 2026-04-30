@@ -512,5 +512,35 @@ async def search_products_async(**kwargs) -> Tuple[bool, Optional[str], Dict[str
     )
 
 
+def _count_in_progress_sync(host, port, database, username, password):
+    """
+    Cheap dashboard tile: total distinct open quotations + the oldest
+    StartDate in QuotationsInProgress. Single round-trip; no joins.
+    """
+    conn_str = get_mssql_connection_string(host, port, database, username, password)
+    try:
+        with pyodbc.connect(conn_str, timeout=10) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT COUNT(DISTINCT QuotationNumber), MIN(StartDate) "
+                "FROM dbo.QuotationsInProgress"
+            )
+            row = cursor.fetchone()
+            total = int(row[0]) if row and row[0] is not None else 0
+            oldest_raw = row[1] if row else None
+            oldest_iso = _row_to_dt(oldest_raw)
+            return True, None, {"total": total, "oldest_started_at": oldest_iso}
+    except Exception as e:
+        return False, str(e), {"total": 0, "oldest_started_at": None}
+
+
+async def count_in_progress_async(**kwargs) -> Tuple[bool, Optional[str], Dict[str, Any]]:
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        _qip_executor,
+        lambda: _count_in_progress_sync(**kwargs),
+    )
+
+
 def shutdown_qip_executor():
     _qip_executor.shutdown(wait=False)

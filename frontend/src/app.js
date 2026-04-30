@@ -28,6 +28,11 @@ document.querySelectorAll(".nav-item").forEach((item) => {
 function navigateTo(page) {
   exitPriceFullscreen();
 
+  // Stop dashboard auto-refresh whenever leaving the dashboard
+  if (typeof stopDashboardAutoRefresh === "function" && page !== "dashboard") {
+    stopDashboardAutoRefresh();
+  }
+
   if (window.location.search) {
     window.history.replaceState({}, "", window.location.pathname);
   }
@@ -61,6 +66,7 @@ function navigateTo(page) {
   // Load page data
   if (page === "dashboard") {
     loadDashboard();
+    startDashboardAutoRefresh();
   } else if (page === "settings") {
     loadSettings();
   } else if (page === "history") {
@@ -172,13 +178,320 @@ function showToast(message, type = "info") {
   }, 3000);
 }
 
-// Dashboard Functions
-async function loadDashboard() {
-  const stores = await apiRequest("/stores");
-  const activeStores = stores.filter((s) => s.is_active);
+// ===== Dashboard =====
 
-  document.getElementById("total-stores").textContent = stores.length;
-  document.getElementById("active-stores").textContent = activeStores.length;
+const DASHBOARD_AUTOREFRESH_MS = 60000;
+const dashboardState = {
+  refreshTimer: null,
+  refreshing: false,
+  bound: false,
+};
+
+async function loadDashboard() {
+  bindDashboardOnce();
+  setDashboardRefreshSpinner(true);
+  try {
+    await Promise.all([loadDashboardStats(), loadDashboardActivity()]);
+    setDashboardUpdatedNow();
+  } catch (e) {
+    console.error("Dashboard load failed", e);
+    showToast(e.message || "Dashboard failed to load", "error");
+  } finally {
+    setDashboardRefreshSpinner(false);
+  }
+}
+
+function bindDashboardOnce() {
+  if (dashboardState.bound) return;
+  dashboardState.bound = true;
+  const refreshBtn = document.getElementById("dashboard-refresh-btn");
+  if (refreshBtn) {
+    refreshBtn.addEventListener("click", () => {
+      if (dashboardState.refreshing) return;
+      loadDashboard();
+    });
+  }
+  // Pause auto-refresh while tab is hidden
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      stopDashboardAutoRefresh();
+    } else if (isDashboardVisible()) {
+      startDashboardAutoRefresh();
+    }
+  });
+}
+
+function isDashboardVisible() {
+  const el = document.getElementById("dashboard-page");
+  return el && el.style.display !== "none";
+}
+
+function startDashboardAutoRefresh() {
+  stopDashboardAutoRefresh();
+  dashboardState.refreshTimer = setInterval(() => {
+    if (document.hidden || !isDashboardVisible()) return;
+    loadDashboard();
+  }, DASHBOARD_AUTOREFRESH_MS);
+}
+
+function stopDashboardAutoRefresh() {
+  if (dashboardState.refreshTimer) {
+    clearInterval(dashboardState.refreshTimer);
+    dashboardState.refreshTimer = null;
+  }
+}
+
+function setDashboardRefreshSpinner(active) {
+  dashboardState.refreshing = active;
+  const btn = document.getElementById("dashboard-refresh-btn");
+  if (!btn) return;
+  btn.classList.toggle("is-spinning", active);
+  btn.disabled = active;
+}
+
+function setDashboardUpdatedNow() {
+  const el = document.getElementById("dashboard-updated");
+  if (!el) return;
+  const t = new Date();
+  const h = t.getHours();
+  const m = t.getMinutes();
+  const ampm = h >= 12 ? "PM" : "AM";
+  const h12 = ((h + 11) % 12) + 1;
+  el.textContent = `Updated ${h12}:${String(m).padStart(2, "0")} ${ampm}`;
+}
+
+async function loadDashboardStats() {
+  let stats;
+  try {
+    stats = await apiRequest("/dashboard/stats");
+  } catch (e) {
+    renderDashboardStatsError();
+    throw e;
+  }
+  renderDashboardKpi(stats);
+  renderDashboardHealth(stats.config_health || []);
+}
+
+function renderDashboardStatsError() {
+  ["kpi-stores", "kpi-in-progress", "kpi-upc-7d", "kpi-price-7d"].forEach((id) => {
+    const v = document.getElementById(`${id}-value`);
+    const m = document.getElementById(`${id}-meta`);
+    if (v) v.textContent = "—";
+    if (m) m.textContent = "Failed to load";
+  });
+}
+
+function renderDashboardKpi(stats) {
+  // Stores tile
+  const stores = stats.stores || {};
+  setText("kpi-stores-value", `${stores.active ?? 0} / ${stores.total ?? 0}`);
+  const typeBits = [];
+  const types = stores.by_type || {};
+  if (types.mssql) typeBits.push(`${types.mssql} MSSQL`);
+  if (types.shopify) typeBits.push(`${types.shopify} Shopify`);
+  setText(
+    "kpi-stores-meta",
+    typeBits.length ? typeBits.join(" · ") : "no stores configured",
+  );
+
+  // In Progress tile
+  const ip = stats.in_progress || {};
+  const ipTile = document.getElementById("kpi-in-progress");
+  if (!ip.configured) {
+    setText("kpi-in-progress-value", "—");
+    setText(
+      "kpi-in-progress-meta",
+      "Admin store not configured",
+    );
+    if (ipTile) {
+      ipTile.classList.add("is-warning");
+      ipTile.dataset.page = "settings";
+    }
+  } else if (ip.error) {
+    setText("kpi-in-progress-value", "—");
+    setText("kpi-in-progress-meta", "Admin DB unreachable");
+    if (ipTile) {
+      ipTile.classList.add("is-warning");
+      ipTile.dataset.page = "quotations-in-progress";
+    }
+  } else {
+    setText("kpi-in-progress-value", String(ip.total ?? 0));
+    setText(
+      "kpi-in-progress-meta",
+      ip.oldest_started_at
+        ? `oldest: ${formatRelative(ip.oldest_started_at)}`
+        : "no open quotations",
+    );
+    if (ipTile) {
+      ipTile.classList.remove("is-warning");
+      ipTile.dataset.page = "quotations-in-progress";
+    }
+  }
+
+  // UPC Updates · 7d
+  const upc = stats.upc_updates_7d || {};
+  setText("kpi-upc-7d-value", String(upc.batches ?? 0));
+  setText(
+    "kpi-upc-7d-meta",
+    upc.batches > 0 && upc.success_rate != null
+      ? `${formatPct(upc.success_rate)} success`
+      : "no batches",
+  );
+
+  // Price Updates · 7d
+  const price = stats.price_updates_7d || {};
+  setText("kpi-price-7d-value", String(price.batches ?? 0));
+  setText(
+    "kpi-price-7d-meta",
+    price.batches > 0 && price.success_rate != null
+      ? `${formatPct(price.success_rate)} success`
+      : "no batches",
+  );
+}
+
+function renderDashboardHealth(checks) {
+  const list = document.getElementById("dashboard-health-list");
+  if (!list) return;
+
+  const labelByKey = {
+    admin_store_id: "Admin DB Store",
+    item_tracker_s2s: "Item Tracker S2S",
+    shopify_sales_s2s: "Shopify Sales Cost Lookup",
+  };
+  const okDetailByKey = {
+    admin_store_id: (n) => `Admin: ${n}`,
+    item_tracker_s2s: (n) => `S2S: ${n}`,
+    shopify_sales_s2s: (n) => `Cost from ${n}`,
+  };
+  const badDetailByKey = {
+    admin_store_id: "Not configured · In Progress unavailable",
+    item_tracker_s2s: "Not configured · cost columns blank",
+    shopify_sales_s2s: "Not configured · Shopify cost column blank",
+  };
+
+  list.innerHTML = checks
+    .map((c) => {
+      const title = labelByKey[c.key] || c.key;
+      const cls = c.ok ? "" : "warn";
+      const icon = c.ok ? "✓" : "!";
+      const detail = c.ok
+        ? escapeHtml((okDetailByKey[c.key] || ((n) => n))(c.store_name || ""))
+        : escapeHtml(badDetailByKey[c.key] || "Not configured");
+      const link = c.ok
+        ? ""
+        : `<a class="dashboard-health-link" href="#" data-page="settings">Open Settings →</a>`;
+      return `
+        <div class="dashboard-health-row ${cls}">
+          <span class="dashboard-health-icon" aria-hidden="true">${icon}</span>
+          <div class="dashboard-health-body">
+            <div class="dashboard-health-title">${escapeHtml(title)}</div>
+            <div class="dashboard-health-detail">${detail}</div>
+            ${link}
+          </div>
+        </div>`;
+    })
+    .join("");
+}
+
+async function loadDashboardActivity() {
+  const list = document.getElementById("dashboard-activity-list");
+  if (!list) return;
+  const limit = 12;
+  let upcResp, priceResp;
+  try {
+    [upcResp, priceResp] = await Promise.all([
+      apiRequest(`/history/updates?limit=${limit}&offset=0`),
+      apiRequest(`/price-updates/history?limit=${limit}&offset=0`),
+    ]);
+  } catch (e) {
+    list.innerHTML = `<div class="dashboard-empty-state">Failed to load recent activity.</div>`;
+    return;
+  }
+
+  const items = [];
+  for (const b of upcResp?.batches || []) {
+    items.push({
+      kind: "upc",
+      created_at: b.created_at,
+      total_stores: b.total_stores || 0,
+      successful_stores: b.successful_stores || 0,
+      failed_stores: b.failed_stores || 0,
+      title: `UPC update · ${b.old_upc || ""} → ${b.new_upc || ""}`,
+      sub: `${b.successful_stores || 0}/${b.total_stores || 0} stores · ${b.total_items_updated || 0} items`,
+      page: "history",
+    });
+  }
+  for (const b of priceResp?.batches || []) {
+    items.push({
+      kind: "price",
+      created_at: b.created_at,
+      total_stores: b.total_stores || 0,
+      successful_stores: b.successful_stores || 0,
+      failed_stores: b.failed_stores || 0,
+      title: `Price update · ${b.upc || ""}${b.product_description ? " · " + b.product_description : ""}`,
+      sub: `${b.successful_stores || 0}/${b.total_stores || 0} stores`,
+      page: "price-updates",
+    });
+  }
+
+  items.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  const top = items.slice(0, limit);
+
+  if (top.length === 0) {
+    list.innerHTML = `<div class="dashboard-empty-state">No recent UPC or price updates.</div>`;
+    return;
+  }
+
+  list.innerHTML = top
+    .map((it) => {
+      const ok = it.failed_stores === 0 && it.successful_stores > 0;
+      const partial = it.failed_stores > 0 && it.successful_stores > 0;
+      const statusCls = ok ? "ok" : partial ? "warn" : "fail";
+      const statusLabel = ok ? "ok" : partial ? "partial" : "failed";
+      const iconSvg =
+        it.kind === "upc"
+          ? `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M2 3v8M4 3v8M6 3v8M8 3v8M10 3v8M12 3v8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>`
+          : `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="m2 8 3-3 2 2 3-4 2 2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+      return `
+        <a class="dashboard-activity-row kind-${it.kind}" href="#" data-page="${escapeHtml(it.page)}">
+          <span class="dashboard-activity-icon" aria-hidden="true">${iconSvg}</span>
+          <div class="dashboard-activity-body">
+            <div class="dashboard-activity-title">${escapeHtml(it.title)}</div>
+            <div class="dashboard-activity-sub">${escapeHtml(it.sub)} · ${escapeHtml(formatRelative(it.created_at))}</div>
+          </div>
+          <span class="dashboard-activity-status ${statusCls}">${statusLabel}</span>
+        </a>`;
+    })
+    .join("");
+}
+
+function setText(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = value;
+}
+
+function formatPct(v) {
+  if (v == null) return "—";
+  return `${(v * 100).toFixed(0)}%`;
+}
+
+function formatRelative(iso) {
+  if (!iso) return "";
+  const t = new Date(iso);
+  const now = new Date();
+  const diffMs = now - t;
+  if (isNaN(diffMs)) return "";
+  const sec = Math.max(0, Math.floor(diffMs / 1000));
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const days = Math.floor(hr / 24);
+  if (days < 30) return `${days}d ago`;
+  const mon = Math.floor(days / 30);
+  if (mon < 12) return `${mon}mo ago`;
+  return `${Math.floor(mon / 12)}y ago`;
 }
 
 // Settings Functions
@@ -2043,16 +2356,18 @@ function displayUpdateResults(data) {
   }
 }
 
-// Tool card click handlers
+// Generic [data-page] click delegation. Covers tool cards on the dashboard,
+// dashboard KPI tiles, activity rows, health-card links, and any future
+// surface that wants to navigate by adding a data-page attribute. Sidebar
+// .nav-item buttons have their own listener and are skipped here.
 document.addEventListener("click", (e) => {
-  const toolCard = e.target.closest(".tool-card");
-  if (toolCard) {
-    e.preventDefault();
-    const page = toolCard.dataset.page;
-    if (page) {
-      navigateTo(page);
-    }
-  }
+  const trigger = e.target.closest("[data-page]");
+  if (!trigger) return;
+  if (trigger.classList.contains("nav-item")) return;
+  const page = trigger.dataset.page;
+  if (!page) return;
+  e.preventDefault();
+  navigateTo(page);
 });
 
 // Config Import/Export Functions

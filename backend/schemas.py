@@ -727,3 +727,50 @@ class QuotationSearchProduct(BaseModel):
 class QuotationSearchResponse(BaseModel):
     products: List[QuotationSearchProduct]
     quotation_count: int = 0
+
+
+# Dashboard Schemas
+class DashboardStoreStats(BaseModel):
+    total: int = 0
+    active: int = 0
+    by_type: Dict[str, int] = {}
+    by_category: Dict[str, int] = {}
+
+
+class DashboardExclusionCounts(BaseModel):
+    upc: int = 0
+    item_tracker: int = 0
+    sales: int = 0
+
+
+class DashboardMirrorStats(BaseModel):
+    count: int = 0
+
+
+class DashboardBatchSummary(BaseModel):
+    batches: int = 0
+    success_rate: Optional[float] = None  # null when batches == 0
+
+
+class DashboardInProgressStats(BaseModel):
+    configured: bool = False
+    total: int = 0
+    oldest_started_at: Optional[str] = None
+    error: Optional[str] = None
+
+
+class DashboardConfigCheck(BaseModel):
+    key: Literal["admin_store_id", "item_tracker_s2s", "shopify_sales_s2s"]
+    ok: bool
+    store_name: Optional[str] = None
+
+
+class DashboardStatsResponse(BaseModel):
+    stores: DashboardStoreStats
+    exclusions: DashboardExclusionCounts
+    mirrors: DashboardMirrorStats
+    upc_updates_7d: DashboardBatchSummary
+    price_updates_7d: DashboardBatchSummary
+    in_progress: DashboardInProgressStats
+    config_health: List[DashboardConfigCheck]
+    generated_at: datetime

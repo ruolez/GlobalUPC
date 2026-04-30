@@ -42,6 +42,9 @@ from schemas import (
     QuotationsInProgressFilterOptions, QuotationInProgressSummary,
     QuotationProductsResponse, QuotationInProgressHeader, QuotationProductLine,
     QuotationSearchProduct, QuotationSearchResponse,
+    DashboardStatsResponse, DashboardStoreStats, DashboardExclusionCounts,
+    DashboardMirrorStats, DashboardBatchSummary, DashboardInProgressStats,
+    DashboardConfigCheck,
 )
 from mssql_helper import (
     test_mssql_connection, search_upc_across_mssql_stores, search_products_by_upc,
@@ -71,6 +74,7 @@ from quotations_in_progress_helper import (
     get_quotation_products_async,
     list_distinct_filter_values_async,
     search_products_async,
+    count_in_progress_async,
 )
 
 @asynccontextmanager
@@ -5255,6 +5259,156 @@ async def search_quotation_in_progress_products(
     return QuotationSearchResponse(
         products=[QuotationSearchProduct(**p) for p in payload["products"]],
         quotation_count=payload["quotation_count"],
+    )
+
+
+# ───────────────────────── Dashboard ─────────────────────────
+
+
+@app.get("/api/dashboard/stats", response_model=DashboardStatsResponse)
+async def get_dashboard_stats(db: Session = Depends(get_db)):
+    """
+    Aggregate operational stats for the home dashboard. All inputs are
+    cheap (counts, soft resolvers, one optional DB_ADMIN ping). Safe to
+    poll on a 60s auto-refresh.
+    """
+    from sqlalchemy import func, distinct
+
+    # Stores: total, active, by_type, by_category
+    stores = db.query(Store).all()
+    by_type: Dict[str, int] = {}
+    by_category: Dict[str, int] = {}
+    active_count = 0
+    for s in stores:
+        st = s.store_type.value if hasattr(s.store_type, "value") else str(s.store_type)
+        by_type[st] = by_type.get(st, 0) + 1
+        cat = s.store_category.value if hasattr(s.store_category, "value") else str(s.store_category or "retail")
+        by_category[cat] = by_category.get(cat, 0) + 1
+        if s.is_active:
+            active_count += 1
+
+    store_stats = DashboardStoreStats(
+        total=len(stores),
+        active=active_count,
+        by_type=by_type,
+        by_category=by_category,
+    )
+
+    # Exclusion counts (3 tables) + mirror count
+    exclusions = DashboardExclusionCounts(
+        upc=db.query(UPCExclusion).count(),
+        item_tracker=db.query(ItemTrackerExclusion).count(),
+        sales=db.query(SalesExclusion).count(),
+    )
+    mirror_stats = DashboardMirrorStats(count=db.query(StoreMirror).count())
+
+    # 7-day batch summaries (UPC + Price update history). A batch is
+    # "successful" only if every row in it succeeded; "failed batch"
+    # = at least one row with success=False.
+    cutoff = datetime.utcnow() - timedelta(days=7)
+
+    def _summarize(model) -> DashboardBatchSummary:
+        total = (
+            db.query(distinct(model.batch_id))
+            .filter(model.created_at >= cutoff)
+            .count()
+        )
+        if not total:
+            return DashboardBatchSummary(batches=0, success_rate=None)
+        failed = (
+            db.query(distinct(model.batch_id))
+            .filter(model.created_at >= cutoff, model.success == False)
+            .count()
+        )
+        return DashboardBatchSummary(
+            batches=total,
+            success_rate=round((total - failed) / total, 4),
+        )
+
+    upc_summary = _summarize(UPCUpdateHistory)
+    price_summary = _summarize(PriceUpdateHistory)
+
+    # In-progress count via soft-resolved admin store
+    admin_store = _resolve_admin_store_soft(db)
+    if admin_store is None:
+        in_progress = DashboardInProgressStats(configured=False)
+    else:
+        conn = admin_store.mssql_connection
+        ok, err, payload = await count_in_progress_async(
+            host=conn.host,
+            port=conn.port,
+            database=conn.database_name,
+            username=conn.username,
+            password=conn.password,
+        )
+        if ok:
+            in_progress = DashboardInProgressStats(
+                configured=True,
+                total=payload.get("total", 0),
+                oldest_started_at=payload.get("oldest_started_at"),
+            )
+        else:
+            in_progress = DashboardInProgressStats(
+                configured=True,
+                total=0,
+                oldest_started_at=None,
+                error=err,
+            )
+
+    # Configuration health (3 role assignments)
+    config_health: List[DashboardConfigCheck] = []
+
+    # admin_store_id
+    config_health.append(DashboardConfigCheck(
+        key="admin_store_id",
+        ok=admin_store is not None,
+        store_name=admin_store.name if admin_store else None,
+    ))
+
+    # Item Tracker S2S
+    it_conn = _resolve_item_tracker_s2s_conn(db)
+    it_store_name: Optional[str] = None
+    if it_conn is not None:
+        it_store = db.query(Store).filter(Store.id == it_conn.store_id).first()
+        it_store_name = it_store.name if it_store else None
+    config_health.append(DashboardConfigCheck(
+        key="item_tracker_s2s",
+        ok=it_conn is not None,
+        store_name=it_store_name,
+    ))
+
+    # Shopify Sales S2S (separate setting)
+    shopify_s2s_setting = db.query(Setting).filter(
+        Setting.key == "shopify_sales_s2s_store_id"
+    ).first()
+    shopify_s2s_store_name: Optional[str] = None
+    shopify_s2s_ok = False
+    if shopify_s2s_setting and shopify_s2s_setting.value:
+        try:
+            shopify_s2s_id = int(shopify_s2s_setting.value)
+            shopify_s2s_store = db.query(Store).filter(
+                Store.id == shopify_s2s_id, Store.is_active == True
+            ).first()
+            if shopify_s2s_store and shopify_s2s_store.store_type == StoreType.mssql:
+                shopify_s2s_ok = True
+                shopify_s2s_store_name = shopify_s2s_store.name
+        except (TypeError, ValueError):
+            pass
+    config_health.append(DashboardConfigCheck(
+        key="shopify_sales_s2s",
+        ok=shopify_s2s_ok,
+        store_name=shopify_s2s_store_name,
+    ))
+
+    return DashboardStatsResponse(
+        stores=store_stats,
+        exclusions=exclusions,
+        mirrors=mirror_stats,
+        upc_updates_7d=upc_summary,
+        price_updates_7d=price_summary,
+        in_progress=in_progress,
+        config_health=config_health,
+        generated_at=datetime.utcnow(),
     )
 
 
