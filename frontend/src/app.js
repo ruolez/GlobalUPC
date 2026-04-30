@@ -11331,6 +11331,7 @@ const shopifyAnalyticsState = {
   sortOrder: "desc",
   abortController: null,
   filter: { status: "all", minCount: 0 },
+  returnedThreshold: 1,
   staggerBudget: 0,
 };
 
@@ -11556,6 +11557,21 @@ async function loadShopifyAnalyticsPage() {
       ?.click();
     setMin(0);
   });
+
+  // === Returned KPI threshold toggle (>=1 / >=2 / >=3) ===
+  document.querySelectorAll('[data-sa-threshold]').forEach((b) => {
+    b.addEventListener("click", () => {
+      const t = parseInt(b.dataset.saThreshold, 10) || 1;
+      shopifyAnalyticsState.returnedThreshold = t;
+      document.querySelectorAll('[data-sa-threshold]').forEach((x) => {
+        const on = parseInt(x.dataset.saThreshold, 10) === t;
+        x.classList.toggle("active", on);
+        x.setAttribute("aria-pressed", on ? "true" : "false");
+      });
+      // Recompute KPIs without re-rendering the (potentially huge) table.
+      renderSaKpis([...shopifyAnalyticsState.rows]);
+    });
+  });
 }
 
 function saApplySortHeaders() {
@@ -11581,16 +11597,26 @@ function saApplyDatePreset(range) {
   if (!startInput || !endInput) return;
   const today = new Date();
   let start, end;
-  if (range === "7" || range === "30") {
+  if (range === "7" || range === "30" || range === "90") {
     end = today;
     start = new Date(today);
     start.setDate(today.getDate() - parseInt(range, 10));
+  } else if (range === "6m" || range === "12m") {
+    end = today;
+    start = new Date(today);
+    start.setMonth(today.getMonth() - (range === "6m" ? 6 : 12));
   } else if (range === "this-month") {
     start = new Date(today.getFullYear(), today.getMonth(), 1);
     end = today;
   } else if (range === "last-month") {
     start = new Date(today.getFullYear(), today.getMonth() - 1, 1);
     end = new Date(today.getFullYear(), today.getMonth(), 0);
+  } else if (range === "ytd" || range === "this-year") {
+    start = new Date(today.getFullYear(), 0, 1);
+    end = today;
+  } else if (range === "last-year") {
+    start = new Date(today.getFullYear() - 1, 0, 1);
+    end = new Date(today.getFullYear() - 1, 11, 31);
   } else {
     return;
   }
@@ -11769,7 +11795,11 @@ function renderSaKpis(rows) {
   strip.hidden = false;
 
   const total = rows.length;
+  const threshold = shopifyAnalyticsState.returnedThreshold || 1;
   const returners = rows.filter((r) => (r.subsequent_count || 0) >= 1);
+  const meetingThreshold = rows.filter(
+    (r) => (r.subsequent_count || 0) >= threshold,
+  );
   const subseqOrders = returners.reduce(
     (s, r) => s + (r.subsequent_count || 0),
     0,
@@ -11778,15 +11808,19 @@ function renderSaKpis(rows) {
     (s, r) => s + (parseFloat(r.subsequent_amount) || 0),
     0,
   );
-  const pct = total ? (returners.length / total) * 100 : 0;
+  const pct = total ? (meetingThreshold.length / total) * 100 : 0;
   const avg = returners.length ? subseqOrders / returners.length : 0;
   const ccy =
     (rows.find((r) => r.subsequent_currency) || {}).subsequent_currency || "";
 
   document.getElementById("sa-kpi-total").textContent = total.toLocaleString();
   document.getElementById("sa-kpi-returned").textContent =
-    returners.length.toLocaleString();
+    meetingThreshold.length.toLocaleString();
   document.getElementById("sa-kpi-returned-pct").textContent = `${pct.toFixed(1)}%`;
+  const subEl = document.getElementById("sa-kpi-returned-sub");
+  if (subEl) {
+    subEl.textContent = `placed ≥${threshold} successful order${threshold === 1 ? "" : "s"}`;
+  }
   document.getElementById("sa-kpi-avg").textContent = avg.toFixed(2);
   document.getElementById("sa-kpi-avg-sub").textContent = returners.length
     ? `among ${returners.length.toLocaleString()} returners`
