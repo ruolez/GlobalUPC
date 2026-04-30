@@ -11330,6 +11330,8 @@ const shopifyAnalyticsState = {
   sortColumn: "subsequent_count",
   sortOrder: "desc",
   abortController: null,
+  filter: { status: "all", minCount: 0 },
+  staggerBudget: 0,
 };
 
 const SA_NUMERIC_COLUMNS = new Set([
@@ -11511,6 +11513,49 @@ async function loadShopifyAnalyticsPage() {
   });
 
   saApplySortHeaders();
+
+  // === Filter bar wiring (status chips + min-count input/presets + reset) ===
+  document
+    .querySelectorAll('#sa-filter-bar [data-sa-status]')
+    .forEach((b) => {
+      b.addEventListener("click", () => {
+        document
+          .querySelectorAll('#sa-filter-bar [data-sa-status]')
+          .forEach((x) => {
+            const on = x === b;
+            x.classList.toggle("active", on);
+            x.setAttribute("aria-checked", on ? "true" : "false");
+          });
+        shopifyAnalyticsState.filter.status = b.dataset.saStatus;
+        renderShopifyAnalyticsTable();
+      });
+    });
+
+  const minInput = document.getElementById("sa-min-count");
+  const setMin = (n) => {
+    const v = Math.max(0, parseInt(n, 10) || 0);
+    shopifyAnalyticsState.filter.minCount = v;
+    if (minInput) minInput.value = String(v);
+    document
+      .querySelectorAll('#sa-filter-bar [data-sa-min]')
+      .forEach((x) => {
+        x.classList.toggle("active", parseInt(x.dataset.saMin, 10) === v);
+      });
+    renderShopifyAnalyticsTable();
+  };
+  minInput?.addEventListener("input", () => setMin(minInput.value));
+  document
+    .querySelectorAll('#sa-filter-bar [data-sa-min]')
+    .forEach((b) => {
+      b.addEventListener("click", () => setMin(b.dataset.saMin));
+    });
+
+  document.getElementById("sa-reset-filters")?.addEventListener("click", () => {
+    document
+      .querySelector('#sa-filter-bar [data-sa-status="all"]')
+      ?.click();
+    setMin(0);
+  });
 }
 
 function saApplySortHeaders() {
@@ -11578,15 +11623,19 @@ async function runFirstCustomerReturnsReport() {
   shopifyAnalyticsState.rows = [];
   shopifyAnalyticsState.summary = null;
   shopifyAnalyticsState.abortController = new AbortController();
+  shopifyAnalyticsState.staggerBudget = 1; // one render burst gets the fade
 
   runBtn.disabled = true;
   runBtn.textContent = "Running...";
   cancelBtn.style.display = "inline-flex";
   progressEl.style.display = "block";
   progressBar.style.width = "0%";
+  progressBar.style.background = "var(--accent-primary)";
   progressStatus.textContent = "Connecting to Shopify...";
   resultsEl.style.display = "none";
   emptyEl.style.display = "none";
+  document.getElementById("sa-kpi-strip")?.setAttribute("hidden", "");
+  document.getElementById("sa-filter-bar")?.setAttribute("hidden", "");
   if (tbody) tbody.innerHTML = "";
   if (tfoot) tfoot.style.display = "none";
 
@@ -11657,6 +11706,8 @@ async function runFirstCustomerReturnsReport() {
           progressStatus.textContent = `Processed ${completed} of ${total} customer(s)...`;
           renderShopifyAnalyticsTable();
           resultsEl.style.display = "block";
+          document.getElementById("sa-kpi-strip")?.removeAttribute("hidden");
+          document.getElementById("sa-filter-bar")?.removeAttribute("hidden");
         } else if (eventType === "complete") {
           progressBar.style.width = "100%";
           progressStatus.textContent = "Done";
@@ -11667,8 +11718,12 @@ async function runFirstCustomerReturnsReport() {
           if (shopifyAnalyticsState.rows.length === 0) {
             resultsEl.style.display = "none";
             emptyEl.style.display = "block";
+            document.getElementById("sa-kpi-strip")?.setAttribute("hidden", "");
+            document.getElementById("sa-filter-bar")?.setAttribute("hidden", "");
           } else {
             resultsEl.style.display = "block";
+            document.getElementById("sa-kpi-strip")?.removeAttribute("hidden");
+            document.getElementById("sa-filter-bar")?.removeAttribute("hidden");
             renderShopifyAnalyticsTable();
           }
         } else if (eventType === "error") {
@@ -11693,10 +11748,74 @@ async function runFirstCustomerReturnsReport() {
   }
 }
 
+function applyShopifyAnalyticsFilters(rows) {
+  const { status, minCount } = shopifyAnalyticsState.filter;
+  return rows.filter((r) => {
+    const c = r.subsequent_count || 0;
+    if (status === "returned" && c < 1) return false;
+    if (status === "not_returned" && c !== 0) return false;
+    if (minCount > 0 && c < minCount) return false;
+    return true;
+  });
+}
+
+function renderSaKpis(rows) {
+  const strip = document.getElementById("sa-kpi-strip");
+  if (!strip) return;
+  if (rows.length === 0) {
+    strip.hidden = true;
+    return;
+  }
+  strip.hidden = false;
+
+  const total = rows.length;
+  const returners = rows.filter((r) => (r.subsequent_count || 0) >= 1);
+  const subseqOrders = returners.reduce(
+    (s, r) => s + (r.subsequent_count || 0),
+    0,
+  );
+  const subseqRev = rows.reduce(
+    (s, r) => s + (parseFloat(r.subsequent_amount) || 0),
+    0,
+  );
+  const pct = total ? (returners.length / total) * 100 : 0;
+  const avg = returners.length ? subseqOrders / returners.length : 0;
+  const ccy =
+    (rows.find((r) => r.subsequent_currency) || {}).subsequent_currency || "";
+
+  document.getElementById("sa-kpi-total").textContent = total.toLocaleString();
+  document.getElementById("sa-kpi-returned").textContent =
+    returners.length.toLocaleString();
+  document.getElementById("sa-kpi-returned-pct").textContent = `${pct.toFixed(1)}%`;
+  document.getElementById("sa-kpi-avg").textContent = avg.toFixed(2);
+  document.getElementById("sa-kpi-avg-sub").textContent = returners.length
+    ? `among ${returners.length.toLocaleString()} returners`
+    : "no returners yet";
+  document.getElementById("sa-kpi-rev").textContent =
+    subseqRev.toLocaleString(undefined, {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+  document.getElementById("sa-kpi-rev-sub").textContent = ccy || "";
+}
+
+function renderSaRowCount(visible, total) {
+  const el = document.getElementById("sa-row-count");
+  if (!el) return;
+  el.textContent =
+    visible === total
+      ? `${total.toLocaleString()} customer${total === 1 ? "" : "s"}`
+      : `showing ${visible.toLocaleString()} of ${total.toLocaleString()}`;
+  const reset = document.getElementById("sa-reset-filters");
+  if (reset) {
+    const f = shopifyAnalyticsState.filter;
+    reset.hidden = f.status === "all" && f.minCount === 0;
+  }
+}
+
 function renderShopifyAnalyticsTable() {
   const tbody = document.getElementById("sa-tbody");
   const tfoot = document.getElementById("sa-tfoot");
-  const summaryEl = document.getElementById("sa-summary");
   if (!tbody) return;
 
   const rows = [...shopifyAnalyticsState.rows];
@@ -11721,43 +11840,63 @@ function renderShopifyAnalyticsTable() {
     });
   }
 
-  tbody.innerHTML = rows
-    .map(
-      (r) => `
-        <tr>
+  // KPIs describe the whole cohort, not the active filter view.
+  renderSaKpis(rows);
+
+  const visible = applyShopifyAnalyticsFilters(rows);
+  renderSaRowCount(visible.length, rows.length);
+
+  // Bar scales to the visible page max so subsets stay readable.
+  const maxCount = Math.max(1, ...visible.map((r) => r.subsequent_count || 0));
+  const useStagger = shopifyAnalyticsState.staggerBudget > 0;
+
+  tbody.innerHTML = visible
+    .map((r, idx) => {
+      const c = r.subsequent_count || 0;
+      const pct = Math.min(100, Math.round((c / maxCount) * 100));
+      const stagger =
+        useStagger && idx < 30
+          ? ` class="sa-row-fade" style="animation-delay:${idx * 12}ms"`
+          : "";
+      return `
+        <tr${stagger}>
           <td>${escapeHtml(r.customer_name || "")}</td>
           <td>${escapeHtml(r.customer_email || "")}</td>
           <td>${escapeHtml(r.first_order_name || "")}</td>
           <td>${escapeHtml(r.first_order_date || "")}</td>
-          <td style="text-align: right;">${escapeHtml(r.first_order_amount || "0.00")} ${escapeHtml(r.first_order_currency || "")}</td>
-          <td style="text-align: right; font-weight: 600;">${r.subsequent_count}</td>
-          <td style="text-align: right;">${escapeHtml(r.subsequent_amount || "0.00")} ${escapeHtml(r.subsequent_currency || "")}</td>
+          <td class="sa-num">${escapeHtml(r.first_order_amount || "0.00")} ${escapeHtml(r.first_order_currency || "")}</td>
+          <td class="sa-num">
+            <span class="sa-count-cell">
+              <span class="sa-count-bar" style="--sa-bar:${pct}%"></span>
+              <span class="sa-count-num">${c.toLocaleString()}</span>
+            </span>
+          </td>
+          <td class="sa-num">${escapeHtml(r.subsequent_amount || "0.00")} ${escapeHtml(r.subsequent_currency || "")}</td>
         </tr>
-      `,
-    )
+      `;
+    })
     .join("");
 
-  // Totals
-  const totalCount = rows.reduce((s, r) => s + (r.subsequent_count || 0), 0);
-  const totalAmount = rows.reduce(
+  // Decrement the stagger budget by one render burst, so it fades away.
+  if (useStagger) {
+    shopifyAnalyticsState.staggerBudget = Math.max(
+      0,
+      shopifyAnalyticsState.staggerBudget - 1,
+    );
+  }
+
+  // Footer totals reflect the visible (filtered) set.
+  const totalCount = visible.reduce((s, r) => s + (r.subsequent_count || 0), 0);
+  const totalAmount = visible.reduce(
     (s, r) => s + (parseFloat(r.subsequent_amount) || 0),
     0,
   );
   const currency =
-    (rows.find((r) => r.subsequent_currency) || {}).subsequent_currency || "";
+    (visible.find((r) => r.subsequent_currency) || {}).subsequent_currency || "";
   const totalCountEl = document.getElementById("sa-total-count");
   const totalAmountEl = document.getElementById("sa-total-amount");
   if (totalCountEl) totalCountEl.textContent = totalCount.toLocaleString();
   if (totalAmountEl)
     totalAmountEl.textContent = `${totalAmount.toFixed(2)} ${currency}`.trim();
-  if (tfoot) tfoot.style.display = rows.length > 0 ? "" : "none";
-
-  if (summaryEl) {
-    const s = shopifyAnalyticsState.summary;
-    if (s) {
-      summaryEl.textContent = `${s.first_time_customers} first-time customer(s) — ${s.customers_with_returns} returned (${s.total_subsequent_orders} subsequent successful order(s), ${s.total_subsequent_amount} ${s.currency || ""})`;
-    } else {
-      summaryEl.textContent = `${rows.length} row(s) — streaming...`;
-    }
-  }
+  if (tfoot) tfoot.style.display = visible.length > 0 ? "" : "none";
 }
