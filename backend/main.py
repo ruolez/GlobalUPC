@@ -15,7 +15,7 @@ import os
 from database import get_db, engine
 from models import Store, MSSQLConnection, ShopifyConnection, Setting, StoreType, StoreCategory, UPCUpdateHistory, UPCExclusion, ItemTrackerConfig, ItemTrackerExclusion, PriceUpdateHistory, StoreMirror, SalesConfig, SalesExclusion
 from schemas import (
-    MSSQLStoreCreate, ShopifyStoreCreate, StoreResponse, StoreNameUpdate, StoreCategoryUpdate,
+    MSSQLStoreCreate, ShopifyStoreCreate, MSSQLStoreUpdate, ShopifyStoreUpdate, StoreResponse, StoreNameUpdate, StoreCategoryUpdate,
     SettingCreate, SettingUpdate, SettingResponse,
     UPCSearchRequest, UPCSearchResponse, ProductVariantMatch,
     UPCUpdateRequest, UPCUpdateResult,
@@ -1093,6 +1093,55 @@ def create_shopify_store(store_data: ShopifyStoreCreate, db: Session = Depends(g
     db.commit()
     db.refresh(store)
 
+    return store
+
+@app.put("/api/stores/{store_id}/mssql", response_model=StoreResponse)
+def update_mssql_store(store_id: int, store_data: MSSQLStoreUpdate, db: Session = Depends(get_db)):
+    store = db.query(Store).filter(Store.id == store_id).first()
+    if not store or store.store_type != StoreType.mssql or not store.mssql_connection:
+        raise HTTPException(status_code=404, detail="MSSQL store not found")
+
+    store.name = store_data.name.strip() or store.name
+    store.store_category = store_data.store_category
+
+    conn = store.mssql_connection
+    conn.host = store_data.connection.host
+    conn.port = store_data.connection.port
+    conn.database_name = store_data.connection.database_name
+    conn.username = store_data.connection.username
+    if store_data.connection.password:  # only overwrite when provided
+        conn.password = store_data.connection.password
+
+    db.commit()
+    db.refresh(store)
+    return store
+
+@app.put("/api/stores/{store_id}/shopify", response_model=StoreResponse)
+def update_shopify_store(store_id: int, store_data: ShopifyStoreUpdate, db: Session = Depends(get_db)):
+    store = db.query(Store).filter(Store.id == store_id).first()
+    if not store or store.store_type != StoreType.shopify or not store.shopify_connection:
+        raise HTTPException(status_code=404, detail="Shopify store not found")
+
+    # shop_domain must stay unique across OTHER stores
+    dupe = db.query(ShopifyConnection).filter(
+        ShopifyConnection.shop_domain == store_data.connection.shop_domain,
+        ShopifyConnection.store_id != store_id,
+    ).first()
+    if dupe:
+        raise HTTPException(status_code=400, detail="Shop domain already exists")
+
+    store.name = store_data.name.strip() or store.name
+    store.store_category = store_data.store_category
+
+    conn = store.shopify_connection
+    conn.shop_domain = store_data.connection.shop_domain
+    conn.api_version = store_data.connection.api_version
+    conn.update_sku_with_barcode = store_data.connection.update_sku_with_barcode
+    if store_data.connection.admin_api_key:  # only overwrite when provided
+        conn.admin_api_key = store_data.connection.admin_api_key
+
+    db.commit()
+    db.refresh(store)
     return store
 
 @app.delete("/api/stores/{store_id}", status_code=204)

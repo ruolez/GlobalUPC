@@ -30,6 +30,25 @@ class ShopifyStoreCreate(StoreBase):
     store_type: Literal["shopify"] = "shopify"
     connection: ShopifyConnectionBase
 
+class MSSQLConnectionUpdate(BaseModel):
+    host: str
+    port: int = 1433
+    database_name: str
+    username: str
+    password: Optional[str] = None  # blank/None => keep current
+
+class MSSQLStoreUpdate(StoreBase):
+    connection: MSSQLConnectionUpdate
+
+class ShopifyConnectionUpdate(BaseModel):
+    shop_domain: str
+    admin_api_key: Optional[str] = None  # blank/None => keep current
+    api_version: str = "2025-01"
+    update_sku_with_barcode: bool = False
+
+class ShopifyStoreUpdate(StoreBase):
+    connection: ShopifyConnectionUpdate
+
 class MSSQLConnectionResponse(MSSQLConnectionBase):
     id: int
     store_id: int

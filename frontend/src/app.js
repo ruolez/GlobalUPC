@@ -1195,6 +1195,9 @@ async function loadStores() {
       .getElementById(`toggle-${store.id}`)
       ?.addEventListener("click", () => toggleStore(store.id));
     document
+      .getElementById(`edit-conn-${store.id}`)
+      ?.addEventListener("click", () => openEditStoreModal(store));
+    document
       .getElementById(`delete-${store.id}`)
       ?.addEventListener("click", () => deleteStore(store.id));
     document
@@ -1230,6 +1233,7 @@ function createStoreCard(store, index) {
                     <button class="btn btn-small btn-secondary" id="toggle-${store.id}">
                         ${store.is_active ? "Disable" : "Enable"}
                     </button>
+                    <button class="btn btn-small btn-secondary" id="edit-conn-${store.id}">Edit</button>
                     <button class="btn btn-small btn-danger" id="delete-${store.id}">Delete</button>
                 </div>
             </div>
@@ -1374,6 +1378,69 @@ document.getElementById("price-update-modal")?.addEventListener("click", (e) => 
   }
 }, true);
 
+// Store edit-mode state (null = create mode)
+let mssqlEditId = null;
+let shopifyEditId = null;
+
+// Swap modal title/submit-button/secret-field between create and edit modes
+function setStoreModalMode(type, isEdit) {
+  if (type === "mssql") {
+    document.querySelector("#mssql-modal .modal-header h3").textContent = isEdit
+      ? "Edit MSSQL Database"
+      : "Add MSSQL Database";
+    document.querySelector("#mssql-form button[type=submit]").textContent =
+      isEdit ? "Save Changes" : "Add Database";
+    const pw = document.getElementById("mssql-password");
+    pw.required = !isEdit;
+    pw.placeholder = isEdit ? "Leave blank to keep current" : "••••••••";
+  } else {
+    document.querySelector("#shopify-modal .modal-header h3").textContent = isEdit
+      ? "Edit Shopify Store"
+      : "Add Shopify Store";
+    document.querySelector("#shopify-form button[type=submit]").textContent =
+      isEdit ? "Save Changes" : "Add Store";
+    const key = document.getElementById("shopify-api-key");
+    key.required = !isEdit;
+    key.placeholder = isEdit ? "Leave blank to keep current" : "shpat_...";
+  }
+}
+
+function openEditStoreModal(store) {
+  if (store.store_type === "mssql") {
+    const c = store.mssql_connection;
+    mssqlEditId = store.id;
+    document.getElementById("mssql-name").value = store.name;
+    document.getElementById("mssql-category").value =
+      store.store_category || "retail";
+    document.getElementById("mssql-host").value = c.host;
+    document.getElementById("mssql-port").value = c.port;
+    document.getElementById("mssql-database").value = c.database_name;
+    document.getElementById("mssql-username").value = c.username;
+    document.getElementById("mssql-password").value = "";
+    setStoreModalMode("mssql", true);
+    document.getElementById("mssql-test-status").className = "test-status";
+    document.getElementById("mssql-test-status").textContent = "";
+    openModal("mssql-modal");
+  } else {
+    const c = store.shopify_connection;
+    shopifyEditId = store.id;
+    document.getElementById("shopify-name").value = store.name;
+    document.getElementById("shopify-category").value =
+      store.store_category || "retail";
+    document.getElementById("shopify-domain").value = c.shop_domain;
+    document.getElementById("shopify-api-key").value = "";
+    document.getElementById("shopify-version").value = c.api_version;
+    const skuCheckbox = document.querySelector(
+      "#shopify-form input[name=update_sku_with_barcode]",
+    );
+    if (skuCheckbox) skuCheckbox.checked = !!c.update_sku_with_barcode;
+    setStoreModalMode("shopify", true);
+    document.getElementById("shopify-test-status").className = "test-status";
+    document.getElementById("shopify-test-status").textContent = "";
+    openModal("shopify-modal");
+  }
+}
+
 // Test MSSQL Connection
 async function testMSSQLConnection() {
   const statusEl = document.getElementById("mssql-test-status");
@@ -1416,6 +1483,9 @@ async function testMSSQLConnection() {
 
 // MSSQL Form
 document.getElementById("add-mssql-btn").addEventListener("click", () => {
+  mssqlEditId = null;
+  document.getElementById("mssql-form").reset();
+  setStoreModalMode("mssql", false);
   openModal("mssql-modal");
   // Clear test status when opening modal
   document.getElementById("mssql-test-status").className = "test-status";
@@ -1444,13 +1514,23 @@ document.getElementById("mssql-form").addEventListener("submit", async (e) => {
     },
   };
 
-  await apiRequest("/stores/mssql", {
-    method: "POST",
-    body: JSON.stringify(data),
-  });
+  if (mssqlEditId != null) {
+    // omit password when blank so backend keeps the current one
+    if (!data.connection.password) delete data.connection.password;
+    await apiRequest(`/stores/${mssqlEditId}/mssql`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    });
+  } else {
+    await apiRequest("/stores/mssql", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
 
   closeModal("mssql-modal");
   e.target.reset();
+  mssqlEditId = null;
   await loadStores();
   await loadDashboard();
 });
@@ -1495,6 +1575,9 @@ async function testShopifyConnection() {
 
 // Shopify Form
 document.getElementById("add-shopify-btn").addEventListener("click", () => {
+  shopifyEditId = null;
+  document.getElementById("shopify-form").reset();
+  setStoreModalMode("shopify", false);
   openModal("shopify-modal");
   // Clear test status when opening modal
   document.getElementById("shopify-test-status").className = "test-status";
@@ -1525,13 +1608,23 @@ document
       },
     };
 
-    await apiRequest("/stores/shopify", {
-      method: "POST",
-      body: JSON.stringify(data),
-    });
+    if (shopifyEditId != null) {
+      // omit api key when blank so backend keeps the current one
+      if (!data.connection.admin_api_key) delete data.connection.admin_api_key;
+      await apiRequest(`/stores/${shopifyEditId}/shopify`, {
+        method: "PUT",
+        body: JSON.stringify(data),
+      });
+    } else {
+      await apiRequest("/stores/shopify", {
+        method: "POST",
+        body: JSON.stringify(data),
+      });
+    }
 
     closeModal("shopify-modal");
     e.target.reset();
+    shopifyEditId = null;
     await loadStores();
     await loadDashboard();
   });
