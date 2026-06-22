@@ -85,6 +85,8 @@ function navigateTo(page) {
     loadShopifyAnalyticsPage();
   } else if (page === "quotations-in-progress") {
     loadQuotationsInProgressPage();
+  } else if (page === "inventory-time") {
+    loadInventoryTimePage();
   }
 }
 
@@ -387,6 +389,7 @@ async function loadSettings() {
   await loadItemTrackerExclusions();
   await loadShopifySalesSettings();
   await loadAdminStoreSetting();
+  await loadInventoryTimeSettings();
 
   // Set dropdown value to saved preference
   const savedLandingPage = getDefaultLandingPage();
@@ -12077,3 +12080,266 @@ function renderShopifyAnalyticsTable() {
     totalAmountEl.textContent = `${totalAmount.toFixed(2)} ${currency}`.trim();
   if (tfoot) tfoot.style.display = visible.length > 0 ? "" : "none";
 }
+
+// ===== Inventory Time =====
+
+const INVENTORY_TIMEOUT_KEY = "inventory_recount_timeout_minutes";
+const INVENTORY_ISOLATED_KEY = "isolated_product_recount_minutes";
+
+const inventoryTimeState = {
+  initialized: false,
+  users: [],
+};
+
+function loadInventoryTimePage() {
+  if (!inventoryTimeState.initialized) {
+    initInventoryTimePage();
+    inventoryTimeState.initialized = true;
+  }
+  loadInventoryTimeUsers();
+}
+
+function initInventoryTimePage() {
+  invtimeApplyDatePreset("7");
+
+  document
+    .getElementById("invtime-calculate-btn")
+    ?.addEventListener("click", fetchInventoryTime);
+
+  document
+    .getElementById("invtime-controls")
+    ?.addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-range]");
+      if (btn) invtimeApplyDatePreset(btn.dataset.range);
+    });
+}
+
+function invtimeApplyDatePreset(range) {
+  const startInput = document.getElementById("invtime-start-date");
+  const endInput = document.getElementById("invtime-end-date");
+  if (!startInput || !endInput) return;
+  const today = new Date();
+  let start, end;
+  if (range === "7" || range === "30") {
+    end = today;
+    start = new Date(today);
+    start.setDate(today.getDate() - parseInt(range, 10));
+  } else if (range === "this-month") {
+    start = new Date(today.getFullYear(), today.getMonth(), 1);
+    end = today;
+  } else if (range === "last-month") {
+    start = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+    end = new Date(today.getFullYear(), today.getMonth(), 0);
+  } else {
+    return;
+  }
+  startInput.value = start.toISOString().slice(0, 10);
+  endInput.value = end.toISOString().slice(0, 10);
+}
+
+async function loadInventoryTimeUsers() {
+  const select = document.getElementById("invtime-user");
+  const notConfigured = document.getElementById("invtime-not-configured");
+  const controls = document.getElementById("invtime-controls");
+  if (!select) return;
+
+  try {
+    const data = await apiRequest("/inventory-time/users");
+    if (!data.configured) {
+      if (notConfigured) notConfigured.style.display = "block";
+      if (controls) controls.style.display = "none";
+      return;
+    }
+    if (notConfigured) notConfigured.style.display = "none";
+    if (controls) controls.style.display = "block";
+
+    inventoryTimeState.users = data.users || [];
+    const previous = select.value;
+    select.innerHTML = '<option value="">— Select a user —</option>';
+    inventoryTimeState.users.forEach((u) => {
+      const opt = document.createElement("option");
+      opt.value = u;
+      opt.textContent = u;
+      select.appendChild(opt);
+    });
+    if (previous && inventoryTimeState.users.includes(previous)) {
+      select.value = previous;
+    }
+  } catch (error) {
+    showToast(`✗ Failed to load users: ${error.message}`, "error");
+  }
+}
+
+async function fetchInventoryTime() {
+  const username = document.getElementById("invtime-user")?.value || "";
+  const dateFrom = document.getElementById("invtime-start-date")?.value || "";
+  const dateTo = document.getElementById("invtime-end-date")?.value || "";
+
+  const loadingEl = document.getElementById("invtime-loading");
+  const errorEl = document.getElementById("invtime-error");
+  const summaryEl = document.getElementById("invtime-summary");
+  const resultsEl = document.getElementById("invtime-results");
+  const emptyEl = document.getElementById("invtime-empty");
+
+  errorEl.style.display = "none";
+  if (!username) {
+    errorEl.textContent = "Please select a user.";
+    errorEl.style.display = "block";
+    return;
+  }
+  if (!dateFrom || !dateTo) {
+    errorEl.textContent = "Please select a date range.";
+    errorEl.style.display = "block";
+    return;
+  }
+
+  loadingEl.style.display = "block";
+  summaryEl.style.display = "none";
+  resultsEl.style.display = "none";
+  emptyEl.style.display = "none";
+
+  try {
+    const data = await apiRequest("/inventory-time", {
+      method: "POST",
+      body: JSON.stringify({
+        username,
+        date_from: dateFrom,
+        date_to: dateTo,
+      }),
+    });
+    if (!data.configured) {
+      errorEl.textContent =
+        "The DB_ADMIN store is not configured. Set it under Settings → Roles & Mirrors.";
+      errorEl.style.display = "block";
+      return;
+    }
+    renderInventoryTime(data);
+  } catch (error) {
+    errorEl.textContent = `Failed to calculate: ${error.message}`;
+    errorEl.style.display = "block";
+  } finally {
+    loadingEl.style.display = "none";
+  }
+}
+
+function renderInventoryTime(data) {
+  const summaryEl = document.getElementById("invtime-summary");
+  const resultsEl = document.getElementById("invtime-results");
+  const emptyEl = document.getElementById("invtime-empty");
+  const tbody = document.getElementById("invtime-tbody");
+
+  document.getElementById("invtime-total").textContent = formatDuration(
+    data.total_seconds,
+  );
+  document.getElementById("invtime-session-count").textContent =
+    data.session_count.toLocaleString();
+  document.getElementById("invtime-item-count").textContent =
+    data.item_count.toLocaleString();
+  document.getElementById("invtime-settings-info").textContent =
+    `${data.timeout_minutes} min / ${data.isolated_minutes} min`;
+  summaryEl.style.display = "block";
+
+  const sessions = data.sessions || [];
+  if (sessions.length === 0) {
+    resultsEl.style.display = "none";
+    emptyEl.style.display = "block";
+    return;
+  }
+  emptyEl.style.display = "none";
+
+  tbody.innerHTML = "";
+  sessions.forEach((s, index) => {
+    const row = document.createElement("tr");
+    row.innerHTML = `
+      <td style="color: var(--text-tertiary)">${index + 1}</td>
+      <td>${escapeHtml(formatDateTime(s.start))}</td>
+      <td>${escapeHtml(formatDateTime(s.end))}</td>
+      <td style="text-align: right">${s.item_count.toLocaleString()}</td>
+      <td style="text-align: right">${escapeHtml(formatDuration(s.seconds))}</td>
+    `;
+    tbody.appendChild(row);
+  });
+  resultsEl.style.display = "block";
+}
+
+function formatDateTime(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  return (
+    d.toLocaleDateString() +
+    " " +
+    d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+  );
+}
+
+function formatDuration(seconds) {
+  const total = Math.round(seconds || 0);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
+async function loadInventoryTimeSettings() {
+  const timeoutInput = document.getElementById("inventory-timeout-minutes");
+  const isolatedInput = document.getElementById("inventory-isolated-minutes");
+
+  if (timeoutInput) {
+    try {
+      const resp = await fetch(`${API_BASE}/settings/${INVENTORY_TIMEOUT_KEY}`);
+      timeoutInput.value = resp.ok ? (await resp.json()).value || "10" : "10";
+    } catch {
+      timeoutInput.value = "10";
+    }
+  }
+  if (isolatedInput) {
+    try {
+      const resp = await fetch(`${API_BASE}/settings/${INVENTORY_ISOLATED_KEY}`);
+      isolatedInput.value = resp.ok ? (await resp.json()).value || "1" : "1";
+    } catch {
+      isolatedInput.value = "1";
+    }
+  }
+}
+
+async function saveSetting(key, value, description) {
+  const patchResp = await fetch(`${API_BASE}/settings/${key}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ value }),
+  });
+  if (!patchResp.ok) {
+    await apiRequest("/settings", {
+      method: "POST",
+      body: JSON.stringify({ key, value, description }),
+    });
+  }
+}
+
+async function saveInventoryTimeSettings() {
+  const timeout = document.getElementById("inventory-timeout-minutes")?.value;
+  const isolated = document.getElementById("inventory-isolated-minutes")?.value;
+
+  try {
+    await saveSetting(
+      INVENTORY_TIMEOUT_KEY,
+      timeout,
+      "Inventory Time: break-timeout in minutes (gap larger than this starts a new session).",
+    );
+    await saveSetting(
+      INVENTORY_ISOLATED_KEY,
+      isolated,
+      "Inventory Time: minutes credited for an isolated single-item recount session.",
+    );
+    showToast("✓ Inventory Time settings saved", "success");
+  } catch (error) {
+    showToast(`✗ Failed to save: ${error.message}`, "error");
+  }
+}
+
+document
+  .getElementById("inventory-time-settings-save")
+  ?.addEventListener("click", saveInventoryTimeSettings);

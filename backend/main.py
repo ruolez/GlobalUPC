@@ -47,6 +47,8 @@ from schemas import (
     DashboardStatsResponse, DashboardStoreStats, DashboardExclusionCounts,
     DashboardMirrorStats, DashboardBatchSummary, DashboardInProgressStats,
     DashboardConfigCheck,
+    InventoryTimeRequest, InventoryTimeResponse, InventoryTimeSession,
+    InventoryTimeUsersResponse,
 )
 from mssql_helper import (
     test_mssql_connection, search_upc_across_mssql_stores, search_products_by_upc,
@@ -79,6 +81,11 @@ from quotations_in_progress_helper import (
     search_products_async,
     count_in_progress_async,
 )
+from inventory_time_helper import (
+    fetch_recount_timestamps_async,
+    fetch_distinct_usernames_async,
+    compute_inventory_time,
+)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -94,6 +101,9 @@ async def lifespan(app: FastAPI):
     print("[SHUTDOWN] Shutting down Quotations-In-Progress thread pool...")
     from quotations_in_progress_helper import shutdown_qip_executor
     shutdown_qip_executor()
+    print("[SHUTDOWN] Shutting down Inventory Time thread pool...")
+    from inventory_time_helper import shutdown_inv_time_executor
+    shutdown_inv_time_executor()
     print("[SHUTDOWN] Cleanup complete.")
 
 app = FastAPI(title="Global UPC API", version="1.0.0", lifespan=lifespan)
@@ -5180,6 +5190,96 @@ def _resolve_admin_store_soft(db: Session) -> Optional[Store]:
     if not store or store.store_type != StoreType.mssql or not store.mssql_connection:
         return None
     return store
+
+
+INVENTORY_TIMEOUT_SETTING_KEY = "inventory_recount_timeout_minutes"
+INVENTORY_ISOLATED_SETTING_KEY = "isolated_product_recount_minutes"
+DEFAULT_INVENTORY_TIMEOUT_MINUTES = 10.0
+DEFAULT_INVENTORY_ISOLATED_MINUTES = 1.0
+
+
+def _get_float_setting(db: Session, key: str, default: float) -> float:
+    """Read a numeric setting (stored as a string), falling back to `default`."""
+    setting = db.query(Setting).filter(Setting.key == key).first()
+    if not setting or setting.value is None:
+        return default
+    try:
+        return float(setting.value)
+    except (TypeError, ValueError):
+        return default
+
+
+@app.get("/api/inventory-time/users", response_model=InventoryTimeUsersResponse)
+async def list_inventory_time_users(db: Session = Depends(get_db)):
+    """Distinct usernames present in ManualInventoryUpdate on the admin DB."""
+    store = _resolve_admin_store_soft(db)
+    if not store:
+        return InventoryTimeUsersResponse(configured=False, users=[])
+
+    conn = store.mssql_connection
+    success, error, users = await fetch_distinct_usernames_async(
+        host=conn.host,
+        port=conn.port,
+        database=conn.database_name,
+        username=conn.username,
+        password=conn.password,
+    )
+    if not success:
+        raise HTTPException(status_code=502, detail=f"MSSQL query failed: {error}")
+    return InventoryTimeUsersResponse(configured=True, users=users)
+
+
+@app.post("/api/inventory-time", response_model=InventoryTimeResponse)
+async def calculate_inventory_time(
+    req: InventoryTimeRequest,
+    db: Session = Depends(get_db),
+):
+    """Reconstruct a user's recount working time from ManualInventoryUpdate timestamps."""
+    if not req.username or not req.username.strip():
+        raise HTTPException(status_code=400, detail="A username is required.")
+    if req.date_from > req.date_to:
+        raise HTTPException(status_code=400, detail="date_from must be on or before date_to.")
+
+    store = _resolve_admin_store_soft(db)
+    if not store:
+        return InventoryTimeResponse(configured=False)
+
+    timeout_minutes = _get_float_setting(
+        db, INVENTORY_TIMEOUT_SETTING_KEY, DEFAULT_INVENTORY_TIMEOUT_MINUTES
+    )
+    isolated_minutes = _get_float_setting(
+        db, INVENTORY_ISOLATED_SETTING_KEY, DEFAULT_INVENTORY_ISOLATED_MINUTES
+    )
+
+    conn = store.mssql_connection
+    success, error, timestamps = await fetch_recount_timestamps_async(
+        host=conn.host,
+        port=conn.port,
+        database=conn.database_name,
+        username=conn.username,
+        password=conn.password,
+        target_user=req.username.strip(),
+        date_from=req.date_from,
+        date_to=req.date_to,
+    )
+    if not success:
+        raise HTTPException(status_code=502, detail=f"MSSQL query failed: {error}")
+
+    result = compute_inventory_time(
+        timestamps,
+        timeout_s=timeout_minutes * 60.0,
+        isolated_s=isolated_minutes * 60.0,
+    )
+
+    return InventoryTimeResponse(
+        configured=True,
+        total_seconds=result["total_seconds"],
+        session_count=result["session_count"],
+        item_count=result["item_count"],
+        sessions=[InventoryTimeSession(**s) for s in result["sessions"]],
+        timeout_minutes=timeout_minutes,
+        isolated_minutes=isolated_minutes,
+    )
 
 
 @app.post("/api/quotations/in-progress", response_model=QuotationsInProgressListResponse)

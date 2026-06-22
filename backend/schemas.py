@@ -828,3 +828,32 @@ class DashboardStatsResponse(BaseModel):
     in_progress: DashboardInProgressStats
     config_health: List[DashboardConfigCheck]
     generated_at: datetime
+
+
+# Inventory Time Schemas
+class InventoryTimeRequest(BaseModel):
+    username: str
+    date_from: str  # "YYYY-MM-DD"
+    date_to: str    # "YYYY-MM-DD"
+
+
+class InventoryTimeSession(BaseModel):
+    start: datetime
+    end: datetime
+    item_count: int
+    seconds: float
+
+
+class InventoryTimeResponse(BaseModel):
+    configured: bool = True
+    total_seconds: float = 0.0
+    session_count: int = 0
+    item_count: int = 0
+    sessions: List[InventoryTimeSession] = []
+    timeout_minutes: float = 0.0
+    isolated_minutes: float = 0.0
+
+
+class InventoryTimeUsersResponse(BaseModel):
+    configured: bool = False
+    users: List[str] = []

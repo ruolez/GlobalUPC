@@ -50,6 +50,9 @@
           <a href="#" class="nav-item" data-page="quotations-in-progress">
             <span>In Progress</span>
           </a>
+          <a href="#" class="nav-item" data-page="inventory-time">
+            <span>Inventory Time</span>
+          </a>
           <a href="#" class="nav-item" data-page="sales">
             <span>Sales</span>
           </a>
@@ -473,6 +476,38 @@
                       <option value="">— None —</option>
                     </select>
                     <button type="button" class="btn btn-primary" id="qip-admin-store-save">Save</button>
+                  </div>
+                </div>
+
+                <!-- Inventory Time settings -->
+                <div class="role-card role-card-wide">
+                  <div class="role-card-head">
+                    <span class="role-card-icon" aria-hidden="true">
+                      <svg width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <circle cx="9" cy="9" r="6.5" stroke="currentColor" stroke-width="1.6"/>
+                        <path d="M9 5.5V9l2.5 1.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+                      </svg>
+                    </span>
+                    <div class="role-card-title-block">
+                      <div class="role-card-title">Inventory Time</div>
+                      <p class="role-card-help">
+                        <strong>Break timeout</strong>: a gap larger than this between two
+                        recounts is treated as a break (not counted), starting a new session.
+                        <strong>Isolated recount</strong>: time credited for a lone single-item
+                        session. Both in minutes.
+                      </p>
+                    </div>
+                  </div>
+                  <div class="role-card-control" style="flex-wrap: wrap; gap: 1rem;">
+                    <div class="form-group" style="margin: 0;">
+                      <label for="inventory-timeout-minutes" style="font-size: 0.75rem;">Break timeout (min)</label>
+                      <input type="number" id="inventory-timeout-minutes" min="0" step="0.5" placeholder="10" style="max-width: 140px" />
+                    </div>
+                    <div class="form-group" style="margin: 0;">
+                      <label for="inventory-isolated-minutes" style="font-size: 0.75rem;">Isolated recount (min)</label>
+                      <input type="number" id="inventory-isolated-minutes" min="0" step="0.5" placeholder="1" style="max-width: 140px" />
+                    </div>
+                    <button type="button" class="btn btn-primary" id="inventory-time-settings-save" style="align-self: flex-end;">Save</button>
                   </div>
                 </div>
 
@@ -2699,6 +2734,99 @@
             Loading quotations…
           </div>
           <div id="qip-error" class="qip-error" style="display: none"></div>
+        </div>
+
+        <!-- Inventory Time Page -->
+        <div id="inventory-time-page" class="page" style="display: none">
+          <header class="page-header">
+            <h2>Inventory Time</h2>
+            <p class="subtitle">Estimate how long each user spent recounting inventory, from ManualInventoryUpdate timestamps</p>
+          </header>
+
+          <div id="invtime-not-configured" class="card" style="display: none; margin-bottom: 1.5rem;">
+            <div style="padding: 1.5rem; color: var(--text-secondary); font-size: 0.875rem;">
+              The DB_ADMIN store is not configured. Set it under
+              <strong>Settings → Roles &amp; Mirrors</strong> to use Inventory Time.
+            </div>
+          </div>
+
+          <div id="invtime-controls" class="card" style="margin-bottom: 1.5rem">
+            <div class="card-header"><h3>Select User &amp; Date Range</h3></div>
+            <div style="padding: 1rem 1.5rem 1.5rem">
+              <div class="form-group">
+                <label for="invtime-user">User</label>
+                <select id="invtime-user" style="max-width: 320px">
+                  <option value="">— Select a user —</option>
+                </select>
+              </div>
+
+              <div class="form-group" style="margin-top: 1rem">
+                <label>Date Range</label>
+                <div style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
+                  <input type="date" id="invtime-start-date" style="max-width: 180px" />
+                  <span style="color: var(--text-secondary)">to</span>
+                  <input type="date" id="invtime-end-date" style="max-width: 180px" />
+                </div>
+                <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem; flex-wrap: wrap;">
+                  <button type="button" class="btn btn-secondary" data-range="7" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Last 7 Days</button>
+                  <button type="button" class="btn btn-secondary" data-range="30" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Last 30 Days</button>
+                  <button type="button" class="btn btn-secondary" data-range="this-month" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">This Month</button>
+                  <button type="button" class="btn btn-secondary" data-range="last-month" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Last Month</button>
+                </div>
+              </div>
+
+              <div style="margin-top: 1.25rem">
+                <button type="button" class="btn btn-primary" id="invtime-calculate-btn">Calculate</button>
+              </div>
+            </div>
+          </div>
+
+          <div id="invtime-loading" style="display: none; text-align: center; padding: 2rem 1rem; color: var(--text-secondary);">
+            Calculating…
+          </div>
+          <div id="invtime-error" class="qip-error" style="display: none; margin-bottom: 1.5rem;"></div>
+
+          <div id="invtime-summary" class="card" style="display: none; margin-bottom: 1.5rem;">
+            <div style="padding: 1.25rem 1.5rem; display: flex; flex-wrap: wrap; gap: 2.5rem;">
+              <div>
+                <div style="font-size: 0.75rem; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.04em;">Total Time</div>
+                <div id="invtime-total" style="font-size: 1.5rem; font-weight: 600; color: var(--text-primary);">—</div>
+              </div>
+              <div>
+                <div style="font-size: 0.75rem; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.04em;">Sessions</div>
+                <div id="invtime-session-count" style="font-size: 1.5rem; font-weight: 600; color: var(--text-primary);">—</div>
+              </div>
+              <div>
+                <div style="font-size: 0.75rem; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.04em;">Items Recounted</div>
+                <div id="invtime-item-count" style="font-size: 1.5rem; font-weight: 600; color: var(--text-primary);">—</div>
+              </div>
+              <div>
+                <div style="font-size: 0.75rem; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.04em;">Break / Isolated</div>
+                <div id="invtime-settings-info" style="font-size: 0.875rem; color: var(--text-secondary); margin-top: 0.35rem;">—</div>
+              </div>
+            </div>
+          </div>
+
+          <div id="invtime-empty" style="display: none; text-align: center; padding: 3rem 1rem; color: var(--text-secondary);">
+            <p>No inventory recounts found for this user in the selected date range.</p>
+          </div>
+
+          <div id="invtime-results" style="display: none;">
+            <div class="table-container">
+              <table class="data-table" id="invtime-table">
+                <thead>
+                  <tr>
+                    <th style="width: 6%;">#</th>
+                    <th style="width: 30%;">Session Start</th>
+                    <th style="width: 30%;">Session End</th>
+                    <th style="width: 14%; text-align: right;">Items</th>
+                    <th style="width: 20%; text-align: right;">Time</th>
+                  </tr>
+                </thead>
+                <tbody id="invtime-tbody"></tbody>
+              </table>
+            </div>
+          </div>
         </div>
 
         <!-- Price Updates Page -->
