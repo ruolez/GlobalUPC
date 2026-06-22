@@ -12106,12 +12106,33 @@ function initInventoryTimePage() {
     .getElementById("invtime-calculate-btn")
     ?.addEventListener("click", fetchInventoryTime);
 
+  // A new range invalidates the displayed results and re-scopes the user list.
   document
     .getElementById("invtime-controls")
     ?.addEventListener("click", (e) => {
       const btn = e.target.closest("[data-week]");
-      if (btn) invtimeApplyWeekPreset(parseInt(btn.dataset.week, 10));
+      if (btn) {
+        invtimeApplyWeekPreset(parseInt(btn.dataset.week, 10));
+        clearInventoryTimeResults();
+        loadInventoryTimeUsers();
+      }
     });
+
+  ["invtime-start-date", "invtime-end-date"].forEach((id) => {
+    document.getElementById(id)?.addEventListener("change", () => {
+      clearInventoryTimeResults();
+      loadInventoryTimeUsers();
+    });
+  });
+}
+
+function clearInventoryTimeResults() {
+  ["invtime-summary", "invtime-results", "invtime-empty", "invtime-error"].forEach(
+    (id) => {
+      const el = document.getElementById(id);
+      if (el) el.style.display = "none";
+    },
+  );
 }
 
 // weekOffset 0 = this week, 1 = last week, etc. Weeks run Monday–Sunday.
@@ -12145,10 +12166,16 @@ async function loadInventoryTimeUsers() {
   const select = document.getElementById("invtime-user");
   const notConfigured = document.getElementById("invtime-not-configured");
   const controls = document.getElementById("invtime-controls");
+  const hint = document.getElementById("invtime-user-hint");
   if (!select) return;
 
+  const dateFrom = document.getElementById("invtime-start-date")?.value || "";
+  const dateTo = document.getElementById("invtime-end-date")?.value || "";
+  if (!dateFrom || !dateTo) return;
+
   try {
-    const data = await apiRequest("/inventory-time/users");
+    const params = new URLSearchParams({ date_from: dateFrom, date_to: dateTo });
+    const data = await apiRequest(`/inventory-time/users?${params}`);
     if (!data.configured) {
       if (notConfigured) notConfigured.style.display = "block";
       if (controls) controls.style.display = "none";
@@ -12168,6 +12195,11 @@ async function loadInventoryTimeUsers() {
     });
     if (previous && inventoryTimeState.users.includes(previous)) {
       select.value = previous;
+    }
+    if (hint) {
+      hint.textContent = inventoryTimeState.users.length
+        ? "Only users who recounted in the selected range are listed."
+        : "No users recounted in the selected range.";
     }
   } catch (error) {
     showToast(`✗ Failed to load users: ${error.message}`, "error");

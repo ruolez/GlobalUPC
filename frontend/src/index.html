@@ -2751,16 +2751,9 @@
           </div>
 
           <div id="invtime-controls" class="card" style="margin-bottom: 1.5rem">
-            <div class="card-header"><h3>Select User &amp; Date Range</h3></div>
+            <div class="card-header"><h3>Select Date Range &amp; User</h3></div>
             <div style="padding: 1rem 1.5rem 1.5rem">
               <div class="form-group">
-                <label for="invtime-user">User</label>
-                <select id="invtime-user" style="max-width: 320px">
-                  <option value="">— Select a user —</option>
-                </select>
-              </div>
-
-              <div class="form-group" style="margin-top: 1rem">
                 <label>Date Range</label>
                 <div style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
                   <input type="date" id="invtime-start-date" style="max-width: 180px" />
@@ -2773,6 +2766,14 @@
                   <button type="button" class="btn btn-secondary" data-week="2" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">2nd Last Week</button>
                   <button type="button" class="btn btn-secondary" data-week="3" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">3rd Last Week</button>
                 </div>
+              </div>
+
+              <div class="form-group" style="margin-top: 1rem">
+                <label for="invtime-user">User</label>
+                <select id="invtime-user" style="max-width: 320px">
+                  <option value="">— Select a user —</option>
+                </select>
+                <small id="invtime-user-hint" class="settings-input-help" style="display: block; margin-top: 0.35rem;">Only users who recounted in the selected range are listed.</small>
               </div>
 
               <div style="margin-top: 1.25rem">

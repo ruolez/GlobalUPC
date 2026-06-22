@@ -59,18 +59,34 @@ def _fetch_distinct_usernames_sync(
     database: str,
     username: str,
     password: str,
+    date_from: str,
+    date_to: str,
 ) -> Tuple[bool, Optional[str], List[str]]:
-    """Distinct, non-blank usernames present in ManualInventoryUpdate (for the dropdown)."""
+    """
+    Distinct, non-blank usernames that have ManualInventoryUpdate rows within
+    [date_from, date_to] (inclusive) -- i.e. only people who recounted in the
+    selected range. The upper bound is compared with `< date_to + 1 day`.
+    """
     conn_str = get_mssql_connection_string(host, port, database, username, password)
+
+    try:
+        upper = (datetime.strptime(date_to, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+    except ValueError:
+        return False, f"Invalid date_to: {date_to}", []
+
+    query = """
+        SELECT DISTINCT Username FROM ManualInventoryUpdate
+        WHERE Username IS NOT NULL AND LTRIM(RTRIM(Username)) <> ''
+          AND DateCreated IS NOT NULL
+          AND DateCreated >= ?
+          AND DateCreated < ?
+        ORDER BY Username
+    """
 
     try:
         with pyodbc.connect(conn_str, timeout=30) as conn:
             cursor = conn.cursor()
-            cursor.execute("""
-                SELECT DISTINCT Username FROM ManualInventoryUpdate
-                WHERE Username IS NOT NULL AND LTRIM(RTRIM(Username)) <> ''
-                ORDER BY Username
-            """)
+            cursor.execute(query, [date_from, upper])
             users = [r[0] for r in cursor.fetchall() if r[0]]
         return True, None, users
     except Exception as e:

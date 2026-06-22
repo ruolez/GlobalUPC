@@ -5210,8 +5210,15 @@ def _get_float_setting(db: Session, key: str, default: float) -> float:
 
 
 @app.get("/api/inventory-time/users", response_model=InventoryTimeUsersResponse)
-async def list_inventory_time_users(db: Session = Depends(get_db)):
-    """Distinct usernames present in ManualInventoryUpdate on the admin DB."""
+async def list_inventory_time_users(
+    date_from: str,
+    date_to: str,
+    db: Session = Depends(get_db),
+):
+    """Usernames with ManualInventoryUpdate rows in [date_from, date_to] on the admin DB."""
+    if date_from > date_to:
+        raise HTTPException(status_code=400, detail="date_from must be on or before date_to.")
+
     store = _resolve_admin_store_soft(db)
     if not store:
         return InventoryTimeUsersResponse(configured=False, users=[])
@@ -5223,6 +5230,8 @@ async def list_inventory_time_users(db: Session = Depends(get_db)):
         database=conn.database_name,
         username=conn.username,
         password=conn.password,
+        date_from=date_from,
+        date_to=date_to,
     )
     if not success:
         raise HTTPException(status_code=502, detail=f"MSSQL query failed: {error}")
