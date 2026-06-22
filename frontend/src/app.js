@@ -12100,7 +12100,7 @@ function loadInventoryTimePage() {
 }
 
 function initInventoryTimePage() {
-  invtimeApplyDatePreset("7");
+  invtimeApplyWeekPreset(0);
 
   document
     .getElementById("invtime-calculate-btn")
@@ -12109,32 +12109,36 @@ function initInventoryTimePage() {
   document
     .getElementById("invtime-controls")
     ?.addEventListener("click", (e) => {
-      const btn = e.target.closest("[data-range]");
-      if (btn) invtimeApplyDatePreset(btn.dataset.range);
+      const btn = e.target.closest("[data-week]");
+      if (btn) invtimeApplyWeekPreset(parseInt(btn.dataset.week, 10));
     });
 }
 
-function invtimeApplyDatePreset(range) {
+// weekOffset 0 = this week, 1 = last week, etc. Weeks run Monday–Sunday.
+function invtimeApplyWeekPreset(weekOffset) {
   const startInput = document.getElementById("invtime-start-date");
   const endInput = document.getElementById("invtime-end-date");
   if (!startInput || !endInput) return;
   const today = new Date();
-  let start, end;
-  if (range === "7" || range === "30") {
-    end = today;
-    start = new Date(today);
-    start.setDate(today.getDate() - parseInt(range, 10));
-  } else if (range === "this-month") {
-    start = new Date(today.getFullYear(), today.getMonth(), 1);
-    end = today;
-  } else if (range === "last-month") {
-    start = new Date(today.getFullYear(), today.getMonth() - 1, 1);
-    end = new Date(today.getFullYear(), today.getMonth(), 0);
-  } else {
-    return;
-  }
-  startInput.value = start.toISOString().slice(0, 10);
-  endInput.value = end.toISOString().slice(0, 10);
+  const daysSinceMonday = (today.getDay() + 6) % 7; // getDay(): 0=Sun..6=Sat
+  const monday = new Date(
+    today.getFullYear(),
+    today.getMonth(),
+    today.getDate() - daysSinceMonday - 7 * weekOffset,
+  );
+  const sunday = new Date(
+    monday.getFullYear(),
+    monday.getMonth(),
+    monday.getDate() + 6,
+  );
+  startInput.value = toYMD(monday);
+  endInput.value = toYMD(sunday);
+}
+
+function toYMD(d) {
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${m}-${day}`;
 }
 
 async function loadInventoryTimeUsers() {
