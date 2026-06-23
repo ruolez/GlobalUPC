@@ -393,6 +393,7 @@ async function loadSettings() {
   await loadShopifySalesSettings();
   await loadAdminStoreSetting();
   await loadInventoryTimeSettings();
+  await loadCheckedOrdersSettings();
 
   // Set dropdown value to saved preference
   const savedLandingPage = getDefaultLandingPage();
@@ -12619,6 +12620,7 @@ function renderCheckedOrders(data) {
   checkedOrdersState.orders = data.orders || [];
   checkedOrdersState.sortColumn = null;
   checkedOrdersState.sortOrder = "asc";
+  checkedOrdersState.slowThresholdSeconds = (data.slow_threshold_minutes || 0) * 60;
   renderCheckedOrdersSplit();
   renderCheckedOrdersTable();
 }
@@ -12657,6 +12659,7 @@ function renderCheckedOrdersTable() {
   }
   emptyEl.style.display = "none";
 
+  const slowThreshold = checkedOrdersState.slowThresholdSeconds || 0;
   const col = checkedOrdersState.sortColumn;
   if (col) {
     const dir = checkedOrdersState.sortOrder === "asc" ? 1 : -1;
@@ -12671,11 +12674,22 @@ function renderCheckedOrdersTable() {
       }
       return result * dir;
     });
+  } else if (slowThreshold > 0) {
+    // Default view: slow orders (duration over the threshold) float to the top,
+    // each group keeping the backend's created_at-ascending order.
+    orders.sort((a, b) => {
+      const aSlow = (a.seconds || 0) > slowThreshold ? 0 : 1;
+      const bSlow = (b.seconds || 0) > slowThreshold ? 0 : 1;
+      if (aSlow !== bSlow) return aSlow - bSlow;
+      return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+    });
   }
 
   tbody.innerHTML = "";
   orders.forEach((o, index) => {
+    const slow = slowThreshold > 0 && (o.seconds || 0) > slowThreshold;
     const row = document.createElement("tr");
+    if (slow) row.className = "chkord-slow-row";
     row.innerHTML = `
       <td style="color: var(--text-tertiary)">${index + 1}</td>
       <td>${escapeHtml(o.order_number)}</td>
@@ -12792,3 +12806,36 @@ async function saveInventoryTimeSettings() {
 document
   .getElementById("inventory-time-settings-save")
   ?.addEventListener("click", saveInventoryTimeSettings);
+
+// ===== Checked Orders settings =====
+
+const CHECKED_ORDERS_SLOW_KEY = "checked_orders_slow_minutes";
+
+async function loadCheckedOrdersSettings() {
+  const slowInput = document.getElementById("checked-orders-slow-minutes");
+  if (!slowInput) return;
+  try {
+    const resp = await fetch(`${API_BASE}/settings/${CHECKED_ORDERS_SLOW_KEY}`);
+    slowInput.value = resp.ok ? (await resp.json()).value || "15" : "15";
+  } catch {
+    slowInput.value = "15";
+  }
+}
+
+async function saveCheckedOrdersSettings() {
+  const slow = document.getElementById("checked-orders-slow-minutes")?.value;
+  try {
+    await saveSetting(
+      CHECKED_ORDERS_SLOW_KEY,
+      slow,
+      "Checked Orders: minutes above which an order's check duration is flagged slow (red, floated to top).",
+    );
+    showToast("✓ Checked Orders settings saved", "success");
+  } catch (error) {
+    showToast(`✗ Failed to save: ${error.message}`, "error");
+  }
+}
+
+document
+  .getElementById("checked-orders-settings-save")
+  ?.addEventListener("click", saveCheckedOrdersSettings);

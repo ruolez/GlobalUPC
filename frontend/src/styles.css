@@ -4909,6 +4909,20 @@ body.no-scroll {
   color: var(--accent-primary);
 }
 
+/* Slow orders: check duration over the configured threshold */
+#chkord-table tbody tr.chkord-slow-row {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+#chkord-table tbody tr.chkord-slow-row:hover {
+  background: color-mix(in srgb, var(--danger) 18%, transparent);
+}
+
+#chkord-table tbody tr.chkord-slow-row td:nth-child(5) {
+  color: var(--danger);
+  font-weight: 600;
+}
+
 /* ============================================================================
    Shopify Analytics — KPI strip, filter bar, table polish
    ============================================================================ */

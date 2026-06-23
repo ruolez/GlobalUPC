@@ -5255,6 +5255,9 @@ INVENTORY_ISOLATED_SETTING_KEY = "isolated_product_recount_minutes"
 DEFAULT_INVENTORY_TIMEOUT_MINUTES = 10.0
 DEFAULT_INVENTORY_ISOLATED_MINUTES = 1.0
 
+CHECKED_ORDERS_SLOW_SETTING_KEY = "checked_orders_slow_minutes"
+DEFAULT_CHECKED_ORDERS_SLOW_MINUTES = 15.0
+
 
 def _get_float_setting(db: Session, key: str, default: float) -> float:
     """Read a numeric setting (stored as a string), falling back to `default`."""
@@ -5429,12 +5432,17 @@ async def calculate_checked_orders(
 
     result = compute_checked_orders(rows)
 
+    slow_threshold_minutes = _get_float_setting(
+        db, CHECKED_ORDERS_SLOW_SETTING_KEY, DEFAULT_CHECKED_ORDERS_SLOW_MINUTES
+    )
+
     return CheckedOrdersResponse(
         configured=True,
         order_count=result["order_count"],
         total_seconds=result["total_seconds"],
         average_seconds=result["average_seconds"],
         total_value=result["total_value"],
+        slow_threshold_minutes=slow_threshold_minutes,
         orders=[CheckedOrder(**o) for o in result["orders"]],
     )
 

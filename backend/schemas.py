@@ -898,4 +898,5 @@ class CheckedOrdersResponse(BaseModel):
     total_seconds: float = 0.0
     average_seconds: float = 0.0
     total_value: float = 0.0
+    slow_threshold_minutes: float = 0.0
     orders: List[CheckedOrder] = []
