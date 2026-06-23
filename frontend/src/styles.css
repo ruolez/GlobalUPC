@@ -1510,6 +1510,12 @@ body {
   border: 1px solid rgba(99, 102, 241, 0.2);
 }
 
+.store-type-badge.shipper {
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+  color: var(--warning);
+  border: 1px solid color-mix(in srgb, var(--warning) 24%, transparent);
+}
+
 .store-category-badge {
   display: inline-block;
   padding: 0.25rem 0.75rem;

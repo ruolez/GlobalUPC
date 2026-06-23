@@ -8,6 +8,7 @@ import enum
 class StoreType(str, enum.Enum):
     mssql = "mssql"
     shopify = "shopify"
+    shipper = "shipper"
 
 class StoreCategory(str, enum.Enum):
     wholesale = "wholesale"

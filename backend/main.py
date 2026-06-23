@@ -15,7 +15,7 @@ import os
 from database import get_db, engine
 from models import Store, MSSQLConnection, ShopifyConnection, Setting, StoreType, StoreCategory, UPCUpdateHistory, UPCExclusion, ItemTrackerConfig, ItemTrackerExclusion, PriceUpdateHistory, StoreMirror, SalesConfig, SalesExclusion
 from schemas import (
-    MSSQLStoreCreate, ShopifyStoreCreate, MSSQLStoreUpdate, ShopifyStoreUpdate, StoreResponse, StoreNameUpdate, StoreCategoryUpdate,
+    MSSQLStoreCreate, ShopifyStoreCreate, ShipperStoreCreate, MSSQLStoreUpdate, ShopifyStoreUpdate, ShipperStoreUpdate, StoreResponse, StoreNameUpdate, StoreCategoryUpdate,
     SettingCreate, SettingUpdate, SettingResponse,
     UPCSearchRequest, UPCSearchResponse, ProductVariantMatch,
     UPCUpdateRequest, UPCUpdateResult,
@@ -1105,6 +1105,33 @@ def create_shopify_store(store_data: ShopifyStoreCreate, db: Session = Depends(g
 
     return store
 
+@app.post("/api/stores/shipper", response_model=StoreResponse, status_code=201)
+def create_shipper_store(store_data: ShipperStoreCreate, db: Session = Depends(get_db)):
+    # Create store (shipping-platform MSSQL database, reuses the MSSQL connection table)
+    store = Store(
+        name=store_data.name,
+        store_type=StoreType.shipper,
+        store_category=store_data.store_category,
+        is_active=store_data.is_active
+    )
+    db.add(store)
+    db.flush()
+
+    # Create MSSQL connection
+    connection = MSSQLConnection(
+        store_id=store.id,
+        host=store_data.connection.host,
+        port=store_data.connection.port,
+        database_name=store_data.connection.database_name,
+        username=store_data.connection.username,
+        password=store_data.connection.password
+    )
+    db.add(connection)
+    db.commit()
+    db.refresh(store)
+
+    return store
+
 @app.put("/api/stores/{store_id}/mssql", response_model=StoreResponse)
 def update_mssql_store(store_id: int, store_data: MSSQLStoreUpdate, db: Session = Depends(get_db)):
     store = db.query(Store).filter(Store.id == store_id).first()
@@ -1149,6 +1176,27 @@ def update_shopify_store(store_id: int, store_data: ShopifyStoreUpdate, db: Sess
     conn.update_sku_with_barcode = store_data.connection.update_sku_with_barcode
     if store_data.connection.admin_api_key:  # only overwrite when provided
         conn.admin_api_key = store_data.connection.admin_api_key
+
+    db.commit()
+    db.refresh(store)
+    return store
+
+@app.put("/api/stores/{store_id}/shipper", response_model=StoreResponse)
+def update_shipper_store(store_id: int, store_data: ShipperStoreUpdate, db: Session = Depends(get_db)):
+    store = db.query(Store).filter(Store.id == store_id).first()
+    if not store or store.store_type != StoreType.shipper or not store.mssql_connection:
+        raise HTTPException(status_code=404, detail="Shipper store not found")
+
+    store.name = store_data.name.strip() or store.name
+    store.store_category = store_data.store_category
+
+    conn = store.mssql_connection
+    conn.host = store_data.connection.host
+    conn.port = store_data.connection.port
+    conn.database_name = store_data.connection.database_name
+    conn.username = store_data.connection.username
+    if store_data.connection.password:  # only overwrite when provided
+        conn.password = store_data.connection.password
 
     db.commit()
     db.refresh(store)

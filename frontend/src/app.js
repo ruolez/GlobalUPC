@@ -292,6 +292,7 @@ function renderDashboardKpi(stats) {
   const types = stores.by_type || {};
   if (types.mssql) typeBits.push(`${types.mssql} MSSQL`);
   if (types.shopify) typeBits.push(`${types.shopify} Shopify`);
+  if (types.shipper) typeBits.push(`${types.shipper} Shipper`);
   setText(
     "kpi-stores-meta",
     typeBits.length ? typeBits.join(" · ") : "no stores configured",
@@ -1214,7 +1215,8 @@ async function loadStores() {
 
 function createStoreCard(store, index) {
   const connection = store.mssql_connection || store.shopify_connection;
-  const isMssql = store.store_type === "mssql";
+  // Both mssql and shipper stores use the MSSQL connection shape
+  const isMssql = store.store_type === "mssql" || store.store_type === "shipper";
 
   return `
         <div class="store-card collapsed" data-store-id="${store.id}">
@@ -1384,6 +1386,7 @@ document.getElementById("price-update-modal")?.addEventListener("click", (e) => 
 // Store edit-mode state (null = create mode)
 let mssqlEditId = null;
 let shopifyEditId = null;
+let shipperEditId = null;
 
 // Swap modal title/submit-button/secret-field between create and edit modes
 function setStoreModalMode(type, isEdit) {
@@ -1396,7 +1399,7 @@ function setStoreModalMode(type, isEdit) {
     const pw = document.getElementById("mssql-password");
     pw.required = !isEdit;
     pw.placeholder = isEdit ? "Leave blank to keep current" : "••••••••";
-  } else {
+  } else if (type === "shopify") {
     document.querySelector("#shopify-modal .modal-header h3").textContent = isEdit
       ? "Edit Shopify Store"
       : "Add Shopify Store";
@@ -1405,6 +1408,16 @@ function setStoreModalMode(type, isEdit) {
     const key = document.getElementById("shopify-api-key");
     key.required = !isEdit;
     key.placeholder = isEdit ? "Leave blank to keep current" : "shpat_...";
+  }
+  if (type === "shipper") {
+    document.querySelector("#shipper-modal .modal-header h3").textContent = isEdit
+      ? "Edit Shipper Database"
+      : "Add Shipper Database";
+    document.querySelector("#shipper-form button[type=submit]").textContent =
+      isEdit ? "Save Changes" : "Add Database";
+    const pw = document.getElementById("shipper-password");
+    pw.required = !isEdit;
+    pw.placeholder = isEdit ? "Leave blank to keep current" : "••••••••";
   }
 }
 
@@ -1424,6 +1437,19 @@ function openEditStoreModal(store) {
     document.getElementById("mssql-test-status").className = "test-status";
     document.getElementById("mssql-test-status").textContent = "";
     openModal("mssql-modal");
+  } else if (store.store_type === "shipper") {
+    const c = store.mssql_connection;
+    shipperEditId = store.id;
+    document.getElementById("shipper-name").value = store.name;
+    document.getElementById("shipper-host").value = c.host;
+    document.getElementById("shipper-port").value = c.port;
+    document.getElementById("shipper-database").value = c.database_name;
+    document.getElementById("shipper-username").value = c.username;
+    document.getElementById("shipper-password").value = "";
+    setStoreModalMode("shipper", true);
+    document.getElementById("shipper-test-status").className = "test-status";
+    document.getElementById("shipper-test-status").textContent = "";
+    openModal("shipper-modal");
   } else {
     const c = store.shopify_connection;
     shopifyEditId = store.id;
@@ -1444,10 +1470,10 @@ function openEditStoreModal(store) {
   }
 }
 
-// Test MSSQL Connection
-async function testMSSQLConnection() {
-  const statusEl = document.getElementById("mssql-test-status");
-  const form = document.getElementById("mssql-form");
+// Test an MSSQL-style connection (shared by mssql + shipper stores)
+async function testMSSQLConnection(formId = "mssql-form", statusId = "mssql-test-status") {
+  const statusEl = document.getElementById(statusId);
+  const form = document.getElementById(formId);
   const formData = new FormData(form);
 
   const testData = {
@@ -1497,7 +1523,9 @@ document.getElementById("add-mssql-btn").addEventListener("click", () => {
 
 document
   .getElementById("test-mssql-btn")
-  .addEventListener("click", testMSSQLConnection);
+  .addEventListener("click", () =>
+    testMSSQLConnection("mssql-form", "mssql-test-status"),
+  );
 
 document.getElementById("mssql-form").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -1534,6 +1562,60 @@ document.getElementById("mssql-form").addEventListener("submit", async (e) => {
   closeModal("mssql-modal");
   e.target.reset();
   mssqlEditId = null;
+  await loadStores();
+  await loadDashboard();
+});
+
+// Shipper Form (MSSQL database from the shipping platform)
+document.getElementById("add-shipper-btn").addEventListener("click", () => {
+  shipperEditId = null;
+  document.getElementById("shipper-form").reset();
+  setStoreModalMode("shipper", false);
+  openModal("shipper-modal");
+  document.getElementById("shipper-test-status").className = "test-status";
+  document.getElementById("shipper-test-status").textContent = "";
+});
+
+document
+  .getElementById("test-shipper-btn")
+  .addEventListener("click", () =>
+    testMSSQLConnection("shipper-form", "shipper-test-status"),
+  );
+
+document.getElementById("shipper-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const formData = new FormData(e.target);
+
+  const data = {
+    name: formData.get("name"),
+    store_type: "shipper",
+    is_active: true,
+    connection: {
+      host: formData.get("host"),
+      port: parseInt(formData.get("port")),
+      database_name: formData.get("database_name"),
+      username: formData.get("username"),
+      password: formData.get("password"),
+    },
+  };
+
+  if (shipperEditId != null) {
+    // omit password when blank so backend keeps the current one
+    if (!data.connection.password) delete data.connection.password;
+    await apiRequest(`/stores/${shipperEditId}/shipper`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    });
+  } else {
+    await apiRequest("/stores/shipper", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  closeModal("shipper-modal");
+  e.target.reset();
+  shipperEditId = null;
   await loadStores();
   await loadDashboard();
 });

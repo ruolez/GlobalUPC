@@ -1,7 +1,7 @@
 -- Global UPC Database Schema
 
 -- Store types enum
-CREATE TYPE store_type AS ENUM ('mssql', 'shopify');
+CREATE TYPE store_type AS ENUM ('mssql', 'shopify', 'shipper');
 
 -- Store category enum
 CREATE TYPE store_category AS ENUM ('wholesale', 'retail');

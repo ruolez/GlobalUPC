@@ -30,6 +30,10 @@ class ShopifyStoreCreate(StoreBase):
     store_type: Literal["shopify"] = "shopify"
     connection: ShopifyConnectionBase
 
+class ShipperStoreCreate(StoreBase):
+    store_type: Literal["shipper"] = "shipper"
+    connection: MSSQLConnectionBase
+
 class MSSQLConnectionUpdate(BaseModel):
     host: str
     port: int = 1433
@@ -38,6 +42,9 @@ class MSSQLConnectionUpdate(BaseModel):
     password: Optional[str] = None  # blank/None => keep current
 
 class MSSQLStoreUpdate(StoreBase):
+    connection: MSSQLConnectionUpdate
+
+class ShipperStoreUpdate(StoreBase):
     connection: MSSQLConnectionUpdate
 
 class ShopifyConnectionUpdate(BaseModel):
