@@ -864,3 +864,35 @@ class InventoryTimeResponse(BaseModel):
 class InventoryTimeUsersResponse(BaseModel):
     configured: bool = False
     users: List[str] = []
+
+
+# Checked Orders Schemas
+class CheckedOrderUser(BaseModel):
+    id: int
+    name: str
+
+
+class CheckedOrdersUsersResponse(BaseModel):
+    configured: bool = False
+    users: List[CheckedOrderUser] = []
+
+
+class CheckedOrdersRequest(BaseModel):
+    checker_id: int
+    date_from: str  # "YYYY-MM-DD"
+    date_to: str    # "YYYY-MM-DD"
+
+
+class CheckedOrder(BaseModel):
+    order_number: str
+    created_at: datetime
+    check_completed_at: datetime
+    seconds: float
+
+
+class CheckedOrdersResponse(BaseModel):
+    configured: bool = True
+    order_count: int = 0
+    total_seconds: float = 0.0
+    average_seconds: float = 0.0
+    orders: List[CheckedOrder] = []

@@ -53,6 +53,9 @@
           <a href="#" class="nav-item" data-page="inventory-time">
             <span>Inventory Time</span>
           </a>
+          <a href="#" class="nav-item" data-page="checked-orders">
+            <span>Checked Orders</span>
+          </a>
           <a href="#" class="nav-item" data-page="sales">
             <span>Sales</span>
           </a>
@@ -2826,6 +2829,93 @@
                   </tr>
                 </thead>
                 <tbody id="invtime-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- Checked Orders Page -->
+        <div id="checked-orders-page" class="page" style="display: none">
+          <div id="chkord-not-configured" class="card" style="display: none; margin-bottom: 1.5rem;">
+            <div style="padding: 1.5rem; color: var(--text-secondary); font-size: 0.875rem;">
+              No active shipper database is configured. Add one under
+              <strong>Settings → Stores</strong> to use Checked Orders.
+            </div>
+          </div>
+
+          <div id="chkord-controls" class="card" style="margin-bottom: 1.5rem">
+            <div class="card-header"><h3>Select Date Range &amp; User</h3></div>
+            <div style="padding: 1rem 1.5rem 1.5rem">
+              <div class="form-group">
+                <label>Date Range</label>
+                <div style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
+                  <input type="date" id="chkord-start-date" style="max-width: 180px" />
+                  <span style="color: var(--text-secondary)">to</span>
+                  <input type="date" id="chkord-end-date" style="max-width: 180px" />
+                </div>
+                <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem; flex-wrap: wrap;">
+                  <button type="button" class="btn btn-secondary" data-week="0" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">This Week</button>
+                  <button type="button" class="btn btn-secondary" data-week="1" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Last Week</button>
+                  <button type="button" class="btn btn-secondary" data-week="2" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">2nd Last Week</button>
+                  <button type="button" class="btn btn-secondary" data-week="3" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">3rd Last Week</button>
+                  <button type="button" class="btn btn-secondary" data-month="0" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">This Month</button>
+                  <button type="button" class="btn btn-secondary" data-month="1" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Last Month</button>
+                </div>
+              </div>
+
+              <div class="form-group" style="margin-top: 1rem">
+                <label for="chkord-user">User</label>
+                <select id="chkord-user" style="max-width: 320px">
+                  <option value="">— Select a user —</option>
+                </select>
+                <small id="chkord-user-hint" class="settings-input-help" style="display: block; margin-top: 0.35rem;">Only users who checked orders in the selected range are listed.</small>
+              </div>
+
+              <div style="margin-top: 1.25rem">
+                <button type="button" class="btn btn-primary" id="chkord-calculate-btn">Calculate</button>
+              </div>
+            </div>
+          </div>
+
+          <div id="chkord-loading" style="display: none; text-align: center; padding: 2rem 1rem; color: var(--text-secondary);">
+            Calculating…
+          </div>
+          <div id="chkord-error" class="qip-error" style="display: none; margin-bottom: 1.5rem;"></div>
+
+          <div id="chkord-summary" class="card" style="display: none; margin-bottom: 1.5rem;">
+            <div style="padding: 1.25rem 1.5rem; display: flex; flex-wrap: wrap; gap: 2.5rem;">
+              <div>
+                <div style="font-size: 0.75rem; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.04em;">Orders Checked</div>
+                <div id="chkord-order-count" style="font-size: 1.5rem; font-weight: 600; color: var(--text-primary);">—</div>
+              </div>
+              <div>
+                <div style="font-size: 0.75rem; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.04em;">Total Time</div>
+                <div id="chkord-total" style="font-size: 1.5rem; font-weight: 600; color: var(--text-primary);">—</div>
+              </div>
+              <div>
+                <div style="font-size: 0.75rem; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.04em;">Avg / Order</div>
+                <div id="chkord-average" style="font-size: 1.5rem; font-weight: 600; color: var(--text-primary);">—</div>
+              </div>
+            </div>
+          </div>
+
+          <div id="chkord-empty" style="display: none; text-align: center; padding: 3rem 1rem; color: var(--text-secondary);">
+            <p>No checked orders found for this user in the selected date range.</p>
+          </div>
+
+          <div id="chkord-results" style="display: none;">
+            <div class="table-container">
+              <table class="data-table" id="chkord-table">
+                <thead>
+                  <tr>
+                    <th style="width: 6%;">#</th>
+                    <th style="width: 24%;">Order #</th>
+                    <th style="width: 28%;">Created</th>
+                    <th style="width: 28%;">Check Completed</th>
+                    <th style="width: 14%; text-align: right;">Duration</th>
+                  </tr>
+                </thead>
+                <tbody id="chkord-tbody"></tbody>
               </table>
             </div>
           </div>

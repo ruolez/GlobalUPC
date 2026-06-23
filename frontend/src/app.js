@@ -87,6 +87,8 @@ function navigateTo(page) {
     loadQuotationsInProgressPage();
   } else if (page === "inventory-time") {
     loadInventoryTimePage();
+  } else if (page === "checked-orders") {
+    loadCheckedOrdersPage();
   }
 }
 
@@ -12218,9 +12220,9 @@ function clearInventoryTimeResults() {
 }
 
 // weekOffset 0 = this week, 1 = last week, etc. Weeks run Monday–Sunday.
-function invtimeApplyWeekPreset(weekOffset) {
-  const startInput = document.getElementById("invtime-start-date");
-  const endInput = document.getElementById("invtime-end-date");
+function applyWeekPreset(startInputId, endInputId, weekOffset) {
+  const startInput = document.getElementById(startInputId);
+  const endInput = document.getElementById(endInputId);
   if (!startInput || !endInput) return;
   const today = new Date();
   const daysSinceMonday = (today.getDay() + 6) % 7; // getDay(): 0=Sun..6=Sat
@@ -12236,6 +12238,22 @@ function invtimeApplyWeekPreset(weekOffset) {
   );
   startInput.value = toYMD(monday);
   endInput.value = toYMD(sunday);
+}
+
+function invtimeApplyWeekPreset(weekOffset) {
+  applyWeekPreset("invtime-start-date", "invtime-end-date", weekOffset);
+}
+
+// monthOffset 0 = this month, 1 = last month, etc.
+function applyMonthPreset(startInputId, endInputId, monthOffset) {
+  const startInput = document.getElementById(startInputId);
+  const endInput = document.getElementById(endInputId);
+  if (!startInput || !endInput) return;
+  const today = new Date();
+  const first = new Date(today.getFullYear(), today.getMonth() - monthOffset, 1);
+  const last = new Date(first.getFullYear(), first.getMonth() + 1, 0); // day 0 = last day of prev month
+  startInput.value = toYMD(first);
+  endInput.value = toYMD(last);
 }
 
 function toYMD(d) {
@@ -12374,6 +12392,203 @@ function renderInventoryTime(data) {
       <td>${escapeHtml(formatDateTime(s.end))}</td>
       <td style="text-align: right">${s.item_count.toLocaleString()}</td>
       <td style="text-align: right">${escapeHtml(formatDuration(s.seconds))}</td>
+    `;
+    tbody.appendChild(row);
+  });
+  resultsEl.style.display = "block";
+}
+
+// ---- Checked Orders (shipper DB) ----
+
+const checkedOrdersState = {
+  initialized: false,
+  users: [],
+};
+
+function loadCheckedOrdersPage() {
+  if (!checkedOrdersState.initialized) {
+    initCheckedOrdersPage();
+    checkedOrdersState.initialized = true;
+  }
+  loadCheckedOrdersUsers();
+}
+
+function initCheckedOrdersPage() {
+  applyWeekPreset("chkord-start-date", "chkord-end-date", 0);
+
+  document
+    .getElementById("chkord-calculate-btn")
+    ?.addEventListener("click", fetchCheckedOrders);
+
+  // A new range invalidates the displayed results and re-scopes the user list.
+  document.getElementById("chkord-controls")?.addEventListener("click", (e) => {
+    const weekBtn = e.target.closest("[data-week]");
+    const monthBtn = e.target.closest("[data-month]");
+    if (weekBtn) {
+      applyWeekPreset(
+        "chkord-start-date",
+        "chkord-end-date",
+        parseInt(weekBtn.dataset.week, 10),
+      );
+    } else if (monthBtn) {
+      applyMonthPreset(
+        "chkord-start-date",
+        "chkord-end-date",
+        parseInt(monthBtn.dataset.month, 10),
+      );
+    } else {
+      return;
+    }
+    clearCheckedOrdersResults();
+    loadCheckedOrdersUsers();
+  });
+
+  ["chkord-start-date", "chkord-end-date"].forEach((id) => {
+    document.getElementById(id)?.addEventListener("change", () => {
+      clearCheckedOrdersResults();
+      loadCheckedOrdersUsers();
+    });
+  });
+}
+
+function clearCheckedOrdersResults() {
+  ["chkord-summary", "chkord-results", "chkord-empty", "chkord-error"].forEach(
+    (id) => {
+      const el = document.getElementById(id);
+      if (el) el.style.display = "none";
+    },
+  );
+}
+
+async function loadCheckedOrdersUsers() {
+  const select = document.getElementById("chkord-user");
+  const notConfigured = document.getElementById("chkord-not-configured");
+  const controls = document.getElementById("chkord-controls");
+  const hint = document.getElementById("chkord-user-hint");
+  if (!select) return;
+
+  const dateFrom = document.getElementById("chkord-start-date")?.value || "";
+  const dateTo = document.getElementById("chkord-end-date")?.value || "";
+  if (!dateFrom || !dateTo) return;
+
+  try {
+    const params = new URLSearchParams({ date_from: dateFrom, date_to: dateTo });
+    const data = await apiRequest(`/checked-orders/users?${params}`);
+    if (!data.configured) {
+      if (notConfigured) notConfigured.style.display = "block";
+      if (controls) controls.style.display = "none";
+      return;
+    }
+    if (notConfigured) notConfigured.style.display = "none";
+    if (controls) controls.style.display = "block";
+
+    checkedOrdersState.users = data.users || [];
+    const previous = select.value;
+    select.innerHTML = '<option value="">— Select a user —</option>';
+    checkedOrdersState.users.forEach((u) => {
+      const opt = document.createElement("option");
+      opt.value = String(u.id);
+      opt.textContent = u.name;
+      select.appendChild(opt);
+    });
+    if (previous && checkedOrdersState.users.some((u) => String(u.id) === previous)) {
+      select.value = previous;
+    }
+    if (hint) {
+      hint.textContent = checkedOrdersState.users.length
+        ? "Only users who checked orders in the selected range are listed."
+        : "No users checked orders in the selected range.";
+    }
+  } catch (error) {
+    showToast(`✗ Failed to load users: ${error.message}`, "error");
+  }
+}
+
+async function fetchCheckedOrders() {
+  const checkerId = document.getElementById("chkord-user")?.value || "";
+  const dateFrom = document.getElementById("chkord-start-date")?.value || "";
+  const dateTo = document.getElementById("chkord-end-date")?.value || "";
+
+  const loadingEl = document.getElementById("chkord-loading");
+  const errorEl = document.getElementById("chkord-error");
+  const summaryEl = document.getElementById("chkord-summary");
+  const resultsEl = document.getElementById("chkord-results");
+  const emptyEl = document.getElementById("chkord-empty");
+
+  errorEl.style.display = "none";
+  if (!checkerId) {
+    errorEl.textContent = "Please select a user.";
+    errorEl.style.display = "block";
+    return;
+  }
+  if (!dateFrom || !dateTo) {
+    errorEl.textContent = "Please select a date range.";
+    errorEl.style.display = "block";
+    return;
+  }
+
+  loadingEl.style.display = "block";
+  summaryEl.style.display = "none";
+  resultsEl.style.display = "none";
+  emptyEl.style.display = "none";
+
+  try {
+    const data = await apiRequest("/checked-orders", {
+      method: "POST",
+      body: JSON.stringify({
+        checker_id: parseInt(checkerId, 10),
+        date_from: dateFrom,
+        date_to: dateTo,
+      }),
+    });
+    if (!data.configured) {
+      errorEl.textContent =
+        "No active shipper database is configured. Add one under Settings → Stores.";
+      errorEl.style.display = "block";
+      return;
+    }
+    renderCheckedOrders(data);
+  } catch (error) {
+    errorEl.textContent = `Failed to calculate: ${error.message}`;
+    errorEl.style.display = "block";
+  } finally {
+    loadingEl.style.display = "none";
+  }
+}
+
+function renderCheckedOrders(data) {
+  const summaryEl = document.getElementById("chkord-summary");
+  const resultsEl = document.getElementById("chkord-results");
+  const emptyEl = document.getElementById("chkord-empty");
+  const tbody = document.getElementById("chkord-tbody");
+
+  document.getElementById("chkord-order-count").textContent =
+    data.order_count.toLocaleString();
+  document.getElementById("chkord-total").textContent = formatDuration(
+    data.total_seconds,
+  );
+  document.getElementById("chkord-average").textContent = formatDuration(
+    data.average_seconds,
+  );
+  summaryEl.style.display = "block";
+
+  const orders = data.orders || [];
+  if (orders.length === 0) {
+    resultsEl.style.display = "none";
+    emptyEl.style.display = "block";
+    return;
+  }
+  emptyEl.style.display = "none";
+
+  tbody.innerHTML = "";
+  orders.forEach((o, index) => {
+    const row = document.createElement("tr");
+    row.innerHTML = `
+      <td style="color: var(--text-tertiary)">${index + 1}</td>
+      <td>${escapeHtml(o.order_number)}</td>
+      <td>${escapeHtml(formatDateTime(o.created_at))}</td>
+      <td>${escapeHtml(formatDateTime(o.check_completed_at))}</td>
+      <td style="text-align: right">${escapeHtml(formatDuration(o.seconds))}</td>
     `;
     tbody.appendChild(row);
   });

@@ -49,6 +49,8 @@ from schemas import (
     DashboardConfigCheck,
     InventoryTimeRequest, InventoryTimeResponse, InventoryTimeSession,
     InventoryTimeUsersResponse,
+    CheckedOrdersRequest, CheckedOrdersResponse, CheckedOrder,
+    CheckedOrderUser, CheckedOrdersUsersResponse,
 )
 from mssql_helper import (
     test_mssql_connection, search_upc_across_mssql_stores, search_products_by_upc,
@@ -86,6 +88,11 @@ from inventory_time_helper import (
     fetch_distinct_usernames_async,
     compute_inventory_time,
 )
+from checked_orders_helper import (
+    fetch_checkers_async,
+    fetch_checked_orders_async,
+    compute_checked_orders,
+)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -104,6 +111,9 @@ async def lifespan(app: FastAPI):
     print("[SHUTDOWN] Shutting down Inventory Time thread pool...")
     from inventory_time_helper import shutdown_inv_time_executor
     shutdown_inv_time_executor()
+    print("[SHUTDOWN] Shutting down Checked Orders thread pool...")
+    from checked_orders_helper import shutdown_chkord_executor
+    shutdown_chkord_executor()
     print("[SHUTDOWN] Cleanup complete.")
 
 app = FastAPI(title="Global UPC API", version="1.0.0", lifespan=lifespan)
@@ -5336,6 +5346,95 @@ async def calculate_inventory_time(
         sessions=[InventoryTimeSession(**s) for s in result["sessions"]],
         timeout_minutes=timeout_minutes,
         isolated_minutes=isolated_minutes,
+    )
+
+
+# ---- Checked Orders (shipper DB) ----
+
+def _resolve_shipper_store_soft(db: Session) -> Optional[Store]:
+    """
+    Return the single active shipper store (lowest id if several exist), or None
+    when none is configured. Soft resolver so the Checked Orders page can show a
+    'not configured' state instead of erroring.
+    """
+    store = (
+        db.query(Store)
+        .filter(Store.store_type == StoreType.shipper, Store.is_active == True)
+        .order_by(Store.id)
+        .first()
+    )
+    if not store or not store.mssql_connection:
+        return None
+    return store
+
+
+@app.get("/api/checked-orders/users", response_model=CheckedOrdersUsersResponse)
+async def list_checked_orders_users(
+    date_from: str,
+    date_to: str,
+    db: Session = Depends(get_db),
+):
+    """Checkers (id + name) who completed order checks in [date_from, date_to] on the shipper DB."""
+    if date_from > date_to:
+        raise HTTPException(status_code=400, detail="date_from must be on or before date_to.")
+
+    store = _resolve_shipper_store_soft(db)
+    if not store:
+        return CheckedOrdersUsersResponse(configured=False, users=[])
+
+    conn = store.mssql_connection
+    success, error, users = await fetch_checkers_async(
+        host=conn.host,
+        port=conn.port,
+        database=conn.database_name,
+        username=conn.username,
+        password=conn.password,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    if not success:
+        raise HTTPException(status_code=502, detail=f"MSSQL query failed: {error}")
+    return CheckedOrdersUsersResponse(
+        configured=True,
+        users=[CheckedOrderUser(**u) for u in users],
+    )
+
+
+@app.post("/api/checked-orders", response_model=CheckedOrdersResponse)
+async def calculate_checked_orders(
+    req: CheckedOrdersRequest,
+    db: Session = Depends(get_db),
+):
+    """Summarize a checker's completed order checks (count, total time, average) on the shipper DB."""
+    if req.date_from > req.date_to:
+        raise HTTPException(status_code=400, detail="date_from must be on or before date_to.")
+
+    store = _resolve_shipper_store_soft(db)
+    if not store:
+        return CheckedOrdersResponse(configured=False)
+
+    conn = store.mssql_connection
+    success, error, rows = await fetch_checked_orders_async(
+        host=conn.host,
+        port=conn.port,
+        database=conn.database_name,
+        username=conn.username,
+        password=conn.password,
+        checker_id=req.checker_id,
+        date_from=req.date_from,
+        date_to=req.date_to,
+    )
+    if not success:
+        raise HTTPException(status_code=502, detail=f"MSSQL query failed: {error}")
+
+    result = compute_checked_orders(rows)
+
+    return CheckedOrdersResponse(
+        configured=True,
+        order_count=result["order_count"],
+        total_seconds=result["total_seconds"],
+        average_seconds=result["average_seconds"],
+        orders=[CheckedOrder(**o) for o in result["orders"]],
     )
 
 
