@@ -8,6 +8,9 @@ from mssql_helper import get_mssql_connection_string
 
 _chkord_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="chkord")
 
+# SQL Server caps query parameters at ~2100; keep IN (...) batches well under that.
+_ITEM_IN_CHUNK = 2000
+
 
 def _upper_bound(date_to: str) -> Optional[str]:
     """Exclusive upper bound = date_to + 1 day, so the end date is fully inclusive."""
@@ -75,10 +78,11 @@ def _fetch_checked_orders_sync(
     duration without an end time). Upper bound is `< date_to + 1 day`.
 
     Each row carries the order value = SUM(price * total_quantity) and the unique
-    product count = COUNT(DISTINCT id_product) over its parcel_items. The aggregation
-    is done with OUTER APPLY so only the matched parcels' items are touched (a global
-    GROUP BY would aggregate the entire parcel_items table on every request). NULL
-    price/quantity count as 0; orders with no items yield 0 value and 0 products.
+    product count = COUNT(DISTINCT id_product) over its parcel_items. To avoid
+    aggregating the whole parcel_items table (or re-scanning it per parcel), this is
+    done in two steps: fetch the matched parcels, then fetch only those parcels'
+    items in one chunked `IN (...)` query and aggregate in Python. NULL price/quantity
+    count as 0; orders with no items yield 0 value and 0 products.
     """
     conn_str = get_mssql_connection_string(host, port, database, username, password)
 
@@ -86,17 +90,9 @@ def _fetch_checked_orders_sync(
     if upper is None:
         return False, f"Invalid date_to: {date_to}", []
 
-    query = """
-        SELECT p.order_number, p.created_at, p.check_completed_at,
-               ISNULL(pv.order_value, 0) AS order_value,
-               ISNULL(pv.product_count, 0) AS product_count
+    parcels_query = """
+        SELECT p.id, p.order_number, p.created_at, p.check_completed_at
         FROM parcels p
-        OUTER APPLY (
-            SELECT SUM(ISNULL(pi.price, 0) * ISNULL(pi.total_quantity, 0)) AS order_value,
-                   COUNT(DISTINCT pi.id_product) AS product_count
-            FROM parcel_items pi
-            WHERE pi.id_parcel = p.id
-        ) pv
         WHERE p.id_checker = ?
           AND p.check_completed_at IS NOT NULL
           AND p.created_at >= ?
@@ -107,11 +103,58 @@ def _fetch_checked_orders_sync(
     try:
         with pyodbc.connect(conn_str, timeout=30) as conn:
             cursor = conn.cursor()
-            cursor.execute(query, [checker_id, date_from, upper])
-            rows = [(r[0], r[1], r[2], r[3], r[4]) for r in cursor.fetchall()]
+            cursor.execute(parcels_query, [checker_id, date_from, upper])
+            parcels = [(r[0], r[1], r[2], r[3]) for r in cursor.fetchall()]
+
+            parcel_ids = [p[0] for p in parcels]
+            value_by_parcel, products_by_parcel = _fetch_item_aggregates(cursor, parcel_ids)
+
+        rows = [
+            (
+                order_number,
+                created_at,
+                check_completed_at,
+                value_by_parcel.get(parcel_id, 0),
+                len(products_by_parcel.get(parcel_id, ())),
+            )
+            for parcel_id, order_number, created_at, check_completed_at in parcels
+        ]
         return True, None, rows
     except Exception as e:
         return False, str(e), []
+
+
+def _fetch_item_aggregates(
+    cursor, parcel_ids: List[int]
+) -> Tuple[Dict[int, Any], Dict[int, set]]:
+    """
+    For the given parcel ids, return {id_parcel: summed line value} and
+    {id_parcel: set of distinct id_product}, fetched in chunked `IN (...)` batches
+    (SQL Server caps parameters at ~2100). Line value = price * total_quantity with
+    NULLs treated as 0, computed in SQL.
+    """
+    value_by_parcel: Dict[int, Any] = {}
+    products_by_parcel: Dict[int, set] = {}
+    if not parcel_ids:
+        return value_by_parcel, products_by_parcel
+
+    for start in range(0, len(parcel_ids), _ITEM_IN_CHUNK):
+        chunk = parcel_ids[start:start + _ITEM_IN_CHUNK]
+        placeholders = ",".join("?" * len(chunk))
+        items_query = f"""
+            SELECT id_parcel,
+                   ISNULL(price, 0) * ISNULL(total_quantity, 0) AS line_value,
+                   id_product
+            FROM parcel_items
+            WHERE id_parcel IN ({placeholders})
+        """
+        cursor.execute(items_query, chunk)
+        for id_parcel, line_value, id_product in cursor.fetchall():
+            value_by_parcel[id_parcel] = value_by_parcel.get(id_parcel, 0) + (line_value or 0)
+            if id_product is not None:
+                products_by_parcel.setdefault(id_parcel, set()).add(id_product)
+
+    return value_by_parcel, products_by_parcel
 
 
 def compute_checked_orders(
