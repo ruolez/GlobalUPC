@@ -12592,6 +12592,7 @@ function renderCheckedOrders(data) {
       <td>${escapeHtml(formatDateTime(o.created_at))}</td>
       <td>${escapeHtml(formatDateTime(o.check_completed_at))}</td>
       <td style="text-align: right">${escapeHtml(formatDuration(o.seconds))}</td>
+      <td style="text-align: right">${(o.product_count || 0).toLocaleString()}</td>
       <td style="text-align: right">${escapeHtml(formatCurrency(o.value))}</td>
     `;
     tbody.appendChild(row);

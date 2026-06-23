@@ -68,16 +68,16 @@ def _fetch_checked_orders_sync(
     checker_id: int,
     date_from: str,
     date_to: str,
-) -> Tuple[bool, Optional[str], List[Tuple[str, datetime, datetime, Any]]]:
+) -> Tuple[bool, Optional[str], List[Tuple[str, datetime, datetime, Any, Any]]]:
     """
     Completed order checks for one checker within [date_from, date_to] (inclusive).
     Only rows with a non-NULL check_completed_at are returned (an order can't have a
     duration without an end time). Upper bound is `< date_to + 1 day`.
 
-    Each row carries the order value = SUM(price * total_quantity) over its
-    parcel_items, pre-aggregated in a subquery so the one-to-many join doesn't
-    multiply parcel rows. NULL price/quantity count as 0; orders with no items
-    yield 0.
+    Each row carries the order value = SUM(price * total_quantity) and the unique
+    product count = COUNT(DISTINCT id_product) over its parcel_items, pre-aggregated
+    in a subquery so the one-to-many join doesn't multiply parcel rows. NULL
+    price/quantity count as 0; orders with no items yield 0 value and 0 products.
     """
     conn_str = get_mssql_connection_string(host, port, database, username, password)
 
@@ -87,10 +87,13 @@ def _fetch_checked_orders_sync(
 
     query = """
         SELECT p.order_number, p.created_at, p.check_completed_at,
-               ISNULL(pv.order_value, 0) AS order_value
+               ISNULL(pv.order_value, 0) AS order_value,
+               ISNULL(pv.product_count, 0) AS product_count
         FROM parcels p
         LEFT JOIN (
-            SELECT id_parcel, SUM(ISNULL(price, 0) * ISNULL(total_quantity, 0)) AS order_value
+            SELECT id_parcel,
+                   SUM(ISNULL(price, 0) * ISNULL(total_quantity, 0)) AS order_value,
+                   COUNT(DISTINCT id_product) AS product_count
             FROM parcel_items
             GROUP BY id_parcel
         ) pv ON pv.id_parcel = p.id
@@ -105,35 +108,36 @@ def _fetch_checked_orders_sync(
         with pyodbc.connect(conn_str, timeout=30) as conn:
             cursor = conn.cursor()
             cursor.execute(query, [checker_id, date_from, upper])
-            rows = [(r[0], r[1], r[2], r[3]) for r in cursor.fetchall()]
+            rows = [(r[0], r[1], r[2], r[3], r[4]) for r in cursor.fetchall()]
         return True, None, rows
     except Exception as e:
         return False, str(e), []
 
 
 def compute_checked_orders(
-    rows: List[Tuple[str, datetime, datetime, Any]],
+    rows: List[Tuple[str, datetime, datetime, Any, Any]],
 ) -> Dict[str, Any]:
     """
-    Pure logic (no I/O). Turn (order_number, created_at, check_completed_at, order_value)
-    rows into a summary. Per-order time = check_completed_at - created_at; rows with a
-    non-positive duration (bad data) are skipped so they don't skew the average or the
-    value totals.
+    Pure logic (no I/O). Turn (order_number, created_at, check_completed_at, order_value,
+    product_count) rows into a summary. Per-order time = check_completed_at - created_at;
+    rows with a non-positive duration (bad data) are skipped so they don't skew the
+    average or the value totals.
 
     Returns order_count, total_seconds, average_seconds, total_value, and the per-order
-    detail list (each with its `value`).
+    detail list (each with its `value` and `product_count`).
     """
     orders: List[Dict[str, Any]] = []
     total_seconds = 0.0
     total_value = 0.0
 
-    for order_number, created_at, check_completed_at, order_value in rows:
+    for order_number, created_at, check_completed_at, order_value, product_count in rows:
         if created_at is None or check_completed_at is None:
             continue
         seconds = (check_completed_at - created_at).total_seconds()
         if seconds <= 0:
             continue
         value = float(order_value) if order_value is not None else 0.0
+        products = int(product_count) if product_count is not None else 0
         total_seconds += seconds
         total_value += value
         orders.append({
@@ -142,6 +146,7 @@ def compute_checked_orders(
             "check_completed_at": check_completed_at.isoformat(),
             "seconds": float(seconds),
             "value": value,
+            "product_count": products,
         })
 
     order_count = len(orders)
@@ -163,7 +168,7 @@ async def fetch_checkers_async(**kwargs) -> Tuple[bool, Optional[str], List[Dict
     )
 
 
-async def fetch_checked_orders_async(**kwargs) -> Tuple[bool, Optional[str], List[Tuple[str, datetime, datetime, Any]]]:
+async def fetch_checked_orders_async(**kwargs) -> Tuple[bool, Optional[str], List[Tuple[str, datetime, datetime, Any, Any]]]:
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
         _chkord_executor,

@@ -889,6 +889,7 @@ class CheckedOrder(BaseModel):
     check_completed_at: datetime
     seconds: float
     value: float = 0.0
+    product_count: int = 0
 
 
 class CheckedOrdersResponse(BaseModel):
