@@ -75,8 +75,9 @@ def _fetch_checked_orders_sync(
     duration without an end time). Upper bound is `< date_to + 1 day`.
 
     Each row carries the order value = SUM(price * total_quantity) and the unique
-    product count = COUNT(DISTINCT id_product) over its parcel_items, pre-aggregated
-    in a subquery so the one-to-many join doesn't multiply parcel rows. NULL
+    product count = COUNT(DISTINCT id_product) over its parcel_items. The aggregation
+    is done with OUTER APPLY so only the matched parcels' items are touched (a global
+    GROUP BY would aggregate the entire parcel_items table on every request). NULL
     price/quantity count as 0; orders with no items yield 0 value and 0 products.
     """
     conn_str = get_mssql_connection_string(host, port, database, username, password)
@@ -90,13 +91,12 @@ def _fetch_checked_orders_sync(
                ISNULL(pv.order_value, 0) AS order_value,
                ISNULL(pv.product_count, 0) AS product_count
         FROM parcels p
-        LEFT JOIN (
-            SELECT id_parcel,
-                   SUM(ISNULL(price, 0) * ISNULL(total_quantity, 0)) AS order_value,
-                   COUNT(DISTINCT id_product) AS product_count
-            FROM parcel_items
-            GROUP BY id_parcel
-        ) pv ON pv.id_parcel = p.id
+        OUTER APPLY (
+            SELECT SUM(ISNULL(pi.price, 0) * ISNULL(pi.total_quantity, 0)) AS order_value,
+                   COUNT(DISTINCT pi.id_product) AS product_count
+            FROM parcel_items pi
+            WHERE pi.id_parcel = p.id
+        ) pv
         WHERE p.id_checker = ?
           AND p.check_completed_at IS NOT NULL
           AND p.created_at >= ?
