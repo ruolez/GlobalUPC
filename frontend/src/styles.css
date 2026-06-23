@@ -4860,6 +4860,55 @@ body.no-scroll {
   color: var(--accent-primary);
 }
 
+/* Checked Orders — sortable result columns (mirrors the sa-page pattern) */
+#chkord-table thead th.qip-sortable {
+  cursor: pointer;
+  user-select: none;
+  position: relative;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+
+#chkord-table thead th.qip-sortable:hover {
+  color: var(--text-primary);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--accent-primary) 6%, var(--bg-tertiary)) 0%,
+    color-mix(in srgb, var(--accent-primary) 4%, var(--bg-secondary)) 100%
+  );
+}
+
+#chkord-table thead th.qip-sortable .qip-sort-arrow {
+  display: inline-block;
+  width: 0;
+  height: 0;
+  margin-left: 0.4rem;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid var(--text-tertiary);
+  opacity: 0.35;
+  transition: opacity 0.12s ease, border-color 0.12s ease, transform 0.12s ease;
+  vertical-align: middle;
+}
+
+#chkord-table thead th.qip-sortable:hover .qip-sort-arrow {
+  opacity: 0.7;
+}
+
+#chkord-table thead th.qip-sort-asc .qip-sort-arrow,
+#chkord-table thead th.qip-sort-desc .qip-sort-arrow {
+  opacity: 1;
+  border-top-color: var(--accent-primary);
+}
+
+#chkord-table thead th.qip-sort-asc .qip-sort-arrow {
+  transform: rotate(180deg);
+}
+
+#chkord-table thead th.qip-sort-asc,
+#chkord-table thead th.qip-sort-desc {
+  color: var(--accent-primary);
+}
+
 /* ============================================================================
    Shopify Analytics — KPI strip, filter bar, table polish
    ============================================================================ */

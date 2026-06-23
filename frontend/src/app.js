@@ -12403,6 +12403,9 @@ function renderInventoryTime(data) {
 const checkedOrdersState = {
   initialized: false,
   users: [],
+  orders: [],
+  sortColumn: null, // null = backend order (created_at asc)
+  sortOrder: "asc",
 };
 
 function loadCheckedOrdersPage() {
@@ -12448,6 +12451,28 @@ function initCheckedOrdersPage() {
       clearCheckedOrdersResults();
       loadCheckedOrdersUsers();
     });
+  });
+
+  // Sortable result columns: cycle asc → desc → none per column.
+  document.getElementById("chkord-table")?.addEventListener("click", (e) => {
+    const th = e.target.closest("th.qip-sortable");
+    if (!th) return;
+    const col = th.dataset.sort;
+    if (!col) return;
+    if (checkedOrdersState.sortColumn === col) {
+      if (checkedOrdersState.sortOrder === "asc") {
+        checkedOrdersState.sortOrder = "desc";
+      } else if (checkedOrdersState.sortOrder === "desc") {
+        checkedOrdersState.sortColumn = null;
+        checkedOrdersState.sortOrder = "asc";
+      } else {
+        checkedOrdersState.sortOrder = "asc";
+      }
+    } else {
+      checkedOrdersState.sortColumn = col;
+      checkedOrdersState.sortOrder = "asc";
+    }
+    renderCheckedOrdersTable();
   });
 }
 
@@ -12557,11 +12582,6 @@ async function fetchCheckedOrders() {
 }
 
 function renderCheckedOrders(data) {
-  const summaryEl = document.getElementById("chkord-summary");
-  const resultsEl = document.getElementById("chkord-results");
-  const emptyEl = document.getElementById("chkord-empty");
-  const tbody = document.getElementById("chkord-tbody");
-
   document.getElementById("chkord-order-count").textContent =
     data.order_count.toLocaleString();
   document.getElementById("chkord-total").textContent = formatDuration(
@@ -12573,15 +12593,49 @@ function renderCheckedOrders(data) {
   document.getElementById("chkord-total-value").textContent = formatCurrency(
     data.total_value,
   );
-  summaryEl.style.display = "block";
+  document.getElementById("chkord-summary").style.display = "block";
 
-  const orders = data.orders || [];
+  // A fresh result keeps the backend's natural order until the user sorts.
+  checkedOrdersState.orders = data.orders || [];
+  checkedOrdersState.sortColumn = null;
+  checkedOrdersState.sortOrder = "asc";
+  renderCheckedOrdersTable();
+}
+
+// Sort keys are numeric except order_number (string) and the two timestamps (dates).
+const CHKORD_STRING_COLUMNS = new Set(["order_number"]);
+const CHKORD_DATE_COLUMNS = new Set(["created_at", "check_completed_at"]);
+
+function renderCheckedOrdersTable() {
+  const resultsEl = document.getElementById("chkord-results");
+  const emptyEl = document.getElementById("chkord-empty");
+  const tbody = document.getElementById("chkord-tbody");
+
+  applyChkordSortHeaders();
+
+  const orders = [...checkedOrdersState.orders];
   if (orders.length === 0) {
     resultsEl.style.display = "none";
     emptyEl.style.display = "block";
     return;
   }
   emptyEl.style.display = "none";
+
+  const col = checkedOrdersState.sortColumn;
+  if (col) {
+    const dir = checkedOrdersState.sortOrder === "asc" ? 1 : -1;
+    orders.sort((a, b) => {
+      let result;
+      if (CHKORD_STRING_COLUMNS.has(col)) {
+        result = String(a[col] || "").localeCompare(String(b[col] || ""));
+      } else if (CHKORD_DATE_COLUMNS.has(col)) {
+        result = new Date(a[col]).getTime() - new Date(b[col]).getTime();
+      } else {
+        result = (a[col] || 0) - (b[col] || 0);
+      }
+      return result * dir;
+    });
+  }
 
   tbody.innerHTML = "";
   orders.forEach((o, index) => {
@@ -12598,6 +12652,22 @@ function renderCheckedOrders(data) {
     tbody.appendChild(row);
   });
   resultsEl.style.display = "block";
+}
+
+function applyChkordSortHeaders() {
+  document
+    .getElementById("chkord-table")
+    ?.querySelectorAll("th.qip-sortable")
+    .forEach((th) => {
+      th.classList.remove("qip-sort-asc", "qip-sort-desc");
+      if (th.dataset.sort === checkedOrdersState.sortColumn) {
+        th.classList.add(
+          checkedOrdersState.sortOrder === "asc"
+            ? "qip-sort-asc"
+            : "qip-sort-desc",
+        );
+      }
+    });
 }
 
 function formatCurrency(n) {
