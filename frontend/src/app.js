@@ -12408,6 +12408,15 @@ const checkedOrdersState = {
   sortOrder: "asc",
 };
 
+const CHKORD_THRESHOLD_KEY = "chkordLargeThreshold";
+
+// Threshold splitting small/large orders; blank/invalid => 0.
+function getChkordThreshold() {
+  const raw = localStorage.getItem(CHKORD_THRESHOLD_KEY);
+  const n = parseFloat(raw);
+  return isFinite(n) ? n : 0;
+}
+
 function loadCheckedOrdersPage() {
   if (!checkedOrdersState.initialized) {
     initCheckedOrdersPage();
@@ -12474,6 +12483,17 @@ function initCheckedOrdersPage() {
     }
     renderCheckedOrdersTable();
   });
+
+  // Large-order threshold: persisted per browser, splits the summary live.
+  const thresholdInput = document.getElementById("chkord-threshold");
+  if (thresholdInput) {
+    const saved = localStorage.getItem(CHKORD_THRESHOLD_KEY);
+    if (saved !== null) thresholdInput.value = saved;
+    thresholdInput.addEventListener("input", () => {
+      localStorage.setItem(CHKORD_THRESHOLD_KEY, thresholdInput.value);
+      renderCheckedOrdersSplit();
+    });
+  }
 }
 
 function clearCheckedOrdersResults() {
@@ -12599,7 +12619,23 @@ function renderCheckedOrders(data) {
   checkedOrdersState.orders = data.orders || [];
   checkedOrdersState.sortColumn = null;
   checkedOrdersState.sortOrder = "asc";
+  renderCheckedOrdersSplit();
   renderCheckedOrdersTable();
+}
+
+// Small = value <= threshold, Large = value > threshold (small + large = order count).
+function renderCheckedOrdersSplit() {
+  const threshold = getChkordThreshold();
+  let small = 0;
+  let large = 0;
+  checkedOrdersState.orders.forEach((o) => {
+    if ((o.value || 0) > threshold) large += 1;
+    else small += 1;
+  });
+  document.getElementById("chkord-small-count").textContent =
+    small.toLocaleString();
+  document.getElementById("chkord-large-count").textContent =
+    large.toLocaleString();
 }
 
 // Sort keys are numeric except order_number (string) and the two timestamps (dates).

@@ -2871,6 +2871,12 @@
                 <small id="chkord-user-hint" class="settings-input-help" style="display: block; margin-top: 0.35rem;">Only users who checked orders in the selected range are listed.</small>
               </div>
 
+              <div class="form-group" style="margin-top: 1rem">
+                <label for="chkord-threshold">Large order threshold ($)</label>
+                <input type="number" id="chkord-threshold" min="0" step="any" placeholder="e.g. 500" style="max-width: 180px" />
+                <small class="settings-input-help" style="display: block; margin-top: 0.35rem;">Orders at or below this value are small; above it, large.</small>
+              </div>
+
               <div style="margin-top: 1.25rem">
                 <button type="button" class="btn btn-primary" id="chkord-calculate-btn">Calculate</button>
               </div>
@@ -2899,6 +2905,14 @@
               <div>
                 <div style="font-size: 0.75rem; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.04em;">Total Value</div>
                 <div id="chkord-total-value" style="font-size: 1.5rem; font-weight: 600; color: var(--text-primary);">—</div>
+              </div>
+              <div>
+                <div style="font-size: 0.75rem; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.04em;">Small Orders</div>
+                <div id="chkord-small-count" style="font-size: 1.5rem; font-weight: 600; color: var(--text-primary);">—</div>
+              </div>
+              <div>
+                <div style="font-size: 0.75rem; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.04em;">Large Orders</div>
+                <div id="chkord-large-count" style="font-size: 1.5rem; font-weight: 600; color: var(--text-primary);">—</div>
               </div>
             </div>
           </div>
