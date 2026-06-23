@@ -12570,6 +12570,9 @@ function renderCheckedOrders(data) {
   document.getElementById("chkord-average").textContent = formatDuration(
     data.average_seconds,
   );
+  document.getElementById("chkord-total-value").textContent = formatCurrency(
+    data.total_value,
+  );
   summaryEl.style.display = "block";
 
   const orders = data.orders || [];
@@ -12589,10 +12592,16 @@ function renderCheckedOrders(data) {
       <td>${escapeHtml(formatDateTime(o.created_at))}</td>
       <td>${escapeHtml(formatDateTime(o.check_completed_at))}</td>
       <td style="text-align: right">${escapeHtml(formatDuration(o.seconds))}</td>
+      <td style="text-align: right">${escapeHtml(formatCurrency(o.value))}</td>
     `;
     tbody.appendChild(row);
   });
   resultsEl.style.display = "block";
+}
+
+function formatCurrency(n) {
+  const v = typeof n === "number" && isFinite(n) ? n : 0;
+  return `$${v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 function formatDateTime(iso) {

@@ -888,6 +888,7 @@ class CheckedOrder(BaseModel):
     created_at: datetime
     check_completed_at: datetime
     seconds: float
+    value: float = 0.0
 
 
 class CheckedOrdersResponse(BaseModel):
@@ -895,4 +896,5 @@ class CheckedOrdersResponse(BaseModel):
     order_count: int = 0
     total_seconds: float = 0.0
     average_seconds: float = 0.0
+    total_value: float = 0.0
     orders: List[CheckedOrder] = []

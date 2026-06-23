@@ -5434,6 +5434,7 @@ async def calculate_checked_orders(
         order_count=result["order_count"],
         total_seconds=result["total_seconds"],
         average_seconds=result["average_seconds"],
+        total_value=result["total_value"],
         orders=[CheckedOrder(**o) for o in result["orders"]],
     )
 
