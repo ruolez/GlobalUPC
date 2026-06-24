@@ -159,12 +159,22 @@ def _fetch_item_aggregates(
 
 def compute_checked_orders(
     rows: List[Tuple[str, datetime, datetime, Any, Any]],
+    slow_threshold_seconds: float = 0.0,
+    seconds_per_product: float = 10.0,
 ) -> Dict[str, Any]:
     """
     Pure logic (no I/O). Turn (order_number, created_at, check_completed_at, order_value,
     product_count) rows into a summary. Per-order time = check_completed_at - created_at;
     rows with a non-positive duration (bad data) are skipped so they don't skew the
     average or the value totals.
+
+    Slow orders (actual duration over `slow_threshold_seconds`) are outliers — a checker
+    who walked away mid-order inflates their real time. For the summary totals only, such
+    orders are counted as an estimate of `product_count * seconds_per_product` instead of
+    their real duration; normal orders keep their real duration. This is gated on
+    `slow_threshold_seconds > 0` (a 0 threshold disables slow-detection, matching the
+    frontend), so nothing is substituted then. The per-order `seconds` in the returned
+    detail list is always the *actual* duration — the table shows real times.
 
     Returns order_count, total_seconds, average_seconds, total_value, and the per-order
     detail list (each with its `value` and `product_count`).
@@ -181,7 +191,9 @@ def compute_checked_orders(
             continue
         value = float(order_value) if order_value is not None else 0.0
         products = int(product_count) if product_count is not None else 0
-        total_seconds += seconds
+        is_slow = slow_threshold_seconds > 0 and seconds > slow_threshold_seconds
+        effective_seconds = products * seconds_per_product if is_slow else seconds
+        total_seconds += effective_seconds
         total_value += value
         orders.append({
             "order_number": order_number,

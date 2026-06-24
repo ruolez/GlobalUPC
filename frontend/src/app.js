@@ -12616,6 +12616,17 @@ function renderCheckedOrders(data) {
   );
   document.getElementById("chkord-summary").style.display = "block";
 
+  // Slow orders are counted at an estimate in Total Time / Avg — explain when active.
+  const noteEl = document.getElementById("chkord-summary-note");
+  if (noteEl) {
+    if ((data.slow_threshold_minutes || 0) > 0) {
+      noteEl.textContent = `Slow orders (over ${data.slow_threshold_minutes} min) are counted at ${data.seconds_per_product}s × products in Total Time and Avg / Order; the table shows their real duration.`;
+      noteEl.style.display = "block";
+    } else {
+      noteEl.style.display = "none";
+    }
+  }
+
   // A fresh result keeps the backend's natural order until the user sorts.
   checkedOrdersState.orders = data.orders || [];
   checkedOrdersState.sortColumn = null;
@@ -12810,25 +12821,48 @@ document
 // ===== Checked Orders settings =====
 
 const CHECKED_ORDERS_SLOW_KEY = "checked_orders_slow_minutes";
+const CHECKED_ORDERS_SECONDS_PER_PRODUCT_KEY = "checked_orders_seconds_per_product";
 
 async function loadCheckedOrdersSettings() {
   const slowInput = document.getElementById("checked-orders-slow-minutes");
-  if (!slowInput) return;
-  try {
-    const resp = await fetch(`${API_BASE}/settings/${CHECKED_ORDERS_SLOW_KEY}`);
-    slowInput.value = resp.ok ? (await resp.json()).value || "15" : "15";
-  } catch {
-    slowInput.value = "15";
+  const perProductInput = document.getElementById(
+    "checked-orders-seconds-per-product",
+  );
+  if (slowInput) {
+    try {
+      const resp = await fetch(`${API_BASE}/settings/${CHECKED_ORDERS_SLOW_KEY}`);
+      slowInput.value = resp.ok ? (await resp.json()).value || "15" : "15";
+    } catch {
+      slowInput.value = "15";
+    }
+  }
+  if (perProductInput) {
+    try {
+      const resp = await fetch(
+        `${API_BASE}/settings/${CHECKED_ORDERS_SECONDS_PER_PRODUCT_KEY}`,
+      );
+      perProductInput.value = resp.ok ? (await resp.json()).value || "10" : "10";
+    } catch {
+      perProductInput.value = "10";
+    }
   }
 }
 
 async function saveCheckedOrdersSettings() {
   const slow = document.getElementById("checked-orders-slow-minutes")?.value;
+  const perProduct = document.getElementById(
+    "checked-orders-seconds-per-product",
+  )?.value;
   try {
     await saveSetting(
       CHECKED_ORDERS_SLOW_KEY,
       slow,
       "Checked Orders: minutes above which an order's check duration is flagged slow (red, floated to top).",
+    );
+    await saveSetting(
+      CHECKED_ORDERS_SECONDS_PER_PRODUCT_KEY,
+      perProduct,
+      "Checked Orders: seconds-per-product used to estimate a slow order's time in the summary totals.",
     );
     showToast("✓ Checked Orders settings saved", "success");
   } catch (error) {

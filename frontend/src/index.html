@@ -534,7 +534,9 @@
                       <p class="role-card-help">
                         <strong>Slow order threshold</strong>: orders whose check duration
                         exceeds this many minutes are highlighted in red and floated to the
-                        top of the Checked Orders results.
+                        top of the Checked Orders results. In the summary totals they're
+                        counted as an estimate of <strong>seconds per product × products</strong>
+                        rather than their inflated real time (the table still shows the real time).
                       </p>
                     </div>
                   </div>
@@ -542,6 +544,10 @@
                     <div class="form-group" style="margin: 0;">
                       <label for="checked-orders-slow-minutes" style="font-size: 0.75rem;">Slow order threshold (min)</label>
                       <input type="number" id="checked-orders-slow-minutes" min="0" step="0.5" placeholder="15" style="max-width: 140px" />
+                    </div>
+                    <div class="form-group" style="margin: 0;">
+                      <label for="checked-orders-seconds-per-product" style="font-size: 0.75rem;">Seconds per product (slow-order estimate)</label>
+                      <input type="number" id="checked-orders-seconds-per-product" min="0" step="1" placeholder="10" style="max-width: 140px" />
                     </div>
                     <button type="button" class="btn btn-primary" id="checked-orders-settings-save" style="align-self: flex-end;">Save</button>
                   </div>
@@ -2942,6 +2948,7 @@
                 <div id="chkord-large-count" style="font-size: 1.5rem; font-weight: 600; color: var(--text-primary);">—</div>
               </div>
             </div>
+            <div id="chkord-summary-note" class="settings-input-help" style="display: none; padding: 0 1.5rem 1.25rem;"></div>
           </div>
 
           <div id="chkord-empty" style="display: none; text-align: center; padding: 3rem 1rem; color: var(--text-secondary);">
