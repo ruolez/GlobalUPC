@@ -8805,7 +8805,64 @@ document
 
 // ===== Fulfillment Status =====
 
-function loadFulfillmentStatusPage() {
+const FULFILLMENT_EXCLUDED_KEY = "fulfillment-status-excluded";
+let fulfillmentStores = []; // full list of active Shopify stores {id, name}
+let fulfillmentRequestSeq = 0; // guards against out-of-order overlapping fetches
+
+// Persist the EXCLUDED set (not the included one) so any store added later
+// defaults to checked/included.
+function getFulfillmentExcluded() {
+  try {
+    const arr = JSON.parse(localStorage.getItem(FULFILLMENT_EXCLUDED_KEY) || "[]");
+    return new Set(Array.isArray(arr) ? arr.map(Number) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function setFulfillmentExcluded(excluded) {
+  localStorage.setItem(FULFILLMENT_EXCLUDED_KEY, JSON.stringify([...excluded]));
+}
+
+async function loadFulfillmentStatusPage() {
+  const container = document.getElementById("fulfillment-status-store-checkboxes");
+  container.innerHTML = "";
+
+  try {
+    const stores = await apiRequest("/stores");
+    fulfillmentStores = stores
+      .filter((s) => s.store_type === "shopify" && s.is_active)
+      .map((s) => ({ id: s.id, name: s.name }));
+
+    if (fulfillmentStores.length === 0) {
+      container.innerHTML =
+        '<span style="color: var(--text-tertiary); font-size: 0.8125rem;">No active Shopify stores configured</span>';
+    } else {
+      const excluded = getFulfillmentExcluded();
+      fulfillmentStores.forEach((store) => {
+        const label = document.createElement("label");
+        label.style.cssText =
+          "display: flex; align-items: center; gap: 0.5rem; cursor: pointer; white-space: nowrap;";
+
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.value = store.id;
+        checkbox.className = "fulfillment-status-store-cb";
+        checkbox.checked = !excluded.has(store.id);
+        checkbox.style.cssText = "width: auto; margin: 0;";
+
+        const span = document.createElement("span");
+        span.textContent = store.name;
+
+        label.appendChild(checkbox);
+        label.appendChild(span);
+        container.appendChild(label);
+      });
+    }
+  } catch (error) {
+    console.error("Error loading Shopify stores:", error);
+  }
+
   fetchFulfillmentStatus();
 }
 
@@ -8813,8 +8870,13 @@ async function fetchFulfillmentStatus() {
   const progress = document.getElementById("fulfillment-status-progress");
   const results = document.getElementById("fulfillment-status-results");
   const empty = document.getElementById("fulfillment-status-empty");
+  const emptyText = empty.querySelector("p");
   const meta = document.getElementById("fulfillment-status-meta");
   const refreshBtn = document.getElementById("fulfillment-status-refresh-btn");
+
+  // Overlapping fetches (rapid checkbox toggles) can resolve out of order; only
+  // the latest request is allowed to touch the UI.
+  const seq = ++fulfillmentRequestSeq;
 
   progress.style.display = "block";
   results.style.display = "none";
@@ -8822,24 +8884,45 @@ async function fetchFulfillmentStatus() {
   meta.textContent = "";
   refreshBtn.disabled = true;
 
+  const excluded = getFulfillmentExcluded();
+  const includedCount = fulfillmentStores.filter((s) => !excluded.has(s.id)).length;
+
+  // Every configured store is excluded — nothing to fetch.
+  if (fulfillmentStores.length > 0 && includedCount === 0) {
+    progress.style.display = "none";
+    emptyText.textContent = "All stores are excluded — check a store above to see counts.";
+    empty.style.display = "block";
+    refreshBtn.disabled = false;
+    return;
+  }
+
   try {
-    const data = await apiRequest("/shopify/fulfillment-status");
+    const qs = excluded.size
+      ? `?exclude_ids=${encodeURIComponent([...excluded].join(","))}`
+      : "";
+    const data = await apiRequest(`/shopify/fulfillment-status${qs}`);
+    if (seq !== fulfillmentRequestSeq) return; // superseded by a newer fetch
     progress.style.display = "none";
 
     if (!data.stores || data.stores.length === 0) {
+      emptyText.textContent = "No active Shopify stores configured.";
       empty.style.display = "block";
       return;
     }
 
     displayFulfillmentStatusResults(data);
     results.style.display = "block";
-    meta.textContent = `${data.stores.length} store${data.stores.length === 1 ? "" : "s"} · updated ${new Date().toLocaleTimeString()}`;
+    const total = fulfillmentStores.length;
+    const shown = data.stores.length;
+    const scope = shown === total ? `${shown} store${shown === 1 ? "" : "s"}` : `${shown} of ${total} stores`;
+    meta.textContent = `${scope} · updated ${new Date().toLocaleTimeString()}`;
   } catch (error) {
+    if (seq !== fulfillmentRequestSeq) return; // superseded by a newer fetch
     console.error("Error loading fulfillment status:", error);
     progress.style.display = "none";
     meta.innerHTML = `<span style="color: var(--danger);">${escapeHtml(error.message || "Failed to load fulfillment status")}</span>`;
   } finally {
-    refreshBtn.disabled = false;
+    if (seq === fulfillmentRequestSeq) refreshBtn.disabled = false;
   }
 }
 
@@ -8889,6 +8972,17 @@ function displayFulfillmentStatusResults(data) {
 document
   .getElementById("fulfillment-status-refresh-btn")
   ?.addEventListener("click", fetchFulfillmentStatus);
+
+document
+  .getElementById("fulfillment-status-store-checkboxes")
+  ?.addEventListener("change", () => {
+    const excluded = new Set();
+    document.querySelectorAll(".fulfillment-status-store-cb").forEach((cb) => {
+      if (!cb.checked) excluded.add(Number(cb.value));
+    });
+    setFulfillmentExcluded(excluded);
+    fetchFulfillmentStatus();
+  });
 
 let shopifySalesResults = null;
 

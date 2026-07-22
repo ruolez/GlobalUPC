@@ -4509,12 +4509,20 @@ async def price_updates_autocomplete(request: DescriptionAutocompleteRequest, st
 
 
 @app.get("/api/shopify/fulfillment-status", response_model=FulfillmentStatusResponse)
-async def shopify_fulfillment_status(db: Session = Depends(get_db)):
+async def shopify_fulfillment_status(exclude_ids: str = "", db: Session = Depends(get_db)):
     """
-    Count open orders across all active Shopify stores, broken into three buckets
-    per store (in process, on picklist, to fulfill) plus grand totals. Uses the
-    lightweight Shopify ordersCount query fanned out per store.
+    Count open orders across active Shopify stores, broken into buckets per store
+    (open, on hold, in process, on picklist, to fulfill) plus grand totals. Uses
+    the lightweight Shopify ordersCount query fanned out per store.
+
+    exclude_ids is an optional comma-separated list of store ids to skip entirely
+    (no Shopify API calls are made for them).
     """
+    excluded = {
+        int(part) for part in exclude_ids.split(",")
+        if part.strip().isdigit()
+    }
+
     stores = db.query(Store).filter(
         Store.store_type == StoreType.shopify,
         Store.is_active == True
@@ -4522,6 +4530,8 @@ async def shopify_fulfillment_status(db: Session = Depends(get_db)):
 
     store_dicts = []
     for store in stores:
+        if store.id in excluded:
+            continue
         if store.shopify_connection:
             store_dicts.append({
                 "id": store.id,
