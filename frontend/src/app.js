@@ -25,22 +25,6 @@ document.querySelectorAll(".nav-item").forEach((item) => {
   });
 });
 
-// Collapsible sidebar groups (e.g. Shopify). Persist open/closed in localStorage.
-document.querySelectorAll(".nav-group-header").forEach((header) => {
-  const group = header.closest(".nav-group");
-  const groupKey = header.dataset.navGroup;
-  if (localStorage.getItem(`navGroup:${groupKey}`) === "collapsed") {
-    group.classList.add("collapsed");
-  }
-  header.addEventListener("click", () => {
-    const collapsed = group.classList.toggle("collapsed");
-    localStorage.setItem(
-      `navGroup:${groupKey}`,
-      collapsed ? "collapsed" : "expanded",
-    );
-  });
-});
-
 function navigateTo(page) {
   exitPriceFullscreen();
 
