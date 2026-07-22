@@ -1581,6 +1581,7 @@ async def count_orders(
         return False, f"Unexpected error: {str(e)}", None
 
 
+_OPEN_QUERY = "status:open"
 _UNFULFILLED_OPEN_QUERY = "status:open AND fulfillment_status:unfulfilled"
 _ON_HOLD_OPEN_QUERY = "status:open AND fulfillment_status:on_hold"
 _CHECKED_TAG = "checked"
@@ -1692,18 +1693,23 @@ async def count_fulfillment_buckets_for_store(
     On failure the counts are left None and `error` is set, so one bad store never
     fails the whole table.
 
-    Buckets (all over open orders):
+    Columns (all over open orders):
+      - open_orders = all open orders (any fulfillment status)
+      - on_hold     = fulfillment status on hold
       - in_process  = unfulfilled AND tagged "checked"
       - on_picklist = unfulfilled AND a tag starts with "picklist" AND NOT tagged "checked"
       - to_fulfill  = total_unfulfilled + on_hold - in_process - on_picklist
                       (untouched backlog: neither already checked nor on a picklist)
 
     in_process / on_picklist / total_unfulfilled are derived from one paginated
-    fetch of the open unfulfilled orders' tags; on_hold is a single ordersCount.
+    fetch of the open unfulfilled orders' tags; on_hold and open_orders are each
+    a single ordersCount.
     """
     row: Dict[str, Any] = {
         "store_id": store["id"],
         "store_name": store["name"],
+        "open_orders": None,
+        "on_hold": None,
         "in_process": None,
         "on_picklist": None,
         "to_fulfill": None,
@@ -1714,19 +1720,24 @@ async def count_fulfillment_buckets_for_store(
     key = store["admin_api_key"]
     ver = store.get("api_version", "2025-01")
 
-    tags_result, hold_result = await asyncio.gather(
+    tags_result, hold_result, open_result = await asyncio.gather(
         fetch_unfulfilled_order_tags(sd, key, ver),
         count_orders(sd, key, _ON_HOLD_OPEN_QUERY, ver),
+        count_orders(sd, key, _OPEN_QUERY, ver),
     )
 
     tags_ok, tags_err, order_tag_lists = tags_result
     hold_ok, hold_err, on_hold = hold_result
+    open_ok, open_err, open_orders = open_result
 
     if not tags_ok:
         row["error"] = tags_err or "Unknown error"
         return row
     if not hold_ok:
         row["error"] = hold_err or "Unknown error"
+        return row
+    if not open_ok:
+        row["error"] = open_err or "Unknown error"
         return row
 
     total_unfulfilled = len(order_tag_lists)
@@ -1740,6 +1751,8 @@ async def count_fulfillment_buckets_for_store(
         elif any(t.startswith(_PICKLIST_TAG_PREFIX) for t in lowered):
             on_picklist += 1
 
+    row["open_orders"] = open_orders
+    row["on_hold"] = on_hold
     row["in_process"] = in_process
     row["on_picklist"] = on_picklist
     row["to_fulfill"] = total_unfulfilled + on_hold - in_process - on_picklist

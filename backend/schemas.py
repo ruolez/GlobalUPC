@@ -569,6 +569,8 @@ class ShopifySalesRequest(BaseModel):
 class FulfillmentStatusRow(BaseModel):
     store_id: int
     store_name: str
+    open_orders: Optional[int] = None
+    on_hold: Optional[int] = None
     in_process: Optional[int] = None
     on_picklist: Optional[int] = None
     to_fulfill: Optional[int] = None
@@ -576,6 +578,8 @@ class FulfillmentStatusRow(BaseModel):
 
 
 class FulfillmentStatusTotals(BaseModel):
+    open_orders: int
+    on_hold: int
     in_process: int
     on_picklist: int
     to_fulfill: int

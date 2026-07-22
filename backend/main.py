@@ -4537,9 +4537,11 @@ async def shopify_fulfillment_status(db: Session = Depends(get_db)):
 
     rows = sorted(rows, key=lambda r: r["store_name"].lower())
 
-    totals = {"in_process": 0, "on_picklist": 0, "to_fulfill": 0}
+    totals = {"open_orders": 0, "on_hold": 0, "in_process": 0, "on_picklist": 0, "to_fulfill": 0}
     for row in rows:
         if row["error"] is None:
+            totals["open_orders"] += row["open_orders"]
+            totals["on_hold"] += row["on_hold"]
             totals["in_process"] += row["in_process"]
             totals["on_picklist"] += row["on_picklist"]
             totals["to_fulfill"] += row["to_fulfill"]

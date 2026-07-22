@@ -8871,11 +8871,13 @@ function displayFulfillmentStatusResults(data) {
       if (row.error) {
         return `<tr>
           <td>${escapeHtml(row.store_name)}</td>
-          <td colspan="3" style="color: var(--danger); font-size: 0.8125rem;">${escapeHtml(row.error)}</td>
+          <td colspan="5" style="color: var(--danger); font-size: 0.8125rem;">${escapeHtml(row.error)}</td>
         </tr>`;
       }
       return `<tr>
         <td>${escapeHtml(row.store_name)}</td>
+        ${numCell(row.open_orders)}
+        ${numCell(row.on_hold)}
         ${numCell(row.in_process)}
         ${numCell(row.on_picklist)}
         ${numCell(row.to_fulfill)}
@@ -8883,9 +8885,17 @@ function displayFulfillmentStatusResults(data) {
     })
     .join("");
 
-  const t = data.totals || { in_process: 0, on_picklist: 0, to_fulfill: 0 };
+  const t = data.totals || {
+    open_orders: 0,
+    on_hold: 0,
+    in_process: 0,
+    on_picklist: 0,
+    to_fulfill: 0,
+  };
   tfoot.innerHTML = `<tr style="font-weight: 700; border-top: 2px solid var(--border-color);">
     <td>Total</td>
+    ${numCell(t.open_orders)}
+    ${numCell(t.on_hold)}
     ${numCell(t.in_process)}
     ${numCell(t.on_picklist)}
     ${numCell(t.to_fulfill)}
