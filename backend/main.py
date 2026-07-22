@@ -35,6 +35,7 @@ from schemas import (
     PriceUpdateHistoryResponse, PriceUpdateHistoryBatch, PriceUpdateHistoryListResponse,
     StoreMirrorCreate, StoreMirrorResponse, StoreMirrorListResponse,
     ShopifySalesRequest,
+    FulfillmentStatusResponse,
     SalesReportRequest,
     SalesConfigCreate, SalesConfigResponse,
     SalesExclusionCreate, SalesExclusionResponse, SalesExclusionListResponse,
@@ -68,7 +69,8 @@ from shopify_helper import (
     check_barcode_exists, search_product_prices_by_barcode, update_variant_prices,
     get_all_product_variant_prices, search_product_prices_with_siblings,
     fetch_fulfilled_orders,
-    fetch_orders_with_tag, fetch_customer_orders_after
+    fetch_orders_with_tag, fetch_customer_orders_after,
+    count_fulfillment_buckets_for_store
 )
 from item_tracker_helper import (
     get_item_info_async, get_purchases_async, get_sales_async,
@@ -4504,6 +4506,45 @@ async def price_updates_autocomplete(request: DescriptionAutocompleteRequest, st
     ]
 
     return DescriptionAutocompleteResponse(results=results, count=len(results))
+
+
+@app.get("/api/shopify/fulfillment-status", response_model=FulfillmentStatusResponse)
+async def shopify_fulfillment_status(db: Session = Depends(get_db)):
+    """
+    Count open orders across all active Shopify stores, broken into three buckets
+    per store (in process, on picklist, to fulfill) plus grand totals. Uses the
+    lightweight Shopify ordersCount query fanned out per store.
+    """
+    stores = db.query(Store).filter(
+        Store.store_type == StoreType.shopify,
+        Store.is_active == True
+    ).all()
+
+    store_dicts = []
+    for store in stores:
+        if store.shopify_connection:
+            store_dicts.append({
+                "id": store.id,
+                "name": store.name,
+                "shop_domain": store.shopify_connection.shop_domain,
+                "admin_api_key": store.shopify_connection.admin_api_key,
+                "api_version": store.shopify_connection.api_version,
+            })
+
+    rows = await asyncio.gather(*[
+        count_fulfillment_buckets_for_store(s) for s in store_dicts
+    ]) if store_dicts else []
+
+    rows = sorted(rows, key=lambda r: r["store_name"].lower())
+
+    totals = {"in_process": 0, "on_picklist": 0, "to_fulfill": 0}
+    for row in rows:
+        if row["error"] is None:
+            totals["in_process"] += row["in_process"]
+            totals["on_picklist"] += row["on_picklist"]
+            totals["to_fulfill"] += row["to_fulfill"]
+
+    return {"stores": rows, "totals": totals}
 
 
 @app.post("/api/shopify-sales/stream")

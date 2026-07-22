@@ -566,6 +566,26 @@ class ShopifySalesRequest(BaseModel):
     end_date: str
 
 
+class FulfillmentStatusRow(BaseModel):
+    store_id: int
+    store_name: str
+    in_process: Optional[int] = None
+    on_picklist: Optional[int] = None
+    to_fulfill: Optional[int] = None
+    error: Optional[str] = None
+
+
+class FulfillmentStatusTotals(BaseModel):
+    in_process: int
+    on_picklist: int
+    to_fulfill: int
+
+
+class FulfillmentStatusResponse(BaseModel):
+    stores: List[FulfillmentStatusRow]
+    totals: FulfillmentStatusTotals
+
+
 class SalesReportRequest(BaseModel):
     mssql_store_ids: List[int] = []
     shopify_store_ids: List[int] = []

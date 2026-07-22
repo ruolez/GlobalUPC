@@ -59,12 +59,23 @@
           <a href="#" class="nav-item" data-page="sales">
             <span>Sales</span>
           </a>
-          <a href="#" class="nav-item" data-page="shopify-sales">
-            <span>Shopify Sales</span>
-          </a>
-          <a href="#" class="nav-item" data-page="shopify-analytics">
-            <span>Shopify Analytics</span>
-          </a>
+          <div class="nav-group" id="nav-group-shopify">
+            <button type="button" class="nav-group-header" data-nav-group="shopify">
+              <span>Shopify</span>
+              <span class="nav-group-chevron">▾</span>
+            </button>
+            <div class="nav-group-items">
+              <a href="#" class="nav-item" data-page="fulfillment-status">
+                <span>Fulfillment Status</span>
+              </a>
+              <a href="#" class="nav-item" data-page="shopify-sales">
+                <span>Shopify Sales</span>
+              </a>
+              <a href="#" class="nav-item" data-page="shopify-analytics">
+                <span>Shopify Analytics</span>
+              </a>
+            </div>
+          </div>
           <a href="#" class="nav-item" data-page="sql-audit">
             <span>Orphan UPCs</span>
           </a>
@@ -3755,6 +3766,54 @@
                   <button type="button" class="btn btn-secondary" id="sales-next-page" onclick="changeSalesPage(1)" style="font-size: 0.75rem; padding: 0.3rem 0.6rem;">Next</button>
                 </div>
               </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Fulfillment Status Page -->
+        <div id="fulfillment-status-page" class="page" style="display: none">
+          <header class="page-header">
+            <h2>Fulfillment Status</h2>
+            <p class="subtitle">Open orders queued for fulfillment across all Shopify stores</p>
+          </header>
+
+          <div class="card" style="margin-bottom: 1.5rem">
+            <div
+              style="display: flex; justify-content: space-between; align-items: center; padding: 1rem 1.5rem; gap: 0.75rem; flex-wrap: wrap;"
+            >
+              <div id="fulfillment-status-meta" style="font-size: 0.8125rem; color: var(--text-secondary);"></div>
+              <button type="button" class="btn btn-secondary" id="fulfillment-status-refresh-btn">Refresh</button>
+            </div>
+          </div>
+
+          <div
+            id="fulfillment-status-progress"
+            style="display: none; text-align: center; padding: 2rem 1rem; color: var(--text-secondary);"
+          >
+            <p>Counting orders across Shopify stores…</p>
+          </div>
+
+          <div
+            id="fulfillment-status-empty"
+            style="display: none; text-align: center; padding: 3rem 1rem; color: var(--text-secondary);"
+          >
+            <p>No active Shopify stores configured.</p>
+          </div>
+
+          <div id="fulfillment-status-results" style="display: none;">
+            <div class="table-container">
+              <table class="data-table" id="fulfillment-status-table">
+                <thead>
+                  <tr>
+                    <th style="width: 34%">Store</th>
+                    <th style="width: 22%; text-align: right;">In Process</th>
+                    <th style="width: 22%; text-align: right;">On Picklist</th>
+                    <th style="width: 22%; text-align: right;">To Fulfill</th>
+                  </tr>
+                </thead>
+                <tbody id="fulfillment-status-tbody"></tbody>
+                <tfoot id="fulfillment-status-tfoot"></tfoot>
+              </table>
             </div>
           </div>
         </div>

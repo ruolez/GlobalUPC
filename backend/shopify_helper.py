@@ -1500,3 +1500,247 @@ async def fetch_customer_orders_after(
         return False, f"Network error: {str(e)}", []
     except Exception as e:
         return False, f"Unexpected error: {str(e)}", []
+
+
+async def count_orders(
+    shop_domain: str,
+    admin_api_key: str,
+    query: str,
+    api_version: str = "2025-01",
+) -> tuple[bool, Optional[str], Optional[int]]:
+    """
+    Return the number of orders matching a Shopify search query, using the
+    lightweight `ordersCount` query (no order pagination).
+
+    Below Shopify's default 10k cap the returned count is exact
+    (precision == "EXACT"); fulfillment backlogs are far smaller, so this is
+    reliable. Returns (True, None, count) on success, (False, error, None) otherwise.
+    """
+    try:
+        shop_domain = validate_shop_domain(shop_domain)
+
+        query_gql = """
+        query OrdersFulfillmentCount($q: String!) {
+          ordersCount(query: $q) { count precision }
+        }
+        """
+
+        url = f"https://{shop_domain}/admin/api/{api_version}/graphql.json"
+        headers = {
+            "X-Shopify-Access-Token": admin_api_key,
+            "Content-Type": "application/json",
+        }
+
+        max_retries = 3
+        backoff_seconds = [1, 2, 4]
+
+        async with aiohttp.ClientSession() as session:
+            response_data = None
+            for attempt in range(max_retries + 1):
+                async with session.post(
+                    url,
+                    json={"query": query_gql, "variables": {"q": query}},
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=60),
+                ) as response:
+                    if response.status == 429:
+                        if attempt < max_retries:
+                            await asyncio.sleep(backoff_seconds[attempt])
+                            continue
+                        return False, "Shopify rate limit exceeded after retries", None
+
+                    if response.status != 200:
+                        error_text = await response.text()
+                        return False, f"HTTP {response.status}: {error_text}", None
+
+                    response_data = await response.json()
+
+                    if "errors" in response_data:
+                        errors = response_data["errors"]
+                        error_msg = "; ".join([e.get("message", str(e)) for e in errors])
+                        if "throttl" in error_msg.lower() and attempt < max_retries:
+                            await asyncio.sleep(backoff_seconds[attempt])
+                            continue
+                        return False, f"GraphQL errors: {error_msg}", None
+
+                    break
+
+            if not response_data:
+                return False, "No response received", None
+
+            orders_count = (response_data.get("data", {}) or {}).get("ordersCount", {}) or {}
+            count = orders_count.get("count")
+            if count is None:
+                return False, "ordersCount returned no count", None
+
+            return True, None, int(count)
+
+    except aiohttp.ClientError as e:
+        return False, f"Network error: {str(e)}", None
+    except Exception as e:
+        return False, f"Unexpected error: {str(e)}", None
+
+
+_UNFULFILLED_OPEN_QUERY = "status:open AND fulfillment_status:unfulfilled"
+_ON_HOLD_OPEN_QUERY = "status:open AND fulfillment_status:on_hold"
+_CHECKED_TAG = "checked"
+_PICKLIST_TAG_PREFIX = "picklist"
+
+
+async def fetch_unfulfilled_order_tags(
+    shop_domain: str,
+    admin_api_key: str,
+    api_version: str = "2025-01",
+) -> tuple[bool, Optional[str], List[List[str]]]:
+    """
+    Fetch tags for every open, unfulfilled order (cursor-paginated).
+
+    Returns (True, None, list_of_tag_lists). We fetch tags in Python rather than
+    counting server-side because Shopify's order search does NOT support a
+    trailing-wildcard tag match (`tag:picklist*` matches nothing), so the
+    "picklist" prefix bucket can only be computed by inspecting each order's tags.
+    The working set is bounded (the open unfulfilled backlog).
+    """
+    try:
+        shop_domain = validate_shop_domain(shop_domain)
+
+        query_gql = """
+        query fetchUnfulfilledTags($query: String!, $first: Int!, $after: String) {
+          orders(first: $first, after: $after, query: $query) {
+            pageInfo { hasNextPage endCursor }
+            edges { node { id tags } }
+          }
+        }
+        """
+
+        url = f"https://{shop_domain}/admin/api/{api_version}/graphql.json"
+        headers = {
+            "X-Shopify-Access-Token": admin_api_key,
+            "Content-Type": "application/json",
+        }
+
+        results: List[List[str]] = []
+        has_next_page = True
+        cursor: Optional[str] = None
+        max_retries = 3
+        backoff_seconds = [1, 2, 4]
+
+        async with aiohttp.ClientSession() as session:
+            while has_next_page:
+                variables: Dict[str, Any] = {"query": _UNFULFILLED_OPEN_QUERY, "first": 250}
+                if cursor:
+                    variables["after"] = cursor
+
+                response_data = None
+                for attempt in range(max_retries + 1):
+                    async with session.post(
+                        url,
+                        json={"query": query_gql, "variables": variables},
+                        headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=60),
+                    ) as response:
+                        if response.status == 429:
+                            if attempt < max_retries:
+                                await asyncio.sleep(backoff_seconds[attempt])
+                                continue
+                            return False, "Shopify rate limit exceeded after retries", []
+
+                        if response.status != 200:
+                            error_text = await response.text()
+                            return False, f"HTTP {response.status}: {error_text}", []
+
+                        response_data = await response.json()
+
+                        if "errors" in response_data:
+                            errors = response_data["errors"]
+                            error_msg = "; ".join([e.get("message", str(e)) for e in errors])
+                            if "throttl" in error_msg.lower() and attempt < max_retries:
+                                await asyncio.sleep(backoff_seconds[attempt])
+                                continue
+                            return False, f"GraphQL errors: {error_msg}", []
+
+                        break
+
+                if not response_data:
+                    return False, "No response received", []
+
+                orders_data = response_data.get("data", {}).get("orders", {}) or {}
+                page_info = orders_data.get("pageInfo", {}) or {}
+                has_next_page = page_info.get("hasNextPage", False)
+                cursor = page_info.get("endCursor")
+
+                for edge in orders_data.get("edges", []) or []:
+                    order = edge.get("node") or {}
+                    results.append(order.get("tags") or [])
+
+        return True, None, results
+
+    except aiohttp.ClientError as e:
+        return False, f"Network error: {str(e)}", []
+    except Exception as e:
+        return False, f"Unexpected error: {str(e)}", []
+
+
+async def count_fulfillment_buckets_for_store(
+    store: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Compute the three fulfillment buckets for one Shopify store.
+
+    `store` is a dict with keys: id, name, shop_domain, admin_api_key, api_version.
+    Returns a row dict {store_id, store_name, in_process, on_picklist, to_fulfill, error}.
+    On failure the counts are left None and `error` is set, so one bad store never
+    fails the whole table.
+
+    Buckets (all over open orders):
+      - in_process  = unfulfilled AND tagged "checked"
+      - on_picklist = unfulfilled AND a tag starts with "picklist" AND NOT tagged "checked"
+      - to_fulfill  = total_unfulfilled + on_hold - in_process - on_picklist
+                      (untouched backlog: neither already checked nor on a picklist)
+
+    in_process / on_picklist / total_unfulfilled are derived from one paginated
+    fetch of the open unfulfilled orders' tags; on_hold is a single ordersCount.
+    """
+    row: Dict[str, Any] = {
+        "store_id": store["id"],
+        "store_name": store["name"],
+        "in_process": None,
+        "on_picklist": None,
+        "to_fulfill": None,
+        "error": None,
+    }
+
+    sd = store["shop_domain"]
+    key = store["admin_api_key"]
+    ver = store.get("api_version", "2025-01")
+
+    tags_result, hold_result = await asyncio.gather(
+        fetch_unfulfilled_order_tags(sd, key, ver),
+        count_orders(sd, key, _ON_HOLD_OPEN_QUERY, ver),
+    )
+
+    tags_ok, tags_err, order_tag_lists = tags_result
+    hold_ok, hold_err, on_hold = hold_result
+
+    if not tags_ok:
+        row["error"] = tags_err or "Unknown error"
+        return row
+    if not hold_ok:
+        row["error"] = hold_err or "Unknown error"
+        return row
+
+    total_unfulfilled = len(order_tag_lists)
+    in_process = 0
+    on_picklist = 0
+    for tags in order_tag_lists:
+        lowered = [t.strip().lower() for t in tags]
+        has_checked = _CHECKED_TAG in lowered
+        if has_checked:
+            in_process += 1
+        elif any(t.startswith(_PICKLIST_TAG_PREFIX) for t in lowered):
+            on_picklist += 1
+
+    row["in_process"] = in_process
+    row["on_picklist"] = on_picklist
+    row["to_fulfill"] = total_unfulfilled + on_hold - in_process - on_picklist
+    return row

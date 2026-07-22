@@ -25,6 +25,22 @@ document.querySelectorAll(".nav-item").forEach((item) => {
   });
 });
 
+// Collapsible sidebar groups (e.g. Shopify). Persist open/closed in localStorage.
+document.querySelectorAll(".nav-group-header").forEach((header) => {
+  const group = header.closest(".nav-group");
+  const groupKey = header.dataset.navGroup;
+  if (localStorage.getItem(`navGroup:${groupKey}`) === "collapsed") {
+    group.classList.add("collapsed");
+  }
+  header.addEventListener("click", () => {
+    const collapsed = group.classList.toggle("collapsed");
+    localStorage.setItem(
+      `navGroup:${groupKey}`,
+      collapsed ? "collapsed" : "expanded",
+    );
+  });
+});
+
 function navigateTo(page) {
   exitPriceFullscreen();
 
@@ -79,6 +95,8 @@ function navigateTo(page) {
     loadPriceUpdatesPage();
   } else if (page === "sales") {
     loadSalesPage();
+  } else if (page === "fulfillment-status") {
+    loadFulfillmentStatusPage();
   } else if (page === "shopify-sales") {
     loadShopifySalesPage();
   } else if (page === "shopify-analytics") {
@@ -8800,6 +8818,83 @@ document
   });
 
 // ===== Shopify Sales =====
+
+// ===== Fulfillment Status =====
+
+function loadFulfillmentStatusPage() {
+  fetchFulfillmentStatus();
+}
+
+async function fetchFulfillmentStatus() {
+  const progress = document.getElementById("fulfillment-status-progress");
+  const results = document.getElementById("fulfillment-status-results");
+  const empty = document.getElementById("fulfillment-status-empty");
+  const meta = document.getElementById("fulfillment-status-meta");
+  const refreshBtn = document.getElementById("fulfillment-status-refresh-btn");
+
+  progress.style.display = "block";
+  results.style.display = "none";
+  empty.style.display = "none";
+  meta.textContent = "";
+  refreshBtn.disabled = true;
+
+  try {
+    const data = await apiRequest("/shopify/fulfillment-status");
+    progress.style.display = "none";
+
+    if (!data.stores || data.stores.length === 0) {
+      empty.style.display = "block";
+      return;
+    }
+
+    displayFulfillmentStatusResults(data);
+    results.style.display = "block";
+    meta.textContent = `${data.stores.length} store${data.stores.length === 1 ? "" : "s"} · updated ${new Date().toLocaleTimeString()}`;
+  } catch (error) {
+    console.error("Error loading fulfillment status:", error);
+    progress.style.display = "none";
+    meta.innerHTML = `<span style="color: var(--danger);">${escapeHtml(error.message || "Failed to load fulfillment status")}</span>`;
+  } finally {
+    refreshBtn.disabled = false;
+  }
+}
+
+function displayFulfillmentStatusResults(data) {
+  const tbody = document.getElementById("fulfillment-status-tbody");
+  const tfoot = document.getElementById("fulfillment-status-tfoot");
+
+  const numCell = (value) =>
+    `<td style="text-align: right; font-variant-numeric: tabular-nums;">${value === null || value === undefined ? "—" : value.toLocaleString()}</td>`;
+
+  tbody.innerHTML = data.stores
+    .map((row) => {
+      if (row.error) {
+        return `<tr>
+          <td>${escapeHtml(row.store_name)}</td>
+          <td colspan="3" style="color: var(--danger); font-size: 0.8125rem;">${escapeHtml(row.error)}</td>
+        </tr>`;
+      }
+      return `<tr>
+        <td>${escapeHtml(row.store_name)}</td>
+        ${numCell(row.in_process)}
+        ${numCell(row.on_picklist)}
+        ${numCell(row.to_fulfill)}
+      </tr>`;
+    })
+    .join("");
+
+  const t = data.totals || { in_process: 0, on_picklist: 0, to_fulfill: 0 };
+  tfoot.innerHTML = `<tr style="font-weight: 700; border-top: 2px solid var(--border-color);">
+    <td>Total</td>
+    ${numCell(t.in_process)}
+    ${numCell(t.on_picklist)}
+    ${numCell(t.to_fulfill)}
+  </tr>`;
+}
+
+document
+  .getElementById("fulfillment-status-refresh-btn")
+  ?.addEventListener("click", fetchFulfillmentStatus);
 
 let shopifySalesResults = null;
 
