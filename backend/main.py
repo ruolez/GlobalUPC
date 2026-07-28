@@ -79,7 +79,7 @@ from shopify_helper import (
     count_fulfillment_buckets_for_store,
     fetch_customers_with_last_order, fetch_customer_recent_orders,
     fetch_orders_line_items, fetch_baseline_order_items, count_orders,
-    fetch_customer_first_orders
+    fetch_customer_first_orders, fetch_customers_by_emails, normalize_email
 )
 from item_tracker_helper import (
     get_item_info_async, get_purchases_async, get_sales_async,
@@ -6358,6 +6358,24 @@ async def shopify_analytics_lost_customers_stream(
             return
         store_list.sort(key=lambda s: s["id"])
 
+        # Someone who stops buying here and starts at a sister shop has not
+        # churned. Shopify keeps a separate customer record per shop, so the
+        # only way to see that is to look — and it has to include shops the
+        # user did not select, since that is exactly where they may have gone.
+        all_shopify: List[Dict[str, Any]] = []
+        for st_all in db.query(Store).filter(
+            Store.store_type == StoreType.shopify, Store.is_active == True,
+        ).all():
+            if not st_all.shopify_connection:
+                continue
+            all_shopify.append({
+                "id": st_all.id, "name": st_all.name,
+                "shop_domain": st_all.shopify_connection.shop_domain,
+                "admin_api_key": st_all.shopify_connection.admin_api_key,
+                "api_version": st_all.shopify_connection.api_version,
+            })
+        cross_store = bool(request.exclude_cross_store) and len(all_shopify) > 1
+
         today = datetime.now().strftime("%Y-%m-%d")
         shards = _lost_shards(active_since, today)
 
@@ -6518,6 +6536,63 @@ async def shopify_analytics_lost_customers_stream(
                 # from a different population.
                 active_kept = [c for c in active_in if c["orders_count"] >= min_orders]
 
+                # Cross-store check runs last, on the smallest possible list.
+                moved_breakdown: Dict[str, int] = {}
+                no_email = 0
+                cross_errors: List[str] = []
+                if cross_store and lost_kept:
+                    others = [o for o in all_shopify if o["id"] != s["id"]]
+                    emails = [normalize_email(c.get("email")) for c in lost_kept]
+                    no_email = sum(1 for c in lost_kept if not normalize_email(c.get("email")))
+                    lookup = [e for e in emails if e]
+
+                    events.put_nowait(("phase", {
+                        "store_id": s["id"], "store_name": s["name"],
+                        "label": f"checking {len(others)} other store(s) for these customers",
+                    }))
+
+                    # email -> name of the shop they are still buying from
+                    moved_to: Dict[str, str] = {}
+                    for other in others:
+                        if not lookup:
+                            break
+                        res = await fetch_customers_by_emails(
+                            shop_domain=other["shop_domain"],
+                            admin_api_key=other["admin_api_key"],
+                            emails=lookup,
+                            api_version=other["api_version"],
+                            on_batch=lambda d, t, _s=s, _o=other: events.put_nowait(("cross_store", {
+                                "store_id": _s["id"], "store_name": _s["name"],
+                                "other": _o["name"], "done": d, "total": t,
+                            })),
+                            on_retry=on_retry,
+                        )
+                        if not res.get("ok"):
+                            # Never silently keep a customer we failed to check.
+                            cross_errors.append(f"{other['name']}: {res.get('error')}")
+                            continue
+                        for em, last in (res.get("last_orders") or {}).items():
+                            if last and last >= silent_since and em not in moved_to:
+                                moved_to[em] = other["name"]
+
+                    if moved_to:
+                        for c in lost_kept:
+                            em = normalize_email(c.get("email"))
+                            if em and em in moved_to:
+                                c["moved_to_store"] = moved_to[em]
+                        kept = []
+                        for c in lost_kept:
+                            if c.get("moved_to_store"):
+                                moved_breakdown[c["moved_to_store"]] = (
+                                    moved_breakdown.get(c["moved_to_store"], 0) + 1)
+                            else:
+                                kept.append(c)
+                        lost_kept = kept
+                    if cross_errors:
+                        incomplete_reasons.append(
+                            "Could not check every other store for customers who moved: "
+                            + "; ".join(cross_errors[:2]))
+
                 return {
                     "store": s,
                     "ok": True,
@@ -6533,6 +6608,9 @@ async def shopify_analytics_lost_customers_stream(
                     "active_all": active_in,
                     "excluded_pre_existing": excluded_pre_existing,
                     "unknown_first_order": unknown_first,
+                    "moved_breakdown": moved_breakdown,
+                    "moved_total": sum(moved_breakdown.values()),
+                    "no_email": no_email,
                 }
 
         tasks = [asyncio.create_task(fetch_for_store(s)) for s in store_list]
@@ -6565,7 +6643,7 @@ async def shopify_analytics_lost_customers_stream(
                 # Everything except "done" is liveness reporting and must not
                 # advance the completed-store counter.
                 if kind in ("retry", "store_start", "page", "shard_done",
-                            "phase", "first_orders"):
+                            "phase", "first_orders", "cross_store"):
                     yield f"event: progress\ndata: {json.dumps({'phase': kind, **payload})}\n\n"
                     continue
 
@@ -6573,7 +6651,7 @@ async def shopify_analytics_lost_customers_stream(
                 results.append(payload)
                 st = payload.get("store") or {}
                 lost = payload.get("lost") or []
-                yield f"event: store\ndata: {json.dumps({'store_id': st.get('id'), 'store_name': st.get('name'), 'ok': payload.get('ok'), 'complete': payload.get('complete'), 'incomplete_reason': payload.get('incomplete_reason'), 'error': payload.get('error'), 'warnings': payload.get('warnings') or [], 'excluded_pre_existing': payload.get('excluded_pre_existing', 0), 'unknown_first_order': payload.get('unknown_first_order', 0), 'lost_count': len(lost), 'active_count': len(payload.get('active') or []), 'lost_timing': _timing_summary(lost), 'active_timing': _timing_summary(payload.get('active') or []), 'rows': lost, 'completed': completed, 'total_stores': len(store_list)})}\n\n"
+                yield f"event: store\ndata: {json.dumps({'store_id': st.get('id'), 'store_name': st.get('name'), 'ok': payload.get('ok'), 'complete': payload.get('complete'), 'incomplete_reason': payload.get('incomplete_reason'), 'error': payload.get('error'), 'warnings': payload.get('warnings') or [], 'excluded_pre_existing': payload.get('excluded_pre_existing', 0), 'unknown_first_order': payload.get('unknown_first_order', 0), 'moved_total': payload.get('moved_total', 0), 'moved_breakdown': payload.get('moved_breakdown', {}), 'no_email': payload.get('no_email', 0), 'lost_count': len(lost), 'active_count': len(payload.get('active') or []), 'lost_timing': _timing_summary(lost), 'active_timing': _timing_summary(payload.get('active') or []), 'rows': lost, 'completed': completed, 'total_stores': len(store_list)})}\n\n"
 
                 now = asyncio.get_event_loop().time()
                 if now - last_heartbeat > 15:
@@ -6612,6 +6690,9 @@ async def shopify_analytics_lost_customers_stream(
                 "active_count": len(r.get("active") or []),
                 "excluded_pre_existing": r.get("excluded_pre_existing", 0),
                 "unknown_first_order": r.get("unknown_first_order", 0),
+                "moved_total": r.get("moved_total", 0),
+                "moved_breakdown": r.get("moved_breakdown", {}),
+                "no_email": r.get("no_email", 0),
                 "lost_timing": _timing_summary(r.get("lost") or []),
                 "active_timing": _timing_summary(r.get("active") or []),
             } for r in results],
@@ -6623,6 +6704,8 @@ async def shopify_analytics_lost_customers_stream(
             },
             "totals": {
                 "excluded_pre_existing": sum(r.get("excluded_pre_existing", 0) for r in complete),
+                "moved_to_other_store": sum(r.get("moved_total", 0) for r in complete),
+                "no_email": sum(r.get("no_email", 0) for r in complete),
                 "unknown_first_order": sum(r.get("unknown_first_order", 0) for r in complete),
                 "lost_customers": len(all_lost),
                 "revenue_lost": round(sum(c["amount_spent"] for c in all_lost), 2),

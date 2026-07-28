@@ -13931,6 +13931,8 @@ async function runLostCustomersReport() {
           active_since: activeSince,
           silent_since: silentSince,
           min_orders: minOrders,
+          exclude_cross_store:
+            document.getElementById("sacr-cross-store")?.checked !== false,
         }),
         signal: sacrState.abortController.signal,
       },
@@ -13998,6 +14000,16 @@ async function runLostCustomersReport() {
           }
           sacrState.progress.doneUnits += 1;
           renderSacrProgress();
+        } else if (eventType === "progress" && data.phase === "phase") {
+          if (status) status.textContent = `${data.store_name} — ${data.label}…`;
+        } else if (eventType === "progress" && data.phase === "first_orders") {
+          if (status) {
+            status.textContent = `${data.store_name} — checking when ${data.done.toLocaleString()} of ${data.total.toLocaleString()} customers started…`;
+          }
+        } else if (eventType === "progress" && data.phase === "cross_store") {
+          if (status) {
+            status.textContent = `${data.store_name} — looking for these customers in ${data.other}…`;
+          }
         } else if (eventType === "progress" && data.phase === "retry") {
           // Surface retries so a backoff never looks like a hang.
           const ps = sacrProgressStore(data.store_id);
@@ -14455,6 +14467,29 @@ function renderSacrNote() {
   if (excluded) {
     notes.push(
       `${excluded.toLocaleString()} customer(s) who were already ordering before ${sacrState.activeSince} were excluded entirely — from this table and from every total, KPI and comparison above.`,
+    );
+  }
+  // Where they went is a finding in its own right, not just a filter count.
+  const movedTotal = sacrState.stores.reduce((a, s) => a + (s.moved_total || 0), 0);
+  if (movedTotal) {
+    const dest = {};
+    sacrState.stores.forEach((s) =>
+      Object.entries(s.moved_breakdown || {}).forEach(([k, v]) => {
+        dest[k] = (dest[k] || 0) + v;
+      }),
+    );
+    const where = Object.entries(dest)
+      .sort((a, b) => b[1] - a[1])
+      .map(([k, v]) => `${v.toLocaleString()} to ${k}`)
+      .join(", ");
+    notes.push(
+      `${movedTotal.toLocaleString()} customer(s) did not leave — they have ordered at another store since ${sacrState.silentSince} (${where}) and are excluded from every figure.`,
+    );
+  }
+  const noEmail = sacrState.stores.reduce((a, s) => a + (s.no_email || 0), 0);
+  if (noEmail) {
+    notes.push(
+      `${noEmail.toLocaleString()} customer(s) have no email address, so they could not be checked against other stores and remain listed.`,
     );
   }
   const unknownFirst = sacrState.stores.reduce((a, s) => a + (s.unknown_first_order || 0), 0);

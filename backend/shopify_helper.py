@@ -2845,3 +2845,118 @@ async def fetch_customer_first_orders(
 
     out["ok"] = True
     return out
+
+
+# ============================================================================
+# Cross-store lookup: did this person just move to another shop?
+# ============================================================================
+
+# Shopify keeps a separate customer record per shop, so someone who stops
+# buying at one store and starts at another looks like churn at the first.
+# Email is the only identifier shared across shops.
+#
+# Batched as `email:"a" OR email:"b" OR ...`, 250 addresses cost 24 points and
+# return in under a second — so checking a cohort against another store scales
+# with the cohort, not with that store's size.
+_EMAIL_BATCH = 250
+_EMAIL_CONCURRENCY = 4
+
+_CUSTOMERS_BY_EMAIL_QUERY = """
+query CustomersByEmail($q: String!) {
+  customers(first: 250, query: $q) {
+    nodes {
+      id
+      email
+      lastOrder { id createdAt }
+    }
+  }
+}
+"""
+
+
+def normalize_email(email: Optional[str]) -> Optional[str]:
+    """Lowercased, trimmed. Shops store the same address with varying case."""
+    if not email:
+        return None
+    e = email.strip().lower()
+    return e or None
+
+
+async def fetch_customers_by_emails(
+    shop_domain: str,
+    admin_api_key: str,
+    emails: List[str],
+    api_version: str = "2025-01",
+    on_batch=None,
+    on_retry=None,
+) -> Dict[str, Any]:
+    """
+    Look up a set of email addresses in one shop.
+
+    Returns {ok, error, last_orders, warnings} where last_orders maps a
+    normalized email to the most recent order date at THIS shop, or None when
+    the customer exists but has never ordered. A shop can hold more than one
+    record for an address, so the latest order across duplicates wins.
+    """
+    out: Dict[str, Any] = {"ok": False, "error": None, "last_orders": {}, "warnings": []}
+
+    try:
+        shop_domain = validate_shop_domain(shop_domain)
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+
+    clean = sorted({e for e in (normalize_email(x) for x in emails) if e})
+    if not clean:
+        out["ok"] = True
+        return out
+
+    batches = [clean[i:i + _EMAIL_BATCH] for i in range(0, len(clean), _EMAIL_BATCH)]
+    semaphore = asyncio.Semaphore(_EMAIL_CONCURRENCY)
+    done = 0
+
+    try:
+        async with aiohttp.ClientSession() as session:
+
+            async def run_batch(batch):
+                nonlocal done
+                async with semaphore:
+                    # Quotes cannot appear in a valid address, but a crafted
+                    # value must not be able to break out of the query.
+                    terms = " OR ".join(
+                        'email:"{}"'.format(e.replace('"', "")) for e in batch
+                    )
+                    data, warnings = await _shopify_graphql(
+                        session, shop_domain, admin_api_key, api_version,
+                        _CUSTOMERS_BY_EMAIL_QUERY, {"q": terms},
+                        op_name="cross-store email lookup", on_retry=on_retry,
+                    )
+                    if warnings:
+                        out["warnings"].extend(warnings)
+                    for node in (data.get("customers") or {}).get("nodes") or []:
+                        em = normalize_email((node or {}).get("email"))
+                        if not em:
+                            continue
+                        last = ((node.get("lastOrder") or {}) or {}).get("createdAt")
+                        prev = out["last_orders"].get(em)
+                        if last and (prev is None or last > prev):
+                            out["last_orders"][em] = last
+                        else:
+                            out["last_orders"].setdefault(em, prev)
+                    done += len(batch)
+                    if on_batch:
+                        on_batch(done, len(clean))
+
+            await asyncio.gather(*[run_batch(b) for b in batches])
+
+    except ShopifyFetchError as e:
+        out["error"] = str(e)
+        return out
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        out["error"] = f"Unexpected error: {e}"
+        return out
+
+    out["ok"] = True
+    return out

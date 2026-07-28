@@ -684,9 +684,12 @@ class NewCustomersByMonthRequest(BaseModel):
 
 class LostCustomersRequest(BaseModel):
     store_ids: List[int]
-    active_since: str          # YYYY-MM-DD — lower bound on the last order
+    active_since: str          # YYYY-MM-DD — first order on or after this date
     silent_since: str          # YYYY-MM-DD — lost cutoff
     min_orders: int = 1
+    # Drop customers who kept buying at another shop; checked against every
+    # active Shopify store, including ones not selected for the report.
+    exclude_cross_store: bool = True
 
 
 class CustomerDetailRequest(BaseModel):
