@@ -45,6 +45,7 @@ from schemas import (
     NewCustomersByMonthRequest,
     LostCustomersRequest,
     CustomerDetailRequest,
+    LostProductsRequest,
     QuotationsInProgressFilter, QuotationsInProgressListResponse,
     QuotationsInProgressFilterOptions, QuotationInProgressSummary,
     QuotationProductsResponse, QuotationInProgressHeader, QuotationProductLine,
@@ -75,7 +76,8 @@ from shopify_helper import (
     fetch_fulfilled_orders,
     fetch_orders_with_tag, fetch_customer_orders_after,
     count_fulfillment_buckets_for_store,
-    fetch_customers_with_last_order, fetch_customer_recent_orders
+    fetch_customers_with_last_order, fetch_customer_recent_orders,
+    fetch_orders_line_items, fetch_baseline_order_items
 )
 from item_tracker_helper import (
     get_item_info_async, get_purchases_async, get_sales_async,
@@ -6602,6 +6604,358 @@ async def shopify_analytics_customer_detail(
     if not result.get("ok"):
         raise HTTPException(status_code=502, detail=result.get("error") or "Shopify request failed")
     return {"store_name": store.name, "orders": result["orders"]}
+
+
+
+# ============================================================================
+# Lost Products — what was in the order customers left after
+#
+# Ranked by how many last orders a product appears in, NOT by quantity: one
+# buyer taking 20 units must not outweigh 20 buyers taking one each.
+#
+# A raw frequency ranking reproduces the bestseller list, so every row also
+# carries its share of a same-period baseline. Measured on live data, one
+# product sat 3rd by count while being *under*-represented versus baseline
+# (2.5% of last orders vs 3.0% of all orders) — without the comparison it
+# would read as a churn signal.
+# ============================================================================
+
+# One 250-order page per calendar month per store. Exhaustive is not an option:
+# one store has ~137,000 orders in a two-year window.
+_BASELINE_MAX_MONTHS = 36
+# Below this many last orders, a lift ratio is noise dressed up as a finding.
+_LIFT_MIN_ORDERS = 5
+
+
+def _month_windows(start_date: str, end_date: str) -> List[tuple]:
+    """
+    [(start, end)] one per calendar month, clamped to [start_date, end_date).
+
+    The clamping is the point: an unclamped final month would sample orders
+    placed *after* the cutoff, i.e. after these customers were already counted
+    as lost, which breaks the same-period property the whole comparison
+    depends on.
+    """
+    try:
+        y, m = int(start_date[0:4]), int(start_date[5:7])
+        ey, em = int(end_date[0:4]), int(end_date[5:7])
+    except (ValueError, IndexError):
+        return []
+
+    out = []
+    while (y, m) <= (ey, em) and len(out) < _BASELINE_MAX_MONTHS:
+        ny, nm = (y + 1, 1) if m == 12 else (y, m + 1)
+        lo = max(f"{y:04d}-{m:02d}-01", start_date)
+        hi = min(f"{ny:04d}-{nm:02d}-01", end_date)
+        if lo < hi:
+            out.append((lo, hi))
+        y, m = ny, nm
+    return out
+
+
+def _product_key(item: Dict[str, Any]) -> tuple:
+    """
+    Group key and display title.
+
+    Falls back to the line-item title when `product` is null (deleted product)
+    rather than dropping the row — a discontinued item is exactly the kind of
+    thing this report exists to surface.
+    """
+    pid = item.get("product_id")
+    if pid:
+        return (pid, item.get("product_title") or item.get("title") or "(untitled)", False)
+    title = item.get("title") or "(untitled)"
+    return (f"title:{title.lower()}", title, True)
+
+
+def _count_orders(orders: List[Dict[str, Any]]) -> tuple:
+    """
+    Count how many ORDERS each product appears in, plus per-variant detail.
+
+    A product is counted once per order even when it occupies several line
+    items. Since each lost customer contributes exactly one last order, this is
+    simultaneously a distinct-customer count.
+    """
+    per_product: Dict[Any, Dict[str, Any]] = {}
+    for order in orders:
+        seen_products = set()
+        seen_variants = set()
+        for item in order.get("items") or []:
+            key, title, deleted = _product_key(item)
+            entry = per_product.setdefault(key, {
+                "key": key if isinstance(key, str) else str(key),
+                "product_id": item.get("product_id"),
+                "title": title,
+                "deleted": deleted,
+                "orders": 0,
+                "quantity": 0,
+                "variants": {},
+            })
+            entry["quantity"] += item.get("quantity") or 0
+            if key not in seen_products:
+                entry["orders"] += 1
+                seen_products.add(key)
+
+            vkey = item.get("sku") or item.get("variant_title") or "—"
+            v = entry["variants"].setdefault(vkey, {
+                "title": item.get("variant_title") or "",
+                "sku": item.get("sku") or "",
+                "orders": 0,
+                "quantity": 0,
+            })
+            v["quantity"] += item.get("quantity") or 0
+            if (key, vkey) not in seen_variants:
+                v["orders"] += 1
+                seen_variants.add((key, vkey))
+
+    return per_product, len(orders)
+
+
+@app.post("/api/shopify-analytics/lost-products/stream")
+async def shopify_analytics_lost_products_stream(
+    request: LostProductsRequest,
+    db: Session = Depends(get_db),
+):
+    async def generate() -> AsyncGenerator[str, None]:
+        selected = [s for s in (request.stores or []) if s.order_ids]
+        if not selected:
+            yield f"event: error\ndata: {json.dumps({'message': 'No last orders to analyse'})}\n\n"
+            return
+
+        stores = db.query(Store).filter(
+            Store.id.in_([s.store_id for s in selected]),
+            Store.store_type == StoreType.shopify,
+            Store.is_active == True,
+        ).all()
+        by_id = {s.id: s for s in stores}
+
+        work: List[Dict[str, Any]] = []
+        for sel in selected:
+            store = by_id.get(sel.store_id)
+            if not store or not store.shopify_connection:
+                continue
+            conn = store.shopify_connection
+            work.append({
+                "id": store.id, "name": store.name,
+                "shop_domain": conn.shop_domain,
+                "admin_api_key": conn.admin_api_key,
+                "api_version": conn.api_version,
+                "order_ids": sel.order_ids,
+            })
+        if not work:
+            yield f"event: error\ndata: {json.dumps({'message': 'No active Shopify stores found for the selected ids'})}\n\n"
+            return
+        work.sort(key=lambda w: w["id"])
+
+        windows = _month_windows(request.active_since, request.silent_since)
+        total_orders = sum(len(w["order_ids"]) for w in work)
+
+        yield f"event: progress\ndata: {json.dumps({'phase': 'started', 'total_orders': total_orders, 'stores': [{'store_id': w['id'], 'store_name': w['name'], 'orders': len(w['order_ids'])} for w in work], 'baseline_months': len(windows)})}\n\n"
+
+        events: asyncio.Queue = asyncio.Queue()
+        semaphore = asyncio.Semaphore(5)
+
+        async def analyse_store(w: Dict[str, Any]) -> Dict[str, Any]:
+            async with semaphore:
+                def on_retry(attempt, max_attempts, reason, _w=w):
+                    events.put_nowait(("retry", {
+                        "store_id": _w["id"], "store_name": _w["name"],
+                        "attempt": attempt, "max_attempts": max_attempts, "reason": reason,
+                    }))
+
+                def on_batch(done, total, _w=w, kind="last"):
+                    events.put_nowait(("batch", {
+                        "store_id": _w["id"], "store_name": _w["name"],
+                        "kind": kind, "done": done, "total": total,
+                    }))
+
+                last = await fetch_orders_line_items(
+                    shop_domain=w["shop_domain"], admin_api_key=w["admin_api_key"],
+                    order_ids=w["order_ids"], api_version=w["api_version"],
+                    on_batch=on_batch, on_retry=on_retry,
+                )
+                if not last.get("ok"):
+                    return {"store": w, "ok": False, "error": last.get("error") or "Fetch failed",
+                            "last": None, "baseline": None}
+
+                base = await fetch_baseline_order_items(
+                    shop_domain=w["shop_domain"], admin_api_key=w["admin_api_key"],
+                    windows=windows, api_version=w["api_version"],
+                    on_batch=lambda d, t, _w=w: events.put_nowait(("batch", {
+                        "store_id": _w["id"], "store_name": _w["name"],
+                        "kind": "baseline", "done": d, "total": t,
+                    })),
+                    on_retry=on_retry,
+                )
+                return {"store": w, "ok": True, "error": None, "last": last, "baseline": base}
+
+        tasks = [asyncio.create_task(analyse_store(w)) for w in work]
+
+        async def collect(t):
+            try:
+                res = await t
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                res = {"store": None, "ok": False, "error": f"Unexpected error: {e}",
+                       "last": None, "baseline": None}
+            await events.put(("done", res))
+
+        collectors = [asyncio.create_task(collect(t)) for t in tasks]
+
+        results: List[Dict[str, Any]] = []
+        completed = 0
+        last_heartbeat = asyncio.get_event_loop().time()
+
+        try:
+            while completed < len(work):
+                try:
+                    kind, payload = await asyncio.wait_for(events.get(), timeout=15)
+                except asyncio.TimeoutError:
+                    yield ": heartbeat\n\n"
+                    last_heartbeat = asyncio.get_event_loop().time()
+                    continue
+
+                if kind in ("retry", "batch"):
+                    yield f"event: progress\ndata: {json.dumps({'phase': kind, **payload})}\n\n"
+                    continue
+
+                completed += 1
+                results.append(payload)
+                st = payload.get("store") or {}
+                yield f"event: progress\ndata: {json.dumps({'phase': 'store_done', 'store_id': st.get('id'), 'store_name': st.get('name'), 'ok': payload.get('ok'), 'error': payload.get('error'), 'completed': completed, 'total_stores': len(work)})}\n\n"
+
+                now = asyncio.get_event_loop().time()
+                if now - last_heartbeat > 15:
+                    yield ": heartbeat\n\n"
+                    last_heartbeat = now
+        except GeneratorExit:
+            print("[SHOPIFY-ANALYTICS] Lost-products client disconnected — cancelling")
+            for t in list(tasks) + list(collectors):
+                if not t.done():
+                    t.cancel()
+            raise
+
+        # --- merge across stores ---
+        merged: Dict[Any, Dict[str, Any]] = {}
+        merged_base: Dict[Any, int] = {}
+        n_last = 0
+        n_base = 0
+        missing = 0
+        truncated = 0
+
+        for res in results:
+            if not res.get("ok"):
+                continue
+            last = res["last"]
+            base = res.get("baseline") or {}
+            missing += last.get("missing", 0)
+            truncated += last.get("truncated", 0) + (base.get("truncated", 0) or 0)
+
+            per_product, count = _count_orders(last.get("orders") or [])
+            n_last += count
+            for key, entry in per_product.items():
+                tgt = merged.setdefault(key, {
+                    "key": entry["key"], "product_id": entry["product_id"],
+                    "title": entry["title"], "deleted": entry["deleted"],
+                    "orders": 0, "quantity": 0, "variants": {},
+                })
+                tgt["orders"] += entry["orders"]
+                tgt["quantity"] += entry["quantity"]
+                for vk, v in entry["variants"].items():
+                    tv = tgt["variants"].setdefault(vk, {
+                        "title": v["title"], "sku": v["sku"], "orders": 0, "quantity": 0,
+                    })
+                    tv["orders"] += v["orders"]
+                    tv["quantity"] += v["quantity"]
+
+            if base.get("ok"):
+                base_products, base_count = _count_orders(base.get("orders") or [])
+                n_base += base_count
+                for key, entry in base_products.items():
+                    merged_base[key] = merged_base.get(key, 0) + entry["orders"]
+
+        # Last orders hold fewer distinct products than ordinary orders
+        # (measured: 3.17 vs 5.49). That shrinks EVERY product's share of last
+        # orders by the same factor, so an unadjusted ratio puts the typical
+        # product near 0.5x and 1.0x stops meaning "average" — a reader would
+        # call an ordinary product under-represented. Rescale so 1.0x is
+        # genuinely typical for this cohort; the raw ratio is kept alongside.
+        slots_last = sum(e["orders"] for e in merged.values())
+        slots_base = sum(merged_base.values())
+        avg_last = (slots_last / n_last) if n_last else 0.0
+        avg_base = (slots_base / n_base) if n_base else 0.0
+        basket_ratio = (avg_base / avg_last) if avg_last else 1.0
+
+        products = []
+        for key, entry in merged.items():
+            pct_lost = (entry["orders"] / n_last * 100) if n_last else 0.0
+            b_orders = merged_base.get(key, 0)
+            pct_base = (b_orders / n_base * 100) if n_base else 0.0
+            # Suppress rather than fabricate: a ratio built on 4 orders against
+            # 2 baseline orders is noise, and a zero baseline is not infinity.
+            lift = None
+            lift_raw = None
+            if entry["orders"] >= _LIFT_MIN_ORDERS and pct_base > 0:
+                lift_raw = round(pct_lost / pct_base, 2)
+                lift = round((pct_lost / pct_base) * basket_ratio, 2)
+            products.append({
+                "key": entry["key"],
+                "product_id": entry["product_id"],
+                "title": entry["title"],
+                "deleted": entry["deleted"],
+                "orders": entry["orders"],
+                "pct_lost": round(pct_lost, 2),
+                "quantity": entry["quantity"],
+                "baseline_orders": b_orders,
+                "pct_base": round(pct_base, 2),
+                "lift": lift,
+                "lift_raw": lift_raw,
+                "only_in_lost": b_orders == 0 and n_base > 0,
+                "variants": sorted(
+                    entry["variants"].values(), key=lambda v: -v["orders"]
+                )[:25],
+            })
+
+        products.sort(key=lambda p: (-p["orders"], p["title"].lower()))
+
+        payload = {
+            "products": products,
+            "totals": {
+                "last_orders_analysed": n_last,
+                "baseline_orders_sampled": n_base,
+                "orders_missing": missing,
+                "orders_truncated": truncated,
+                "distinct_products": len(products),
+                "lift_min_orders": _LIFT_MIN_ORDERS,
+                "avg_products_last": round(avg_last, 2),
+                "avg_products_baseline": round(avg_base, 2),
+                "basket_ratio": round(basket_ratio, 2),
+            },
+            "stores": [{
+                "store_id": (r.get("store") or {}).get("id"),
+                "store_name": (r.get("store") or {}).get("name"),
+                "ok": r.get("ok"),
+                "error": r.get("error"),
+                "analysed": len((r.get("last") or {}).get("orders") or []),
+                "baseline": len((r.get("baseline") or {}).get("orders") or []),
+            } for r in results],
+        }
+        yield f"event: complete\ndata: {json.dumps(payload)}\n\n"
+
+    async def generate_safe() -> AsyncGenerator[str, None]:
+        try:
+            async for event in generate():
+                yield event
+        except GeneratorExit:
+            print("[SHOPIFY-ANALYTICS] Lost-products stream cancelled")
+            return
+
+    return StreamingResponse(
+        generate_safe(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
 
 
 

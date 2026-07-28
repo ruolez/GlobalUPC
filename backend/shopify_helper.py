@@ -2499,3 +2499,227 @@ async def fetch_customer_recent_orders(
 
     out["ok"] = True
     return out
+
+
+# ============================================================================
+# Lost-products analysis: line items of the orders customers left after
+# ============================================================================
+
+# nodes(ids:) accepts up to 250 ids and, unlike a connection, is charged almost
+# flat: 250 orders with lineItems(first:100) measured 21 points against a
+# 1,000-point ceiling. That is why the whole cohort can be analysed at all.
+_LINE_ITEM_BATCH = 250
+
+# Largest basket observed across these stores is 69 items; 100 leaves headroom
+# and hasNextPage reports anything that still overflows rather than silently
+# truncating the counts.
+_LINE_ITEMS_PER_ORDER = 100
+
+_ORDER_ITEMS_QUERY = """
+query OrderItems($ids: [ID!]!) {
+  nodes(ids: $ids) {
+    ... on Order {
+      id
+      name
+      createdAt
+      lineItems(first: %d) {
+        pageInfo { hasNextPage }
+        nodes {
+          title
+          quantity
+          sku
+          variantTitle
+          product { id title }
+        }
+      }
+    }
+  }
+}
+""" % _LINE_ITEMS_PER_ORDER
+
+_BASELINE_ITEMS_QUERY = """
+query BaselineItems($q: String!) {
+  orders(first: 250, query: $q, sortKey: CREATED_AT) {
+    nodes {
+      id
+      lineItems(first: %d) {
+        pageInfo { hasNextPage }
+        nodes {
+          title
+          quantity
+          sku
+          variantTitle
+          product { id title }
+        }
+      }
+    }
+  }
+}
+""" % _LINE_ITEMS_PER_ORDER
+
+
+def _order_gid(order_id: str) -> str:
+    """Accept either a bare numeric id or a full GID."""
+    s = str(order_id or "").strip()
+    if not s:
+        return ""
+    return s if s.startswith("gid://") else f"gid://shopify/Order/{s}"
+
+
+def _normalize_order_items(node: Dict[str, Any]) -> Dict[str, Any]:
+    """Flatten one order's line items into the shape the aggregator wants."""
+    li = node.get("lineItems") or {}
+    return {
+        "id": node.get("id"),
+        "name": node.get("name"),
+        "created_at": node.get("createdAt"),
+        "truncated": bool((li.get("pageInfo") or {}).get("hasNextPage")),
+        "items": [
+            {
+                "title": (it.get("title") or "").strip(),
+                "quantity": it.get("quantity") or 0,
+                "sku": (it.get("sku") or "").strip(),
+                "variant_title": (it.get("variantTitle") or "").strip(),
+                # product is null for deleted products — the aggregator falls
+                # back to the title rather than dropping the row, since a
+                # discontinued item is exactly what this report might surface.
+                "product_id": ((it.get("product") or {}) or {}).get("id"),
+                "product_title": ((it.get("product") or {}) or {}).get("title"),
+            }
+            for it in (li.get("nodes") or [])
+        ],
+    }
+
+
+async def fetch_orders_line_items(
+    shop_domain: str,
+    admin_api_key: str,
+    order_ids: List[str],
+    api_version: str = "2025-01",
+    on_batch=None,
+    on_retry=None,
+) -> Dict[str, Any]:
+    """
+    Fetch line items for a specific set of orders, in batches of 250.
+
+    Returns {ok, error, orders[], missing, truncated, warnings}. `missing`
+    counts ids Shopify returned nothing for (deleted orders) so the analysed
+    total is never quietly smaller than what was asked for.
+    """
+    out: Dict[str, Any] = {
+        "ok": False, "error": None, "orders": [],
+        "missing": 0, "truncated": 0, "warnings": [],
+    }
+
+    try:
+        shop_domain = validate_shop_domain(shop_domain)
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+
+    gids = [_order_gid(o) for o in order_ids if o]
+    gids = [g for g in gids if g]
+    if not gids:
+        out["ok"] = True
+        return out
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            for i in range(0, len(gids), _LINE_ITEM_BATCH):
+                batch = gids[i:i + _LINE_ITEM_BATCH]
+                data, warnings = await _shopify_graphql(
+                    session, shop_domain, admin_api_key, api_version,
+                    _ORDER_ITEMS_QUERY, {"ids": batch},
+                    op_name="order line items", on_retry=on_retry,
+                )
+                if warnings:
+                    out["warnings"].extend(warnings)
+
+                for node in data.get("nodes") or []:
+                    if not node or not node.get("id"):
+                        out["missing"] += 1
+                        continue
+                    order = _normalize_order_items(node)
+                    if order["truncated"]:
+                        out["truncated"] += 1
+                    out["orders"].append(order)
+
+                if on_batch:
+                    on_batch(len(out["orders"]), len(gids))
+
+    except ShopifyFetchError as e:
+        out["error"] = str(e)
+        return out
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        out["error"] = f"Unexpected error: {e}"
+        return out
+
+    out["ok"] = True
+    return out
+
+
+async def fetch_baseline_order_items(
+    shop_domain: str,
+    admin_api_key: str,
+    windows: List[tuple],
+    api_version: str = "2025-01",
+    on_batch=None,
+    on_retry=None,
+) -> Dict[str, Any]:
+    """
+    Sample orders for the comparison baseline: one 250-order page per window.
+
+    `windows` is a list of (start, end) date strings — one per month. Sampling
+    month by month rather than taking the first N pages keeps the baseline
+    spread across the same period as the last orders, so a product that was
+    added or discontinued mid-window cannot masquerade as a churn signal.
+    An exhaustive baseline is not viable: one store has ~137,000 orders in a
+    two-year window.
+    """
+    out: Dict[str, Any] = {
+        "ok": False, "error": None, "orders": [],
+        "truncated": 0, "warnings": [],
+    }
+
+    try:
+        shop_domain = validate_shop_domain(shop_domain)
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            for start, end in windows:
+                q = f"created_at:>={start} created_at:<{end}"
+                data, warnings = await _shopify_graphql(
+                    session, shop_domain, admin_api_key, api_version,
+                    _BASELINE_ITEMS_QUERY, {"q": q},
+                    op_name="baseline line items", on_retry=on_retry,
+                )
+                if warnings:
+                    out["warnings"].extend(warnings)
+
+                for node in (data.get("orders") or {}).get("nodes") or []:
+                    if not node:
+                        continue
+                    order = _normalize_order_items(node)
+                    if order["truncated"]:
+                        out["truncated"] += 1
+                    out["orders"].append(order)
+
+                if on_batch:
+                    on_batch(len(out["orders"]), len(windows))
+
+    except ShopifyFetchError as e:
+        out["error"] = str(e)
+        return out
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        out["error"] = f"Unexpected error: {e}"
+        return out
+
+    out["ok"] = True
+    return out

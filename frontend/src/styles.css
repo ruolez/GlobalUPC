@@ -5833,3 +5833,114 @@ body.no-scroll {
 @media (prefers-reduced-motion: reduce) {
   .sa-page .sacr-progress-bar.is-active { animation: none; }
 }
+
+/* Lost Customers: top-products modal */
+#sacr-products-modal .sacr-products-scope {
+  margin: 0 0 0.875rem;
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+}
+#sacr-products-modal .sacr-products-progress {
+  margin-bottom: 0.875rem;
+}
+#sacr-products-modal .sacr-progress-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  margin-bottom: 0.5rem;
+}
+#sacr-products-modal .sacr-progress-meta {
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+#sacr-products-modal .sacr-progress-track {
+  width: 100%;
+  height: 6px;
+  background: var(--bg-tertiary);
+  border-radius: 3px;
+  overflow: hidden;
+}
+#sacr-products-modal .sacr-progress-bar {
+  width: 0%;
+  height: 100%;
+  background: var(--accent-primary);
+  border-radius: 3px;
+  transition: width 0.4s ease;
+}
+#sacr-products-modal .sacr-products-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding: 0.625rem 0.75rem;
+  margin-bottom: 0.75rem;
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-md);
+}
+#sacr-products-modal .sacr-products-toolbar input { width: auto; }
+#sacr-products-modal .sacr-products-toolbar .sa-row-count { margin-left: auto; }
+#sacr-products-modal .sacr-products-error {
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--danger) 10%, var(--bg-secondary));
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, var(--border-color));
+  color: var(--danger);
+  font-size: 0.8125rem;
+}
+/* One scroll context, not two. A nested max-height here left the footnote
+   overlapping the last rows. .modal-content already scrolls. */
+#sacr-products-modal .table-container { max-height: none; overflow: visible; }
+#sacr-products-modal .sacr-products-table { table-layout: fixed; width: 100%; }
+#sacr-products-modal .sacr-products-table th:first-child,
+#sacr-products-modal .sacr-products-table td:first-child {
+  width: 42%;
+  white-space: normal;
+  word-break: break-word;
+}
+#sacr-products-modal .sacr-products-table th:not(:first-child),
+#sacr-products-modal .sacr-products-table td:not(:first-child) { width: 11.6%; }
+
+#sacr-products-modal .sacr-products-table td.sacr-num,
+#sacr-products-modal .sacr-products-table th.sacr-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+#sacr-products-modal .sacr-product-row { cursor: pointer; }
+#sacr-products-modal .sacr-product-row:hover { background: var(--bg-hover); }
+#sacr-products-modal .sacr-expand {
+  display: inline-block;
+  width: 1rem;
+  color: var(--text-tertiary);
+  transition: transform 0.15s ease;
+}
+#sacr-products-modal .sacr-expand.is-open { transform: rotate(90deg); }
+#sacr-products-modal .sacr-variant-row td {
+  background: color-mix(in srgb, var(--accent-primary) 4%, transparent);
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  padding-top: 0.25rem;
+  padding-bottom: 0.25rem;
+}
+#sacr-products-modal .sacr-variant-row td:first-child { padding-left: 1.75rem; }
+#sacr-products-modal .sacr-email { color: var(--text-tertiary); font-size: 0.6875rem; }
+#sacr-products-modal .sacr-badge {
+  display: inline-block;
+  font-size: 0.625rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  padding: 0.0625rem 0.3125rem;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--warning) 22%, transparent);
+  color: var(--warning);
+}
+
+/* Over-represented among people who left is the finding worth chasing. */
+#sacr-products-modal .sacr-lift-high { color: var(--danger); font-weight: 600; }
+#sacr-products-modal .sacr-lift-neutral { color: var(--text-secondary); }
+#sacr-products-modal .sacr-lift-low { color: var(--success); }

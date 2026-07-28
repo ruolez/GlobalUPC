@@ -13758,6 +13758,7 @@ function loadLostCustomersPanel() {
     sacrState.resizeObserver.observe(wrap);
   }
 
+  sacrBindProductsModal();
   updateSacrRunBtn();
 }
 
@@ -14574,6 +14575,358 @@ function renderSacrDetail(data) {
       );
     })
     .join("");
+}
+
+// ----- Top products in last orders -----
+
+const sacrProductsState = {
+  loading: false,
+  products: [],
+  totals: null,
+  stores: [],
+  sortColumn: "orders",
+  sortOrder: "desc",
+  // Show the whole ranking by default. This is only a display filter — lift is
+  // suppressed independently by the backend at its own threshold, so a low
+  // floor here surfaces every product without inviting noisy ratios.
+  minOrders: 1,
+  search: "",
+  expanded: new Set(),
+  startedAt: 0,
+  scope: "",
+  abortController: null,
+};
+
+function sacrBindProductsModal() {
+  document
+    .getElementById("sacr-products-btn")
+    ?.addEventListener("click", openSacrProductsModal);
+  document
+    .getElementById("sacr-products-close")
+    ?.addEventListener("click", () => closeModal("sacr-products-modal"));
+  document.getElementById("sacr-products-cancel")?.addEventListener("click", () => {
+    if (sacrProductsState.abortController) sacrProductsState.abortController.abort();
+  });
+  // No global ESC handler exists; each modal supplies its own.
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    const m = document.getElementById("sacr-products-modal");
+    if (m && m.classList.contains("active")) closeModal("sacr-products-modal");
+  });
+
+  document.getElementById("sacr-products-min")?.addEventListener("input", (e) => {
+    sacrProductsState.minOrders = Math.max(1, parseInt(e.target.value, 10) || 1);
+    renderSacrProducts();
+  });
+  document.getElementById("sacr-products-search")?.addEventListener("input", (e) => {
+    sacrProductsState.search = e.target.value.trim().toLowerCase();
+    renderSacrProducts();
+  });
+
+  document.getElementById("sacr-products-table")?.addEventListener("click", (e) => {
+    const th = e.target.closest("th.qip-sortable");
+    if (th && th.dataset.psort) {
+      const col = th.dataset.psort;
+      if (sacrProductsState.sortColumn === col) {
+        sacrProductsState.sortOrder =
+          sacrProductsState.sortOrder === "asc" ? "desc" : "asc";
+      } else {
+        sacrProductsState.sortColumn = col;
+        sacrProductsState.sortOrder = "desc";
+      }
+      renderSacrProducts();
+      return;
+    }
+    const row = e.target.closest("tr[data-product-key]");
+    if (row) {
+      const key = row.dataset.productKey;
+      // Persisted in a Set so expansion survives a re-sort or filter change.
+      if (sacrProductsState.expanded.has(key)) sacrProductsState.expanded.delete(key);
+      else sacrProductsState.expanded.add(key);
+      renderSacrProducts();
+    }
+  });
+}
+
+async function openSacrProductsModal() {
+  if (sacrProductsState.loading) return;
+
+  // Analyse exactly what the table is showing, so filters carry through.
+  const rows = sacrFilteredRows().filter((r) => r.last_order_id);
+  const byStore = new Map();
+  for (const r of rows) {
+    if (!byStore.has(r.store_id)) byStore.set(r.store_id, []);
+    // The backend re-forms the GID; sending numeric ids keeps a 25k-order
+    // payload around 275KB instead of ~1MB.
+    byStore.get(r.store_id).push(String(r.last_order_id).split("/").pop());
+  }
+
+  const storeCount = byStore.size;
+  sacrProductsState.products = [];
+  sacrProductsState.totals = null;
+  sacrProductsState.stores = [];
+  sacrProductsState.expanded = new Set();
+  sacrProductsState.startedAt = Date.now();
+  sacrProductsState.scope = `${rows.length.toLocaleString()} last order${rows.length === 1 ? "" : "s"} · ${storeCount} store${storeCount === 1 ? "" : "s"}`;
+
+  const scopeEl = document.getElementById("sacr-products-scope");
+  const progress = document.getElementById("sacr-products-progress");
+  const toolbar = document.getElementById("sacr-products-toolbar");
+  const results = document.getElementById("sacr-products-results");
+  const errEl = document.getElementById("sacr-products-error");
+  const cancelBtn = document.getElementById("sacr-products-cancel");
+  const note = document.getElementById("sacr-products-note");
+
+  if (scopeEl) scopeEl.textContent = `Analysing ${sacrProductsState.scope}…`;
+  if (progress) progress.hidden = false;
+  if (toolbar) toolbar.hidden = false;
+  if (results) results.hidden = true;
+  if (errEl) {
+    errEl.hidden = true;
+    errEl.textContent = "";
+  }
+  if (cancelBtn) cancelBtn.style.display = "";
+  if (note) note.textContent = "";
+  openModal("sacr-products-modal");
+
+  if (rows.length === 0) {
+    if (progress) progress.hidden = true;
+    if (cancelBtn) cancelBtn.style.display = "none";
+    if (errEl) {
+      errEl.textContent = "No lost customers in the current view to analyse.";
+      errEl.hidden = false;
+    }
+    return;
+  }
+
+  sacrProductsState.loading = true;
+  sacrProductsState.abortController = new AbortController();
+  const status = document.getElementById("sacr-products-status");
+  const meta = document.getElementById("sacr-products-meta");
+  const bar = document.getElementById("sacr-products-bar");
+  if (bar) {
+    bar.style.width = "0%";
+    bar.classList.add("is-active");
+  }
+
+  let fetched = 0;
+  let totalOrders = rows.length;
+  let storesDone = 0;
+
+  try {
+    const response = await fetch(`${API_BASE}/shopify-analytics/lost-products/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        stores: Array.from(byStore.entries()).map(([store_id, order_ids]) => ({
+          store_id,
+          order_ids,
+        })),
+        active_since: sacrState.activeSince,
+        silent_since: sacrState.silentSince,
+      }),
+      signal: sacrProductsState.abortController.signal,
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const messages = buffer.split("\n\n");
+      buffer = messages.pop();
+
+      for (const raw of messages) {
+        const msg = raw.trim();
+        if (!msg || msg.startsWith(":")) continue;
+        const match = msg.match(/event: (\w+)\ndata: (.+)/s);
+        if (!match) continue;
+        let data;
+        try {
+          data = JSON.parse(match[2]);
+        } catch (e) {
+          continue;
+        }
+        const type = match[1];
+
+        if (type === "progress" && data.phase === "started") {
+          totalOrders = data.total_orders || totalOrders;
+          if (status) status.textContent = "Reading last orders…";
+        } else if (type === "progress" && data.phase === "batch") {
+          if (data.kind === "last") {
+            fetched = data.done;
+            if (status) {
+              status.textContent = `Reading last orders from ${data.store_name}…`;
+            }
+          } else if (status) {
+            status.textContent = `Sampling comparison orders from ${data.store_name}…`;
+          }
+          if (bar && totalOrders) {
+            bar.style.width = `${Math.min(95, Math.round((fetched / totalOrders) * 95))}%`;
+          }
+          if (meta) {
+            meta.textContent = `${fetched.toLocaleString()} of ${totalOrders.toLocaleString()} orders read · ${sacrFmtElapsed(Date.now() - sacrProductsState.startedAt)}`;
+          }
+        } else if (type === "progress" && data.phase === "retry") {
+          if (status) {
+            status.textContent = `${data.store_name} — retrying (${data.attempt}/${data.max_attempts}) after ${data.reason}…`;
+          }
+        } else if (type === "progress" && data.phase === "store_done") {
+          storesDone += 1;
+          if (status) {
+            status.textContent = `${storesDone} of ${data.total_stores} stores analysed`;
+          }
+        } else if (type === "complete") {
+          sacrProductsState.products = data.products || [];
+          sacrProductsState.totals = data.totals || null;
+          sacrProductsState.stores = data.stores || [];
+          if (bar) bar.style.width = "100%";
+          if (status) status.textContent = "Complete";
+          renderSacrProducts();
+        } else if (type === "error") {
+          if (errEl) {
+            errEl.textContent = data.message || "Analysis failed";
+            errEl.hidden = false;
+          }
+        }
+      }
+    }
+  } catch (e) {
+    if (e.name === "AbortError") {
+      if (status) status.textContent = "Cancelled";
+    } else if (errEl) {
+      errEl.textContent = `Could not analyse products: ${e.message}`;
+      errEl.hidden = false;
+    }
+  } finally {
+    sacrProductsState.loading = false;
+    sacrProductsState.abortController = null;
+    if (cancelBtn) cancelBtn.style.display = "none";
+    if (bar) bar.classList.remove("is-active");
+    if (scopeEl) {
+      scopeEl.textContent = `Analysed ${sacrProductsState.scope}`;
+    }
+    setTimeout(() => {
+      const p = document.getElementById("sacr-products-progress");
+      if (p && !sacrProductsState.loading) p.hidden = true;
+    }, 1500);
+  }
+}
+
+function sacrProductRows() {
+  const st = sacrProductsState;
+  let rows = st.products.filter((p) => p.orders >= st.minOrders);
+  if (st.search) {
+    rows = rows.filter((p) => (p.title || "").toLowerCase().includes(st.search));
+  }
+  const dir = st.sortOrder === "asc" ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    let av = a[st.sortColumn];
+    let bv = b[st.sortColumn];
+    // A suppressed lift is "unknown", not "zero" — keep those out of the top.
+    if (av === null || av === undefined) return 1;
+    if (bv === null || bv === undefined) return -1;
+    if (av === bv) return b.orders - a.orders;
+    return av < bv ? -dir : dir;
+  });
+}
+
+function sacrLiftClass(lift) {
+  if (lift === null || lift === undefined) return "";
+  if (lift >= 1.5) return "sacr-lift-high";
+  if (lift <= 0.7) return "sacr-lift-low";
+  return "sacr-lift-neutral";
+}
+
+function renderSacrProducts() {
+  const tbody = document.getElementById("sacr-products-tbody");
+  const results = document.getElementById("sacr-products-results");
+  const countEl = document.getElementById("sacr-products-count");
+  const note = document.getElementById("sacr-products-note");
+  const st = sacrProductsState;
+  if (!tbody) return;
+
+  const rows = sacrProductRows();
+  if (results) results.hidden = st.products.length === 0;
+  if (countEl) {
+    countEl.textContent = `${rows.length.toLocaleString()} of ${st.products.length.toLocaleString()} products`;
+  }
+
+  tbody.innerHTML = rows
+    .map((p) => {
+      const open = st.expanded.has(p.key);
+      const liftText =
+        p.lift === null || p.lift === undefined
+          ? p.only_in_lost
+            ? "only here"
+            : "—"
+          : `${p.lift.toFixed(2)}x`;
+      const liftTitle =
+        p.lift === null && !p.only_in_lost
+          ? ` title="Too few orders to compare reliably (needs ${st.totals?.lift_min_orders ?? 5})"`
+          : p.only_in_lost
+            ? ' title="Did not appear in the comparison sample at all"'
+            : ` title="${p.pct_lost.toFixed(1)}% vs ${p.pct_base.toFixed(1)}% is ${p.lift_raw ?? "—"}x before adjusting for basket size (x${st.totals?.basket_ratio ?? 1})"`;
+      const head =
+        `<tr class="sacr-product-row" data-product-key="${saEscape(p.key)}">` +
+        `<td><span class="sacr-expand${open ? " is-open" : ""}">▸</span>${saEscape(p.title)}` +
+        (p.deleted ? ' <span class="sacr-badge">deleted</span>' : "") +
+        `</td>` +
+        `<td class="sacr-num">${p.orders.toLocaleString()}</td>` +
+        `<td class="sacr-num">${p.pct_lost.toFixed(1)}%</td>` +
+        `<td class="sacr-num">${p.pct_base.toFixed(1)}%</td>` +
+        `<td class="sacr-num ${sacrLiftClass(p.lift)}"${liftTitle}>${liftText}</td>` +
+        `<td class="sacr-num">${p.quantity.toLocaleString()}</td></tr>`;
+      if (!open) return head;
+      const variants = (p.variants || [])
+        .map(
+          (v) =>
+            `<tr class="sacr-variant-row"><td>&#8627; ${saEscape(v.title || "(default)")}` +
+            (v.sku ? ` <span class="sacr-email">${saEscape(v.sku)}</span>` : "") +
+            `</td><td class="sacr-num">${v.orders.toLocaleString()}</td>` +
+            `<td colspan="3"></td><td class="sacr-num">${v.quantity.toLocaleString()}</td></tr>`,
+        )
+        .join("");
+      return head + variants;
+    })
+    .join("");
+
+  document
+    .getElementById("sacr-products-table")
+    ?.querySelectorAll("th.qip-sortable")
+    .forEach((th) => {
+      th.classList.remove("qip-sort-asc", "qip-sort-desc");
+      if (th.dataset.psort === st.sortColumn) {
+        th.classList.add(st.sortOrder === "asc" ? "qip-sort-asc" : "qip-sort-desc");
+      }
+    });
+
+  if (note && st.totals) {
+    const t = st.totals;
+    const bits = [
+      `Ranked by how many last orders each product appears in — a product is counted once per order, so a single large basket cannot inflate it.`,
+      `Lift compares a product's share of these ${t.last_orders_analysed.toLocaleString()} last orders against its share of ${t.baseline_orders_sampled.toLocaleString()} orders sampled from the same period. Above 1.0x means it appears more often in last orders than is typical; below means less often.`,
+      // Without this adjustment every product would sit near 0.5x and an
+      // ordinary product would read as under-represented.
+      `Last orders held ${t.avg_products_last} different products on average versus ${t.avg_products_baseline} in comparable orders, which shrinks every product's share alike — lift is rescaled by x${t.basket_ratio} so that 1.0x means "typical". Hover a lift to see the unadjusted ratio.`,
+      `Lift is hidden below ${t.lift_min_orders} last orders, where the ratio would be noise.`,
+    ];
+    if (t.orders_missing) {
+      bits.push(`${t.orders_missing.toLocaleString()} order(s) could not be read and are excluded.`);
+    }
+    if (t.orders_truncated) {
+      bits.push(`${t.orders_truncated.toLocaleString()} basket(s) had more than 100 line items; only the first 100 were counted.`);
+    }
+    const failed = (st.stores || []).filter((s) => !s.ok);
+    failed.forEach((s) =>
+      bits.push(`${s.store_name || "A store"} failed: ${s.error || "unknown error"} — excluded.`),
+    );
+    note.innerHTML = bits.map((b) => saEscape(b)).join("<br />");
+  }
 }
 
 // ===== Inventory Time =====

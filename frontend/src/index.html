@@ -4430,6 +4430,7 @@
                 </select>
               </label>
               <button type="button" class="btn btn-secondary" id="sacr-reset-filters" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Reset</button>
+              <button type="button" class="btn btn-primary" id="sacr-products-btn" style="font-size: 0.6875rem; padding: 0.25rem 0.625rem;">Top products in last orders</button>
               <span class="sa-row-count" id="sacr-row-count" aria-live="polite"></span>
             </div>
 
@@ -4491,6 +4492,60 @@
           <button type="button" class="modal-close" id="sacr-detail-close">&times;</button>
         </div>
         <div class="modal-body" id="sacr-detail-body" style="padding: 1rem 1.5rem 1.5rem"></div>
+      </div>
+    </div>
+
+    <!-- Top products in lost customers' last orders -->
+    <div id="sacr-products-modal" class="modal">
+      <div class="modal-content" style="max-width: 1100px; width: 96%">
+        <div class="modal-header">
+          <h3 id="sacr-products-title">Top products in last orders</h3>
+          <button type="button" class="modal-close" id="sacr-products-close">&times;</button>
+        </div>
+        <div class="modal-body" id="sacr-products-body" style="padding: 1rem 1.5rem 1.5rem">
+          <p class="sacr-products-scope" id="sacr-products-scope"></p>
+
+          <div id="sacr-products-progress" class="sacr-products-progress" hidden>
+            <div class="sacr-progress-head">
+              <span id="sacr-products-status">Starting…</span>
+              <span id="sacr-products-meta" class="sacr-progress-meta"></span>
+            </div>
+            <div class="sacr-progress-track">
+              <div id="sacr-products-bar" class="sacr-progress-bar"></div>
+            </div>
+          </div>
+
+          <div class="sacr-products-toolbar" id="sacr-products-toolbar" hidden>
+            <label style="font-size: 0.75rem; color: var(--text-secondary);">Min. last orders
+              <input type="number" id="sacr-products-min" min="1" step="1" value="1" style="max-width: 80px; margin-left: 0.375rem;" />
+            </label>
+            <label style="font-size: 0.75rem; color: var(--text-secondary);">Search
+              <input type="text" id="sacr-products-search" placeholder="product name" style="max-width: 200px; margin-left: 0.375rem;" />
+            </label>
+            <span class="sa-row-count" id="sacr-products-count"></span>
+            <button type="button" class="btn btn-secondary" id="sacr-products-cancel" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem; display: none;">Cancel</button>
+          </div>
+
+          <div id="sacr-products-error" class="sacr-products-error" hidden></div>
+
+          <div class="table-container" id="sacr-products-results" hidden>
+            <table class="data-table sacr-products-table" id="sacr-products-table">
+              <thead>
+                <tr>
+                  <th>Product</th>
+                  <th class="qip-sortable qip-sort-desc sacr-num" data-psort="orders">In last orders <span class="qip-sort-arrow"></span></th>
+                  <th class="sacr-num">% of last</th>
+                  <th class="sacr-num">% of baseline</th>
+                  <th class="qip-sortable sacr-num" data-psort="lift">Lift <span class="qip-sort-arrow"></span></th>
+                  <th class="qip-sortable sacr-num" data-psort="quantity">Units <span class="qip-sort-arrow"></span></th>
+                </tr>
+              </thead>
+              <tbody id="sacr-products-tbody"></tbody>
+            </table>
+          </div>
+
+          <p class="sancm-note" id="sacr-products-note"></p>
+        </div>
       </div>
     </div>
 

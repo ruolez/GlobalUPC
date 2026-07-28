@@ -695,6 +695,17 @@ class CustomerDetailRequest(BaseModel):
     limit: int = 5
 
 
+class LostProductsStore(BaseModel):
+    store_id: int
+    order_ids: List[str]       # numeric Shopify order ids (GID stripped)
+
+
+class LostProductsRequest(BaseModel):
+    stores: List[LostProductsStore]
+    active_since: str          # baseline window start, YYYY-MM-DD
+    silent_since: str          # baseline window end, YYYY-MM-DD
+
+
 # Quotations In Progress Schemas
 class QuotationsInProgressFilter(BaseModel):
     # "all" -> no scan filter
