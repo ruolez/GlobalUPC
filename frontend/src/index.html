@@ -4348,10 +4348,14 @@
 
             <div id="sacr-progress" style="display: none; margin-bottom: 1rem;">
               <div class="card" style="padding: 0.875rem 1.25rem">
-                <div id="sacr-progress-status" style="font-size: 0.8125rem; color: var(--text-secondary); margin-bottom: 0.625rem;">Connecting...</div>
-                <div style="width: 100%; height: 6px; background: var(--bg-tertiary); border-radius: 3px; overflow: hidden;">
-                  <div id="sacr-progress-bar" style="width: 0%; height: 100%; background: var(--accent-primary); border-radius: 3px; transition: width 0.4s ease;"></div>
+                <div class="sacr-progress-head">
+                  <span id="sacr-progress-status">Connecting...</span>
+                  <span id="sacr-progress-meta" class="sacr-progress-meta"></span>
                 </div>
+                <div class="sacr-progress-track">
+                  <div id="sacr-progress-bar" class="sacr-progress-bar"></div>
+                </div>
+                <div class="sacr-progress-stores" id="sacr-progress-stores"></div>
               </div>
             </div>
 

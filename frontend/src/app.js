@@ -13510,7 +13510,105 @@ const sacrState = {
   abortController: null,
   resizeObserver: null,
   rafId: 0,
+  // Liveness reporting. A store can spend minutes inside one cursor walk, so
+  // the run has to keep visibly moving or it reads as hung.
+  progress: null,
+  elapsedTimer: null,
 };
+
+function sacrResetProgress(stores, shardsPerStore, totalUnits) {
+  sacrState.progress = {
+    totalUnits: totalUnits || Math.max(1, stores.length * (shardsPerStore || 1)),
+    doneUnits: 0,
+    startedAt: Date.now(),
+    stores: stores.map((s) => ({
+      store_id: s.store_id,
+      name: s.store_name,
+      state: "queued",
+      shards: shardsPerStore || 1,
+      shardsDone: 0,
+      shardPages: {},
+      shardScanned: {},
+      lost: null,
+      note: "",
+    })),
+  };
+}
+
+function sacrProgressStore(storeId) {
+  return sacrState.progress?.stores.find((s) => s.store_id === storeId) || null;
+}
+
+function sacrSum(obj) {
+  return Object.values(obj || {}).reduce((a, b) => a + b, 0);
+}
+
+function sacrFmtElapsed(ms) {
+  const s = Math.floor(ms / 1000);
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
+}
+
+function renderSacrProgress() {
+  const p = sacrState.progress;
+  if (!p) return;
+
+  const bar = document.getElementById("sacr-progress-bar");
+  // Shard completion is the finest honest unit of progress: total page counts
+  // are unknowable up front, so anything smoother would be invented. A single
+  // dominant store can hold the percentage still for a while, so the bar also
+  // carries an activity shimmer — that signals "working", not "progressing".
+  const pct = Math.min(100, Math.round((p.doneUnits / p.totalUnits) * 100));
+  if (bar) {
+    bar.style.width = `${pct}%`;
+    bar.classList.toggle("is-active", sacrState.loading);
+  }
+
+  const scanned = p.stores.reduce((a, s) => a + sacrSum(s.shardScanned), 0);
+  const pages = p.stores.reduce((a, s) => a + sacrSum(s.shardPages), 0);
+  const meta = document.getElementById("sacr-progress-meta");
+  if (meta) {
+    // Scanned/pages tick up continuously between shard boundaries — that is
+    // the signal that work is still happening.
+    meta.textContent = `${scanned.toLocaleString()} customers scanned · ${pages.toLocaleString()} pages · ${sacrFmtElapsed(Date.now() - p.startedAt)}`;
+  }
+
+  const list = document.getElementById("sacr-progress-stores");
+  if (!list) return;
+  list.innerHTML = p.stores
+    .map((s) => {
+      const sc = sacrSum(s.shardScanned);
+      const pg = sacrSum(s.shardPages);
+      let detail;
+      if (s.state === "queued") detail = "waiting…";
+      else if (s.state === "scanning")
+        // Shards run concurrently, so "shard 2/4" would imply a sequential
+        // walk that isn't happening. Report how many have finished instead.
+        detail = `${s.shardsDone}/${s.shards} shards · ${pg.toLocaleString()} pages · ${sc.toLocaleString()} scanned`;
+      else if (s.state === "failed") detail = s.note || "failed";
+      else detail = `${sc.toLocaleString()} scanned · ${(s.lost ?? 0).toLocaleString()} lost`;
+      return (
+        `<div class="sacr-progress-store is-${s.state}">` +
+        `<span class="sacr-progress-dot"></span>` +
+        `<span class="sacr-progress-name">${saEscape(s.name)}</span>` +
+        `<span class="sacr-progress-detail">${saEscape(detail)}</span>` +
+        `</div>`
+      );
+    })
+    .join("");
+}
+
+function sacrStartElapsedTimer() {
+  sacrStopElapsedTimer();
+  // Without a ticking clock a slow shard looks identical to a dead connection.
+  sacrState.elapsedTimer = setInterval(() => {
+    if (sacrState.progress) renderSacrProgress();
+  }, 1000);
+}
+
+function sacrStopElapsedTimer() {
+  if (sacrState.elapsedTimer) clearInterval(sacrState.elapsedTimer);
+  sacrState.elapsedTimer = null;
+}
 
 const SACR_NUMERIC_COLUMNS = new Set([
   "orders_count",
@@ -13856,14 +13954,44 @@ async function runLostCustomersReport() {
             ok: null,
             complete: null,
           }));
+          sacrResetProgress(data.stores || [], data.shards, data.total_units);
+          sacrStartElapsedTimer();
           if (status) {
-            status.textContent = `Scanning ${sacrState.stores.length} store(s) across ${data.shards} shard(s)...`;
+            status.textContent = `Scanning ${sacrState.stores.length} store(s) across ${data.shards} shard(s) each`;
           }
+          renderSacrProgress();
+        } else if (eventType === "progress" && data.phase === "store_start") {
+          const ps = sacrProgressStore(data.store_id);
+          if (ps) {
+            ps.state = "scanning";
+            ps.shards = data.shards || ps.shards;
+          }
+          renderSacrProgress();
+        } else if (eventType === "progress" && data.phase === "page") {
+          const ps = sacrProgressStore(data.store_id);
+          if (ps) {
+            // Both values are cumulative per shard, so assign rather than add.
+            ps.shardPages[data.shard] = data.pages;
+            ps.shardScanned[data.shard] = data.scanned;
+          }
+          renderSacrProgress();
+        } else if (eventType === "progress" && data.phase === "shard_done") {
+          const ps = sacrProgressStore(data.store_id);
+          if (ps) {
+            ps.shardPages[data.shard] = data.pages;
+            ps.shardScanned[data.shard] = data.scanned;
+            ps.shardsDone += 1;
+          }
+          sacrState.progress.doneUnits += 1;
+          renderSacrProgress();
         } else if (eventType === "progress" && data.phase === "retry") {
           // Surface retries so a backoff never looks like a hang.
+          const ps = sacrProgressStore(data.store_id);
+          if (ps) ps.note = `retrying ${data.attempt}/${data.max_attempts} — ${data.reason}`;
           if (status) {
             status.textContent = `${data.store_name} — retrying (${data.attempt}/${data.max_attempts}) after ${data.reason}...`;
           }
+          renderSacrProgress();
         } else if (eventType === "store") {
           const s = sacrState.stores.find((x) => x.store_id === data.store_id);
           if (s) Object.assign(s, data);
@@ -13875,12 +14003,23 @@ async function runLostCustomersReport() {
             }
             sacrState.rows.push(...data.rows);
           }
-          if (bar && data.total_stores) {
-            bar.style.width = `${Math.round((data.completed / data.total_stores) * 100)}%`;
+          const ps = sacrProgressStore(data.store_id);
+          if (ps) {
+            ps.state = data.ok ? "done" : "failed";
+            ps.lost = data.lost_count;
+            ps.note = data.ok ? "" : (data.error || "failed").slice(0, 60);
+            // A store that failed early may never have emitted every
+            // shard_done; settle its units so the bar can still reach 100%.
+            const missing = ps.shards - ps.shardsDone;
+            if (missing > 0) {
+              ps.shardsDone = ps.shards;
+              sacrState.progress.doneUnits += missing;
+            }
           }
           if (status) {
             status.textContent = `${data.completed} of ${data.total_stores} stores complete`;
           }
+          renderSacrProgress();
           renderSacrBanner();
           renderSacrAll();
         } else if (eventType === "complete") {
@@ -13891,8 +14030,12 @@ async function runLostCustomersReport() {
             const s = sacrState.stores.find((x) => x.store_id === fresh.store_id);
             if (s) Object.assign(s, fresh);
           });
+          if (sacrState.progress) {
+            sacrState.progress.doneUnits = sacrState.progress.totalUnits;
+          }
           if (bar) bar.style.width = "100%";
           if (status) status.textContent = "Complete";
+          renderSacrProgress();
           sacrPopulateFilterOptions();
           renderSacrBanner();
           renderSacrAll();
@@ -13915,13 +14058,21 @@ async function runLostCustomersReport() {
   } finally {
     sacrState.loading = false;
     sacrState.abortController = null;
+    sacrStopElapsedTimer();
     if (runBtn) runBtn.disabled = false;
     if (cancelBtn) cancelBtn.style.display = "none";
     updateSacrRunBtn();
+    renderSacrProgress();
     renderSacrAll();
-    setTimeout(() => {
-      if (progress && !sacrState.loading) progress.style.display = "none";
-    }, 2500);
+    // Keep the panel up when something went wrong — the timings and per-store
+    // detail are the evidence. Clear it on a clean run so it stops taking room.
+    const clean =
+      sacrState.stores.length > 0 && sacrState.stores.every((s) => s.ok && s.complete);
+    if (clean) {
+      setTimeout(() => {
+        if (progress && !sacrState.loading) progress.style.display = "none";
+      }, 4000);
+    }
   }
 }
 

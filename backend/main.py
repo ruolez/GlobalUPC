@@ -6357,7 +6357,7 @@ async def shopify_analytics_lost_customers_stream(
         today = datetime.now().strftime("%Y-%m-%d")
         shards = _lost_shards(active_since, today)
 
-        yield f"event: progress\ndata: {json.dumps({'phase': 'started', 'active_since': active_since, 'silent_since': silent_since, 'min_orders': min_orders, 'shards': len(shards), 'stores': [{'store_id': s['id'], 'store_name': s['name']} for s in store_list]})}\n\n"
+        yield f"event: progress\ndata: {json.dumps({'phase': 'started', 'active_since': active_since, 'silent_since': silent_since, 'min_orders': min_orders, 'shards': len(shards), 'total_units': len(shards) * len(store_list), 'stores': [{'store_id': s['id'], 'store_name': s['name']} for s in store_list]})}\n\n"
 
         # Retries and page progress must reach the client while work is still in
         # flight, so workers publish to a queue rather than only returning.
@@ -6372,8 +6372,24 @@ async def shopify_analytics_lost_customers_stream(
                         "attempt": attempt, "max_attempts": max_attempts, "reason": reason,
                     }))
 
-                shard_results = await asyncio.gather(*[
-                    fetch_customers_with_last_order(
+                events.put_nowait(("store_start", {
+                    "store_id": s["id"], "store_name": s["name"], "shards": len(shards),
+                }))
+
+                async def run_shard(index: int, lo: str, hi: Optional[str]):
+                    # Page callbacks are what prove the run is alive during a
+                    # long cursor walk — a store can spend minutes on one shard.
+                    pages = 0
+
+                    def on_page(scanned: int, _i=index):
+                        nonlocal pages
+                        pages += 1
+                        events.put_nowait(("page", {
+                            "store_id": s["id"], "store_name": s["name"],
+                            "shard": _i, "pages": pages, "scanned": scanned,
+                        }))
+
+                    res = await fetch_customers_with_last_order(
                         shop_domain=s["shop_domain"],
                         admin_api_key=s["admin_api_key"],
                         active_since=active_since,
@@ -6381,8 +6397,17 @@ async def shopify_analytics_lost_customers_stream(
                         shard_start=lo,
                         shard_end=hi,
                         on_retry=on_retry,
+                        on_page=on_page,
                     )
-                    for lo, hi in shards
+                    events.put_nowait(("shard_done", {
+                        "store_id": s["id"], "store_name": s["name"], "shard": index,
+                        "ok": bool(res.get("ok")), "pages": res.get("pages", 0),
+                        "scanned": len(res.get("customers") or []),
+                    }))
+                    return res
+
+                shard_results = await asyncio.gather(*[
+                    run_shard(i, lo, hi) for i, (lo, hi) in enumerate(shards)
                 ], return_exceptions=True)
 
                 by_id: Dict[str, Dict[str, Any]] = {}
@@ -6469,8 +6494,10 @@ async def shopify_analytics_lost_customers_stream(
                     last_heartbeat = asyncio.get_event_loop().time()
                     continue
 
-                if kind == "retry":
-                    yield f"event: progress\ndata: {json.dumps({'phase': 'retry', **payload})}\n\n"
+                # Everything except "done" is liveness reporting and must not
+                # advance the completed-store counter.
+                if kind in ("retry", "store_start", "page", "shard_done"):
+                    yield f"event: progress\ndata: {json.dumps({'phase': kind, **payload})}\n\n"
                     continue
 
                 completed += 1
