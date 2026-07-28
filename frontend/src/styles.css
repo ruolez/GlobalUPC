@@ -5265,3 +5265,264 @@ body.no-scroll {
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
+
+/* ============================================================================
+   Shopify Analytics: New Customers by Month
+   ========================================================================= */
+
+/* Series identity needs real chroma to do its job. Six of the eight themes set
+   --accent-primary to a near-neutral gray, so a color-mix ramp off it would
+   yield eight indistinguishable grays. Chrome below reads only theme variables;
+   only the categorical series slots are fixed. Every series is also named in
+   the legend and carries the same swatch in its table column, so color is never
+   the only channel. */
+.sancm-chart-card {
+  --sancm-c1: #3987e5;
+  --sancm-c2: #d95926;
+  --sancm-c3: #199e70;
+  --sancm-c4: #c98500;
+  --sancm-c5: #d55181;
+  --sancm-c6: #008300;
+  --sancm-c7: #9085e9;
+  --sancm-c8: #e66767;
+}
+[data-theme="author-light"] .sancm-chart-card {
+  --sancm-c1: #2a78d6;
+  --sancm-c2: #eb6834;
+  --sancm-c3: #1baf7a;
+  --sancm-c4: #eda100;
+  --sancm-c5: #e87ba4;
+  --sancm-c6: #008300;
+  --sancm-c7: #4a3aa7;
+  --sancm-c8: #e34948;
+}
+
+.sa-page .sancm-chart-card {
+  position: relative;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 1rem 1.25rem 0.75rem;
+  margin-bottom: 1.25rem;
+  transition: opacity 0.2s ease;
+}
+.sa-page .sancm-chart-card[hidden] { display: none; }
+.sa-page .sancm-chart-card.is-loading {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.sa-page .sancm-chart-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.625rem;
+}
+.sa-page .sancm-chart-title {
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.sa-page .sancm-chart-sub {
+  margin: 0.1875rem 0 0;
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+}
+.sa-page .sancm-chart-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+/* Mode toggle — mirrors the .tab-pill treatment used elsewhere. */
+.sa-page .sancm-mode-group {
+  display: inline-flex;
+  gap: 0.125rem;
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-md);
+  padding: 0.1875rem;
+}
+.sa-page .sancm-mode-btn {
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  font-weight: 500;
+  padding: 0.25rem 0.625rem;
+  border-radius: calc(var(--radius-md) - 0.1875rem);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.sa-page .sancm-mode-btn:hover { color: var(--text-primary); }
+.sa-page .sancm-mode-btn.active {
+  background: var(--bg-primary);
+  color: var(--accent-primary);
+  font-weight: 600;
+  box-shadow: var(--shadow-sm);
+}
+.sa-page .sancm-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+.sa-page .sancm-toggle input { width: auto; margin: 0; }
+.sa-page .sancm-toggle input:disabled { opacity: 0.4; }
+
+.sa-page .sancm-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.5rem;
+  margin-bottom: 0.5rem;
+}
+.sa-page .sancm-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  padding: 0.1875rem 0.4375rem;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.15s ease, opacity 0.15s ease;
+}
+.sa-page .sancm-legend-item:hover { background: var(--bg-hover); }
+.sa-page .sancm-legend-item.is-hidden { opacity: 0.4; text-decoration: line-through; }
+.sa-page .sancm-legend-item.is-static { cursor: default; }
+.sa-page .sancm-legend-item.is-static:hover { background: transparent; }
+.sa-page .sancm-legend-item:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 1px;
+}
+
+.sa-page .sancm-swatch {
+  display: inline-block;
+  width: 0.625rem;
+  height: 0.625rem;
+  border-radius: 2px;
+  flex: 0 0 auto;
+  vertical-align: -1px;
+  margin-right: 0.375rem;
+}
+.sa-page .sancm-legend-item .sancm-swatch { margin-right: 0; }
+.sa-page .sancm-swatch-line {
+  width: 0.875rem;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--text-primary);
+  opacity: 0.7;
+}
+
+.sa-page .sancm-chart-wrap {
+  width: 100%;
+  overflow: hidden;
+}
+.sa-page .sancm-chart-wrap svg { display: block; }
+.sa-page .sancm-band-wash {
+  fill: transparent;
+  transition: fill 0.12s ease;
+}
+.sa-page .sancm-band-wash.is-active {
+  fill: color-mix(in srgb, var(--accent-primary) 8%, transparent);
+}
+.sa-page .sancm-hit { cursor: crosshair; outline: none; }
+.sa-page .sancm-hit:focus-visible {
+  stroke: var(--accent-primary);
+  stroke-width: 2;
+  fill: color-mix(in srgb, var(--accent-primary) 6%, transparent);
+}
+
+.sa-page .sancm-tooltip {
+  position: absolute;
+  z-index: 20;
+  pointer-events: none;
+  min-width: 9rem;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  padding: 0.5rem 0.625rem;
+  font-size: 0.75rem;
+}
+.sa-page .sancm-tooltip[hidden] { display: none; }
+.sa-page .sancm-tip-head {
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 0.3125rem;
+  padding-bottom: 0.3125rem;
+  border-bottom: 1px solid var(--border-color);
+}
+.sa-page .sancm-tip-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.375rem;
+  padding: 0.0625rem 0;
+}
+.sa-page .sancm-tip-key {
+  width: 0.75rem;
+  height: 2px;
+  border-radius: 1px;
+  flex: 0 0 auto;
+  align-self: center;
+}
+.sa-page .sancm-tip-val {
+  font-weight: 600;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  min-width: 2.25rem;
+  text-align: right;
+}
+.sa-page .sancm-tip-name { color: var(--text-secondary); }
+.sa-page .sancm-tip-total {
+  margin-top: 0.3125rem;
+  padding-top: 0.3125rem;
+  border-top: 1px solid var(--border-color);
+}
+.sa-page .sancm-tip-mom .sancm-tip-val { font-weight: 600; }
+
+/* Table */
+.sa-page #sancm-table td.sancm-num,
+.sa-page #sancm-table th.sancm-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.sa-page #sancm-table th.sancm-num .sancm-swatch { margin-right: 0.375rem; }
+.sa-page #sancm-table .sancm-muted { color: var(--text-tertiary); }
+.sa-page #sancm-table .sancm-total-cell { font-weight: 600; color: var(--text-primary); }
+.sa-page #sancm-table th.sancm-th-error { color: var(--danger); cursor: help; }
+.sa-page .sancm-partial-mark { color: var(--text-tertiary); cursor: help; }
+.sa-page #sancm-table .sancm-foot-row td {
+  font-weight: 600;
+  border-top: 2px solid var(--border-color);
+  background: color-mix(in srgb, var(--accent-primary) 5%, var(--bg-secondary));
+}
+.sa-page .sancm-mom-up { color: var(--success); }
+.sa-page .sancm-mom-down { color: var(--danger); }
+.sa-page .sancm-mom-flat { color: var(--text-tertiary); }
+.sa-page .sancm-note {
+  margin: 0.75rem 0 0;
+  font-size: 0.75rem;
+  line-height: 1.6;
+  color: var(--text-tertiary);
+}
+
+/* Empty state — same treatment as #sa-empty on the sibling tab. */
+.sa-page #sancm-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 3.5rem 1rem;
+  color: var(--text-secondary);
+}
+.sa-page #sancm-empty p { margin: 0; }

@@ -11980,6 +11980,48 @@ async function loadShopifyAnalyticsPage() {
       renderSaKpis([...shopifyAnalyticsState.rows]);
     });
   });
+
+  // === Report tabs (sub-nav) ===
+  document.querySelectorAll(".sa-subnav-item[data-sa-tab]").forEach((b) => {
+    b.addEventListener("click", () => activateShopifyAnalyticsTab(b.dataset.saTab));
+  });
+  let savedTab = "first-customer-returns";
+  try {
+    savedTab = localStorage.getItem(SA_TAB_KEY) || savedTab;
+  } catch (e) {
+    /* private mode */
+  }
+  activateShopifyAnalyticsTab(savedTab);
+}
+
+const SA_TAB_KEY = "sa_active_tab";
+
+function activateShopifyAnalyticsTab(tabId) {
+  const buttons = document.querySelectorAll(".sa-subnav-item[data-sa-tab]");
+  if (buttons.length === 0) return;
+  const valid = Array.from(buttons).some((b) => b.dataset.saTab === tabId);
+  const target = valid ? tabId : "first-customer-returns";
+
+  buttons.forEach((b) => {
+    const on = b.dataset.saTab === target;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-selected", on ? "true" : "false");
+  });
+  document.querySelectorAll(".sa-panel[data-sa-panel]").forEach((p) => {
+    p.style.display = p.dataset.saPanel === target ? "" : "none";
+  });
+  try {
+    localStorage.setItem(SA_TAB_KEY, target);
+  } catch (e) {
+    /* private mode */
+  }
+
+  if (target === "new-customers-by-month") {
+    loadNewCustomersByMonthPanel();
+    // The SVG sizes itself from wrap.clientWidth, which is 0 while the panel is
+    // display:none — it must be redrawn once the panel is actually visible.
+    sancmScheduleChartRender();
+  }
 }
 
 function saApplySortHeaders() {
@@ -11999,9 +12041,22 @@ function saApplySortHeaders() {
   });
 }
 
-function saApplyDatePreset(range) {
-  const startInput = document.getElementById("sa-start-date");
-  const endInput = document.getElementById("sa-end-date");
+// Local-calendar YYYY-MM-DD. toISOString() would shift a local-midnight Date
+// across the date line for any UTC+ offset, turning "1st of the month" into the
+// last day of the previous one.
+function saLocalDateStr(d) {
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${m}-${day}`;
+}
+
+function saApplyDatePreset(
+  range,
+  startId = "sa-start-date",
+  endId = "sa-end-date",
+) {
+  const startInput = document.getElementById(startId);
+  const endInput = document.getElementById(endId);
   if (!startInput || !endInput) return;
   const today = new Date();
   let start, end;
@@ -12009,10 +12064,10 @@ function saApplyDatePreset(range) {
     end = today;
     start = new Date(today);
     start.setDate(today.getDate() - parseInt(range, 10));
-  } else if (range === "6m" || range === "12m") {
+  } else if (range === "6m" || range === "12m" || range === "24m") {
     end = today;
     start = new Date(today);
-    start.setMonth(today.getMonth() - (range === "6m" ? 6 : 12));
+    start.setMonth(today.getMonth() - parseInt(range, 10));
   } else if (range === "this-month") {
     start = new Date(today.getFullYear(), today.getMonth(), 1);
     end = today;
@@ -12028,8 +12083,8 @@ function saApplyDatePreset(range) {
   } else {
     return;
   }
-  startInput.value = start.toISOString().slice(0, 10);
-  endInput.value = end.toISOString().slice(0, 10);
+  startInput.value = saLocalDateStr(start);
+  endInput.value = saLocalDateStr(end);
   startInput.dispatchEvent(new Event("change"));
   endInput.dispatchEvent(new Event("change"));
 }
@@ -12347,6 +12402,1086 @@ function renderShopifyAnalyticsTable() {
   if (totalAmountEl)
     totalAmountEl.textContent = `${totalAmount.toFixed(2)} ${currency}`.trim();
   if (tfoot) tfoot.style.display = visible.length > 0 ? "" : "none";
+}
+
+// ===== Shopify Analytics: New Customers by Month =====
+
+// Series identity needs real chroma. Six of the eight themes set
+// --accent-primary to a near-neutral gray, so a color-mix ramp off it would
+// produce eight indistinguishable grays. Chrome (grid, axes, tooltip, total
+// line) still reads only theme variables; see the palette in styles.css.
+const SANCM_PALETTE = [
+  "var(--sancm-c1)",
+  "var(--sancm-c2)",
+  "var(--sancm-c3)",
+  "var(--sancm-c4)",
+  "var(--sancm-c5)",
+  "var(--sancm-c6)",
+  "var(--sancm-c7)",
+  "var(--sancm-c8)",
+];
+const SANCM_OTHER_COLOR = "var(--text-tertiary)";
+const SANCM_SELECTION_KEY = "sancm_selected_store_ids";
+const SANCM_RENDER_THROTTLE_MS = 150;
+
+const sancmState = {
+  initialized: false,
+  loading: false,
+  stores: [], // { store_id, store_name, tag, ok, error, counts, color }
+  monthKeys: [], // [{ month: "2026-03", label: "Mar 2026" }]
+  months: [], // [{ month, label, counts, total, mom_growth_pct }]
+  hiddenStoreIds: new Set(),
+  mode: "grouped",
+  modeAuto: true, // user hasn't explicitly picked a mode yet
+  showTotal: true,
+  partialLastMonth: false,
+  startDate: "",
+  endDate: "",
+  abortController: null,
+  resizeObserver: null,
+  rafId: 0,
+};
+
+let sancmRenderTimer = null;
+let sancmRenderPending = false;
+
+function requestSancmRender(force) {
+  if (force) {
+    if (sancmRenderTimer) clearTimeout(sancmRenderTimer);
+    sancmRenderTimer = null;
+    sancmRenderPending = false;
+    renderSancmAll();
+    return;
+  }
+  if (sancmRenderPending) return;
+  sancmRenderPending = true;
+  sancmRenderTimer = setTimeout(() => {
+    sancmRenderTimer = null;
+    sancmRenderPending = false;
+    renderSancmAll();
+  }, SANCM_RENDER_THROTTLE_MS);
+}
+
+function loadNewCustomersByMonthPanel() {
+  if (sancmState.initialized) return;
+  sancmState.initialized = true;
+
+  renderSancmStoreCheckboxes();
+  sancmSetDefaultDates();
+
+  document.querySelectorAll("[data-sancm-range]").forEach((b) => {
+    b.addEventListener("click", () => sancmApplyRange(b.dataset.sancmRange));
+  });
+
+  document
+    .getElementById("sancm-store-checkboxes")
+    ?.addEventListener("change", () => {
+      sancmPersistSelection();
+      updateSancmRunBtn();
+    });
+  document
+    .getElementById("sancm-select-all")
+    ?.addEventListener("click", () => sancmSetAll(true));
+  document
+    .getElementById("sancm-deselect-all")
+    ?.addEventListener("click", () => sancmSetAll(false));
+
+  ["sancm-start-date", "sancm-end-date"].forEach((id) => {
+    document.getElementById(id)?.addEventListener("change", updateSancmRunBtn);
+  });
+
+  document
+    .getElementById("sancm-run-btn")
+    ?.addEventListener("click", runNewCustomersByMonthReport);
+  document.getElementById("sancm-cancel-btn")?.addEventListener("click", () => {
+    if (sancmState.abortController) sancmState.abortController.abort();
+  });
+
+  document.querySelectorAll("[data-sancm-mode]").forEach((b) => {
+    b.addEventListener("click", () => sancmSetMode(b.dataset.sancmMode, true));
+  });
+  document
+    .getElementById("sancm-show-total")
+    ?.addEventListener("change", (e) => {
+      sancmState.showTotal = e.target.checked;
+      renderSancmChart();
+    });
+
+  document
+    .getElementById("sancm-legend")
+    ?.addEventListener("click", onSancmLegendClick);
+  sancmBindChartInteraction();
+
+  const wrap = document.getElementById("sancm-chart-wrap");
+  if (wrap && window.ResizeObserver) {
+    sancmState.resizeObserver = new ResizeObserver(() =>
+      sancmScheduleChartRender(),
+    );
+    sancmState.resizeObserver.observe(wrap);
+  }
+
+  updateSancmRunBtn();
+}
+
+function sancmReadSelection() {
+  try {
+    const raw = localStorage.getItem(SANCM_SELECTION_KEY);
+    if (!raw) return null;
+    const ids = JSON.parse(raw);
+    return Array.isArray(ids) ? new Set(ids.map(Number)) : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function sancmPersistSelection() {
+  try {
+    localStorage.setItem(
+      SANCM_SELECTION_KEY,
+      JSON.stringify(sancmSelectedStoreIds()),
+    );
+  } catch (e) {
+    /* private mode */
+  }
+}
+
+function sancmSelectedStoreIds() {
+  return Array.from(document.querySelectorAll(".sancm-store-cb"))
+    .filter((cb) => cb.checked)
+    .map((cb) => parseInt(cb.value, 10));
+}
+
+function renderSancmStoreCheckboxes() {
+  const container = document.getElementById("sancm-store-checkboxes");
+  if (!container) return;
+  container.innerHTML = "";
+
+  // Reuses the store list loadShopifyAnalyticsPage() already fetched.
+  const stores = shopifyAnalyticsState.shopifyStores || [];
+  if (stores.length === 0) {
+    container.innerHTML =
+      '<span style="color: var(--text-tertiary); font-size: 0.8125rem;">No active Shopify stores configured</span>';
+    return;
+  }
+
+  const remembered = sancmReadSelection();
+  stores.forEach((s) => {
+    const label = document.createElement("label");
+    label.style.cssText =
+      "display:flex;align-items:center;gap:0.5rem;cursor:pointer;white-space:nowrap;";
+    const tag =
+      (s.shopify_connection && s.shopify_connection.first_order_tag) ||
+      "First order";
+    label.title = `Tag: ${tag}`;
+
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.value = String(s.id);
+    cb.className = "sancm-store-cb";
+    cb.checked = remembered ? remembered.has(s.id) : true;
+    cb.style.cssText = "width:auto;margin:0;";
+
+    const span = document.createElement("span");
+    span.textContent = s.name;
+
+    label.appendChild(cb);
+    label.appendChild(span);
+    container.appendChild(label);
+  });
+}
+
+function sancmSetAll(checked) {
+  document.querySelectorAll(".sancm-store-cb").forEach((cb) => {
+    cb.checked = checked;
+  });
+  sancmPersistSelection();
+  updateSancmRunBtn();
+}
+
+function sancmSetDefaultDates() {
+  const startInput = document.getElementById("sancm-start-date");
+  const endInput = document.getElementById("sancm-end-date");
+  if (!startInput || !endInput || startInput.value) return;
+  sancmApplyRange("12m");
+}
+
+function sancmApplyRange(range) {
+  saApplyDatePreset(range, "sancm-start-date", "sancm-end-date");
+  // Snap to the 1st: a partial leading month otherwise reads as a real dip.
+  const s = document.getElementById("sancm-start-date");
+  if (s && s.value) {
+    s.value = `${s.value.slice(0, 8)}01`;
+    s.dispatchEvent(new Event("change"));
+  }
+}
+
+function updateSancmRunBtn() {
+  const runBtn = document.getElementById("sancm-run-btn");
+  if (!runBtn) return;
+  const startVal = document.getElementById("sancm-start-date")?.value || "";
+  const endVal = document.getElementById("sancm-end-date")?.value || "";
+  const anyStore = sancmSelectedStoreIds().length > 0;
+  runBtn.disabled = !(anyStore && startVal && endVal && startVal <= endVal);
+}
+
+function sancmSetMode(mode, userInitiated) {
+  sancmState.mode = mode === "stacked" ? "stacked" : "grouped";
+  if (userInitiated) sancmState.modeAuto = false;
+  document.querySelectorAll("[data-sancm-mode]").forEach((b) => {
+    const on = b.dataset.sancmMode === sancmState.mode;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-checked", on ? "true" : "false");
+  });
+  const totalToggle = document.getElementById("sancm-show-total");
+  if (totalToggle) totalToggle.disabled = sancmState.mode === "stacked";
+  renderSancmChart();
+}
+
+function onSancmLegendClick(e) {
+  const btn = e.target.closest("[data-store-id]");
+  if (!btn) return;
+  const id = parseInt(btn.dataset.storeId, 10);
+  if (sancmState.hiddenStoreIds.has(id)) {
+    sancmState.hiddenStoreIds.delete(id);
+  } else {
+    sancmState.hiddenStoreIds.add(id);
+  }
+  sancmRecomputeMonths(); // totals/MoM follow the visible set
+  renderSancmAll();
+}
+
+// Stores that are fetched OK and not hidden via the legend.
+function sancmVisibleStores() {
+  return sancmState.stores.filter(
+    (s) => s.ok && !sancmState.hiddenStoreIds.has(s.store_id),
+  );
+}
+
+function sancmMomPct(current, previous) {
+  if (previous === null || previous === undefined || previous === 0) return null;
+  return Math.round(((current - previous) / previous) * 1000) / 10;
+}
+
+// Rebuild month rows from whatever store columns have landed so far. One code
+// path for the streaming case and the final payload, so they cannot diverge.
+// `counts` keeps every fetched store so unhiding is free, but totals and MoM
+// cover only the visible ones — otherwise the table's Total would silently
+// include a store the reader just hid, and disagree with the chart.
+function sancmRecomputeMonths() {
+  const okStores = sancmState.stores.filter((s) => s.ok);
+  const visible = sancmVisibleStores();
+  const rows = [];
+  let prevTotal = null;
+  for (const mk of sancmState.monthKeys) {
+    const counts = {};
+    for (const s of okStores) {
+      counts[String(s.store_id)] = (s.counts && s.counts[mk.month]) || 0;
+    }
+    const total = visible.reduce(
+      (a, s) => a + (counts[String(s.store_id)] || 0),
+      0,
+    );
+    rows.push({
+      month: mk.month,
+      label: mk.label,
+      counts,
+      total,
+      mom_growth_pct: sancmMomPct(total, prevTotal),
+    });
+    prevTotal = total;
+  }
+  sancmState.months = rows;
+}
+
+// True when end_date stops before the last day of its own month — that month's
+// bar is incomplete and its MoM would be a lie.
+function sancmComputePartialLastMonth() {
+  const end = sancmState.endDate;
+  if (!end || end.length < 10) {
+    sancmState.partialLastMonth = false;
+    return;
+  }
+  const y = parseInt(end.slice(0, 4), 10);
+  const m = parseInt(end.slice(5, 7), 10);
+  const d = parseInt(end.slice(8, 10), 10);
+  const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  sancmState.partialLastMonth = d < lastDay;
+}
+
+function sancmMonthTotalSpan(row, stores) {
+  return stores.reduce((sum, s) => sum + (row.counts[String(s.store_id)] || 0), 0);
+}
+
+async function runNewCustomersByMonthReport() {
+  if (sancmState.loading) return;
+
+  const storeIds = sancmSelectedStoreIds();
+  const startDate = document.getElementById("sancm-start-date")?.value || "";
+  const endDate = document.getElementById("sancm-end-date")?.value || "";
+  const tag = (document.getElementById("sancm-tag")?.value || "").trim();
+  if (storeIds.length === 0 || !startDate || !endDate) return;
+
+  const runBtn = document.getElementById("sancm-run-btn");
+  const cancelBtn = document.getElementById("sancm-cancel-btn");
+  const progress = document.getElementById("sancm-progress");
+  const progressStatus = document.getElementById("sancm-progress-status");
+  const progressBar = document.getElementById("sancm-progress-bar");
+  const empty = document.getElementById("sancm-empty");
+  const chartCard = document.getElementById("sancm-chart-card");
+
+  sancmState.loading = true;
+  sancmState.abortController = new AbortController();
+  sancmState.stores = [];
+  sancmState.monthKeys = [];
+  sancmState.months = [];
+  sancmState.hiddenStoreIds = new Set();
+  sancmState.startDate = startDate;
+  sancmState.endDate = endDate;
+  sancmComputePartialLastMonth();
+
+  if (runBtn) runBtn.disabled = true;
+  if (cancelBtn) cancelBtn.style.display = "";
+  if (progress) progress.style.display = "";
+  if (progressBar) {
+    progressBar.style.width = "0%";
+    progressBar.style.background = "var(--accent-primary)";
+  }
+  if (progressStatus) progressStatus.textContent = "Connecting...";
+  if (empty) empty.style.display = "none";
+  // Keep the chart frame in place while refetching — no skeleton flash.
+  if (chartCard) chartCard.classList.add("is-loading");
+
+  try {
+    const response = await fetch(
+      `${API_BASE}/shopify-analytics/new-customers-by-month/stream`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          store_ids: storeIds,
+          start_date: startDate,
+          end_date: endDate,
+          tag: tag || undefined,
+        }),
+        signal: sancmState.abortController.signal,
+      },
+    );
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const messages = buffer.split("\n\n");
+      buffer = messages.pop();
+
+      for (const raw of messages) {
+        const msg = raw.trim();
+        if (!msg || msg.startsWith(":")) continue; // heartbeat / blank
+        const match = msg.match(/event: (\w+)\ndata: (.+)/s);
+        if (!match) continue;
+        const eventType = match[1];
+        let data;
+        try {
+          data = JSON.parse(match[2]);
+        } catch (e) {
+          continue;
+        }
+
+        if (eventType === "progress" && data.phase === "started") {
+          sancmState.monthKeys = data.months || [];
+          // Color is bound to store_id order, never to arrival order or rank,
+          // so hiding a store never repaints the others.
+          sancmState.stores = (data.stores || []).map((s, i) => ({
+            store_id: s.store_id,
+            store_name: s.store_name,
+            tag: s.tag,
+            ok: null,
+            error: null,
+            counts: null,
+            total_new_customers: 0,
+            anonymous_new_customers: 0,
+            color: i < SANCM_PALETTE.length ? SANCM_PALETTE[i] : SANCM_OTHER_COLOR,
+          }));
+          if (sancmState.modeAuto) {
+            // A total line over N stores sits N× above any single bar on a
+            // shared axis; stacking keeps the bars readable past two stores.
+            sancmSetMode(sancmState.stores.length >= 3 ? "stacked" : "grouped");
+          }
+          if (progressStatus) {
+            progressStatus.textContent = `Fetching tagged orders from ${sancmState.stores.length} store(s)...`;
+          }
+          sancmRecomputeMonths();
+          requestSancmRender(true);
+        } else if (eventType === "store") {
+          const s = sancmState.stores.find((x) => x.store_id === data.store_id);
+          if (s) {
+            s.ok = data.ok;
+            s.error = data.error;
+            s.counts = data.counts || {};
+            s.total_new_customers = data.total_new_customers || 0;
+            s.anonymous_new_customers = data.anonymous_new_customers || 0;
+            s.orders_scanned = data.orders_scanned || 0;
+          }
+          if (progressBar && data.total_stores) {
+            progressBar.style.width = `${Math.round((data.completed / data.total_stores) * 100)}%`;
+          }
+          if (progressStatus) {
+            progressStatus.textContent = `${data.completed} of ${data.total_stores} stores complete`;
+          }
+          sancmRecomputeMonths();
+          requestSancmRender();
+        } else if (eventType === "complete") {
+          sancmState.monthKeys = (data.months || []).map((m) => ({
+            month: m.month,
+            label: m.label,
+          }));
+          const byId = new Map(
+            (data.stores || []).map((s) => [s.store_id, s]),
+          );
+          sancmState.stores.forEach((s) => {
+            const fresh = byId.get(s.store_id);
+            if (!fresh) return;
+            s.ok = fresh.ok;
+            s.error = fresh.error;
+            s.total_new_customers = fresh.total_new_customers;
+            s.anonymous_new_customers = fresh.anonymous_new_customers;
+            s.orders_scanned = fresh.orders_scanned;
+          });
+          sancmRecomputeMonths();
+          if (progressBar) progressBar.style.width = "100%";
+          if (progressStatus) progressStatus.textContent = "Complete";
+          requestSancmRender(true);
+        } else if (eventType === "error") {
+          if (progressStatus) {
+            progressStatus.textContent = data.message || "Report failed";
+          }
+          if (progressBar) progressBar.style.background = "var(--danger)";
+          const msgEl = document.getElementById("sancm-empty-msg");
+          if (msgEl) msgEl.textContent = data.message || "Report failed";
+          if (empty) empty.style.display = "";
+        }
+      }
+    }
+  } catch (e) {
+    if (e.name === "AbortError") {
+      if (progressStatus) progressStatus.textContent = "Cancelled";
+    } else {
+      if (progressStatus) progressStatus.textContent = `Error: ${e.message}`;
+      if (progressBar) progressBar.style.background = "var(--danger)";
+    }
+  } finally {
+    sancmState.loading = false;
+    sancmState.abortController = null;
+    if (runBtn) runBtn.disabled = false;
+    if (cancelBtn) cancelBtn.style.display = "none";
+    if (chartCard) chartCard.classList.remove("is-loading");
+    updateSancmRunBtn();
+    requestSancmRender(true);
+    setTimeout(() => {
+      if (progress && !sancmState.loading) progress.style.display = "none";
+    }, 1500);
+  }
+}
+
+function renderSancmAll() {
+  renderSancmKpis();
+  renderSancmTable();
+  renderSancmLegend();
+  renderSancmChart();
+  renderSancmNote();
+
+  const hasData = sancmState.months.length > 0;
+  const results = document.getElementById("sancm-results");
+  const chartCard = document.getElementById("sancm-chart-card");
+  const kpis = document.getElementById("sancm-kpi-strip");
+  const empty = document.getElementById("sancm-empty");
+  if (results) results.style.display = hasData ? "" : "none";
+  if (chartCard) chartCard.hidden = !hasData;
+  if (kpis) kpis.hidden = !hasData;
+
+  const anyCount = sancmState.months.some((m) => m.total > 0);
+  const allDone = sancmState.stores.every((s) => s.ok !== null);
+  if (empty && hasData) {
+    empty.style.display = allDone && !anyCount ? "" : "none";
+  }
+}
+
+function sancmFormatMom(pct) {
+  if (pct === null || pct === undefined) return "—";
+  const sign = pct > 0 ? "+" : pct < 0 ? "−" : "";
+  return `${sign}${Math.abs(pct).toFixed(1)}%`;
+}
+
+function sancmMomClass(pct) {
+  if (pct === null || pct === undefined) return "";
+  if (pct > 0) return "sancm-mom-up";
+  if (pct < 0) return "sancm-mom-down";
+  return "sancm-mom-flat";
+}
+
+function renderSancmTable() {
+  const headRow = document.getElementById("sancm-thead-row");
+  const tbody = document.getElementById("sancm-tbody");
+  const tfoot = document.getElementById("sancm-tfoot");
+  if (!headRow || !tbody || !tfoot) return;
+
+  const cols = sancmState.stores.filter(
+    (s) => !sancmState.hiddenStoreIds.has(s.store_id),
+  );
+  const months = sancmState.months;
+
+  headRow.innerHTML =
+    "<th>Month</th>" +
+    cols
+      .map((s) => {
+        const failed = s.ok === false;
+        const cls = failed ? ' class="sancm-num sancm-th-error"' : ' class="sancm-num"';
+        const title = failed ? ` title="${saEscape(s.error || "Fetch failed")}"` : "";
+        return `<th${cls}${title}><span class="sancm-swatch" style="background:${s.color}"></span>${saEscape(s.store_name)}${failed ? " ⚠" : ""}</th>`;
+      })
+      .join("") +
+    '<th class="sancm-num">Total</th><th class="sancm-num">MoM</th>';
+
+  const lastIndex = months.length - 1;
+  tbody.innerHTML = months
+    .map((row, i) => {
+      const isPartial = sancmState.partialLastMonth && i === lastIndex;
+      const cells = cols
+        .map((s) => {
+          if (s.ok === false) return '<td class="sancm-num sancm-muted">—</td>';
+          if (s.ok === null) return '<td class="sancm-num sancm-muted">…</td>';
+          const v = row.counts[String(s.store_id)] || 0;
+          return `<td class="sancm-num">${v.toLocaleString()}</td>`;
+        })
+        .join("");
+      const momPct = isPartial ? null : row.mom_growth_pct;
+      const momTitle = isPartial
+        ? ' title="Partial month — growth would be misleading"'
+        : "";
+      return (
+        `<tr><td>${saEscape(row.label)}${isPartial ? ' <span class="sancm-partial-mark" title="Partial month">†</span>' : ""}</td>` +
+        cells +
+        `<td class="sancm-num sancm-total-cell">${row.total.toLocaleString()}</td>` +
+        `<td class="sancm-num ${sancmMomClass(momPct)}"${momTitle}>${sancmFormatMom(momPct)}</td></tr>`
+      );
+    })
+    .join("");
+
+  const footCells = cols
+    .map((s) => {
+      if (s.ok !== true) return '<td class="sancm-num sancm-muted">—</td>';
+      const sum = months.reduce(
+        (acc, m) => acc + (m.counts[String(s.store_id)] || 0),
+        0,
+      );
+      return `<td class="sancm-num">${sum.toLocaleString()}</td>`;
+    })
+    .join("");
+  const grand = months.reduce((acc, m) => acc + m.total, 0);
+  tfoot.innerHTML =
+    `<tr class="sancm-foot-row"><td>Total</td>${footCells}` +
+    `<td class="sancm-num sancm-total-cell">${grand.toLocaleString()}</td>` +
+    '<td class="sancm-num sancm-muted">—</td></tr>';
+}
+
+function renderSancmKpis() {
+  const months = sancmState.months;
+  const setText = (id, text) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+  };
+
+  if (months.length === 0) {
+    setText("sancm-kpi-total", "0");
+    setText("sancm-kpi-avg", "0");
+    setText("sancm-kpi-best", "—");
+    setText("sancm-kpi-mom", "—");
+    return;
+  }
+
+  // Averages and MoM ignore a partial trailing month.
+  const complete = sancmState.partialLastMonth ? months.slice(0, -1) : months;
+  const grand = months.reduce((a, m) => a + m.total, 0);
+  const avg = complete.length
+    ? Math.round(complete.reduce((a, m) => a + m.total, 0) / complete.length)
+    : 0;
+  const best = months.reduce(
+    (b, m) => (b === null || m.total > b.total ? m : b),
+    null,
+  );
+  const latest = complete.length ? complete[complete.length - 1] : null;
+
+  setText("sancm-kpi-total", grand.toLocaleString());
+  setText(
+    "sancm-kpi-total-sub",
+    `${months.length} month${months.length === 1 ? "" : "s"}`,
+  );
+  setText("sancm-kpi-avg", avg.toLocaleString());
+  setText(
+    "sancm-kpi-avg-sub",
+    sancmState.partialLastMonth ? "complete months only" : "",
+  );
+  setText("sancm-kpi-best", best ? best.total.toLocaleString() : "—");
+  setText("sancm-kpi-best-sub", best ? best.label : "");
+  setText("sancm-kpi-mom", latest ? sancmFormatMom(latest.mom_growth_pct) : "—");
+  setText("sancm-kpi-mom-sub", latest ? latest.label : "");
+
+  const momEl = document.getElementById("sancm-kpi-mom");
+  if (momEl) {
+    momEl.className = `sa-kpi-value ${latest ? sancmMomClass(latest.mom_growth_pct) : ""}`;
+  }
+}
+
+function renderSancmNote() {
+  const el = document.getElementById("sancm-note");
+  if (!el) return;
+  const notes = [];
+  const okStores = sancmState.stores.filter((s) => s.ok);
+  if (okStores.length > 1) {
+    notes.push(
+      "Total is the sum of the store columns — a shopper new at two stores counts once per store.",
+    );
+  }
+  const anon = okStores.reduce(
+    (a, s) => a + (s.anonymous_new_customers || 0),
+    0,
+  );
+  if (anon > 0) {
+    notes.push(
+      `${anon.toLocaleString()} tagged order(s) had no linked customer record and are counted individually.`,
+    );
+  }
+  if (sancmState.partialLastMonth) {
+    notes.push(
+      "† The final month is partial (the range ends mid-month); its growth is not shown.",
+    );
+  }
+  sancmState.stores
+    .filter((s) => s.ok === false)
+    .forEach((s) => {
+      notes.push(`${s.store_name}: ${s.error || "fetch failed"} — excluded from totals.`);
+    });
+
+  el.innerHTML = notes.map((n) => saEscape(n)).join("<br />");
+  el.style.display = notes.length ? "" : "none";
+}
+
+// ----- Chart -----
+
+const SANCM_PAD = { top: 16, right: 16, bottom: 46, left: 54 };
+const SANCM_H = 300;
+const SANCM_BAR_MAX = 24;
+const SANCM_GAP = 2;
+const SANCM_RADIUS = 4;
+
+function sancmScheduleChartRender() {
+  if (sancmState.rafId) cancelAnimationFrame(sancmState.rafId);
+  sancmState.rafId = requestAnimationFrame(() => {
+    sancmState.rafId = 0;
+    renderSancmChart();
+  });
+}
+
+// Round up to a "nice" 1/2/5 × 10^n so gridline labels are readable numbers.
+function sancmNiceMax(value) {
+  if (!value || value <= 0) return 0;
+  const exp = Math.floor(Math.log10(value));
+  const pow = Math.pow(10, exp);
+  const frac = value / pow;
+  const nice = frac <= 1 ? 1 : frac <= 2 ? 2 : frac <= 5 ? 5 : 10;
+  return nice * pow;
+}
+
+function sancmCompact(n) {
+  if (Math.abs(n) >= 10000) {
+    return `${Math.round(n / 100) / 10}K`;
+  }
+  return n.toLocaleString();
+}
+
+// Rounded top, square base. `rx` on a <rect> would round the baseline too.
+function sancmBarPath(x, y, w, h, r) {
+  const rr = Math.max(0, Math.min(r, w / 2, h));
+  return (
+    `M${x},${y + h}V${y + rr}A${rr},${rr} 0 0 1 ${x + rr},${y}` +
+    `H${x + w - rr}A${rr},${rr} 0 0 1 ${x + w},${y + rr}V${y + h}Z`
+  );
+}
+
+// "Mar" when the range sits in one calendar year, "Mar 2026" when it spans two.
+// Date.UTC + timeZone:"UTC" is required — without it a browser west of UTC
+// renders 2026-03 as "Feb 2026".
+function sancmMonthTick(monthKey, includeYear) {
+  const y = parseInt(monthKey.slice(0, 4), 10);
+  const m = parseInt(monthKey.slice(5, 7), 10);
+  const d = new Date(Date.UTC(y, m - 1, 1));
+  return d.toLocaleDateString(undefined, {
+    month: "short",
+    year: includeYear ? "numeric" : undefined,
+    timeZone: "UTC",
+  });
+}
+
+function renderSancmChart() {
+  const wrap = document.getElementById("sancm-chart-wrap");
+  if (!wrap) return;
+
+  const months = sancmState.months;
+  const W = Math.max(320, wrap.clientWidth);
+  // clientWidth is 0 while the panel is hidden; drawing then yields an empty
+  // frame that never repaints. activateShopifyAnalyticsTab re-triggers this.
+  if (!wrap.clientWidth || months.length === 0) {
+    if (months.length === 0) wrap.innerHTML = "";
+    return;
+  }
+
+  const visible = sancmVisibleStores();
+  const innerW = W - SANCM_PAD.left - SANCM_PAD.right;
+  const innerH = SANCM_H - SANCM_PAD.top - SANCM_PAD.bottom;
+  const k = months.length;
+  const subEl = document.getElementById("sancm-chart-sub");
+
+  if (visible.length === 0) {
+    wrap.innerHTML = `<svg width="100%" height="${SANCM_H}" viewBox="0 0 ${W} ${SANCM_H}" preserveAspectRatio="xMinYMid meet" role="img" aria-label="No data to chart"><text x="${W / 2}" y="${SANCM_H / 2}" text-anchor="middle" font-size="13" fill="var(--text-tertiary)">No stores selected</text></svg>`;
+    if (subEl) subEl.textContent = "";
+    return;
+  }
+
+  let mode = sancmState.mode;
+  const stackTotals = months.map((m) => sancmMonthTotalSpan(m, visible));
+  const bandW = innerW / k;
+  const groupW = bandW * 0.72;
+
+  // Too many bars to fit: stack rather than draw sub-pixel slivers.
+  let autoStacked = false;
+  if (mode === "grouped") {
+    const w =
+      (groupW - SANCM_GAP * (visible.length - 1)) / visible.length;
+    if (w < 2) {
+      mode = "stacked";
+      autoStacked = true;
+    }
+  }
+
+  const showTotalLine =
+    mode === "grouped" && sancmState.showTotal && visible.length > 1;
+
+  let rawMax;
+  if (mode === "stacked") {
+    rawMax = Math.max(0, ...stackTotals);
+  } else {
+    const barMax = Math.max(
+      0,
+      ...months.flatMap((m) =>
+        visible.map((s) => m.counts[String(s.store_id)] || 0),
+      ),
+    );
+    rawMax = showTotalLine ? Math.max(barMax, ...stackTotals) : barMax;
+  }
+  const yMax = sancmNiceMax(rawMax);
+
+  if (yMax === 0) {
+    wrap.innerHTML = `<svg width="100%" height="${SANCM_H}" viewBox="0 0 ${W} ${SANCM_H}" preserveAspectRatio="xMinYMid meet" role="img" aria-label="No new customers in range"><text x="${W / 2}" y="${SANCM_H / 2}" text-anchor="middle" font-size="13" fill="var(--text-tertiary)">No new customers in this range</text></svg>`;
+    if (subEl) subEl.textContent = "";
+    return;
+  }
+
+  const y = (v) => SANCM_PAD.top + innerH - (v / yMax) * innerH;
+  const parts = [];
+
+  // Gridlines + y ticks (solid, crisp, drawn behind everything).
+  for (const f of [0, 0.25, 0.5, 0.75, 1]) {
+    const val = yMax * f;
+    const py = Math.round(y(val)) + 0.5;
+    parts.push(
+      `<line x1="${SANCM_PAD.left}" y1="${py}" x2="${W - SANCM_PAD.right}" y2="${py}" stroke="var(--border-color)" stroke-width="1" shape-rendering="crispEdges" />`,
+    );
+    parts.push(
+      `<text x="${SANCM_PAD.left - 8}" y="${py + 4}" text-anchor="end" font-size="11" fill="var(--text-tertiary)" style="font-variant-numeric:tabular-nums">${sancmCompact(Math.round(val))}</text>`,
+    );
+  }
+
+  // Hover wash sits behind the marks.
+  months.forEach((m, j) => {
+    const x = SANCM_PAD.left + j * bandW;
+    parts.push(
+      `<rect class="sancm-band-wash" data-band="${j}" x="${x}" y="${SANCM_PAD.top}" width="${bandW}" height="${innerH}" />`,
+    );
+  });
+
+  const lastIndex = k - 1;
+  const partialIndex = sancmState.partialLastMonth ? lastIndex : -1;
+
+  if (mode === "stacked") {
+    const barW = Math.min(SANCM_BAR_MAX * 1.5, groupW);
+    months.forEach((m, j) => {
+      const x = SANCM_PAD.left + j * bandW + (bandW - barW) / 2;
+      const opacity = j === partialIndex ? 0.55 : 1;
+      let acc = 0;
+      visible.forEach((s, i) => {
+        const v = m.counts[String(s.store_id)] || 0;
+        if (v <= 0) return;
+        const yTop = y(acc + v);
+        const yBottom = y(acc);
+        // A gap of surface between segments, never a stroke.
+        const h = Math.max(1, yBottom - yTop - (acc > 0 ? SANCM_GAP : 0));
+        const isTop = acc + v >= sancmMonthTotalSpan(m, visible) - 0.001;
+        parts.push(
+          `<path d="${sancmBarPath(x, yTop, barW, h, isTop ? SANCM_RADIUS : 0)}" fill="${s.color}" opacity="${opacity}" />`,
+        );
+        acc += v;
+      });
+    });
+  } else {
+    const n = visible.length;
+    const barW = Math.min(
+      SANCM_BAR_MAX,
+      (groupW - SANCM_GAP * (n - 1)) / n,
+    );
+    const clusterW = barW * n + SANCM_GAP * (n - 1);
+    months.forEach((m, j) => {
+      const x0 = SANCM_PAD.left + j * bandW + (bandW - clusterW) / 2;
+      const opacity = j === partialIndex ? 0.55 : 1;
+      visible.forEach((s, i) => {
+        const v = m.counts[String(s.store_id)] || 0;
+        if (v <= 0) return; // zero draws nothing, not a sliver that reads as data
+        const yTop = y(v);
+        const h = SANCM_PAD.top + innerH - yTop;
+        const x = x0 + i * (barW + SANCM_GAP);
+        parts.push(
+          `<path d="${sancmBarPath(x, yTop, barW, h, SANCM_RADIUS)}" fill="${s.color}" opacity="${opacity}" />`,
+        );
+      });
+    });
+  }
+
+  // Total line: a text token, not a categorical hue — it is an aggregate, not
+  // a ninth store.
+  if (showTotalLine) {
+    const pts = months.map((m, j) => [
+      SANCM_PAD.left + j * bandW + bandW / 2,
+      y(stackTotals[j]),
+    ]);
+    const d = pts
+      .map((p, i) => `${i === 0 ? "M" : "L"}${p[0].toFixed(1)},${p[1].toFixed(1)}`)
+      .join(" ");
+    parts.push(
+      `<path d="${d}" fill="none" stroke="var(--text-primary)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity="0.7" />`,
+    );
+    pts.forEach((p) => {
+      parts.push(
+        `<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="4" fill="var(--text-primary)" stroke="var(--bg-secondary)" stroke-width="2" opacity="0.85" />`,
+      );
+    });
+    // Direct-label the last point only.
+    const last = pts[pts.length - 1];
+    parts.push(
+      `<text x="${last[0]}" y="${Math.max(12, last[1] - 10)}" text-anchor="end" font-size="11" font-weight="600" fill="var(--text-primary)" style="font-variant-numeric:tabular-nums">${stackTotals[k - 1].toLocaleString()}</text>`,
+    );
+  }
+
+  // X labels: thin them, never rotate.
+  const spansYears =
+    months.length > 0 &&
+    months[0].month.slice(0, 4) !== months[k - 1].month.slice(0, 4);
+  const step = Math.max(1, Math.ceil(k / Math.max(1, Math.floor(innerW / 56))));
+  months.forEach((m, j) => {
+    if (j % step !== 0 && j !== lastIndex) return;
+    const cx = SANCM_PAD.left + j * bandW + bandW / 2;
+    const label =
+      sancmMonthTick(m.month, spansYears) + (j === partialIndex ? " †" : "");
+    parts.push(
+      `<text x="${cx.toFixed(1)}" y="${SANCM_H - SANCM_PAD.bottom + 20}" text-anchor="middle" font-size="11" fill="var(--text-tertiary)">${saEscape(label)}</text>`,
+    );
+  });
+
+  // One hit target per month band, on top of everything, for tooltip + keyboard.
+  months.forEach((m, j) => {
+    const x = SANCM_PAD.left + j * bandW;
+    const readout =
+      `${m.label}: ` +
+      visible
+        .map((s) => `${s.store_name} ${m.counts[String(s.store_id)] || 0}`)
+        .join(", ") +
+      `, total ${stackTotals[j]}`;
+    parts.push(
+      `<rect class="sancm-hit" data-month-index="${j}" tabindex="0" role="img" aria-label="${saEscape(readout)}" x="${x}" y="${SANCM_PAD.top}" width="${bandW}" height="${innerH}" fill="transparent" />`,
+    );
+  });
+
+  wrap.innerHTML =
+    `<svg width="100%" height="${SANCM_H}" viewBox="0 0 ${W} ${SANCM_H}" preserveAspectRatio="xMinYMid meet" role="group" aria-label="New customers by month">` +
+    parts.join("") +
+    "</svg>";
+
+  if (subEl) {
+    const bits = [];
+    if (sancmState.startDate && sancmState.endDate) {
+      bits.push(`${sancmState.startDate} to ${sancmState.endDate}`);
+    }
+    if (autoStacked) bits.push("switched to stacked — too many bars to fit");
+    subEl.textContent = bits.join(" · ");
+  }
+}
+
+function renderSancmLegend() {
+  const el = document.getElementById("sancm-legend");
+  if (!el) return;
+  el.innerHTML = "";
+
+  const stores = sancmState.stores.filter((s) => s.ok !== false);
+  if (stores.length < 2) {
+    el.style.display = "none";
+    return;
+  }
+  el.style.display = "";
+
+  stores.forEach((s) => {
+    const hidden = sancmState.hiddenStoreIds.has(s.store_id);
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = `sancm-legend-item${hidden ? " is-hidden" : ""}`;
+    btn.dataset.storeId = String(s.store_id);
+    btn.setAttribute("aria-pressed", hidden ? "false" : "true");
+
+    const sw = document.createElement("span");
+    sw.className = "sancm-swatch";
+    sw.style.background = s.color;
+
+    const label = document.createElement("span");
+    label.textContent = s.store_name;
+
+    btn.appendChild(sw);
+    btn.appendChild(label);
+    el.appendChild(btn);
+  });
+
+  if (sancmState.mode === "grouped" && sancmState.showTotal) {
+    const key = document.createElement("span");
+    key.className = "sancm-legend-item is-static";
+    const line = document.createElement("span");
+    line.className = "sancm-swatch sancm-swatch-line";
+    const label = document.createElement("span");
+    label.textContent = "Total";
+    key.appendChild(line);
+    key.appendChild(label);
+    el.appendChild(key);
+  }
+}
+
+function sancmBindChartInteraction() {
+  const wrap = document.getElementById("sancm-chart-wrap");
+  if (!wrap) return;
+
+  const show = (target) => {
+    const hit = target && target.closest("[data-month-index]");
+    if (!hit) return;
+    const j = parseInt(hit.dataset.monthIndex, 10);
+    sancmShowTooltip(j, hit);
+  };
+
+  wrap.addEventListener("pointermove", (e) => show(e.target));
+  wrap.addEventListener("pointerleave", sancmHideTooltip);
+  wrap.addEventListener("focusin", (e) => show(e.target));
+  wrap.addEventListener("focusout", sancmHideTooltip);
+}
+
+function sancmHideTooltip() {
+  const tip = document.getElementById("sancm-tooltip");
+  if (tip) tip.hidden = true;
+  document
+    .querySelectorAll("#sancm-chart-wrap .sancm-band-wash.is-active")
+    .forEach((r) => r.classList.remove("is-active"));
+}
+
+function sancmShowTooltip(index, hitRect) {
+  const tip = document.getElementById("sancm-tooltip");
+  const card = document.getElementById("sancm-chart-card");
+  const row = sancmState.months[index];
+  if (!tip || !card || !row) return;
+
+  document
+    .querySelectorAll("#sancm-chart-wrap .sancm-band-wash")
+    .forEach((r) => r.classList.toggle("is-active", r.dataset.band === String(index)));
+
+  const visible = sancmVisibleStores();
+  tip.innerHTML = "";
+
+  const head = document.createElement("div");
+  head.className = "sancm-tip-head";
+  head.textContent =
+    row.label +
+    (sancmState.partialLastMonth && index === sancmState.months.length - 1
+      ? " (partial)"
+      : "");
+  tip.appendChild(head);
+
+  // Store names are user data — build with textContent, never innerHTML.
+  visible.forEach((s) => {
+    const r = document.createElement("div");
+    r.className = "sancm-tip-row";
+    const key = document.createElement("span");
+    key.className = "sancm-tip-key";
+    key.style.background = s.color;
+    const val = document.createElement("span");
+    val.className = "sancm-tip-val";
+    val.textContent = (row.counts[String(s.store_id)] || 0).toLocaleString();
+    const name = document.createElement("span");
+    name.className = "sancm-tip-name";
+    name.textContent = s.store_name;
+    r.appendChild(key);
+    r.appendChild(val);
+    r.appendChild(name);
+    tip.appendChild(r);
+  });
+
+  const total = document.createElement("div");
+  total.className = "sancm-tip-row sancm-tip-total";
+  const tVal = document.createElement("span");
+  tVal.className = "sancm-tip-val";
+  tVal.textContent = sancmMonthTotalSpan(row, visible).toLocaleString();
+  const tName = document.createElement("span");
+  tName.className = "sancm-tip-name";
+  tName.textContent = "Total";
+  total.appendChild(tVal);
+  total.appendChild(tName);
+  tip.appendChild(total);
+
+  const isPartial =
+    sancmState.partialLastMonth && index === sancmState.months.length - 1;
+  if (!isPartial && row.mom_growth_pct !== null) {
+    const mom = document.createElement("div");
+    mom.className = `sancm-tip-row sancm-tip-mom ${sancmMomClass(row.mom_growth_pct)}`;
+    const mVal = document.createElement("span");
+    mVal.className = "sancm-tip-val";
+    mVal.textContent = sancmFormatMom(row.mom_growth_pct);
+    const mName = document.createElement("span");
+    mName.className = "sancm-tip-name";
+    mName.textContent = "vs prev month";
+    mom.appendChild(mVal);
+    mom.appendChild(mName);
+    tip.appendChild(mom);
+  }
+
+  tip.hidden = false;
+  const cardBox = card.getBoundingClientRect();
+  const hitBox = hitRect.getBoundingClientRect();
+  const tipBox = tip.getBoundingClientRect();
+  const cx = hitBox.left + hitBox.width / 2 - cardBox.left;
+  let left = cx - tipBox.width / 2;
+  left = Math.max(4, Math.min(left, cardBox.width - tipBox.width - 4));
+  let top = hitBox.top - cardBox.top - tipBox.height - 12;
+  if (top < 4) top = hitBox.top - cardBox.top + hitBox.height + 12;
+  tip.style.left = `${left}px`;
+  tip.style.top = `${top}px`;
 }
 
 // ===== Inventory Time =====

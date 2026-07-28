@@ -675,6 +675,13 @@ class FirstCustomerReturnsSummary(BaseModel):
     currency: str
 
 
+class NewCustomersByMonthRequest(BaseModel):
+    store_ids: List[int]
+    start_date: str  # YYYY-MM-DD
+    end_date: str    # YYYY-MM-DD
+    tag: Optional[str] = None  # blank -> each store falls back to its own saved tag
+
+
 # Quotations In Progress Schemas
 class QuotationsInProgressFilter(BaseModel):
     # "all" -> no scan filter

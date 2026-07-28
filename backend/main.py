@@ -41,6 +41,7 @@ from schemas import (
     SalesExclusionCreate, SalesExclusionResponse, SalesExclusionListResponse,
     FirstCustomerReturnsRequest,
     ShopifyFirstOrderTagUpdate,
+    NewCustomersByMonthRequest,
     QuotationsInProgressFilter, QuotationsInProgressListResponse,
     QuotationsInProgressFilterOptions, QuotationInProgressSummary,
     QuotationProductsResponse, QuotationInProgressHeader, QuotationProductLine,
@@ -6007,6 +6008,230 @@ async def shopify_analytics_first_customer_returns_stream(
                 yield event
         except GeneratorExit:
             print("[SHOPIFY-ANALYTICS] Stream cancelled")
+            return
+
+    return StreamingResponse(
+        generate_safe(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+_MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+               "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+
+def _month_spine(start_date: str, end_date: str) -> List[str]:
+    """Continuous list of YYYY-MM keys from start through end, inclusive."""
+    try:
+        sy, sm = int(start_date[0:4]), int(start_date[5:7])
+        ey, em = int(end_date[0:4]), int(end_date[5:7])
+    except (ValueError, IndexError):
+        return []
+
+    spine: List[str] = []
+    y, m = sy, sm
+    # Guard against a reversed or absurd range producing an unbounded loop.
+    while (y, m) <= (ey, em) and len(spine) < 600:
+        spine.append(f"{y:04d}-{m:02d}")
+        m += 1
+        if m > 12:
+            m = 1
+            y += 1
+    return spine
+
+
+def _month_label(month_key: str) -> str:
+    try:
+        y, m = int(month_key[0:4]), int(month_key[5:7])
+        return f"{_MONTH_ABBR[m - 1]} {y}"
+    except (ValueError, IndexError):
+        return month_key
+
+
+def _mom_pct(current: int, previous: Optional[int]) -> Optional[float]:
+    """Month-over-month growth %. None for the first month or a zero baseline."""
+    if previous is None or previous == 0:
+        return None
+    return round(((current - previous) / previous) * 100, 1)
+
+
+@app.post("/api/shopify-analytics/new-customers-by-month/stream")
+async def shopify_analytics_new_customers_by_month_stream(
+    request: NewCustomersByMonthRequest,
+    db: Session = Depends(get_db),
+):
+    async def generate() -> AsyncGenerator[str, None]:
+        start_date = request.start_date
+        end_date = request.end_date
+
+        spine = _month_spine(start_date, end_date)
+        if not spine:
+            yield f"event: error\ndata: {json.dumps({'message': 'Invalid date range'})}\n\n"
+            return
+
+        store_ids = request.store_ids or []
+        if not store_ids:
+            yield f"event: error\ndata: {json.dumps({'message': 'Select at least one Shopify store'})}\n\n"
+            return
+
+        stores = db.query(Store).filter(
+            Store.id.in_(store_ids),
+            Store.store_type == StoreType.shopify,
+            Store.is_active == True,
+        ).all()
+
+        # Tag resolution per store: explicit request override > store's saved tag > default.
+        request_tag = (request.tag or "").strip() if request.tag is not None else ""
+
+        store_list: List[Dict[str, Any]] = []
+        for s in stores:
+            conn = s.shopify_connection
+            if not conn:
+                continue
+            saved_tag = (conn.first_order_tag or "").strip()
+            store_list.append({
+                "id": s.id,
+                "name": s.name,
+                "shop_domain": conn.shop_domain,
+                "admin_api_key": conn.admin_api_key,
+                "api_version": conn.api_version,
+                "tag": request_tag or saved_tag or DEFAULT_FIRST_ORDER_TAG,
+            })
+
+        if not store_list:
+            yield f"event: error\ndata: {json.dumps({'message': 'No active Shopify stores found for the selected ids'})}\n\n"
+            return
+
+        store_list.sort(key=lambda s: s["id"])
+
+        yield f"event: progress\ndata: {json.dumps({'phase': 'started', 'start_date': start_date, 'end_date': end_date, 'months': [{'month': m, 'label': _month_label(m)} for m in spine], 'stores': [{'store_id': s['id'], 'store_name': s['name'], 'tag': s['tag']} for s in store_list]})}\n\n"
+
+        semaphore = asyncio.Semaphore(5)
+
+        async def fetch_for_store(s: Dict[str, Any]) -> Dict[str, Any]:
+            async with semaphore:
+                ok, err, orders = await fetch_orders_with_tag(
+                    shop_domain=s["shop_domain"],
+                    admin_api_key=s["admin_api_key"],
+                    start_date=start_date,
+                    end_date=end_date,
+                    tag=s["tag"],
+                    api_version=s["api_version"],
+                )
+
+                if not ok:
+                    return {
+                        "store": s, "ok": False, "error": err or "Unknown error",
+                        "counts": {}, "total": 0, "anonymous": 0, "orders_scanned": 0,
+                    }
+
+                # Dedupe per customer across the whole window, keeping the earliest
+                # tagged order, so sum(months) == store total. Orders with no customer
+                # (deleted/redacted, anonymous POS) are still real acquisitions but
+                # can't be deduped against each other — key them by order id.
+                earliest: Dict[str, str] = {}
+                for o in orders:
+                    created = o.get("created_at") or o.get("processed_at") or ""
+                    if len(created) < 7:
+                        continue
+                    key = o.get("customer_id") or f"anon:{o.get('id')}"
+                    prev = earliest.get(key)
+                    if prev is None or created < prev:
+                        earliest[key] = created
+
+                # Bucket by shop-LOCAL month: created_at is ISO8601 with the shop's
+                # offset, and Shopify evaluates the created_at:>= filter in shop-local
+                # time too. Converting to UTC would move an order into a month outside
+                # the range the filter selected. Slice, don't convert.
+                counts = {m: 0 for m in spine}
+                anon = 0
+                for key, created in earliest.items():
+                    month_key = created[:7]
+                    if month_key in counts:
+                        counts[month_key] += 1
+                    if key.startswith("anon:"):
+                        anon += 1
+
+                return {
+                    "store": s, "ok": True, "error": None, "counts": counts,
+                    "total": sum(counts.values()), "anonymous": anon,
+                    "orders_scanned": len(orders),
+                }
+
+        tasks = [asyncio.create_task(fetch_for_store(s)) for s in store_list]
+        results: Dict[int, Dict[str, Any]] = {}
+        completed = 0
+        last_heartbeat = asyncio.get_event_loop().time()
+
+        try:
+            for fut in asyncio.as_completed(tasks):
+                res = await fut
+                completed += 1
+                results[res["store"]["id"]] = res
+
+                yield f"event: store\ndata: {json.dumps({'store_id': res['store']['id'], 'store_name': res['store']['name'], 'tag': res['store']['tag'], 'ok': res['ok'], 'error': res['error'], 'counts': res['counts'], 'total_new_customers': res['total'], 'anonymous_new_customers': res['anonymous'], 'orders_scanned': res['orders_scanned'], 'completed': completed, 'total_stores': len(store_list)})}\n\n"
+
+                now = asyncio.get_event_loop().time()
+                if now - last_heartbeat > 15:
+                    yield f": heartbeat\n\n"
+                    last_heartbeat = now
+        except GeneratorExit:
+            print("[SHOPIFY-ANALYTICS] New-customers client disconnected — cancelling pending tasks")
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+            raise
+
+        # Authoritative final payload. Failed stores are excluded from every total
+        # so a fetch failure never reads as a zero.
+        ok_ids = [s["id"] for s in store_list if results.get(s["id"], {}).get("ok")]
+
+        month_rows: List[Dict[str, Any]] = []
+        prev_total: Optional[int] = None
+        for month_key in spine:
+            per_store = {
+                str(sid): results[sid]["counts"].get(month_key, 0) for sid in ok_ids
+            }
+            total = sum(per_store.values())
+            month_rows.append({
+                "month": month_key,
+                "label": _month_label(month_key),
+                "counts": per_store,
+                "total": total,
+                "mom_growth_pct": _mom_pct(total, prev_total),
+            })
+            prev_total = total
+
+        payload = {
+            "stores": [{
+                "store_id": s["id"],
+                "store_name": s["name"],
+                "tag": s["tag"],
+                "ok": results.get(s["id"], {}).get("ok", False),
+                "error": results.get(s["id"], {}).get("error"),
+                "total_new_customers": results.get(s["id"], {}).get("total", 0),
+                "orders_scanned": results.get(s["id"], {}).get("orders_scanned", 0),
+                "anonymous_new_customers": results.get(s["id"], {}).get("anonymous", 0),
+            } for s in store_list],
+            "months": month_rows,
+            "totals_by_store": {str(sid): results[sid]["total"] for sid in ok_ids},
+            "grand_total": sum(results[sid]["total"] for sid in ok_ids),
+            "start_date": start_date,
+            "end_date": end_date,
+        }
+
+        yield f"event: complete\ndata: {json.dumps(payload)}\n\n"
+
+    async def generate_safe() -> AsyncGenerator[str, None]:
+        try:
+            async for event in generate():
+                yield event
+        except GeneratorExit:
+            print("[SHOPIFY-ANALYTICS] New-customers stream cancelled")
             return
 
     return StreamingResponse(
