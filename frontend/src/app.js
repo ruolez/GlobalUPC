@@ -12021,6 +12021,9 @@ function activateShopifyAnalyticsTab(tabId) {
     // The SVG sizes itself from wrap.clientWidth, which is 0 while the panel is
     // display:none — it must be redrawn once the panel is actually visible.
     sancmScheduleChartRender();
+  } else if (target === "churned-customers") {
+    loadChurnedCustomersPanel();
+    sacrScheduleChartRender();
   }
 }
 
@@ -13482,6 +13485,943 @@ function sancmShowTooltip(index, hitRect) {
   if (top < 4) top = hitBox.top - cardBox.top + hitBox.height + 12;
   tip.style.left = `${left}px`;
   tip.style.top = `${top}px`;
+}
+
+// ===== Shopify Analytics: Churned Customers =====
+
+const SACR_PAGE_SIZE_KEY = "sacr_page_size";
+const SACR_SELECTION_KEY = "sacr_selected_store_ids";
+
+const sacrState = {
+  initialized: false,
+  loading: false,
+  rows: [],            // churned customers, all stores
+  stores: [],          // per-store status incl. ok/complete/error
+  benchmark: null,
+  totals: null,
+  byMonth: [],
+  activeSince: "",
+  silentSince: "",
+  sortColumn: "amount_spent",
+  sortOrder: "desc",
+  filter: { search: "", method: "", carrier: "", slow: "" },
+  currentPage: 0,
+  pageSize: 100,
+  abortController: null,
+  resizeObserver: null,
+  rafId: 0,
+};
+
+const SACR_NUMERIC_COLUMNS = new Set([
+  "orders_count",
+  "amount_spent",
+  "days_silent",
+  "days_to_fulfil",
+  "days_to_deliver",
+]);
+
+function loadChurnedCustomersPanel() {
+  if (sacrState.initialized) return;
+  sacrState.initialized = true;
+
+  renderSacrStoreCheckboxes();
+  sacrSetDefaultDates();
+
+  try {
+    const saved = parseInt(localStorage.getItem(SACR_PAGE_SIZE_KEY), 10);
+    if (saved) sacrState.pageSize = saved;
+  } catch (e) {
+    /* private mode */
+  }
+  const sizeSel = document.getElementById("sacr-page-size");
+  if (sizeSel) sizeSel.value = String(sacrState.pageSize);
+
+  document.querySelectorAll("[data-sacr-active]").forEach((b) => {
+    b.addEventListener("click", () =>
+      sacrApplyMonthsAgo("sacr-active-since", parseInt(b.dataset.sacrActive, 10)),
+    );
+  });
+  document.querySelectorAll("[data-sacr-silent]").forEach((b) => {
+    b.addEventListener("click", () =>
+      sacrApplyMonthsAgo("sacr-silent-since", parseInt(b.dataset.sacrSilent, 10)),
+    );
+  });
+
+  document
+    .getElementById("sacr-store-checkboxes")
+    ?.addEventListener("change", () => {
+      sacrPersistSelection();
+      updateSacrRunBtn();
+    });
+  document
+    .getElementById("sacr-select-all")
+    ?.addEventListener("click", () => sacrSetAll(true));
+  document
+    .getElementById("sacr-deselect-all")
+    ?.addEventListener("click", () => sacrSetAll(false));
+
+  ["sacr-active-since", "sacr-silent-since", "sacr-min-orders"].forEach((id) => {
+    document.getElementById(id)?.addEventListener("change", updateSacrRunBtn);
+  });
+
+  document
+    .getElementById("sacr-run-btn")
+    ?.addEventListener("click", runChurnedCustomersReport);
+  document.getElementById("sacr-cancel-btn")?.addEventListener("click", () => {
+    if (sacrState.abortController) sacrState.abortController.abort();
+  });
+
+  // Filters
+  const rerender = () => {
+    sacrState.currentPage = 0;
+    renderSacrAll();
+  };
+  document.getElementById("sacr-search")?.addEventListener("input", (e) => {
+    sacrState.filter.search = e.target.value.trim().toLowerCase();
+    rerender();
+  });
+  ["method", "carrier", "slow"].forEach((k) => {
+    document
+      .getElementById(`sacr-filter-${k}`)
+      ?.addEventListener("change", (e) => {
+        sacrState.filter[k] = e.target.value;
+        rerender();
+      });
+  });
+  document.getElementById("sacr-reset-filters")?.addEventListener("click", () => {
+    sacrState.filter = { search: "", method: "", carrier: "", slow: "" };
+    const s = document.getElementById("sacr-search");
+    if (s) s.value = "";
+    ["method", "carrier", "slow"].forEach((k) => {
+      const el = document.getElementById(`sacr-filter-${k}`);
+      if (el) el.value = "";
+    });
+    rerender();
+  });
+
+  // Sorting
+  document.getElementById("sacr-table")?.addEventListener("click", (e) => {
+    const th = e.target.closest("th.qip-sortable");
+    if (!th || !th.dataset.sort) return;
+    const col = th.dataset.sort;
+    if (sacrState.sortColumn === col) {
+      sacrState.sortOrder = sacrState.sortOrder === "asc" ? "desc" : "asc";
+    } else {
+      sacrState.sortColumn = col;
+      sacrState.sortOrder = SACR_NUMERIC_COLUMNS.has(col) ? "desc" : "asc";
+    }
+    sacrState.currentPage = 0;
+    sacrApplySortHeaders();
+    renderSacrAll();
+  });
+  sacrApplySortHeaders();
+
+  // Pagination
+  document.getElementById("sacr-prev-page")?.addEventListener("click", () => {
+    if (sacrState.currentPage > 0) {
+      sacrState.currentPage -= 1;
+      renderSacrAll();
+    }
+  });
+  document.getElementById("sacr-next-page")?.addEventListener("click", () => {
+    sacrState.currentPage += 1;
+    renderSacrAll();
+  });
+  sizeSel?.addEventListener("change", (e) => {
+    sacrState.pageSize = parseInt(e.target.value, 10) || 100;
+    sacrState.currentPage = 0;
+    try {
+      localStorage.setItem(SACR_PAGE_SIZE_KEY, String(sacrState.pageSize));
+    } catch (err) {
+      /* private mode */
+    }
+    renderSacrAll();
+  });
+
+  // Row click -> detail modal
+  document.getElementById("sacr-tbody")?.addEventListener("click", (e) => {
+    const tr = e.target.closest("tr[data-customer-id]");
+    if (!tr) return;
+    openSacrDetail(tr.dataset.storeId, tr.dataset.customerId, tr.dataset.customerName);
+  });
+  document
+    .getElementById("sacr-detail-close")
+    ?.addEventListener("click", () => closeModal("sacr-detail-modal"));
+  // There is no global ESC handler; each modal supplies its own.
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    const m = document.getElementById("sacr-detail-modal");
+    if (m && m.classList.contains("active")) closeModal("sacr-detail-modal");
+  });
+
+  const wrap = document.getElementById("sacr-chart-wrap");
+  if (wrap && window.ResizeObserver) {
+    sacrState.resizeObserver = new ResizeObserver(() => sacrScheduleChartRender());
+    sacrState.resizeObserver.observe(wrap);
+  }
+
+  updateSacrRunBtn();
+}
+
+function sacrReadSelection() {
+  try {
+    const raw = localStorage.getItem(SACR_SELECTION_KEY);
+    if (!raw) return null;
+    const ids = JSON.parse(raw);
+    return Array.isArray(ids) ? new Set(ids.map(Number)) : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function sacrPersistSelection() {
+  try {
+    localStorage.setItem(SACR_SELECTION_KEY, JSON.stringify(sacrSelectedStoreIds()));
+  } catch (e) {
+    /* private mode */
+  }
+}
+
+function sacrSelectedStoreIds() {
+  return Array.from(document.querySelectorAll(".sacr-store-cb"))
+    .filter((cb) => cb.checked)
+    .map((cb) => parseInt(cb.value, 10));
+}
+
+function renderSacrStoreCheckboxes() {
+  const container = document.getElementById("sacr-store-checkboxes");
+  if (!container) return;
+  container.innerHTML = "";
+  const stores = shopifyAnalyticsState.shopifyStores || [];
+  if (stores.length === 0) {
+    container.innerHTML =
+      '<span style="color: var(--text-tertiary); font-size: 0.8125rem;">No active Shopify stores configured</span>';
+    return;
+  }
+  const remembered = sacrReadSelection();
+  stores.forEach((s) => {
+    const label = document.createElement("label");
+    label.style.cssText =
+      "display:flex;align-items:center;gap:0.5rem;cursor:pointer;white-space:nowrap;";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.value = String(s.id);
+    cb.className = "sacr-store-cb";
+    cb.checked = remembered ? remembered.has(s.id) : true;
+    cb.style.cssText = "width:auto;margin:0;";
+    const span = document.createElement("span");
+    span.textContent = s.name;
+    label.appendChild(cb);
+    label.appendChild(span);
+    container.appendChild(label);
+  });
+}
+
+function sacrSetAll(checked) {
+  document.querySelectorAll(".sacr-store-cb").forEach((cb) => {
+    cb.checked = checked;
+  });
+  sacrPersistSelection();
+  updateSacrRunBtn();
+}
+
+function sacrApplyMonthsAgo(inputId, months) {
+  const el = document.getElementById(inputId);
+  if (!el || !months) return;
+  const d = new Date();
+  d.setMonth(d.getMonth() - months);
+  el.value = saLocalDateStr(d);
+  el.dispatchEvent(new Event("change"));
+}
+
+function sacrSetDefaultDates() {
+  const a = document.getElementById("sacr-active-since");
+  const s = document.getElementById("sacr-silent-since");
+  if (a && !a.value) sacrApplyMonthsAgo("sacr-active-since", 24);
+  if (s && !s.value) sacrApplyMonthsAgo("sacr-silent-since", 6);
+}
+
+function updateSacrRunBtn() {
+  const btn = document.getElementById("sacr-run-btn");
+  if (!btn) return;
+  const a = document.getElementById("sacr-active-since")?.value || "";
+  const s = document.getElementById("sacr-silent-since")?.value || "";
+  btn.disabled = !(sacrSelectedStoreIds().length > 0 && a && s && a < s);
+}
+
+function sacrApplySortHeaders() {
+  document
+    .getElementById("sacr-table")
+    ?.querySelectorAll("th.qip-sortable")
+    .forEach((th) => {
+      th.classList.remove("qip-sort-asc", "qip-sort-desc");
+      if (th.dataset.sort === sacrState.sortColumn) {
+        th.classList.add(
+          sacrState.sortOrder === "asc" ? "qip-sort-asc" : "qip-sort-desc",
+        );
+      }
+    });
+}
+
+function sacrDaysSilent(row) {
+  if (!row.last_order_created_at) return null;
+  const then = new Date(row.last_order_created_at);
+  if (isNaN(then)) return null;
+  return Math.floor((Date.now() - then.getTime()) / 86400000);
+}
+
+async function runChurnedCustomersReport() {
+  if (sacrState.loading) return;
+
+  const storeIds = sacrSelectedStoreIds();
+  const activeSince = document.getElementById("sacr-active-since")?.value || "";
+  const silentSince = document.getElementById("sacr-silent-since")?.value || "";
+  const minOrders =
+    parseInt(document.getElementById("sacr-min-orders")?.value, 10) || 1;
+  if (!storeIds.length || !activeSince || !silentSince) return;
+
+  const runBtn = document.getElementById("sacr-run-btn");
+  const cancelBtn = document.getElementById("sacr-cancel-btn");
+  const progress = document.getElementById("sacr-progress");
+  const status = document.getElementById("sacr-progress-status");
+  const bar = document.getElementById("sacr-progress-bar");
+  const empty = document.getElementById("sacr-empty");
+
+  sacrState.loading = true;
+  sacrState.abortController = new AbortController();
+  sacrState.rows = [];
+  sacrState.stores = [];
+  sacrState.benchmark = null;
+  sacrState.totals = null;
+  sacrState.byMonth = [];
+  sacrState.currentPage = 0;
+  sacrState.activeSince = activeSince;
+  sacrState.silentSince = silentSince;
+
+  if (runBtn) runBtn.disabled = true;
+  if (cancelBtn) cancelBtn.style.display = "";
+  if (progress) progress.style.display = "";
+  if (bar) {
+    bar.style.width = "0%";
+    bar.style.background = "var(--accent-primary)";
+  }
+  if (status) status.textContent = "Connecting...";
+  if (empty) empty.style.display = "none";
+  renderSacrBanner();
+
+  try {
+    const response = await fetch(
+      `${API_BASE}/shopify-analytics/churned-customers/stream`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          store_ids: storeIds,
+          active_since: activeSince,
+          silent_since: silentSince,
+          min_orders: minOrders,
+        }),
+        signal: sacrState.abortController.signal,
+      },
+    );
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const messages = buffer.split("\n\n");
+      buffer = messages.pop();
+
+      for (const raw of messages) {
+        const msg = raw.trim();
+        if (!msg || msg.startsWith(":")) continue;
+        const match = msg.match(/event: (\w+)\ndata: (.+)/s);
+        if (!match) continue;
+        let data;
+        try {
+          data = JSON.parse(match[2]);
+        } catch (e) {
+          continue;
+        }
+        const eventType = match[1];
+
+        if (eventType === "progress" && data.phase === "started") {
+          sacrState.stores = (data.stores || []).map((s) => ({
+            ...s,
+            ok: null,
+            complete: null,
+          }));
+          if (status) {
+            status.textContent = `Scanning ${sacrState.stores.length} store(s) across ${data.shards} shard(s)...`;
+          }
+        } else if (eventType === "progress" && data.phase === "retry") {
+          // Surface retries so a backoff never looks like a hang.
+          if (status) {
+            status.textContent = `${data.store_name} — retrying (${data.attempt}/${data.max_attempts}) after ${data.reason}...`;
+          }
+        } else if (eventType === "store") {
+          const s = sacrState.stores.find((x) => x.store_id === data.store_id);
+          if (s) Object.assign(s, data);
+          if (data.ok && Array.isArray(data.rows)) {
+            for (const r of data.rows) {
+              r.store_id = data.store_id;
+              r.store_name = data.store_name;
+              r.days_silent = sacrDaysSilent(r);
+            }
+            sacrState.rows.push(...data.rows);
+          }
+          if (bar && data.total_stores) {
+            bar.style.width = `${Math.round((data.completed / data.total_stores) * 100)}%`;
+          }
+          if (status) {
+            status.textContent = `${data.completed} of ${data.total_stores} stores complete`;
+          }
+          renderSacrBanner();
+          renderSacrAll();
+        } else if (eventType === "complete") {
+          sacrState.benchmark = data.benchmark;
+          sacrState.totals = data.totals;
+          sacrState.byMonth = data.by_month || [];
+          (data.stores || []).forEach((fresh) => {
+            const s = sacrState.stores.find((x) => x.store_id === fresh.store_id);
+            if (s) Object.assign(s, fresh);
+          });
+          if (bar) bar.style.width = "100%";
+          if (status) status.textContent = "Complete";
+          sacrPopulateFilterOptions();
+          renderSacrBanner();
+          renderSacrAll();
+        } else if (eventType === "error") {
+          if (status) status.textContent = data.message || "Report failed";
+          if (bar) bar.style.background = "var(--danger)";
+          const msgEl = document.getElementById("sacr-empty-msg");
+          if (msgEl) msgEl.textContent = data.message || "Report failed";
+          if (empty) empty.style.display = "";
+        }
+      }
+    }
+  } catch (e) {
+    if (e.name === "AbortError") {
+      if (status) status.textContent = "Cancelled — showing partial results";
+    } else {
+      if (status) status.textContent = `Error: ${e.message}`;
+      if (bar) bar.style.background = "var(--danger)";
+    }
+  } finally {
+    sacrState.loading = false;
+    sacrState.abortController = null;
+    if (runBtn) runBtn.disabled = false;
+    if (cancelBtn) cancelBtn.style.display = "none";
+    updateSacrRunBtn();
+    renderSacrAll();
+    setTimeout(() => {
+      if (progress && !sacrState.loading) progress.style.display = "none";
+    }, 2500);
+  }
+}
+
+function sacrPopulateFilterOptions() {
+  const methods = [...new Set(sacrState.rows.map((r) => r.shipping_method).filter(Boolean))].sort();
+  const carriers = [...new Set(sacrState.rows.map((r) => r.carrier).filter(Boolean))].sort();
+  const fill = (id, values, current) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.innerHTML =
+      '<option value="">All</option>' +
+      values.map((v) => `<option value="${saEscape(v)}">${saEscape(v)}</option>`).join("");
+    el.value = current || "";
+  };
+  fill("sacr-filter-method", methods, sacrState.filter.method);
+  fill("sacr-filter-carrier", carriers, sacrState.filter.carrier);
+}
+
+function sacrFilteredRows() {
+  const f = sacrState.filter;
+  let rows = sacrState.rows;
+  if (f.search) {
+    rows = rows.filter(
+      (r) =>
+        (r.name || "").toLowerCase().includes(f.search) ||
+        (r.email || "").toLowerCase().includes(f.search),
+    );
+  }
+  if (f.method) rows = rows.filter((r) => r.shipping_method === f.method);
+  if (f.carrier) rows = rows.filter((r) => r.carrier === f.carrier);
+  if (f.slow) {
+    if (f.slow === "unfulfilled") {
+      rows = rows.filter((r) => r.days_to_fulfil === null);
+    } else {
+      const [stage, n] = f.slow.split(":");
+      const key = stage === "fulfil" ? "days_to_fulfil" : "days_to_deliver";
+      const threshold = parseFloat(n);
+      rows = rows.filter((r) => r[key] !== null && r[key] > threshold);
+    }
+  }
+  const col = sacrState.sortColumn;
+  const dir = sacrState.sortOrder === "asc" ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    let av = a[col];
+    let bv = b[col];
+    // Nulls sort last regardless of direction — an unknown is not a small value.
+    if (av === null || av === undefined) return 1;
+    if (bv === null || bv === undefined) return -1;
+    if (SACR_NUMERIC_COLUMNS.has(col)) {
+      av = parseFloat(av) || 0;
+      bv = parseFloat(bv) || 0;
+    } else {
+      av = String(av).toLowerCase();
+      bv = String(bv).toLowerCase();
+    }
+    return av < bv ? -dir : av > bv ? dir : 0;
+  });
+}
+
+function sacrFmtDays(v) {
+  return v === null || v === undefined ? "—" : `${Number(v).toFixed(1)}d`;
+}
+
+// Displayed days are rounded to 1dp, so a 7.04d row reads "7.0d" and looks
+// like it contradicts an "over 7 days" filter. Expose the exact value.
+function sacrDaysCell(v) {
+  if (v === null || v === undefined) return '<td class="sacr-num">—</td>';
+  return `<td class="sacr-num" title="${Number(v).toFixed(2)} days">${sacrFmtDays(v)}</td>`;
+}
+
+function sacrFmtMoney(v, currency) {
+  const n = Number(v) || 0;
+  return `${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}${currency ? " " + currency : ""}`;
+}
+
+function renderSacrAll() {
+  const hasRows = sacrState.rows.length > 0;
+  const allDone = sacrState.stores.length > 0 && sacrState.stores.every((s) => s.ok !== null);
+
+  document.getElementById("sacr-kpi-strip").hidden = !hasRows;
+  document.getElementById("sacr-benchmark").hidden = !sacrState.benchmark;
+  document.getElementById("sacr-chart-card").hidden = !sacrState.byMonth.length;
+  document.getElementById("sacr-filter-bar").hidden = !hasRows;
+  document.getElementById("sacr-results").style.display = hasRows ? "" : "none";
+  const empty = document.getElementById("sacr-empty");
+  if (empty && allDone && !sacrState.loading) {
+    empty.style.display = hasRows ? "none" : "";
+  }
+
+  renderSacrKpis();
+  renderSacrBenchmark();
+  renderSacrTable();
+  renderSacrChart();
+  renderSacrNote();
+}
+
+function renderSacrKpis() {
+  const t = sacrState.totals;
+  const set = (id, v) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = v;
+  };
+  const rows = sacrState.rows;
+  if (!rows.length) return;
+
+  const silentDays = rows.map((r) => r.days_silent).filter((d) => d !== null).sort((a, b) => a - b);
+  const medSilent = silentDays.length
+    ? silentDays[Math.floor(silentDays.length / 2)]
+    : null;
+  const orders = rows.map((r) => r.orders_count).sort((a, b) => a - b);
+  const medOrders = orders.length ? orders[Math.floor(orders.length / 2)] : 0;
+  const revenue = rows.reduce((s, r) => s + (r.amount_spent || 0), 0);
+  const currency = rows[0]?.currency || "USD";
+
+  // The † ties any partial-data figure back to the banner.
+  const incomplete = sacrState.stores.some((s) => s.ok && s.complete === false);
+  const mark = incomplete ? " †" : "";
+
+  set("sacr-kpi-count", rows.length.toLocaleString() + mark);
+  set("sacr-kpi-count-sub", t ? `across ${sacrState.stores.filter((s) => s.ok).length} store(s)` : "");
+  set("sacr-kpi-revenue", sacrFmtMoney(revenue, currency) + mark);
+  set("sacr-kpi-orders", String(medOrders));
+  set("sacr-kpi-orders-sub", "lifetime orders before going quiet");
+  set("sacr-kpi-silent", medSilent === null ? "—" : medSilent.toLocaleString());
+  set("sacr-kpi-silent-sub", "since their last order");
+}
+
+function renderSacrBenchmark() {
+  const b = sacrState.benchmark;
+  const body = document.getElementById("sacr-benchmark-body");
+  if (!b || !body) return;
+
+  // With no complete store there is nothing trustworthy to compare. A table of
+  // dashes invites the reader to fill in the blank; say why instead.
+  if (!b.stores_included) {
+    body.innerHTML =
+      '<tr><td colspan="4" class="sacr-benchmark-blocked">No store returned complete data, so the churned-vs-active comparison cannot be computed. See the warning above.</td></tr>';
+    const sub0 = document.getElementById("sacr-benchmark-sub");
+    if (sub0) sub0.textContent = `0 of ${b.stores_total} stores usable`;
+    const note0 = document.getElementById("sacr-benchmark-note");
+    if (note0) {
+      note0.textContent = "";
+      note0.className = "sacr-benchmark-note";
+    }
+    return;
+  }
+
+  const stages = [
+    ["Order → shipped", "days_to_fulfil", "n_fulfil"],
+    ["Shipped → delivered", "days_to_deliver", "n_deliver"],
+    ["Order → delivered", "days_total", "n_total"],
+  ];
+
+  body.innerHTML = stages
+    .map(([label, key]) => {
+      const c = b.churned[key];
+      const a = b.active[key];
+      const diff = c !== null && a !== null ? c - a : null;
+      // Slower than the active cohort is the bad direction.
+      const cls =
+        diff === null || Math.abs(diff) < 0.05
+          ? "sacr-diff-flat"
+          : diff > 0
+            ? "sacr-diff-worse"
+            : "sacr-diff-better";
+      const sign = diff !== null && diff > 0 ? "+" : diff !== null && diff < 0 ? "−" : "";
+      return (
+        `<tr><td>${label}</td>` +
+        `<td class="sacr-num">${sacrFmtDays(c)}</td>` +
+        `<td class="sacr-num">${sacrFmtDays(a)}</td>` +
+        `<td class="sacr-num ${cls}">${diff === null ? "—" : sign + Math.abs(diff).toFixed(2) + "d"}</td></tr>`
+      );
+    })
+    .join("");
+
+  const sub = document.getElementById("sacr-benchmark-sub");
+  if (sub) {
+    sub.textContent =
+      `Median time for the last order of ${b.churned.n.toLocaleString()} churned vs ` +
+      `${b.active.n.toLocaleString()} still-active customers` +
+      (b.stores_included < b.stores_total
+        ? ` — ${b.stores_included} of ${b.stores_total} stores included`
+        : "");
+  }
+
+  // Report the size of the end-to-end gap rather than a yes/no verdict. A
+  // binary threshold on the individual stages hides a real cumulative
+  // difference (e.g. +0.38d shipping and +0.25d delivery is +0.64d total).
+  const note = document.getElementById("sacr-benchmark-note");
+  if (note) {
+    const c = b.churned.days_total;
+    const a = b.active.days_total;
+    let text;
+    let cls = "is-ok";
+    if (c === null || a === null) {
+      text = "Not enough delivery data to compare the two groups.";
+    } else {
+      const gap = c - a;
+      const pct = a > 0 ? Math.abs(gap / a) * 100 : 0;
+      const mag = `${Math.abs(gap).toFixed(2)} days (${pct.toFixed(0)}%) ${gap > 0 ? "slower" : "faster"} end to end`;
+      if (gap >= 1) {
+        text = `Churned customers waited ${mag} than active ones — a large enough gap that fulfillment speed is worth investigating as a cause.`;
+        cls = "is-warn";
+      } else if (gap >= 0.25) {
+        text = `Churned customers were ${mag} than active ones. The gap is real but small — it may be a contributing factor rather than the main reason they left.`;
+        cls = "is-warn";
+      } else if (gap <= -0.25) {
+        text = `Churned customers were actually ${mag} than active ones, so fulfillment speed does not explain why they left — look elsewhere (pricing, stock, competition).`;
+      } else {
+        text =
+          "Both groups were served at essentially the same speed, so fulfillment does not explain why these customers left — look elsewhere (pricing, stock, competition).";
+      }
+    }
+    note.textContent = text;
+    note.className = `sacr-benchmark-note ${cls}`;
+  }
+}
+
+function renderSacrBanner() {
+  const el = document.getElementById("sacr-banner");
+  if (!el) return;
+  const failed = sacrState.stores.filter((s) => s.ok === false);
+  const partial = sacrState.stores.filter((s) => s.ok && s.complete === false);
+  if (!failed.length && !partial.length) {
+    el.hidden = true;
+    el.innerHTML = "";
+    return;
+  }
+  const items = [];
+  failed.forEach((s) =>
+    items.push(
+      `<li><strong>${saEscape(s.store_name || "Store")}</strong> — could not be read: ${saEscape(s.error || "unknown error")}. Excluded from all figures.</li>`,
+    ),
+  );
+  partial.forEach((s) =>
+    items.push(
+      `<li><strong>${saEscape(s.store_name || "Store")}</strong> — partial data: ${saEscape(s.incomplete_reason || "some pages failed")}. Rows shown, but excluded from the comparison above.</li>`,
+    ),
+  );
+  el.innerHTML =
+    '<div class="sacr-banner-title">Results are incomplete</div><ul>' +
+    items.join("") +
+    "</ul>";
+  el.hidden = false;
+}
+
+function renderSacrTable() {
+  const tbody = document.getElementById("sacr-tbody");
+  const tfoot = document.getElementById("sacr-tfoot");
+  if (!tbody) return;
+
+  const rows = sacrFilteredRows();
+  const total = rows.length;
+  const pageSize = sacrState.pageSize;
+  const maxPage = Math.max(0, Math.ceil(total / pageSize) - 1);
+  if (sacrState.currentPage > maxPage) sacrState.currentPage = maxPage;
+  const start = sacrState.currentPage * pageSize;
+  const page = rows.slice(start, start + pageSize);
+
+  const partialIds = new Set(
+    sacrState.stores.filter((s) => s.ok && s.complete === false).map((s) => s.store_id),
+  );
+
+  tbody.innerHTML = page
+    .map((r) => {
+      const badge = partialIds.has(r.store_id)
+        ? ' <span class="sacr-badge" title="This store returned partial data">partial</span>'
+        : "";
+      return (
+        `<tr data-customer-id="${saEscape(r.customer_id)}" data-store-id="${r.store_id}" data-customer-name="${saEscape(r.name)}" class="sacr-row">` +
+        `<td><span class="sacr-cust">${saEscape(r.name || "(no name)")}</span>${r.email ? `<span class="sacr-email">${saEscape(r.email)}</span>` : ""}</td>` +
+        `<td>${saEscape(r.store_name || "")}${badge}</td>` +
+        `<td class="sacr-num">${(r.orders_count || 0).toLocaleString()}</td>` +
+        `<td class="sacr-num">${sacrFmtMoney(r.amount_spent, "")}</td>` +
+        `<td>${(r.last_order_created_at || "").slice(0, 10)}${r.last_order_name ? ` <span class="sacr-ordname">${saEscape(r.last_order_name)}</span>` : ""}</td>` +
+        `<td class="sacr-num">${r.days_silent === null ? "—" : r.days_silent.toLocaleString()}</td>` +
+        sacrDaysCell(r.days_to_fulfil) +
+        sacrDaysCell(r.days_to_deliver) +
+        `<td>${saEscape(r.shipping_method || "—")}</td>` +
+        `<td>${saEscape(r.carrier || "—")}</td></tr>`
+      );
+    })
+    .join("");
+
+  // Footer totals cover the whole filtered set, not just the visible page.
+  if (tfoot) {
+    const spend = rows.reduce((s, r) => s + (r.amount_spent || 0), 0);
+    const orders = rows.reduce((s, r) => s + (r.orders_count || 0), 0);
+    tfoot.innerHTML =
+      `<tr class="sacr-foot-row"><td>Total (filtered)</td><td></td>` +
+      `<td class="sacr-num">${orders.toLocaleString()}</td>` +
+      `<td class="sacr-num">${sacrFmtMoney(spend, "")}</td>` +
+      `<td colspan="6"></td></tr>`;
+  }
+
+  const info = document.getElementById("sacr-page-info");
+  if (info) {
+    info.textContent = total
+      ? `${(start + 1).toLocaleString()}–${Math.min(start + pageSize, total).toLocaleString()} of ${total.toLocaleString()}`
+      : "0 of 0";
+  }
+  const prev = document.getElementById("sacr-prev-page");
+  const next = document.getElementById("sacr-next-page");
+  if (prev) prev.disabled = sacrState.currentPage === 0;
+  if (next) next.disabled = sacrState.currentPage >= maxPage;
+
+  const count = document.getElementById("sacr-row-count");
+  if (count) {
+    count.textContent =
+      total === sacrState.rows.length
+        ? `${total.toLocaleString()} churned`
+        : `${total.toLocaleString()} of ${sacrState.rows.length.toLocaleString()} churned`;
+  }
+}
+
+function renderSacrNote() {
+  const el = document.getElementById("sacr-note");
+  if (!el) return;
+  const notes = [];
+  const okStores = sacrState.stores.filter((s) => s.ok);
+  if (okStores.length > 1) {
+    notes.push(
+      "A person who shops at two stores appears once per store — Shopify keeps separate customer records.",
+    );
+  }
+  const noTiming = sacrState.rows.filter((r) => r.days_to_deliver === null).length;
+  if (noTiming) {
+    notes.push(
+      `${noTiming.toLocaleString()} last order(s) have no delivery timestamp (unfulfilled, or a carrier that never reported delivery). Shown as “—” and excluded from medians — never counted as zero.`,
+    );
+  }
+  notes.push(
+    "Timings describe the customer's final order: order → first shipment, and first shipment → last delivery.",
+  );
+  el.innerHTML = notes.map((n) => saEscape(n)).join("<br />");
+}
+
+// ----- Chart: churned customers by month of last order -----
+
+function sacrScheduleChartRender() {
+  if (sacrState.rafId) cancelAnimationFrame(sacrState.rafId);
+  sacrState.rafId = requestAnimationFrame(() => {
+    sacrState.rafId = 0;
+    renderSacrChart();
+  });
+}
+
+function renderSacrChart() {
+  const wrap = document.getElementById("sacr-chart-wrap");
+  if (!wrap) return;
+  const months = sacrState.byMonth || [];
+  if (!wrap.clientWidth || months.length === 0) {
+    if (!months.length) wrap.innerHTML = "";
+    return;
+  }
+
+  const W = Math.max(320, wrap.clientWidth);
+  const innerW = W - SANCM_PAD.left - SANCM_PAD.right;
+  const innerH = SANCM_H - SANCM_PAD.top - SANCM_PAD.bottom;
+  const k = months.length;
+  const yMax = sancmNiceMax(Math.max(0, ...months.map((m) => m.count)));
+  if (yMax === 0) {
+    wrap.innerHTML = "";
+    return;
+  }
+
+  const y = (v) => SANCM_PAD.top + innerH - (v / yMax) * innerH;
+  const bandW = innerW / k;
+  const barW = Math.min(SANCM_BAR_MAX, bandW * 0.66);
+  const parts = [];
+
+  for (const f of [0, 0.25, 0.5, 0.75, 1]) {
+    const val = yMax * f;
+    const py = Math.round(y(val)) + 0.5;
+    parts.push(
+      `<line x1="${SANCM_PAD.left}" y1="${py}" x2="${W - SANCM_PAD.right}" y2="${py}" stroke="var(--border-color)" stroke-width="1" shape-rendering="crispEdges" />`,
+    );
+    parts.push(
+      `<text x="${SANCM_PAD.left - 8}" y="${py + 4}" text-anchor="end" font-size="11" fill="var(--text-tertiary)" style="font-variant-numeric:tabular-nums">${sancmCompact(Math.round(val))}</text>`,
+    );
+  }
+
+  months.forEach((m, j) => {
+    const x = SANCM_PAD.left + j * bandW;
+    parts.push(
+      `<rect class="sancm-band-wash" data-band="${j}" x="${x}" y="${SANCM_PAD.top}" width="${bandW}" height="${innerH}" />`,
+    );
+  });
+
+  months.forEach((m, j) => {
+    if (!m.count) return;
+    const x = SANCM_PAD.left + j * bandW + (bandW - barW) / 2;
+    const yTop = y(m.count);
+    const h = SANCM_PAD.top + innerH - yTop;
+    parts.push(
+      `<path d="${sancmBarPath(x, yTop, barW, h, SANCM_RADIUS)}" fill="var(--sancm-c2)" />`,
+    );
+  });
+
+  const spansYears =
+    months[0].month.slice(0, 4) !== months[k - 1].month.slice(0, 4);
+  const step = Math.max(1, Math.ceil(k / Math.max(1, Math.floor(innerW / 56))));
+  months.forEach((m, j) => {
+    if (j % step !== 0 && j !== k - 1) return;
+    const cx = SANCM_PAD.left + j * bandW + bandW / 2;
+    parts.push(
+      `<text x="${cx.toFixed(1)}" y="${SANCM_H - SANCM_PAD.bottom + 20}" text-anchor="middle" font-size="11" fill="var(--text-tertiary)">${saEscape(sancmMonthTick(m.month, spansYears))}</text>`,
+    );
+  });
+
+  months.forEach((m, j) => {
+    const x = SANCM_PAD.left + j * bandW;
+    parts.push(
+      `<rect class="sancm-hit" data-month-index="${j}" tabindex="0" role="img" aria-label="${saEscape(sancmMonthTick(m.month, true))}: ${m.count} customers last ordered" x="${x}" y="${SANCM_PAD.top}" width="${bandW}" height="${innerH}" fill="transparent" />`,
+    );
+  });
+
+  wrap.innerHTML =
+    `<svg width="100%" height="${SANCM_H}" viewBox="0 0 ${W} ${SANCM_H}" preserveAspectRatio="xMinYMid meet" role="group" aria-label="Churned customers by month of last order">` +
+    parts.join("") +
+    "</svg>";
+}
+
+// ----- Detail modal -----
+
+async function openSacrDetail(storeId, customerId, customerName) {
+  const title = document.getElementById("sacr-detail-title");
+  const body = document.getElementById("sacr-detail-body");
+  if (!body) return;
+  if (title) title.textContent = customerName || "Customer";
+  body.innerHTML =
+    '<p style="color: var(--text-secondary); font-size: 0.8125rem;">Loading recent orders...</p>';
+  openModal("sacr-detail-modal");
+
+  try {
+    // Deliberately not apiRequest(): it raises a blocking alert() on failure,
+    // and this modal reports its own errors inline.
+    const response = await fetch(`${API_BASE}/shopify-analytics/customer-detail`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        store_id: parseInt(storeId, 10),
+        customer_id: customerId,
+        limit: 5,
+      }),
+    });
+    if (!response.ok) {
+      let detail = `HTTP ${response.status}`;
+      try {
+        detail = (await response.json()).detail || detail;
+      } catch (parseErr) {
+        /* keep the status */
+      }
+      throw new Error(detail);
+    }
+    renderSacrDetail(await response.json());
+  } catch (e) {
+    body.innerHTML = `<p style="color: var(--danger); font-size: 0.8125rem;">Could not load this customer's orders: ${saEscape(e.message || String(e))}</p>`;
+  }
+}
+
+function renderSacrDetail(data) {
+  const body = document.getElementById("sacr-detail-body");
+  if (!body) return;
+  const orders = data.orders || [];
+  if (!orders.length) {
+    body.innerHTML =
+      '<p style="color: var(--text-secondary); font-size: 0.8125rem;">No orders returned for this customer.</p>';
+    return;
+  }
+
+  body.innerHTML = orders
+    .map((o, i) => {
+      const items = (o.line_items || [])
+        .map(
+          (li) =>
+            `<tr><td class="sacr-num">${(li.quantity || 0).toLocaleString()}&times;</td>` +
+            `<td>${saEscape(li.title)}${li.variant_title ? ` <span class="sacr-email">${saEscape(li.variant_title)}</span>` : ""}</td>` +
+            `<td>${saEscape(li.sku || "")}</td>` +
+            `<td class="sacr-num">${sacrFmtMoney(li.amount, li.currency)}</td></tr>`,
+        )
+        .join("");
+      return (
+        `<div class="sacr-detail-order${i === 0 ? " is-last" : ""}">` +
+        `<div class="sacr-detail-head">` +
+        `<strong>${saEscape(o.name || "")}</strong>` +
+        `<span>${(o.created_at || "").slice(0, 10)}</span>` +
+        `<span>${sacrFmtMoney(o.total_amount, o.currency)}</span>` +
+        `<span>${saEscape(o.shipping_method || "—")}</span>` +
+        `<span>${saEscape(o.carrier || "—")}</span>` +
+        `<span class="sacr-detail-timing">ship ${sacrFmtDays(o.days_to_fulfil)} · deliver ${sacrFmtDays(o.days_to_deliver)}</span>` +
+        (o.cancelled_at ? '<span class="sacr-badge">cancelled</span>' : "") +
+        `</div>` +
+        (items
+          ? `<table class="sacr-detail-items"><thead><tr><th class="sacr-num">Qty</th><th>Product</th><th>SKU</th><th class="sacr-num">Total</th></tr></thead><tbody>${items}</tbody></table>`
+          : '<p class="sacr-detail-empty">Line items not loaded for this order.</p>') +
+        `</div>`
+      );
+    })
+    .join("");
 }
 
 // ===== Inventory Time =====

@@ -5526,3 +5526,213 @@ body.no-scroll {
   color: var(--text-secondary);
 }
 .sa-page #sancm-empty p { margin: 0; }
+
+/* ============================================================================
+   Shopify Analytics: Churned Customers
+   ========================================================================= */
+
+/* The chart reuses .sancm-chart-card, so it needs the same series slots in
+   scope for var(--sancm-c2). */
+.sa-page #sacr-chart-card {
+  --sancm-c1: #3987e5;
+  --sancm-c2: #d95926;
+}
+[data-theme="author-light"] .sa-page #sacr-chart-card {
+  --sancm-c1: #2a78d6;
+  --sancm-c2: #eb6834;
+}
+
+/* Incomplete-results banner — persistent, not a toast. */
+.sa-page .sacr-banner {
+  border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border-color));
+  background: color-mix(in srgb, var(--warning) 10%, var(--bg-secondary));
+  border-radius: var(--radius-md);
+  padding: 0.75rem 1rem;
+  margin-bottom: 1.25rem;
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+}
+.sa-page .sacr-banner[hidden] { display: none; }
+.sa-page .sacr-banner-title {
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 0.375rem;
+}
+.sa-page .sacr-banner ul { margin: 0; padding-left: 1.125rem; }
+.sa-page .sacr-banner li { margin: 0.1875rem 0; }
+
+/* Benchmark comparison */
+.sa-page .sacr-benchmark {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 1rem 1.25rem 0.875rem;
+  margin-bottom: 1.25rem;
+}
+.sa-page .sacr-benchmark[hidden] { display: none; }
+.sa-page .sacr-benchmark-title {
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.sa-page .sacr-benchmark-sub {
+  margin: 0.1875rem 0 0.75rem;
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+}
+.sa-page .sacr-benchmark-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+}
+.sa-page .sacr-benchmark-table th {
+  text-align: left;
+  font-size: 0.6875rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  font-weight: 600;
+  padding: 0.25rem 0.5rem 0.375rem;
+  border-bottom: 1px solid var(--border-color);
+}
+.sa-page .sacr-benchmark-table td {
+  padding: 0.4375rem 0.5rem;
+  color: var(--text-secondary);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 55%, transparent);
+}
+.sa-page .sacr-benchmark-table tr:last-child td { border-bottom: 0; }
+.sa-page .sacr-benchmark-table .sacr-num,
+.sa-page .sacr-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.sa-page .sacr-diff-worse { color: var(--danger); font-weight: 600; }
+.sa-page .sacr-diff-better { color: var(--success); font-weight: 600; }
+.sa-page .sacr-diff-flat { color: var(--text-tertiary); }
+.sa-page .sacr-benchmark-note {
+  margin: 0.625rem 0 0;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  padding-top: 0.625rem;
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 55%, transparent);
+}
+.sa-page .sacr-benchmark-note.is-ok { color: var(--text-tertiary); }
+.sa-page .sacr-benchmark-note.is-warn { color: var(--warning); font-weight: 500; }
+
+/* Results table */
+.sa-page #sacr-table td.sacr-num,
+.sa-page #sacr-table th.sacr-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.sa-page .sacr-row { cursor: pointer; }
+.sa-page .sacr-row:hover { background: var(--bg-hover); }
+.sa-page .sacr-cust { display: block; color: var(--text-primary); }
+.sa-page .sacr-email,
+.sa-page .sacr-ordname {
+  display: block;
+  font-size: 0.6875rem;
+  color: var(--text-tertiary);
+}
+.sa-page .sacr-ordname { display: inline; margin-left: 0.25rem; }
+.sa-page .sacr-badge {
+  display: inline-block;
+  font-size: 0.625rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0.0625rem 0.3125rem;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--warning) 22%, transparent);
+  color: var(--warning);
+  vertical-align: middle;
+}
+.sa-page #sacr-table .sacr-foot-row td {
+  font-weight: 600;
+  border-top: 2px solid var(--border-color);
+  background: color-mix(in srgb, var(--accent-primary) 5%, var(--bg-secondary));
+}
+
+.sa-page .sacr-pagination {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding: 0.75rem 0.25rem 0;
+}
+.sa-page .sacr-pagination select { width: auto; }
+
+/* Detail modal */
+#sacr-detail-modal .sacr-detail-order {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 0.75rem 0.875rem;
+  margin-bottom: 0.875rem;
+}
+#sacr-detail-modal .sacr-detail-order.is-last {
+  border-color: color-mix(in srgb, var(--accent-primary) 45%, var(--border-color));
+  background: color-mix(in srgb, var(--accent-primary) 4%, transparent);
+}
+#sacr-detail-modal .sacr-detail-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  margin-bottom: 0.5rem;
+}
+#sacr-detail-modal .sacr-detail-head strong { color: var(--text-primary); }
+#sacr-detail-modal .sacr-detail-timing {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-tertiary);
+}
+#sacr-detail-modal .sacr-detail-items {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.75rem;
+}
+#sacr-detail-modal .sacr-detail-items th {
+  text-align: left;
+  font-size: 0.625rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-tertiary);
+  padding: 0.25rem 0.375rem;
+  border-bottom: 1px solid var(--border-color);
+}
+#sacr-detail-modal .sacr-detail-items td {
+  padding: 0.3125rem 0.375rem;
+  color: var(--text-secondary);
+  border-bottom: 1px solid color-mix(in srgb, var(--border-color) 45%, transparent);
+}
+#sacr-detail-modal .sacr-detail-items .sacr-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+#sacr-detail-modal .sacr-detail-empty {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+}
+#sacr-detail-modal .sacr-email { color: var(--text-tertiary); }
+
+.sa-page #sacr-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 3.5rem 1rem;
+  color: var(--text-secondary);
+}
+.sa-page #sacr-empty p { margin: 0; }
+.sa-page .sacr-benchmark-blocked {
+  color: var(--text-tertiary);
+  font-style: italic;
+  padding: 0.75rem 0.5rem;
+}

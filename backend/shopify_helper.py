@@ -1,7 +1,9 @@
 import requests
 import aiohttp
 import asyncio
-from typing import Optional, Dict, Any, List
+import random
+import time
+from typing import Optional, Dict, Any, List, Tuple
 
 def test_shopify_connection(
     shop_domain: str,
@@ -1757,3 +1759,742 @@ async def count_fulfillment_buckets_for_store(
     row["on_picklist"] = on_picklist
     row["to_fulfill"] = total_unfulfilled + on_hold - in_process - on_picklist
     return row
+
+
+# ============================================================================
+# Shared GraphQL executor: rate limiting, retries, and honest failures
+#
+# Every request from the churned-customers report goes through _shopify_graphql.
+# The older helpers above keep their own inline retry loops (unchanged, out of
+# scope) — this is the single implementation new code should use.
+# ============================================================================
+
+# Retry ceiling. Transient classes only; see _classify_response.
+_MAX_ATTEMPTS = 5
+_MAX_BACKOFF_SECONDS = 30.0
+
+# Fraction of the shop's bucket to keep in reserve. Below this we wait for the
+# leaky bucket to refill rather than gambling on a 429.
+_BUCKET_SAFETY_FLOOR = 0.20
+
+# Cost assumed for the first request to a shop, before any throttleStatus has
+# been observed. A 250-record page with nested fulfillments measured 57.
+_ASSUMED_QUERY_COST = 60.0
+
+
+class ShopifyFetchError(Exception):
+    """
+    Raised when a request cannot be completed.
+
+    Carries enough context for the UI to tell the user what actually went wrong
+    instead of showing an empty result that looks like "no data".
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status: Optional[int] = None,
+        code: Optional[str] = None,
+        attempts: int = 1,
+        retryable: bool = False,
+    ):
+        super().__init__(message)
+        self.message = message
+        self.status = status
+        self.code = code
+        self.attempts = attempts
+        self.retryable = retryable
+
+    def __str__(self) -> str:
+        bits = [self.message]
+        if self.status:
+            bits.append(f"HTTP {self.status}")
+        if self.attempts > 1:
+            bits.append(f"after {self.attempts} attempts")
+        return " — ".join(bits)
+
+
+def _parse_graphql_errors(errors: Any) -> str:
+    """
+    Normalize Shopify's `errors` payload to a readable string.
+
+    Shopify is not consistent about the shape: a 401 returns a bare string
+    ("[API] Invalid API key..."), while query errors return a list of dicts.
+    Iterating a string yields characters, so the usual
+    `"; ".join(e.get("message") for e in errors)` raises AttributeError and the
+    real cause gets buried under a confusing type error.
+    """
+    if errors is None:
+        return ""
+    if isinstance(errors, str):
+        return errors
+    if isinstance(errors, dict):
+        return str(errors.get("message") or errors)
+    if isinstance(errors, list):
+        out = []
+        for e in errors:
+            if isinstance(e, dict):
+                out.append(str(e.get("message") or e))
+            else:
+                out.append(str(e))
+        return "; ".join(out)
+    return str(errors)
+
+
+def _is_throttled(errors: Any) -> bool:
+    if isinstance(errors, list):
+        for e in errors:
+            if isinstance(e, dict):
+                code = ((e.get("extensions") or {}).get("code") or "")
+                if str(code).upper() == "THROTTLED":
+                    return True
+    return "throttl" in _parse_graphql_errors(errors).lower()
+
+
+class _ShopBucket:
+    """
+    Mirror of one shop's leaky bucket, shared by every concurrent request to
+    that shop — Shopify meters per shop, not per connection, so the shards of a
+    single store must draw from one budget or they will throttle each other.
+
+    Capacity and restore rate are learned from `extensions.cost.throttleStatus`
+    rather than hardcoded: the observed values here (20000 / 1000 per second)
+    are far above the documented standard-plan figures, the public docs
+    contradict themselves, and it varies by plan.
+    """
+
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+        self.maximum = 0.0
+        self.available = 0.0
+        self.restore_rate = 0.0
+        self.last_update = 0.0
+        self.last_cost = _ASSUMED_QUERY_COST
+
+    def _projected_available(self) -> float:
+        if self.maximum <= 0:
+            return 0.0
+        elapsed = max(0.0, time.monotonic() - self.last_update)
+        return min(self.maximum, self.available + elapsed * self.restore_rate)
+
+    async def acquire(self) -> None:
+        """Wait until the shop's bucket can absorb another query of typical cost."""
+        async with self._lock:
+            if self.maximum <= 0 or self.restore_rate <= 0:
+                return  # nothing observed yet; the first response teaches us
+            need = max(self.last_cost, _ASSUMED_QUERY_COST)
+            floor = self.maximum * _BUCKET_SAFETY_FLOOR
+            projected = self._projected_available()
+            if projected >= need + floor:
+                return
+            deficit = (need + floor) - projected
+            await asyncio.sleep(min(_MAX_BACKOFF_SECONDS, deficit / self.restore_rate))
+
+    def observe(self, cost: Optional[Dict[str, Any]]) -> None:
+        if not cost:
+            return
+        throttle = cost.get("throttleStatus") or {}
+        try:
+            self.maximum = float(throttle.get("maximumAvailable") or self.maximum)
+            self.available = float(throttle.get("currentlyAvailable") or 0.0)
+            self.restore_rate = float(throttle.get("restoreRate") or self.restore_rate)
+            self.last_cost = float(cost.get("actualQueryCost") or self.last_cost)
+            self.last_update = time.monotonic()
+        except (TypeError, ValueError):
+            pass
+
+
+_shop_buckets: Dict[str, _ShopBucket] = {}
+
+
+def _bucket_for(shop_domain: str) -> _ShopBucket:
+    bucket = _shop_buckets.get(shop_domain)
+    if bucket is None:
+        bucket = _ShopBucket()
+        _shop_buckets[shop_domain] = bucket
+    return bucket
+
+
+def _backoff_delay(attempt: int, retry_after: Optional[str]) -> float:
+    """
+    Exponential backoff with full jitter.
+
+    Jitter is not cosmetic here: ~20 concurrent paginations that all get
+    throttled would otherwise wake in lockstep and immediately re-throttle.
+    """
+    if retry_after:
+        try:
+            return min(_MAX_BACKOFF_SECONDS, float(retry_after))
+        except (TypeError, ValueError):
+            pass
+    return random.uniform(0.0, min(_MAX_BACKOFF_SECONDS, 2.0 ** attempt))
+
+
+async def _shopify_graphql(
+    session: aiohttp.ClientSession,
+    shop_domain: str,
+    admin_api_key: str,
+    api_version: str,
+    query: str,
+    variables: Optional[Dict[str, Any]] = None,
+    *,
+    op_name: str = "query",
+    on_retry=None,
+) -> Tuple[Dict[str, Any], List[str]]:
+    """
+    Execute one GraphQL request against a shop, with pacing and retries.
+
+    Returns (data, warnings). Raises ShopifyFetchError when the request cannot
+    be completed — callers must handle it rather than treating a failure as an
+    empty result, which is the whole point of this report.
+
+    `on_retry(attempt, max_attempts, reason)` is an optional callback so the UI
+    can show "retrying (2/5) after rate limit" instead of appearing to hang.
+    """
+    url = f"https://{shop_domain}/admin/api/{api_version}/graphql.json"
+    headers = {
+        "X-Shopify-Access-Token": admin_api_key,
+        "Content-Type": "application/json",
+    }
+    bucket = _bucket_for(shop_domain)
+    payload = {"query": query, "variables": variables or {}}
+    last_reason = "unknown error"
+
+    for attempt in range(_MAX_ATTEMPTS):
+        await bucket.acquire()
+
+        try:
+            async with session.post(
+                url,
+                json=payload,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=90),
+            ) as response:
+                status = response.status
+
+                # --- Permanent failures: retrying cannot help, and retrying
+                # would only bury the real cause behind five round trips.
+                if status in (401, 403):
+                    body = await response.text()
+                    raise ShopifyFetchError(
+                        f"Authentication failed for {shop_domain} — check the "
+                        f"Admin API token. {body[:200]}",
+                        status=status,
+                        code="AUTH",
+                        attempts=attempt + 1,
+                    )
+                if status == 404:
+                    raise ShopifyFetchError(
+                        f"Shop or API version not found ({shop_domain}, {api_version})",
+                        status=status,
+                        code="NOT_FOUND",
+                        attempts=attempt + 1,
+                    )
+
+                # --- Transient: rate limited.
+                if status == 429:
+                    last_reason = "rate limited (HTTP 429)"
+                    if attempt < _MAX_ATTEMPTS - 1:
+                        if on_retry:
+                            on_retry(attempt + 1, _MAX_ATTEMPTS, last_reason)
+                        await asyncio.sleep(
+                            _backoff_delay(attempt, response.headers.get("Retry-After"))
+                        )
+                        continue
+                    raise ShopifyFetchError(
+                        f"Still rate limited by {shop_domain}",
+                        status=status,
+                        code="THROTTLED",
+                        attempts=attempt + 1,
+                        retryable=True,
+                    )
+
+                # --- Transient: server-side wobble.
+                if status >= 500:
+                    last_reason = f"server error (HTTP {status})"
+                    if attempt < _MAX_ATTEMPTS - 1:
+                        if on_retry:
+                            on_retry(attempt + 1, _MAX_ATTEMPTS, last_reason)
+                        await asyncio.sleep(_backoff_delay(attempt, None))
+                        continue
+                    raise ShopifyFetchError(
+                        f"Shopify returned HTTP {status} for {shop_domain}",
+                        status=status,
+                        code="SERVER",
+                        attempts=attempt + 1,
+                        retryable=True,
+                    )
+
+                if status != 200:
+                    body = await response.text()
+                    raise ShopifyFetchError(
+                        f"Unexpected HTTP {status} from {shop_domain}: {body[:200]}",
+                        status=status,
+                        attempts=attempt + 1,
+                    )
+
+                body = await response.json()
+
+        except ShopifyFetchError:
+            raise
+        except asyncio.CancelledError:
+            # A cancelled report must stop calling Shopify immediately.
+            raise
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            last_reason = f"network error ({type(e).__name__})"
+            if attempt < _MAX_ATTEMPTS - 1:
+                if on_retry:
+                    on_retry(attempt + 1, _MAX_ATTEMPTS, last_reason)
+                await asyncio.sleep(_backoff_delay(attempt, None))
+                continue
+            raise ShopifyFetchError(
+                f"Could not reach {shop_domain}: {e}",
+                code="NETWORK",
+                attempts=attempt + 1,
+                retryable=True,
+            )
+
+        bucket.observe(body.get("extensions", {}).get("cost"))
+
+        errors = body.get("errors")
+        data = body.get("data")
+
+        if errors and _is_throttled(errors):
+            last_reason = "throttled by Shopify"
+            if attempt < _MAX_ATTEMPTS - 1:
+                if on_retry:
+                    on_retry(attempt + 1, _MAX_ATTEMPTS, last_reason)
+                # Wait for the bucket to actually refill rather than a blind sleep.
+                deficit = max(0.0, bucket.maximum * _BUCKET_SAFETY_FLOOR - bucket.available)
+                wait = (
+                    deficit / bucket.restore_rate
+                    if bucket.restore_rate > 0
+                    else _backoff_delay(attempt, None)
+                )
+                await asyncio.sleep(max(1.0, min(_MAX_BACKOFF_SECONDS, wait)))
+                continue
+            raise ShopifyFetchError(
+                f"Throttled by {shop_domain} after retries",
+                code="THROTTLED",
+                attempts=attempt + 1,
+                retryable=True,
+            )
+
+        # No data at all means the query itself is wrong — a code bug. Fail
+        # loudly and immediately; retrying a malformed query is pure waste.
+        if data is None:
+            raise ShopifyFetchError(
+                f"{op_name} failed: {_parse_graphql_errors(errors) or 'no data returned'}",
+                code="QUERY",
+                attempts=attempt + 1,
+            )
+
+        # Data present alongside errors = field-level denial (e.g. protected
+        # customer data). The response is usable, but the caller must know the
+        # result is not whole.
+        warnings: List[str] = []
+        if errors:
+            warnings.append(_parse_graphql_errors(errors)[:300])
+
+        return data, warnings
+
+    raise ShopifyFetchError(
+        f"{op_name} failed against {shop_domain}: {last_reason}",
+        attempts=_MAX_ATTEMPTS,
+        retryable=True,
+    )
+
+
+# ============================================================================
+# Churned-customers report
+# ============================================================================
+
+_CHURN_CUSTOMERS_QUERY = """
+query ChurnCustomers($q: String!, $after: String) {
+  customers(first: 250, query: $q, sortKey: ID, after: $after) {
+    pageInfo { hasNextPage endCursor }
+    nodes {
+      id
+      displayName
+      email
+      createdAt
+      numberOfOrders
+      amountSpent { amount currencyCode }
+      lastOrder {
+        id
+        name
+        createdAt
+        displayFulfillmentStatus
+        shippingLine { title carrierIdentifier }
+        fulfillments(first: 5) {
+          createdAt
+          inTransitAt
+          deliveredAt
+          displayStatus
+          trackingInfo { company number url }
+        }
+      }
+    }
+  }
+}
+"""
+
+# Shopify refuses to paginate past 25,000 objects. Sharding keeps each cursor
+# walk under that, but we still detect the ceiling so a truncated result can
+# never be presented as a complete one.
+_PAGINATION_OBJECT_CAP = 25000
+
+
+def _normalize_carrier(name: Optional[str]) -> Optional[str]:
+    """Carriers arrive as 'usps'/'USPS'/'ups'/'UPS' — collapse the casing."""
+    if not name:
+        return None
+    return name.strip().upper() or None
+
+
+def _normalize_shipping_method(title: Optional[str]) -> Optional[str]:
+    """
+    Group shipping-method variants that mean the same service.
+
+    Observed on live stores: "Economy Shipping", "Economy Shipping 6-14
+    Business Days" and "Economy Shipping (EST 6-14 Business Days)" are one
+    service. Without this the breakdown fragments into near-duplicates.
+    """
+    if not title:
+        return None
+    import re
+
+    t = title.strip().lower()
+    t = re.sub(r"\(.*?\)", " ", t)              # drop parentheticals
+    t = re.sub(r"\b(est|approx)\b", " ", t)
+    t = re.sub(r"\d+\s*-\s*\d+", " ", t)        # "6-14"
+    t = re.sub(r"\b(business\s+)?days?\b", " ", t)
+    t = t.replace(":", " ")
+    t = re.sub(r"\s+", " ", t).strip(" -–—")
+    return (t or title.strip().lower()).title()
+
+
+async def fetch_customers_with_last_order(
+    shop_domain: str,
+    admin_api_key: str,
+    active_since: str,
+    api_version: str = "2025-01",
+    shard_start: Optional[str] = None,
+    shard_end: Optional[str] = None,
+    on_page=None,
+    on_retry=None,
+) -> Dict[str, Any]:
+    """
+    Page customers who ordered since `active_since`, carrying their last order's
+    shipping and fulfillment timeline.
+
+    `lastOrder` is a full Order, so the entire report's timing data comes from
+    this one cheap pagination (~57 points/page) instead of a separate sweep of
+    every order.
+
+    Churn is NOT decided here. Shopify's `order_date` filter has any-order
+    semantics and negating it does not invert that — verified against live
+    stores, where every negated form still returned 12% customers who had
+    ordered after the cutoff. The caller classifies on `last_order_created_at`.
+
+    Returns {ok, complete, incomplete_reason, error, customers[], warnings[], pages}.
+    """
+    result: Dict[str, Any] = {
+        "ok": False,
+        "complete": False,
+        "incomplete_reason": None,
+        "error": None,
+        "customers": [],
+        "warnings": [],
+        "pages": 0,
+    }
+
+    try:
+        shop_domain = validate_shop_domain(shop_domain)
+    except Exception as e:
+        result["error"] = str(e)
+        return result
+
+    query_filter = f"order_date:>={shard_start or active_since}"
+    if shard_end:
+        query_filter += f" order_date:<{shard_end}"
+
+    customers: List[Dict[str, Any]] = []
+    cursor: Optional[str] = None
+    pages = 0
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            while True:
+                data, warnings = await _shopify_graphql(
+                    session,
+                    shop_domain,
+                    admin_api_key,
+                    api_version,
+                    _CHURN_CUSTOMERS_QUERY,
+                    {"q": query_filter, "after": cursor},
+                    op_name="churn customers",
+                    on_retry=on_retry,
+                )
+                if warnings:
+                    result["warnings"].extend(warnings)
+
+                conn = data.get("customers") or {}
+                for node in conn.get("nodes") or []:
+                    customers.append(_normalize_churn_customer(node))
+
+                pages += 1
+                if on_page:
+                    on_page(len(customers))
+
+                page_info = conn.get("pageInfo") or {}
+                if not page_info.get("hasNextPage"):
+                    break
+                cursor = page_info.get("endCursor")
+
+                if len(customers) >= _PAGINATION_OBJECT_CAP:
+                    # Truncating silently would understate churn — exactly the
+                    # wrong direction for this report.
+                    result["customers"] = customers
+                    result["pages"] = pages
+                    result["ok"] = True
+                    result["complete"] = False
+                    result["incomplete_reason"] = (
+                        f"Hit Shopify's {_PAGINATION_OBJECT_CAP:,}-record pagination "
+                        f"limit for {shop_domain}. Narrow the date range to see the rest."
+                    )
+                    return result
+
+    except ShopifyFetchError as e:
+        result["error"] = str(e)
+        result["customers"] = customers  # keep what we got; caller marks partial
+        result["pages"] = pages
+        return result
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        result["error"] = f"Unexpected error: {e}"
+        result["pages"] = pages
+        return result
+
+    result["ok"] = True
+    result["complete"] = not result["warnings"]
+    if result["warnings"]:
+        result["incomplete_reason"] = "Shopify returned partial data: " + result["warnings"][0]
+    result["customers"] = customers
+    result["pages"] = pages
+    return result
+
+
+def _normalize_churn_customer(node: Dict[str, Any]) -> Dict[str, Any]:
+    """Flatten one customer node, deriving the last order's fulfillment timeline."""
+    last = node.get("lastOrder") or None
+    spent = node.get("amountSpent") or {}
+
+    row: Dict[str, Any] = {
+        "customer_id": node.get("id"),
+        "name": node.get("displayName") or "",
+        # May be null when protected customer data is not approved.
+        "email": node.get("email"),
+        "customer_since": node.get("createdAt"),
+        # UnsignedInt64 serializes as a JSON string.
+        "orders_count": int(node.get("numberOfOrders") or 0),
+        "amount_spent": float(spent.get("amount") or 0),
+        "currency": spent.get("currencyCode") or "USD",
+        "last_order_id": None,
+        "last_order_name": None,
+        "last_order_created_at": None,
+        "shipping_method": None,
+        "shipping_method_raw": None,
+        "carrier": None,
+        "tracking_url": None,
+        "fulfillment_status": None,
+        "days_to_fulfil": None,
+        "days_to_deliver": None,
+        "days_total": None,
+    }
+
+    if not last:
+        return row
+
+    row["last_order_id"] = last.get("id")
+    row["last_order_name"] = last.get("name")
+    row["last_order_created_at"] = last.get("createdAt")
+    row["fulfillment_status"] = last.get("displayFulfillmentStatus")
+
+    ship = last.get("shippingLine") or {}
+    row["shipping_method_raw"] = ship.get("title")
+    row["shipping_method"] = _normalize_shipping_method(ship.get("title"))
+
+    fulfillments = last.get("fulfillments") or []
+    if fulfillments:
+        # Split shipments are common (≈1.7 fulfillments per order on live data).
+        # Ship time = when the first parcel left. Delivery = when the last one
+        # landed, i.e. when the customer actually had the whole order.
+        created = [f.get("createdAt") for f in fulfillments if f.get("createdAt")]
+        delivered = [f.get("deliveredAt") for f in fulfillments if f.get("deliveredAt")]
+        first_ship = min(created) if created else None
+        last_deliver = max(delivered) if delivered else None
+
+        row["days_to_fulfil"] = _days_between(last.get("createdAt"), first_ship)
+        row["days_to_deliver"] = _days_between(first_ship, last_deliver)
+        row["days_total"] = _days_between(last.get("createdAt"), last_deliver)
+
+        for f in fulfillments:
+            for t in f.get("trackingInfo") or []:
+                if t.get("company") and not row["carrier"]:
+                    row["carrier"] = _normalize_carrier(t.get("company"))
+                if t.get("url") and not row["tracking_url"]:
+                    row["tracking_url"] = t.get("url")
+
+    return row
+
+
+def _days_between(start_iso: Optional[str], end_iso: Optional[str]) -> Optional[float]:
+    """
+    Fractional days between two ISO timestamps, or None.
+
+    None means "unknown" (unfulfilled, or a carrier that never reported
+    delivery) and must never be rendered as 0 — that would silently drag every
+    median toward zero and make fulfillment look faster than it is.
+    """
+    if not start_iso or not end_iso:
+        return None
+    from datetime import datetime
+
+    try:
+        a = datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
+        b = datetime.fromisoformat(end_iso.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+    delta = (b - a).total_seconds() / 86400.0
+    return round(delta, 2) if delta >= 0 else None
+
+
+_CUSTOMER_ORDERS_QUERY = """
+query CustomerOrders($q: String!, $n: Int!) {
+  orders(first: $n, query: $q, sortKey: CREATED_AT, reverse: true) {
+    nodes {
+      id
+      name
+      createdAt
+      displayFulfillmentStatus
+      displayFinancialStatus
+      cancelledAt
+      totalPriceSet { shopMoney { amount currencyCode } }
+      shippingLine { title carrierIdentifier }
+      fulfillments(first: 5) {
+        createdAt
+        inTransitAt
+        deliveredAt
+        displayStatus
+        trackingInfo { company number url }
+      }
+      lineItems(first: 50) {
+        nodes {
+          title
+          quantity
+          sku
+          variantTitle
+          originalTotalSet { shopMoney { amount currencyCode } }
+        }
+      }
+    }
+  }
+}
+"""
+
+
+async def fetch_customer_recent_orders(
+    shop_domain: str,
+    admin_api_key: str,
+    customer_id: str,
+    api_version: str = "2025-01",
+    limit: int = 5,
+) -> Dict[str, Any]:
+    """
+    Fetch a single customer's most recent orders with line items, for the
+    click-through detail view. Raises nothing — returns {ok, error, orders[]}.
+    """
+    out: Dict[str, Any] = {"ok": False, "error": None, "orders": []}
+
+    try:
+        shop_domain = validate_shop_domain(shop_domain)
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+
+    numeric_id = (customer_id or "").rsplit("/", 1)[-1]
+    if not numeric_id:
+        out["error"] = "Missing customer id"
+        return out
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            data, warnings = await _shopify_graphql(
+                session,
+                shop_domain,
+                admin_api_key,
+                api_version,
+                _CUSTOMER_ORDERS_QUERY,
+                {"q": f"customer_id:{numeric_id}", "n": max(1, min(limit, 20))},
+                op_name="customer orders",
+            )
+    except ShopifyFetchError as e:
+        out["error"] = str(e)
+        return out
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        out["error"] = f"Unexpected error: {e}"
+        return out
+
+    for node in (data.get("orders") or {}).get("nodes") or []:
+        total = (node.get("totalPriceSet") or {}).get("shopMoney") or {}
+        ship = node.get("shippingLine") or {}
+        fulfillments = node.get("fulfillments") or []
+        created = [f.get("createdAt") for f in fulfillments if f.get("createdAt")]
+        delivered = [f.get("deliveredAt") for f in fulfillments if f.get("deliveredAt")]
+        first_ship = min(created) if created else None
+        last_deliver = max(delivered) if delivered else None
+
+        carrier = None
+        for f in fulfillments:
+            for t in f.get("trackingInfo") or []:
+                if t.get("company"):
+                    carrier = _normalize_carrier(t.get("company"))
+                    break
+            if carrier:
+                break
+
+        out["orders"].append({
+            "id": node.get("id"),
+            "name": node.get("name"),
+            "created_at": node.get("createdAt"),
+            "cancelled_at": node.get("cancelledAt"),
+            "fulfillment_status": node.get("displayFulfillmentStatus"),
+            "financial_status": node.get("displayFinancialStatus"),
+            "total_amount": total.get("amount") or "0",
+            "currency": total.get("currencyCode") or "USD",
+            "shipping_method": _normalize_shipping_method(ship.get("title")),
+            "shipping_method_raw": ship.get("title"),
+            "carrier": carrier,
+            "days_to_fulfil": _days_between(node.get("createdAt"), first_ship),
+            "days_to_deliver": _days_between(first_ship, last_deliver),
+            "days_total": _days_between(node.get("createdAt"), last_deliver),
+            "line_items": [
+                {
+                    "title": li.get("title") or "",
+                    "quantity": li.get("quantity") or 0,
+                    "sku": li.get("sku") or "",
+                    "variant_title": li.get("variantTitle") or "",
+                    "amount": ((li.get("originalTotalSet") or {}).get("shopMoney") or {}).get("amount") or "0",
+                    "currency": ((li.get("originalTotalSet") or {}).get("shopMoney") or {}).get("currencyCode") or "USD",
+                }
+                for li in (node.get("lineItems") or {}).get("nodes") or []
+            ],
+        })
+
+    out["ok"] = True
+    return out

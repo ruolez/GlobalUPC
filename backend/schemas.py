@@ -682,6 +682,19 @@ class NewCustomersByMonthRequest(BaseModel):
     tag: Optional[str] = None  # blank -> each store falls back to its own saved tag
 
 
+class ChurnedCustomersRequest(BaseModel):
+    store_ids: List[int]
+    active_since: str          # YYYY-MM-DD — lower bound on the last order
+    silent_since: str          # YYYY-MM-DD — churn cutoff
+    min_orders: int = 1
+
+
+class CustomerDetailRequest(BaseModel):
+    store_id: int
+    customer_id: str           # Shopify GID
+    limit: int = 5
+
+
 # Quotations In Progress Schemas
 class QuotationsInProgressFilter(BaseModel):
     # "all" -> no scan filter

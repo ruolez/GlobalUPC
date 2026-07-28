@@ -9,6 +9,7 @@ from datetime import datetime, date, timedelta
 import uvicorn
 import asyncio
 import json
+import statistics
 import uuid
 import os
 
@@ -42,6 +43,8 @@ from schemas import (
     FirstCustomerReturnsRequest,
     ShopifyFirstOrderTagUpdate,
     NewCustomersByMonthRequest,
+    ChurnedCustomersRequest,
+    CustomerDetailRequest,
     QuotationsInProgressFilter, QuotationsInProgressListResponse,
     QuotationsInProgressFilterOptions, QuotationInProgressSummary,
     QuotationProductsResponse, QuotationInProgressHeader, QuotationProductLine,
@@ -71,7 +74,8 @@ from shopify_helper import (
     get_all_product_variant_prices, search_product_prices_with_siblings,
     fetch_fulfilled_orders,
     fetch_orders_with_tag, fetch_customer_orders_after,
-    count_fulfillment_buckets_for_store
+    count_fulfillment_buckets_for_store,
+    fetch_customers_with_last_order, fetch_customer_recent_orders
 )
 from item_tracker_helper import (
     get_item_info_async, get_purchases_async, get_sales_async,
@@ -6242,6 +6246,336 @@ async def shopify_analytics_new_customers_by_month_stream(
             "Connection": "keep-alive",
         },
     )
+
+
+# ============================================================================
+# Churned Customers
+#
+# Churn is decided here, not by Shopify. The `order_date` search filter has
+# any-order semantics ("has placed at least one order in this range"), and
+# negating it does not invert that — verified against live stores, where every
+# negated form still returned 12% of customers who HAD ordered after the
+# cutoff. So the query only bounds the window; classification is ours.
+# ============================================================================
+
+# Wall-clock per store is latency-bound (~5s per 250-customer page), so the
+# window is split into concurrent shards. This also keeps each cursor walk
+# under Shopify's 25,000-object pagination ceiling.
+_CHURN_MAX_SHARDS = 4
+_CHURN_SHARD_MIN_DAYS = 90
+
+
+def _churn_shards(active_since: str, upper: str) -> List[tuple]:
+    """Split [active_since, upper) into up to 4 contiguous sub-ranges."""
+    from datetime import date, timedelta
+
+    try:
+        start = date.fromisoformat(active_since)
+        end = date.fromisoformat(upper)
+    except ValueError:
+        return [(active_since, None)]
+
+    span = (end - start).days
+    if span <= _CHURN_SHARD_MIN_DAYS:
+        return [(active_since, None)]
+
+    n = min(_CHURN_MAX_SHARDS, max(2, span // _CHURN_SHARD_MIN_DAYS))
+    step = span // n
+    bounds = [start + timedelta(days=step * i) for i in range(n)] + [end]
+    # Last shard is left open-ended so orders placed after `upper` (i.e. today)
+    # still classify their owner as active.
+    return [
+        (bounds[i].isoformat(), bounds[i + 1].isoformat() if i < n - 1 else None)
+        for i in range(n)
+    ]
+
+
+def _median(values: List[float]) -> Optional[float]:
+    """Median, not mean — delivery times are right-skewed and a few stuck
+    parcels would drag a mean somewhere no customer actually experienced."""
+    if not values:
+        return None
+    return round(statistics.median(values), 2)
+
+
+def _timing_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    fulfil = [r["days_to_fulfil"] for r in rows if r.get("days_to_fulfil") is not None]
+    deliver = [r["days_to_deliver"] for r in rows if r.get("days_to_deliver") is not None]
+    total = [r["days_total"] for r in rows if r.get("days_total") is not None]
+    return {
+        "days_to_fulfil": _median(fulfil),
+        "days_to_deliver": _median(deliver),
+        "days_total": _median(total),
+        "n": len(rows),
+        # Coverage is reported separately so a median over 12 orders is never
+        # mistaken for one over 12,000.
+        "n_fulfil": len(fulfil),
+        "n_deliver": len(deliver),
+        "n_total": len(total),
+    }
+
+
+@app.post("/api/shopify-analytics/churned-customers/stream")
+async def shopify_analytics_churned_customers_stream(
+    request: ChurnedCustomersRequest,
+    db: Session = Depends(get_db),
+):
+    async def generate() -> AsyncGenerator[str, None]:
+        active_since = request.active_since
+        silent_since = request.silent_since
+        min_orders = max(1, int(request.min_orders or 1))
+
+        if not active_since or not silent_since or active_since >= silent_since:
+            yield f"event: error\ndata: {json.dumps({'message': 'Active-since must be earlier than silent-since'})}\n\n"
+            return
+        if not request.store_ids:
+            yield f"event: error\ndata: {json.dumps({'message': 'Select at least one Shopify store'})}\n\n"
+            return
+
+        stores = db.query(Store).filter(
+            Store.id.in_(request.store_ids),
+            Store.store_type == StoreType.shopify,
+            Store.is_active == True,
+        ).all()
+
+        store_list: List[Dict[str, Any]] = []
+        for s in stores:
+            conn = s.shopify_connection
+            if not conn:
+                continue
+            store_list.append({
+                "id": s.id, "name": s.name,
+                "shop_domain": conn.shop_domain,
+                "admin_api_key": conn.admin_api_key,
+                "api_version": conn.api_version,
+            })
+        if not store_list:
+            yield f"event: error\ndata: {json.dumps({'message': 'No active Shopify stores found for the selected ids'})}\n\n"
+            return
+        store_list.sort(key=lambda s: s["id"])
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        shards = _churn_shards(active_since, today)
+
+        yield f"event: progress\ndata: {json.dumps({'phase': 'started', 'active_since': active_since, 'silent_since': silent_since, 'min_orders': min_orders, 'shards': len(shards), 'stores': [{'store_id': s['id'], 'store_name': s['name']} for s in store_list]})}\n\n"
+
+        # Retries and page progress must reach the client while work is still in
+        # flight, so workers publish to a queue rather than only returning.
+        events: asyncio.Queue = asyncio.Queue()
+        semaphore = asyncio.Semaphore(5)
+
+        async def fetch_for_store(s: Dict[str, Any]) -> Dict[str, Any]:
+            async with semaphore:
+                def on_retry(attempt, max_attempts, reason, _s=s):
+                    events.put_nowait(("retry", {
+                        "store_id": _s["id"], "store_name": _s["name"],
+                        "attempt": attempt, "max_attempts": max_attempts, "reason": reason,
+                    }))
+
+                shard_results = await asyncio.gather(*[
+                    fetch_customers_with_last_order(
+                        shop_domain=s["shop_domain"],
+                        admin_api_key=s["admin_api_key"],
+                        active_since=active_since,
+                        api_version=s["api_version"],
+                        shard_start=lo,
+                        shard_end=hi,
+                        on_retry=on_retry,
+                    )
+                    for lo, hi in shards
+                ], return_exceptions=True)
+
+                by_id: Dict[str, Dict[str, Any]] = {}
+                warnings: List[str] = []
+                failed_shards = 0
+                incomplete_reasons: List[str] = []
+
+                for res in shard_results:
+                    if isinstance(res, BaseException):
+                        failed_shards += 1
+                        incomplete_reasons.append(str(res)[:200])
+                        continue
+                    if not res.get("ok"):
+                        failed_shards += 1
+                        if res.get("error"):
+                            incomplete_reasons.append(res["error"][:200])
+                    if res.get("incomplete_reason"):
+                        incomplete_reasons.append(res["incomplete_reason"])
+                    warnings.extend(res.get("warnings") or [])
+                    # A customer with orders in several shards appears in each;
+                    # the record is identical, so first write wins.
+                    for c in res.get("customers") or []:
+                        if c.get("customer_id"):
+                            by_id.setdefault(c["customer_id"], c)
+
+                if failed_shards >= len(shards):
+                    return {
+                        "store": s, "ok": False, "complete": False,
+                        "error": incomplete_reasons[0] if incomplete_reasons else "Fetch failed",
+                        "churned": [], "churned_all": [], "active": [],
+                    }
+
+                churned, active = [], []
+                for c in by_id.values():
+                    last = c.get("last_order_created_at")
+                    if not last:
+                        continue
+                    if last >= silent_since:
+                        active.append(c)
+                    elif last >= active_since:
+                        churned.append(c)
+
+                churned_kept = [c for c in churned if c["orders_count"] >= min_orders]
+                churned_kept.sort(key=lambda c: c["amount_spent"], reverse=True)
+
+                return {
+                    "store": s,
+                    "ok": True,
+                    # A failed shard removes a contiguous date range, so what
+                    # survives is a biased sample — flag it rather than pretend.
+                    "complete": failed_shards == 0 and not incomplete_reasons,
+                    "incomplete_reason": incomplete_reasons[0] if incomplete_reasons else None,
+                    "error": None,
+                    "warnings": warnings[:3],
+                    "churned": churned_kept,
+                    "churned_all": churned,
+                    "active": active,
+                }
+
+        tasks = [asyncio.create_task(fetch_for_store(s)) for s in store_list]
+
+        async def collect(t):
+            try:
+                res = await t
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                res = {"store": None, "ok": False, "complete": False,
+                       "error": f"Unexpected error: {e}", "churned": [], "churned_all": [], "active": []}
+            await events.put(("done", res))
+
+        collectors = [asyncio.create_task(collect(t)) for t in tasks]
+
+        results: List[Dict[str, Any]] = []
+        completed = 0
+        last_heartbeat = asyncio.get_event_loop().time()
+
+        try:
+            while completed < len(store_list):
+                try:
+                    kind, payload = await asyncio.wait_for(events.get(), timeout=15)
+                except asyncio.TimeoutError:
+                    yield ": heartbeat\n\n"
+                    last_heartbeat = asyncio.get_event_loop().time()
+                    continue
+
+                if kind == "retry":
+                    yield f"event: progress\ndata: {json.dumps({'phase': 'retry', **payload})}\n\n"
+                    continue
+
+                completed += 1
+                results.append(payload)
+                st = payload.get("store") or {}
+                churned = payload.get("churned") or []
+                yield f"event: store\ndata: {json.dumps({'store_id': st.get('id'), 'store_name': st.get('name'), 'ok': payload.get('ok'), 'complete': payload.get('complete'), 'incomplete_reason': payload.get('incomplete_reason'), 'error': payload.get('error'), 'warnings': payload.get('warnings') or [], 'churned_count': len(churned), 'active_count': len(payload.get('active') or []), 'churned_timing': _timing_summary(churned), 'active_timing': _timing_summary(payload.get('active') or []), 'rows': churned, 'completed': completed, 'total_stores': len(store_list)})}\n\n"
+
+                now = asyncio.get_event_loop().time()
+                if now - last_heartbeat > 15:
+                    yield ": heartbeat\n\n"
+                    last_heartbeat = now
+        except GeneratorExit:
+            print("[SHOPIFY-ANALYTICS] Churn client disconnected — cancelling")
+            for t in list(tasks) + list(collectors):
+                if not t.done():
+                    t.cancel()
+            raise
+
+        # Only stores with a complete fetch feed the benchmark. A partial store
+        # is missing a date range, and the benchmark is the number the user acts on.
+        complete = [r for r in results if r.get("ok") and r.get("complete")]
+        all_churned = [c for r in complete for c in (r.get("churned") or [])]
+        all_active = [c for r in complete for c in (r.get("active") or [])]
+
+        # "When did they leave" — month of last order.
+        by_month: Dict[str, int] = {}
+        for c in all_churned:
+            key = (c.get("last_order_created_at") or "")[:7]
+            if key:
+                by_month[key] = by_month.get(key, 0) + 1
+
+        payload = {
+            "stores": [{
+                "store_id": (r.get("store") or {}).get("id"),
+                "store_name": (r.get("store") or {}).get("name"),
+                "ok": r.get("ok"),
+                "complete": r.get("complete"),
+                "incomplete_reason": r.get("incomplete_reason"),
+                "error": r.get("error"),
+                "warnings": r.get("warnings") or [],
+                "churned_count": len(r.get("churned") or []),
+                "active_count": len(r.get("active") or []),
+                "churned_timing": _timing_summary(r.get("churned") or []),
+                "active_timing": _timing_summary(r.get("active") or []),
+            } for r in results],
+            "benchmark": {
+                "churned": _timing_summary(all_churned),
+                "active": _timing_summary(all_active),
+                "stores_included": len(complete),
+                "stores_total": len(store_list),
+            },
+            "totals": {
+                "churned_customers": len(all_churned),
+                "revenue_lost": round(sum(c["amount_spent"] for c in all_churned), 2),
+                "median_orders": _median([float(c["orders_count"]) for c in all_churned]),
+                "currency": (all_churned[0]["currency"] if all_churned else "USD"),
+            },
+            "by_month": [{"month": m, "count": by_month[m]} for m in sorted(by_month)],
+            "active_since": active_since,
+            "silent_since": silent_since,
+            "min_orders": min_orders,
+        }
+        yield f"event: complete\ndata: {json.dumps(payload)}\n\n"
+
+    async def generate_safe() -> AsyncGenerator[str, None]:
+        try:
+            async for event in generate():
+                yield event
+        except GeneratorExit:
+            print("[SHOPIFY-ANALYTICS] Churn stream cancelled")
+            return
+
+    return StreamingResponse(
+        generate_safe(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
+
+
+@app.post("/api/shopify-analytics/customer-detail")
+async def shopify_analytics_customer_detail(
+    request: CustomerDetailRequest,
+    db: Session = Depends(get_db),
+):
+    """Recent orders + line items for one customer, loaded on row click."""
+    store = db.query(Store).filter(
+        Store.id == request.store_id,
+        Store.store_type == StoreType.shopify,
+    ).first()
+    if not store or not store.shopify_connection:
+        raise HTTPException(status_code=404, detail="Shopify store not found")
+
+    conn = store.shopify_connection
+    result = await fetch_customer_recent_orders(
+        shop_domain=conn.shop_domain,
+        admin_api_key=conn.admin_api_key,
+        customer_id=request.customer_id,
+        api_version=conn.api_version,
+        limit=request.limit or 5,
+    )
+    if not result.get("ok"):
+        raise HTTPException(status_code=502, detail=result.get("error") or "Shopify request failed")
+    return {"store_name": store.name, "orders": result["orders"]}
+
 
 
 if __name__ == "__main__":
