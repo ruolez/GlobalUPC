@@ -9,6 +9,7 @@ from datetime import datetime, date, timedelta
 import uvicorn
 import asyncio
 import json
+import math
 import statistics
 import uuid
 import os
@@ -77,7 +78,7 @@ from shopify_helper import (
     fetch_orders_with_tag, fetch_customer_orders_after,
     count_fulfillment_buckets_for_store,
     fetch_customers_with_last_order, fetch_customer_recent_orders,
-    fetch_orders_line_items, fetch_baseline_order_items
+    fetch_orders_line_items, fetch_baseline_order_items, count_orders
 )
 from item_tracker_helper import (
     get_item_info_async, get_purchases_async, get_sales_async,
@@ -6454,6 +6455,12 @@ async def shopify_analytics_lost_customers_stream(
 
                 lost_kept = [c for c in lost if c["orders_count"] >= min_orders]
                 lost_kept.sort(key=lambda c: c["amount_spent"], reverse=True)
+                # The comparison group must be filtered identically. Applying
+                # min_orders to only one side would compare repeat-buyer
+                # leavers against a control that is mostly one-time buyers —
+                # two different populations — exactly when raising the filter
+                # is supposed to sharpen the question.
+                active_kept = [c for c in active if c["orders_count"] >= min_orders]
 
                 return {
                     "store": s,
@@ -6466,7 +6473,8 @@ async def shopify_analytics_lost_customers_stream(
                     "warnings": warnings[:3],
                     "lost": lost_kept,
                     "lost_all": lost,
-                    "active": active,
+                    "active": active_kept,
+                    "active_all": active,
                 }
 
         tasks = [asyncio.create_task(fetch_for_store(s)) for s in store_list]
@@ -6620,37 +6628,85 @@ async def shopify_analytics_customer_detail(
 # would read as a churn signal.
 # ============================================================================
 
-# One 250-order page per calendar month per store. Exhaustive is not an option:
-# one store has ~137,000 orders in a two-year window.
-_BASELINE_MAX_MONTHS = 36
+# Baseline sampling. Exhaustive is not an option — one store has ~137,000
+# orders in a two-year window — but a naive "first 250 of each month" is worse
+# than it looks: on a 5,000-order month it covers only days 1-2, so every lift
+# inherits whatever is special about the start of a month.
+#
+# Instead, size each window so a single 250-order page covers it ENTIRELY
+# (unbiased within the window), and spread those windows evenly across the
+# range. Small stores end up with contiguous windows, i.e. full coverage.
+_BASELINE_PAGE_BUDGET = 100
+_BASELINE_PAGE = 250
+# Days used to measure the store's order rate. Short enough to stay under
+# Shopify's 10,000 ordersCount saturation on the busiest store.
+_RATE_PROBE_DAYS = 14
 # Below this many last orders, a lift ratio is noise dressed up as a finding.
 _LIFT_MIN_ORDERS = 5
 
 
-def _month_windows(start_date: str, end_date: str) -> List[tuple]:
+def _baseline_months(
+    start_date: str, end_date: str, orders_per_day: float,
+    page_budget: int = _BASELINE_PAGE_BUDGET,
+) -> List[tuple]:
     """
-    [(start, end)] one per calendar month, clamped to [start_date, end_date).
+    Complete calendar months, spread evenly across the range.
 
-    The clamping is the point: an unclamped final month would sample orders
-    placed *after* the cutoff, i.e. after these customers were already counted
-    as lost, which breaks the same-period property the whole comparison
-    depends on.
+    Whole months matter: a partial slice inherits whatever is special about the
+    days it lands on — paydays, weekends, promos, restocks. Each returned
+    window is paginated in full, so within a month coverage is total.
+
+    How many months fit depends on the store: a 5,000-order month costs ~20
+    pages, a 30-order month costs one. The page budget decides how many months
+    can be covered, and they are spread across the range rather than clustered.
     """
+    from datetime import date
+
     try:
-        y, m = int(start_date[0:4]), int(start_date[5:7])
-        ey, em = int(end_date[0:4]), int(end_date[5:7])
-    except (ValueError, IndexError):
+        s = date.fromisoformat(start_date)
+        e = date.fromisoformat(end_date)
+    except ValueError:
+        return []
+    if s >= e:
         return []
 
-    out = []
-    while (y, m) <= (ey, em) and len(out) < _BASELINE_MAX_MONTHS:
+    months: List[tuple] = []
+    y, m = s.year, s.month
+    while date(y, m, 1) < e and len(months) < 120:
         ny, nm = (y + 1, 1) if m == 12 else (y, m + 1)
-        lo = max(f"{y:04d}-{m:02d}-01", start_date)
-        hi = min(f"{ny:04d}-{nm:02d}-01", end_date)
+        lo = max(date(y, m, 1), s)
+        hi = min(date(ny, nm, 1), e)
         if lo < hi:
-            out.append((lo, hi))
+            months.append((lo.isoformat(), hi.isoformat()))
         y, m = ny, nm
-    return out
+    if not months:
+        return []
+
+    avg_days = ((e - s).days / len(months)) or 30
+    per_month_pages = max(
+        1, math.ceil((orders_per_day * avg_days) / _BASELINE_PAGE) if orders_per_day else 1
+    )
+    n = max(1, min(len(months), page_budget // per_month_pages))
+    if n >= len(months):
+        return months
+    step = len(months) / n
+    return [months[int(i * step)] for i in range(n)]
+
+
+def _rate_probe_window(start_date: str, end_date: str) -> tuple:
+    """A short window mid-range used to measure the store's orders/day."""
+    from datetime import date, timedelta
+
+    try:
+        s = date.fromisoformat(start_date)
+        e = date.fromisoformat(end_date)
+    except ValueError:
+        return (start_date, end_date, 1)
+    total = (e - s).days
+    if total <= _RATE_PROBE_DAYS:
+        return (start_date, end_date, max(1, total))
+    mid = s + timedelta(days=total // 2)
+    return (mid.isoformat(), (mid + timedelta(days=_RATE_PROBE_DAYS)).isoformat(), _RATE_PROBE_DAYS)
 
 
 def _product_key(item: Dict[str, Any]) -> tuple:
@@ -6747,10 +6803,9 @@ async def shopify_analytics_lost_products_stream(
             return
         work.sort(key=lambda w: w["id"])
 
-        windows = _month_windows(request.active_since, request.silent_since)
         total_orders = sum(len(w["order_ids"]) for w in work)
 
-        yield f"event: progress\ndata: {json.dumps({'phase': 'started', 'total_orders': total_orders, 'stores': [{'store_id': w['id'], 'store_name': w['name'], 'orders': len(w['order_ids'])} for w in work], 'baseline_months': len(windows)})}\n\n"
+        yield f"event: progress\ndata: {json.dumps({'phase': 'started', 'total_orders': total_orders, 'stores': [{'store_id': w['id'], 'store_name': w['name'], 'orders': len(w['order_ids'])} for w in work]})}\n\n"
 
         events: asyncio.Queue = asyncio.Queue()
         semaphore = asyncio.Semaphore(5)
@@ -6776,7 +6831,23 @@ async def shopify_analytics_lost_products_stream(
                 )
                 if not last.get("ok"):
                     return {"store": w, "ok": False, "error": last.get("error") or "Fetch failed",
-                            "last": None, "baseline": None}
+                            "last": None, "baseline": None, "windows": []}
+
+                # Measure this store's order rate so the baseline windows can be
+                # sized to fit one page each. Stores differ by 100x in volume, so
+                # a single fixed window size would over-sample one and bias another.
+                pstart, pend, pdays = _rate_probe_window(
+                    request.active_since, request.silent_since)
+                rate = 0.0
+                ok_c, _err_c, cnt = await count_orders(
+                    shop_domain=w["shop_domain"], admin_api_key=w["admin_api_key"],
+                    query=f"created_at:>={pstart} created_at:<{pend}",
+                    api_version=w["api_version"],
+                )
+                if ok_c and cnt:
+                    rate = cnt / max(1, pdays)
+                windows = _baseline_months(
+                    request.active_since, request.silent_since, rate)
 
                 base = await fetch_baseline_order_items(
                     shop_domain=w["shop_domain"], admin_api_key=w["admin_api_key"],
@@ -6787,7 +6858,8 @@ async def shopify_analytics_lost_products_stream(
                     })),
                     on_retry=on_retry,
                 )
-                return {"store": w, "ok": True, "error": None, "last": last, "baseline": base}
+                return {"store": w, "ok": True, "error": None, "last": last,
+                        "baseline": base, "windows": windows, "orders_per_day": round(rate, 1)}
 
         tasks = [asyncio.create_task(analyse_store(w)) for w in work]
 
@@ -6798,7 +6870,7 @@ async def shopify_analytics_lost_products_stream(
                 raise
             except Exception as e:
                 res = {"store": None, "ok": False, "error": f"Unexpected error: {e}",
-                       "last": None, "baseline": None}
+                       "last": None, "baseline": None, "windows": []}
             await events.put(("done", res))
 
         collectors = [asyncio.create_task(collect(t)) for t in tasks]
@@ -6836,11 +6908,17 @@ async def shopify_analytics_lost_products_stream(
                     t.cancel()
             raise
 
-        # --- merge across stores ---
-        merged: Dict[Any, Dict[str, Any]] = {}
-        merged_base: Dict[Any, int] = {}
-        n_last = 0
-        n_base = 0
+        # --- merge across stores, standardised per store ---
+        #
+        # Pooling raw counts across stores is Simpson's paradox waiting to
+        # happen: merging a small store with a large one shifted one product
+        # from 2.46x to 11.00x without a single order changing, because the
+        # other store contributed baseline orders but no matching sales.
+        #
+        # So compare each store against ITS OWN baseline and sum the results
+        # (indirect standardisation): expected = SUM_s n_lost_s * share_base_s.
+        # Lift is then observed/expected, and store mix cannot distort it.
+        per_store = []
         missing = 0
         truncated = 0
 
@@ -6852,9 +6930,28 @@ async def shopify_analytics_lost_products_stream(
             missing += last.get("missing", 0)
             truncated += last.get("truncated", 0) + (base.get("truncated", 0) or 0)
 
-            per_product, count = _count_orders(last.get("orders") or [])
-            n_last += count
-            for key, entry in per_product.items():
+            lost_products, n_lost_s = _count_orders(last.get("orders") or [])
+            base_products, n_base_s = (
+                _count_orders(base.get("orders") or []) if base.get("ok") else ({}, 0)
+            )
+            slots_last = sum(e["orders"] for e in lost_products.values())
+            slots_base = sum(e["orders"] for e in base_products.values())
+            per_store.append({
+                "store": res.get("store") or {},
+                "lost_products": lost_products,
+                "base_products": base_products,
+                "n_lost": n_lost_s,
+                "n_base": n_base_s,
+                "avg_last": (slots_last / n_lost_s) if n_lost_s else 0.0,
+                "avg_base": (slots_base / n_base_s) if n_base_s else 0.0,
+            })
+
+        n_last = sum(p["n_lost"] for p in per_store)
+        n_base = sum(p["n_base"] for p in per_store)
+
+        merged: Dict[Any, Dict[str, Any]] = {}
+        for ps in per_store:
+            for key, entry in ps["lost_products"].items():
                 tgt = merged.setdefault(key, {
                     "key": entry["key"], "product_id": entry["product_id"],
                     "title": entry["title"], "deleted": entry["deleted"],
@@ -6869,36 +6966,43 @@ async def shopify_analytics_lost_products_stream(
                     tv["orders"] += v["orders"]
                     tv["quantity"] += v["quantity"]
 
-            if base.get("ok"):
-                base_products, base_count = _count_orders(base.get("orders") or [])
-                n_base += base_count
-                for key, entry in base_products.items():
-                    merged_base[key] = merged_base.get(key, 0) + entry["orders"]
-
-        # Last orders hold fewer distinct products than ordinary orders
-        # (measured: 3.17 vs 5.49). That shrinks EVERY product's share of last
-        # orders by the same factor, so an unadjusted ratio puts the typical
-        # product near 0.5x and 1.0x stops meaning "average" — a reader would
-        # call an ordinary product under-represented. Rescale so 1.0x is
-        # genuinely typical for this cohort; the raw ratio is kept alongside.
-        slots_last = sum(e["orders"] for e in merged.values())
-        slots_base = sum(merged_base.values())
-        avg_last = (slots_last / n_last) if n_last else 0.0
-        avg_base = (slots_base / n_base) if n_base else 0.0
-        basket_ratio = (avg_base / avg_last) if avg_last else 1.0
+        # Last orders hold fewer distinct products than ordinary orders, which
+        # shrinks every product's share alike and would park the typical
+        # product near 0.5x. Rescale per store so 1.0x means "typical".
+        exp_raw_total = 0.0
+        exp_adj_total = 0.0
+        expected: Dict[Any, Dict[str, float]] = {}
+        for key in merged:
+            e_raw = 0.0
+            e_adj = 0.0
+            seen_base = 0
+            for ps in per_store:
+                if not ps["n_base"]:
+                    continue
+                share = (ps["base_products"].get(key, {}).get("orders", 0)) / ps["n_base"]
+                seen_base += ps["base_products"].get(key, {}).get("orders", 0)
+                e_raw += ps["n_lost"] * share
+                ratio = (ps["avg_base"] / ps["avg_last"]) if ps["avg_last"] else 1.0
+                e_adj += ps["n_lost"] * share / (ratio or 1.0)
+            expected[key] = {"raw": e_raw, "adj": e_adj, "base_orders": seen_base}
+            exp_raw_total += e_raw
+            exp_adj_total += e_adj
 
         products = []
         for key, entry in merged.items():
+            exp = expected.get(key) or {"raw": 0.0, "adj": 0.0, "base_orders": 0}
             pct_lost = (entry["orders"] / n_last * 100) if n_last else 0.0
-            b_orders = merged_base.get(key, 0)
-            pct_base = (b_orders / n_base * 100) if n_base else 0.0
-            # Suppress rather than fabricate: a ratio built on 4 orders against
-            # 2 baseline orders is noise, and a zero baseline is not infinity.
+            # The share this product WOULD have if lost customers behaved like
+            # their own store's ordinary orders. Displayed so lift stays
+            # checkable: lift_raw == pct_lost / pct_expected.
+            pct_expected = (exp["raw"] / n_last * 100) if n_last else 0.0
+            # Suppress rather than fabricate: a ratio built on 4 orders is
+            # noise, and a zero expectation is not infinity.
             lift = None
             lift_raw = None
-            if entry["orders"] >= _LIFT_MIN_ORDERS and pct_base > 0:
-                lift_raw = round(pct_lost / pct_base, 2)
-                lift = round((pct_lost / pct_base) * basket_ratio, 2)
+            if entry["orders"] >= _LIFT_MIN_ORDERS and exp["raw"] > 0 and exp["adj"] > 0:
+                lift_raw = round(entry["orders"] / exp["raw"], 2)
+                lift = round(entry["orders"] / exp["adj"], 2)
             products.append({
                 "key": entry["key"],
                 "product_id": entry["product_id"],
@@ -6907,15 +7011,23 @@ async def shopify_analytics_lost_products_stream(
                 "orders": entry["orders"],
                 "pct_lost": round(pct_lost, 2),
                 "quantity": entry["quantity"],
-                "baseline_orders": b_orders,
-                "pct_base": round(pct_base, 2),
+                "baseline_orders": exp["base_orders"],
+                "pct_base": round(pct_expected, 2),
                 "lift": lift,
                 "lift_raw": lift_raw,
-                "only_in_lost": b_orders == 0 and n_base > 0,
+                "only_in_lost": exp["base_orders"] == 0 and n_base > 0,
                 "variants": sorted(
                     entry["variants"].values(), key=lambda v: -v["orders"]
                 )[:25],
             })
+
+        avg_last = (
+            sum(ps["avg_last"] * ps["n_lost"] for ps in per_store) / n_last
+        ) if n_last else 0.0
+        avg_base = (
+            sum(ps["avg_base"] * ps["n_base"] for ps in per_store) / n_base
+        ) if n_base else 0.0
+        basket_ratio = (exp_raw_total / exp_adj_total) if exp_adj_total else 1.0
 
         products.sort(key=lambda p: (-p["orders"], p["title"].lower()))
 

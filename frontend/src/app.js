@@ -13759,6 +13759,7 @@ function loadLostCustomersPanel() {
   }
 
   sacrBindProductsModal();
+  updateSacrProductsBtn();
   updateSacrRunBtn();
 }
 
@@ -13862,6 +13863,16 @@ function sacrApplySortHeaders() {
     });
 }
 
+// Matches Python's statistics.median used by the backend — averaging the two
+// middle values. Picking the upper one made the same word mean two different
+// things on the same screen for even-sized cohorts.
+function sacrMedian(values) {
+  const v = values.filter((x) => x !== null && x !== undefined).sort((a, b) => a - b);
+  if (!v.length) return null;
+  const mid = Math.floor(v.length / 2);
+  return v.length % 2 ? v[mid] : (v[mid - 1] + v[mid]) / 2;
+}
+
 function sacrDaysSilent(row) {
   if (!row.last_order_created_at) return null;
   const then = new Date(row.last_order_created_at);
@@ -13906,6 +13917,7 @@ async function runLostCustomersReport() {
   }
   if (status) status.textContent = "Connecting...";
   if (empty) empty.style.display = "none";
+  updateSacrProductsBtn();
   renderSacrBanner();
 
   try {
@@ -14001,7 +14013,6 @@ async function runLostCustomersReport() {
             for (const r of data.rows) {
               r.store_id = data.store_id;
               r.store_name = data.store_name;
-              r.days_silent = sacrDaysSilent(r);
             }
             sacrState.rows.push(...data.rows);
           }
@@ -14064,6 +14075,7 @@ async function runLostCustomersReport() {
     if (runBtn) runBtn.disabled = false;
     if (cancelBtn) cancelBtn.style.display = "none";
     updateSacrRunBtn();
+    updateSacrProductsBtn();
     renderSacrProgress();
     renderSacrAll();
     // Keep the panel up when something went wrong — the timings and per-store
@@ -14095,6 +14107,9 @@ function sacrPopulateFilterOptions() {
 
 function sacrFilteredRows() {
   const f = sacrState.filter;
+  // Recomputed per render: frozen at arrival it silently drifts a day stale
+  // on a tab left open overnight, including in the KPI.
+  for (const r of sacrState.rows) r.days_silent = sacrDaysSilent(r);
   let rows = sacrState.rows;
   if (f.search) {
     rows = rows.filter(
@@ -14154,6 +14169,8 @@ function renderSacrAll() {
   const hasRows = sacrState.rows.length > 0;
   const allDone = sacrState.stores.length > 0 && sacrState.stores.every((s) => s.ok !== null);
 
+  updateSacrProductsBtn();
+
   document.getElementById("sacr-kpi-strip").hidden = !hasRows;
   document.getElementById("sacr-benchmark").hidden = !sacrState.benchmark;
   document.getElementById("sacr-chart-card").hidden = !sacrState.byMonth.length;
@@ -14171,21 +14188,37 @@ function renderSacrAll() {
   renderSacrNote();
 }
 
+// Clicking mid-run would analyse only the stores that had landed and then
+// report that partial count as though it were the whole scope. Called from
+// every state transition, not just renderSacrAll — which has not run at all
+// before the first report.
+function updateSacrProductsBtn() {
+  const btn = document.getElementById("sacr-products-btn");
+  if (!btn) return;
+  const hasRows = sacrState.rows.length > 0;
+  btn.disabled = sacrState.loading || !hasRows;
+  btn.title = sacrState.loading
+    ? "Wait for the report to finish"
+    : !hasRows
+      ? "Run the report first"
+      : "";
+}
+
 function renderSacrKpis() {
-  const t = sacrState.totals;
   const set = (id, v) => {
     const el = document.getElementById(id);
     if (el) el.textContent = v;
   };
-  const rows = sacrState.rows;
-  if (!rows.length) return;
+  // Scoped to the filtered set so the KPI strip, the footer totals and the row
+  // count all describe the same rows. Previously the strip summarised
+  // everything while the footer summarised the filter, with nothing saying so.
+  const rows = sacrFilteredRows();
+  const allRows = sacrState.rows;
+  if (!allRows.length) return;
+  const filtered = rows.length !== allRows.length;
 
-  const silentDays = rows.map((r) => r.days_silent).filter((d) => d !== null).sort((a, b) => a - b);
-  const medSilent = silentDays.length
-    ? silentDays[Math.floor(silentDays.length / 2)]
-    : null;
-  const orders = rows.map((r) => r.orders_count).sort((a, b) => a - b);
-  const medOrders = orders.length ? orders[Math.floor(orders.length / 2)] : 0;
+  const medSilent = sacrMedian(rows.map((r) => r.days_silent));
+  const medOrders = sacrMedian(rows.map((r) => r.orders_count)) || 0;
   const revenue = rows.reduce((s, r) => s + (r.amount_spent || 0), 0);
   const currency = rows[0]?.currency || "USD";
 
@@ -14194,11 +14227,22 @@ function renderSacrKpis() {
   const mark = incomplete ? " †" : "";
 
   set("sacr-kpi-count", rows.length.toLocaleString() + mark);
-  set("sacr-kpi-count-sub", t ? `across ${sacrState.stores.filter((s) => s.ok).length} store(s)` : "");
+  set(
+    "sacr-kpi-count-sub",
+    filtered
+      ? `filtered from ${allRows.length.toLocaleString()}`
+      : `across ${sacrState.stores.filter((s) => s.ok).length} store(s)`,
+  );
   set("sacr-kpi-revenue", sacrFmtMoney(revenue, currency) + mark);
+  // These are lifetime figures from Shopify, including orders placed before
+  // the window — not revenue lost during the period.
+  set(
+    "sacr-kpi-revenue-sub",
+    filtered ? "lifetime spend, filtered rows" : "lifetime spend of lost customers",
+  );
   set("sacr-kpi-orders", String(medOrders));
   set("sacr-kpi-orders-sub", "lifetime orders before going quiet");
-  set("sacr-kpi-silent", medSilent === null ? "—" : medSilent.toLocaleString());
+  set("sacr-kpi-silent", medSilent === null ? "—" : Math.round(medSilent).toLocaleString());
   set("sacr-kpi-silent-sub", "since their last order");
 }
 
@@ -14870,7 +14914,7 @@ function renderSacrProducts() {
           ? ` title="Too few orders to compare reliably (needs ${st.totals?.lift_min_orders ?? 5})"`
           : p.only_in_lost
             ? ' title="Did not appear in the comparison sample at all"'
-            : ` title="${p.pct_lost.toFixed(1)}% vs ${p.pct_base.toFixed(1)}% is ${p.lift_raw ?? "—"}x before adjusting for basket size (x${st.totals?.basket_ratio ?? 1})"`;
+            : ` title="${p.pct_lost.toFixed(1)}% actual vs ${p.pct_base.toFixed(1)}% expected = ${p.lift_raw ?? "—"}x before adjusting for basket size (x${st.totals?.basket_ratio ?? 1}). Seen in ${p.baseline_orders.toLocaleString()} baseline order(s)."`;
       const head =
         `<tr class="sacr-product-row" data-product-key="${saEscape(p.key)}">` +
         `<td><span class="sacr-expand${open ? " is-open" : ""}">▸</span>${saEscape(p.title)}` +
@@ -14909,7 +14953,7 @@ function renderSacrProducts() {
     const t = st.totals;
     const bits = [
       `Ranked by how many last orders each product appears in — a product is counted once per order, so a single large basket cannot inflate it.`,
-      `Lift compares a product's share of these ${t.last_orders_analysed.toLocaleString()} last orders against its share of ${t.baseline_orders_sampled.toLocaleString()} orders sampled from the same period. Above 1.0x means it appears more often in last orders than is typical; below means less often.`,
+      `Lift compares each product's share of these ${t.last_orders_analysed.toLocaleString()} last orders against what you would expect if those customers had shopped like their own store's ordinary orders (${t.baseline_orders_sampled.toLocaleString()} sampled from the same period). Each store is compared against itself and the results summed, so a store's size cannot distort another's products. Above 1.0x means over-represented among leavers.`,
       // Without this adjustment every product would sit near 0.5x and an
       // ordinary product would read as under-represented.
       `Last orders held ${t.avg_products_last} different products on average versus ${t.avg_products_baseline} in comparable orders, which shrinks every product's share alike — lift is rescaled by x${t.basket_ratio} so that 1.0x means "typical". Hover a lift to see the unadjusted ratio.`,
@@ -14925,6 +14969,19 @@ function renderSacrProducts() {
     failed.forEach((s) =>
       bits.push(`${s.store_name || "A store"} failed: ${s.error || "unknown error"} — excluded.`),
     );
+    // The report itself may have flagged a store as partial. Those rows are in
+    // this analysis, so the caveat has to travel with them.
+    (sacrState.stores || [])
+      .filter((s) => s.ok && s.complete === false)
+      .forEach((s) =>
+        bits.push(
+          `${s.store_name} returned incomplete data in the report (${s.incomplete_reason || "some pages failed"}), so its products are under-counted here.`,
+        ),
+      );
+    if (t.orders_missing && t.last_orders_analysed &&
+        t.orders_missing / (t.orders_missing + t.last_orders_analysed) > 0.05) {
+      bits.push(`Over 5% of requested orders could not be read — treat these counts as indicative only.`);
+    }
     note.innerHTML = bits.map((b) => saEscape(b)).join("<br />");
   }
 }

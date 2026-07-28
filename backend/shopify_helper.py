@@ -2515,6 +2515,9 @@ _LINE_ITEM_BATCH = 250
 # truncating the counts.
 _LINE_ITEMS_PER_ORDER = 100
 
+# Backstop per baseline month; a normal month needs far fewer.
+_BASELINE_MAX_PAGES_PER_WINDOW = 60
+
 _ORDER_ITEMS_QUERY = """
 query OrderItems($ids: [ID!]!) {
   nodes(ids: $ids) {
@@ -2538,8 +2541,9 @@ query OrderItems($ids: [ID!]!) {
 """ % _LINE_ITEMS_PER_ORDER
 
 _BASELINE_ITEMS_QUERY = """
-query BaselineItems($q: String!) {
-  orders(first: 250, query: $q, sortKey: CREATED_AT) {
+query BaselineItems($q: String!, $after: String) {
+  orders(first: 250, query: $q, sortKey: CREATED_AT, after: $after) {
+    pageInfo { hasNextPage endCursor }
     nodes {
       id
       lineItems(first: %d) {
@@ -2671,16 +2675,18 @@ async def fetch_baseline_order_items(
     """
     Sample orders for the comparison baseline: one 250-order page per window.
 
-    `windows` is a list of (start, end) date strings — one per month. Sampling
-    month by month rather than taking the first N pages keeps the baseline
-    spread across the same period as the last orders, so a product that was
-    added or discontinued mid-window cannot masquerade as a churn signal.
-    An exhaustive baseline is not viable: one store has ~137,000 orders in a
-    two-year window.
+    `windows` is a list of (start, end) date strings — complete calendar
+    months, each paginated IN FULL. Reading only the first page covered just
+    the opening day or two of a busy month, so every comparison inherited
+    whatever was special about the start of a month.
+
+    An exhaustive baseline over the entire range is not viable — one store has
+    ~137,000 orders in two years — so the caller picks how many whole months to
+    cover based on that store's volume.
     """
     out: Dict[str, Any] = {
         "ok": False, "error": None, "orders": [],
-        "truncated": 0, "warnings": [],
+        "truncated": 0, "warnings": [], "pages": 0,
     }
 
     try:
@@ -2693,25 +2699,34 @@ async def fetch_baseline_order_items(
         async with aiohttp.ClientSession() as session:
             for start, end in windows:
                 q = f"created_at:>={start} created_at:<{end}"
-                data, warnings = await _shopify_graphql(
-                    session, shop_domain, admin_api_key, api_version,
-                    _BASELINE_ITEMS_QUERY, {"q": q},
-                    op_name="baseline line items", on_retry=on_retry,
-                )
-                if warnings:
-                    out["warnings"].extend(warnings)
+                cursor = None
+                # Backstop so one unexpectedly huge month cannot run away.
+                for _ in range(_BASELINE_MAX_PAGES_PER_WINDOW):
+                    data, warnings = await _shopify_graphql(
+                        session, shop_domain, admin_api_key, api_version,
+                        _BASELINE_ITEMS_QUERY, {"q": q, "after": cursor},
+                        op_name="baseline line items", on_retry=on_retry,
+                    )
+                    if warnings:
+                        out["warnings"].extend(warnings)
 
-                for node in (data.get("orders") or {}).get("nodes") or []:
-                    if not node:
-                        continue
-                    order = _normalize_order_items(node)
-                    if order["truncated"]:
-                        out["truncated"] += 1
-                    out["orders"].append(order)
+                    conn = data.get("orders") or {}
+                    for node in conn.get("nodes") or []:
+                        if not node:
+                            continue
+                        order = _normalize_order_items(node)
+                        if order["truncated"]:
+                            out["truncated"] += 1
+                        out["orders"].append(order)
 
-                if on_batch:
-                    on_batch(len(out["orders"]), len(windows))
+                    out["pages"] += 1
+                    if on_batch:
+                        on_batch(len(out["orders"]), len(windows))
 
+                    page_info = conn.get("pageInfo") or {}
+                    if not page_info.get("hasNextPage"):
+                        break
+                    cursor = page_info.get("endCursor")
     except ShopifyFetchError as e:
         out["error"] = str(e)
         return out
