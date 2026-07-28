@@ -14393,6 +14393,7 @@ function renderSacrTable() {
         `<td>${saEscape(r.store_name || "")}${badge}</td>` +
         `<td class="sacr-num">${(r.orders_count || 0).toLocaleString()}</td>` +
         `<td class="sacr-num">${sacrFmtMoney(r.amount_spent, "")}</td>` +
+        `<td>${(r.first_order_created_at || "").slice(0, 10) || "—"}</td>` +
         `<td>${(r.last_order_created_at || "").slice(0, 10)}${r.last_order_name ? ` <span class="sacr-ordname">${saEscape(r.last_order_name)}</span>` : ""}</td>` +
         `<td class="sacr-num">${r.days_silent === null ? "—" : r.days_silent.toLocaleString()}</td>` +
         sacrDaysCell(r.days_to_fulfil) +
@@ -14411,7 +14412,7 @@ function renderSacrTable() {
       `<tr class="sacr-foot-row"><td>Total (filtered)</td><td></td>` +
       `<td class="sacr-num">${orders.toLocaleString()}</td>` +
       `<td class="sacr-num">${sacrFmtMoney(spend, "")}</td>` +
-      `<td colspan="6"></td></tr>`;
+      `<td colspan="7"></td></tr>`;
   }
 
   const info = document.getElementById("sacr-page-info");
@@ -14448,6 +14449,18 @@ function renderSacrNote() {
   if (noTiming) {
     notes.push(
       `${noTiming.toLocaleString()} last order(s) have no delivery timestamp (unfulfilled, or a carrier that never reported delivery). Shown as “—” and excluded from medians — never counted as zero.`,
+    );
+  }
+  const excluded = sacrState.stores.reduce((a, s) => a + (s.excluded_pre_existing || 0), 0);
+  if (excluded) {
+    notes.push(
+      `${excluded.toLocaleString()} customer(s) who were already ordering before ${sacrState.activeSince} were excluded entirely — from this table and from every total, KPI and comparison above.`,
+    );
+  }
+  const unknownFirst = sacrState.stores.reduce((a, s) => a + (s.unknown_first_order || 0), 0);
+  if (unknownFirst) {
+    notes.push(
+      `${unknownFirst.toLocaleString()} customer(s) had no retrievable first order and were excluded rather than assumed to qualify.`,
     );
   }
   notes.push(

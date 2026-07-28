@@ -78,7 +78,8 @@ from shopify_helper import (
     fetch_orders_with_tag, fetch_customer_orders_after,
     count_fulfillment_buckets_for_store,
     fetch_customers_with_last_order, fetch_customer_recent_orders,
-    fetch_orders_line_items, fetch_baseline_order_items, count_orders
+    fetch_orders_line_items, fetch_baseline_order_items, count_orders,
+    fetch_customer_first_orders
 )
 from item_tracker_helper import (
     get_item_info_async, get_purchases_async, get_sales_async,
@@ -6453,14 +6454,69 @@ async def shopify_analytics_lost_customers_stream(
                     elif last >= active_since:
                         lost.append(c)
 
-                lost_kept = [c for c in lost if c["orders_count"] >= min_orders]
+                # "Was ordering since" means the customer STARTED here. Shopify's
+                # order_date filter only proves they ordered at some point in the
+                # window, so anyone already buying beforehand is still in `lost`
+                # at this stage. Look up each candidate's oldest order and drop
+                # the pre-existing ones outright — they must not reach the rows,
+                # the totals, the KPIs or the benchmark.
+                candidates = [c["customer_id"] for c in (lost + active) if c.get("customer_id")]
+                first_map: Dict[str, Any] = {}
+                first_err = None
+                unknown_first = 0
+                if candidates:
+                    events.put_nowait(("phase", {
+                        "store_id": s["id"], "store_name": s["name"],
+                        "label": "checking when each customer started",
+                    }))
+                    fo = await fetch_customer_first_orders(
+                        shop_domain=s["shop_domain"],
+                        admin_api_key=s["admin_api_key"],
+                        customer_ids=candidates,
+                        api_version=s["api_version"],
+                        on_batch=lambda d, t, _s=s: events.put_nowait(("first_orders", {
+                            "store_id": _s["id"], "store_name": _s["name"],
+                            "done": d, "total": t,
+                        })),
+                        on_retry=on_retry,
+                    )
+                    if fo.get("ok"):
+                        first_map = fo.get("first_orders") or {}
+                        unknown_first = fo.get("missing", 0)
+                    else:
+                        first_err = fo.get("error")
+
+                def acquired_in_window(c):
+                    first = first_map.get(c.get("customer_id"))
+                    if not first:
+                        # No first order resolved: excluded rather than assumed
+                        # in, so a lookup gap can never inflate the cohort.
+                        return False
+                    c["first_order_created_at"] = first
+                    return first >= active_since
+
+                if first_err:
+                    # Without first-order data the acquisition filter cannot be
+                    # honoured, so report the store as partial instead of
+                    # silently falling back to the old, wider meaning.
+                    incomplete_reasons.append(
+                        f"Could not determine when customers started ordering: {first_err}")
+                    for c in lost + active:
+                        c["first_order_created_at"] = None
+                    lost_in, active_in = lost, active
+                else:
+                    lost_in = [c for c in lost if acquired_in_window(c)]
+                    active_in = [c for c in active if acquired_in_window(c)]
+
+                excluded_pre_existing = (len(lost) - len(lost_in)) + (len(active) - len(active_in))
+
+                lost_kept = [c for c in lost_in if c["orders_count"] >= min_orders]
                 lost_kept.sort(key=lambda c: c["amount_spent"], reverse=True)
                 # The comparison group must be filtered identically. Applying
-                # min_orders to only one side would compare repeat-buyer
-                # leavers against a control that is mostly one-time buyers —
-                # two different populations — exactly when raising the filter
-                # is supposed to sharpen the question.
-                active_kept = [c for c in active if c["orders_count"] >= min_orders]
+                # min_orders — or the acquisition window — to only one side
+                # would compare newly-acquired leavers against a control drawn
+                # from a different population.
+                active_kept = [c for c in active_in if c["orders_count"] >= min_orders]
 
                 return {
                     "store": s,
@@ -6472,9 +6528,11 @@ async def shopify_analytics_lost_customers_stream(
                     "error": None,
                     "warnings": warnings[:3],
                     "lost": lost_kept,
-                    "lost_all": lost,
+                    "lost_all": lost_in,
                     "active": active_kept,
-                    "active_all": active,
+                    "active_all": active_in,
+                    "excluded_pre_existing": excluded_pre_existing,
+                    "unknown_first_order": unknown_first,
                 }
 
         tasks = [asyncio.create_task(fetch_for_store(s)) for s in store_list]
@@ -6506,7 +6564,8 @@ async def shopify_analytics_lost_customers_stream(
 
                 # Everything except "done" is liveness reporting and must not
                 # advance the completed-store counter.
-                if kind in ("retry", "store_start", "page", "shard_done"):
+                if kind in ("retry", "store_start", "page", "shard_done",
+                            "phase", "first_orders"):
                     yield f"event: progress\ndata: {json.dumps({'phase': kind, **payload})}\n\n"
                     continue
 
@@ -6514,7 +6573,7 @@ async def shopify_analytics_lost_customers_stream(
                 results.append(payload)
                 st = payload.get("store") or {}
                 lost = payload.get("lost") or []
-                yield f"event: store\ndata: {json.dumps({'store_id': st.get('id'), 'store_name': st.get('name'), 'ok': payload.get('ok'), 'complete': payload.get('complete'), 'incomplete_reason': payload.get('incomplete_reason'), 'error': payload.get('error'), 'warnings': payload.get('warnings') or [], 'lost_count': len(lost), 'active_count': len(payload.get('active') or []), 'lost_timing': _timing_summary(lost), 'active_timing': _timing_summary(payload.get('active') or []), 'rows': lost, 'completed': completed, 'total_stores': len(store_list)})}\n\n"
+                yield f"event: store\ndata: {json.dumps({'store_id': st.get('id'), 'store_name': st.get('name'), 'ok': payload.get('ok'), 'complete': payload.get('complete'), 'incomplete_reason': payload.get('incomplete_reason'), 'error': payload.get('error'), 'warnings': payload.get('warnings') or [], 'excluded_pre_existing': payload.get('excluded_pre_existing', 0), 'unknown_first_order': payload.get('unknown_first_order', 0), 'lost_count': len(lost), 'active_count': len(payload.get('active') or []), 'lost_timing': _timing_summary(lost), 'active_timing': _timing_summary(payload.get('active') or []), 'rows': lost, 'completed': completed, 'total_stores': len(store_list)})}\n\n"
 
                 now = asyncio.get_event_loop().time()
                 if now - last_heartbeat > 15:
@@ -6551,6 +6610,8 @@ async def shopify_analytics_lost_customers_stream(
                 "warnings": r.get("warnings") or [],
                 "lost_count": len(r.get("lost") or []),
                 "active_count": len(r.get("active") or []),
+                "excluded_pre_existing": r.get("excluded_pre_existing", 0),
+                "unknown_first_order": r.get("unknown_first_order", 0),
                 "lost_timing": _timing_summary(r.get("lost") or []),
                 "active_timing": _timing_summary(r.get("active") or []),
             } for r in results],
@@ -6561,6 +6622,8 @@ async def shopify_analytics_lost_customers_stream(
                 "stores_total": len(store_list),
             },
             "totals": {
+                "excluded_pre_existing": sum(r.get("excluded_pre_existing", 0) for r in complete),
+                "unknown_first_order": sum(r.get("unknown_first_order", 0) for r in complete),
                 "lost_customers": len(all_lost),
                 "revenue_lost": round(sum(c["amount_spent"] for c in all_lost), 2),
                 "median_orders": _median([float(c["orders_count"]) for c in all_lost]),

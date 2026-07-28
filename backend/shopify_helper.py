@@ -2738,3 +2738,110 @@ async def fetch_baseline_order_items(
 
     out["ok"] = True
     return out
+
+
+# ============================================================================
+# Acquisition date: when did this customer FIRST order?
+# ============================================================================
+
+# Shopify's Customer type has no firstOrder field, and its `order_date` search
+# filter matches customers with ANY order in a range — not customers who
+# STARTED in it. The only way to know when someone actually began buying is to
+# ask for their oldest order.
+#
+# orders(first: 1, sortKey: CREATED_AT) is ascending by default, i.e. the
+# oldest order — verified against full order lists, not assumed. Batched via
+# nodes(ids:) it costs 4 points per 250 customers, so a 25,000-customer cohort
+# is ~100 cheap calls rather than 25,000.
+_FIRST_ORDER_BATCH = 250
+_FIRST_ORDER_CONCURRENCY = 5
+
+_FIRST_ORDER_QUERY = """
+query CustomerFirstOrders($ids: [ID!]!) {
+  nodes(ids: $ids) {
+    ... on Customer {
+      id
+      orders(first: 1, sortKey: CREATED_AT) {
+        nodes { id createdAt }
+      }
+    }
+  }
+}
+"""
+
+
+async def fetch_customer_first_orders(
+    shop_domain: str,
+    admin_api_key: str,
+    customer_ids: List[str],
+    api_version: str = "2025-01",
+    on_batch=None,
+    on_retry=None,
+) -> Dict[str, Any]:
+    """
+    Map customer GID -> ISO date of their oldest order.
+
+    Returns {ok, error, first_orders, missing, warnings}. `missing` counts
+    customers Shopify returned no order for; the caller must decide what to do
+    with them rather than silently assuming a date.
+    """
+    out: Dict[str, Any] = {
+        "ok": False, "error": None, "first_orders": {}, "missing": 0, "warnings": [],
+    }
+
+    try:
+        shop_domain = validate_shop_domain(shop_domain)
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+
+    ids = [c for c in customer_ids if c]
+    if not ids:
+        out["ok"] = True
+        return out
+
+    batches = [ids[i:i + _FIRST_ORDER_BATCH] for i in range(0, len(ids), _FIRST_ORDER_BATCH)]
+    semaphore = asyncio.Semaphore(_FIRST_ORDER_CONCURRENCY)
+    done = 0
+
+    try:
+        async with aiohttp.ClientSession() as session:
+
+            async def run_batch(batch):
+                nonlocal done
+                async with semaphore:
+                    # Unlike cursor pagination these batches are independent,
+                    # so they can run concurrently instead of serially.
+                    data, warnings = await _shopify_graphql(
+                        session, shop_domain, admin_api_key, api_version,
+                        _FIRST_ORDER_QUERY, {"ids": batch},
+                        op_name="customer first orders", on_retry=on_retry,
+                    )
+                    if warnings:
+                        out["warnings"].extend(warnings)
+                    for node in data.get("nodes") or []:
+                        if not node or not node.get("id"):
+                            out["missing"] += 1
+                            continue
+                        nodes = ((node.get("orders") or {}).get("nodes") or [])
+                        if not nodes:
+                            out["missing"] += 1
+                            continue
+                        out["first_orders"][node["id"]] = nodes[0].get("createdAt")
+                    done += len(batch)
+                    if on_batch:
+                        on_batch(done, len(ids))
+
+            await asyncio.gather(*[run_batch(b) for b in batches])
+
+    except ShopifyFetchError as e:
+        out["error"] = str(e)
+        return out
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        out["error"] = f"Unexpected error: {e}"
+        return out
+
+    out["ok"] = True
+    return out
