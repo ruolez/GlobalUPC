@@ -2110,6 +2110,16 @@ async def _shopify_graphql(
 # Lost-customers report
 # ============================================================================
 
+# Cancelled and fully-refunded orders are not purchases: counting them makes a
+# customer look active when nothing was actually bought, and can make a
+# cancelled order stand in as someone's "last order".
+#
+# Verified honoured on live data (unlike Shopify's order_date negation, which
+# silently fails): 495 orders - 32 cancelled/refunded = 463 returned, exactly.
+# PARTIALLY_REFUNDED is deliberately kept — the customer still bought and kept
+# part of the order.
+ORDER_STATUS_FILTER = "-status:cancelled -financial_status:refunded"
+
 _LOST_CUSTOMERS_QUERY = """
 query LostCustomers($q: String!, $after: String) {
   customers(first: 250, query: $q, sortKey: ID, after: $after) {
@@ -2121,24 +2131,28 @@ query LostCustomers($q: String!, $after: String) {
       createdAt
       numberOfOrders
       amountSpent { amount currencyCode }
-      lastOrder {
-        id
-        name
-        createdAt
-        displayFulfillmentStatus
-        shippingLine { title carrierIdentifier }
-        fulfillments(first: 5) {
+      lastValidOrder: orders(
+        first: 1, sortKey: CREATED_AT, reverse: true, query: "%s"
+      ) {
+        nodes {
+          id
+          name
           createdAt
-          inTransitAt
-          deliveredAt
-          displayStatus
-          trackingInfo { company number url }
+          displayFulfillmentStatus
+          shippingLine { title carrierIdentifier }
+          fulfillments(first: 5) {
+            createdAt
+            inTransitAt
+            deliveredAt
+            displayStatus
+            trackingInfo { company number url }
+          }
         }
       }
     }
   }
 }
-"""
+""" % ORDER_STATUS_FILTER
 
 # Shopify refuses to paginate past 25,000 objects. Sharding keeps each cursor
 # walk under that, but we still detect the ceiling so a truncated result can
@@ -2189,9 +2203,11 @@ async def fetch_customers_with_last_order(
     Page customers who ordered since `active_since`, carrying their last order's
     shipping and fulfillment timeline.
 
-    `lastOrder` is a full Order, so the entire report's timing data comes from
-    this one cheap pagination (~57 points/page) instead of a separate sweep of
-    every order.
+    The customer's most recent COMPLETED order is selected inline via a
+    filtered orders connection, so the entire report's timing data comes from
+    this one cheap pagination instead of a separate sweep of every order.
+    `lastOrder` cannot be used: it is a plain field with no filter, so a
+    cancelled order would stand in as someone's last purchase.
 
     Lost is NOT decided here. Shopify's `order_date` filter has any-order
     semantics and negating it does not invert that — verified against live
@@ -2290,7 +2306,10 @@ async def fetch_customers_with_last_order(
 
 def _normalize_lost_customer(node: Dict[str, Any]) -> Dict[str, Any]:
     """Flatten one customer node, deriving the last order's fulfillment timeline."""
-    last = node.get("lastOrder") or None
+    # Their most recent order that was actually completed. A customer whose
+    # only orders were cancelled has none, and is dropped by the caller.
+    _lv = (node.get("lastValidOrder") or {}).get("nodes") or []
+    last = _lv[0] if _lv else None
     spent = node.get("amountSpent") or {}
 
     row: Dict[str, Any] = {
@@ -2439,7 +2458,8 @@ async def fetch_customer_recent_orders(
                 admin_api_key,
                 api_version,
                 _CUSTOMER_ORDERS_QUERY,
-                {"q": f"customer_id:{numeric_id}", "n": max(1, min(limit, 20))},
+                {"q": f"customer_id:{numeric_id} {ORDER_STATUS_FILTER}",
+                 "n": max(1, min(limit, 20))},
                 op_name="customer orders",
             )
     except ShopifyFetchError as e:
@@ -2698,7 +2718,7 @@ async def fetch_baseline_order_items(
     try:
         async with aiohttp.ClientSession() as session:
             for start, end in windows:
-                q = f"created_at:>={start} created_at:<{end}"
+                q = f"created_at:>={start} created_at:<{end} {ORDER_STATUS_FILTER}"
                 cursor = None
                 # Backstop so one unexpectedly huge month cannot run away.
                 for _ in range(_BASELINE_MAX_PAGES_PER_WINDOW):
@@ -2761,13 +2781,13 @@ query CustomerFirstOrders($ids: [ID!]!) {
   nodes(ids: $ids) {
     ... on Customer {
       id
-      orders(first: 1, sortKey: CREATED_AT) {
+      orders(first: 1, sortKey: CREATED_AT, query: "%s") {
         nodes { id createdAt }
       }
     }
   }
 }
-"""
+""" % ORDER_STATUS_FILTER
 
 
 async def fetch_customer_first_orders(
@@ -2867,11 +2887,15 @@ query CustomersByEmail($q: String!) {
     nodes {
       id
       email
-      lastOrder { id createdAt }
+      lastValidOrder: orders(
+        first: 1, sortKey: CREATED_AT, reverse: true, query: "%s"
+      ) {
+        nodes { id createdAt }
+      }
     }
   }
 }
-"""
+""" % ORDER_STATUS_FILTER
 
 
 def normalize_email(email: Optional[str]) -> Optional[str]:
@@ -2937,7 +2961,8 @@ async def fetch_customers_by_emails(
                         em = normalize_email((node or {}).get("email"))
                         if not em:
                             continue
-                        last = ((node.get("lastOrder") or {}) or {}).get("createdAt")
+                        _n = (node.get("lastValidOrder") or {}).get("nodes") or []
+                        last = _n[0].get("createdAt") if _n else None
                         prev = out["last_orders"].get(em)
                         if last and (prev is None or last > prev):
                             out["last_orders"][em] = last

@@ -79,7 +79,8 @@ from shopify_helper import (
     count_fulfillment_buckets_for_store,
     fetch_customers_with_last_order, fetch_customer_recent_orders,
     fetch_orders_line_items, fetch_baseline_order_items, count_orders,
-    fetch_customer_first_orders, fetch_customers_by_emails, normalize_email
+    fetch_customer_first_orders, fetch_customers_by_emails, normalize_email,
+    ORDER_STATUS_FILTER
 )
 from item_tracker_helper import (
     get_item_info_async, get_purchases_async, get_sales_async,
@@ -6463,9 +6464,13 @@ async def shopify_analytics_lost_customers_stream(
                     }
 
                 lost, active = [], []
+                never_purchased = 0
                 for c in by_id.values():
                     last = c.get("last_order_created_at")
                     if not last:
+                        # Every order they placed was cancelled or refunded, so
+                        # there is no purchase here to have lost.
+                        never_purchased += 1
                         continue
                     if last >= silent_since:
                         active.append(c)
@@ -6608,6 +6613,7 @@ async def shopify_analytics_lost_customers_stream(
                     "active_all": active_in,
                     "excluded_pre_existing": excluded_pre_existing,
                     "unknown_first_order": unknown_first,
+                    "never_purchased": never_purchased,
                     "moved_breakdown": moved_breakdown,
                     "moved_total": sum(moved_breakdown.values()),
                     "no_email": no_email,
@@ -6651,7 +6657,7 @@ async def shopify_analytics_lost_customers_stream(
                 results.append(payload)
                 st = payload.get("store") or {}
                 lost = payload.get("lost") or []
-                yield f"event: store\ndata: {json.dumps({'store_id': st.get('id'), 'store_name': st.get('name'), 'ok': payload.get('ok'), 'complete': payload.get('complete'), 'incomplete_reason': payload.get('incomplete_reason'), 'error': payload.get('error'), 'warnings': payload.get('warnings') or [], 'excluded_pre_existing': payload.get('excluded_pre_existing', 0), 'unknown_first_order': payload.get('unknown_first_order', 0), 'moved_total': payload.get('moved_total', 0), 'moved_breakdown': payload.get('moved_breakdown', {}), 'no_email': payload.get('no_email', 0), 'lost_count': len(lost), 'active_count': len(payload.get('active') or []), 'lost_timing': _timing_summary(lost), 'active_timing': _timing_summary(payload.get('active') or []), 'rows': lost, 'completed': completed, 'total_stores': len(store_list)})}\n\n"
+                yield f"event: store\ndata: {json.dumps({'store_id': st.get('id'), 'store_name': st.get('name'), 'ok': payload.get('ok'), 'complete': payload.get('complete'), 'incomplete_reason': payload.get('incomplete_reason'), 'error': payload.get('error'), 'warnings': payload.get('warnings') or [], 'excluded_pre_existing': payload.get('excluded_pre_existing', 0), 'unknown_first_order': payload.get('unknown_first_order', 0), 'never_purchased': payload.get('never_purchased', 0), 'moved_total': payload.get('moved_total', 0), 'moved_breakdown': payload.get('moved_breakdown', {}), 'no_email': payload.get('no_email', 0), 'lost_count': len(lost), 'active_count': len(payload.get('active') or []), 'lost_timing': _timing_summary(lost), 'active_timing': _timing_summary(payload.get('active') or []), 'rows': lost, 'completed': completed, 'total_stores': len(store_list)})}\n\n"
 
                 now = asyncio.get_event_loop().time()
                 if now - last_heartbeat > 15:
@@ -6690,6 +6696,7 @@ async def shopify_analytics_lost_customers_stream(
                 "active_count": len(r.get("active") or []),
                 "excluded_pre_existing": r.get("excluded_pre_existing", 0),
                 "unknown_first_order": r.get("unknown_first_order", 0),
+                "never_purchased": r.get("never_purchased", 0),
                 "moved_total": r.get("moved_total", 0),
                 "moved_breakdown": r.get("moved_breakdown", {}),
                 "no_email": r.get("no_email", 0),
@@ -6705,6 +6712,7 @@ async def shopify_analytics_lost_customers_stream(
             "totals": {
                 "excluded_pre_existing": sum(r.get("excluded_pre_existing", 0) for r in complete),
                 "moved_to_other_store": sum(r.get("moved_total", 0) for r in complete),
+                "never_purchased": sum(r.get("never_purchased", 0) for r in complete),
                 "no_email": sum(r.get("no_email", 0) for r in complete),
                 "unknown_first_order": sum(r.get("unknown_first_order", 0) for r in complete),
                 "lost_customers": len(all_lost),
@@ -6987,7 +6995,7 @@ async def shopify_analytics_lost_products_stream(
                 rate = 0.0
                 ok_c, _err_c, cnt = await count_orders(
                     shop_domain=w["shop_domain"], admin_api_key=w["admin_api_key"],
-                    query=f"created_at:>={pstart} created_at:<{pend}",
+                    query=f"created_at:>={pstart} created_at:<{pend} {ORDER_STATUS_FILTER}",
                     api_version=w["api_version"],
                 )
                 if ok_c and cnt:

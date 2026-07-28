@@ -14486,6 +14486,12 @@ function renderSacrNote() {
       `${movedTotal.toLocaleString()} customer(s) did not leave — they have ordered at another store since ${sacrState.silentSince} (${where}) and are excluded from every figure.`,
     );
   }
+  const neverPurchased = sacrState.stores.reduce((a, s) => a + (s.never_purchased || 0), 0);
+  if (neverPurchased) {
+    notes.push(
+      `${neverPurchased.toLocaleString()} customer(s) were excluded because every order they placed was cancelled or refunded — there was no completed purchase to lose.`,
+    );
+  }
   const noEmail = sacrState.stores.reduce((a, s) => a + (s.no_email || 0), 0);
   if (noEmail) {
     notes.push(
@@ -14499,6 +14505,7 @@ function renderSacrNote() {
     );
   }
   notes.push(
+    "Cancelled and fully refunded orders are ignored throughout, so \"last order\" means the last one actually completed. Partially refunded orders are kept — the customer still bought something.",
     "Timings describe the customer's final order: order → first shipment, and first shipment → last delivery.",
   );
   el.innerHTML = notes.map((n) => saEscape(n)).join("<br />");
