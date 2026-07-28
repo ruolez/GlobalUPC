@@ -1764,7 +1764,7 @@ async def count_fulfillment_buckets_for_store(
 # ============================================================================
 # Shared GraphQL executor: rate limiting, retries, and honest failures
 #
-# Every request from the churned-customers report goes through _shopify_graphql.
+# Every request from the lost-customers report goes through _shopify_graphql.
 # The older helpers above keep their own inline retry loops (unchanged, out of
 # scope) — this is the single implementation new code should use.
 # ============================================================================
@@ -2107,11 +2107,11 @@ async def _shopify_graphql(
 
 
 # ============================================================================
-# Churned-customers report
+# Lost-customers report
 # ============================================================================
 
-_CHURN_CUSTOMERS_QUERY = """
-query ChurnCustomers($q: String!, $after: String) {
+_LOST_CUSTOMERS_QUERY = """
+query LostCustomers($q: String!, $after: String) {
   customers(first: 250, query: $q, sortKey: ID, after: $after) {
     pageInfo { hasNextPage endCursor }
     nodes {
@@ -2193,7 +2193,7 @@ async def fetch_customers_with_last_order(
     this one cheap pagination (~57 points/page) instead of a separate sweep of
     every order.
 
-    Churn is NOT decided here. Shopify's `order_date` filter has any-order
+    Lost is NOT decided here. Shopify's `order_date` filter has any-order
     semantics and negating it does not invert that — verified against live
     stores, where every negated form still returned 12% customers who had
     ordered after the cutoff. The caller classifies on `last_order_created_at`.
@@ -2232,9 +2232,9 @@ async def fetch_customers_with_last_order(
                     shop_domain,
                     admin_api_key,
                     api_version,
-                    _CHURN_CUSTOMERS_QUERY,
+                    _LOST_CUSTOMERS_QUERY,
                     {"q": query_filter, "after": cursor},
-                    op_name="churn customers",
+                    op_name="lost customers",
                     on_retry=on_retry,
                 )
                 if warnings:
@@ -2242,7 +2242,7 @@ async def fetch_customers_with_last_order(
 
                 conn = data.get("customers") or {}
                 for node in conn.get("nodes") or []:
-                    customers.append(_normalize_churn_customer(node))
+                    customers.append(_normalize_lost_customer(node))
 
                 pages += 1
                 if on_page:
@@ -2254,7 +2254,7 @@ async def fetch_customers_with_last_order(
                 cursor = page_info.get("endCursor")
 
                 if len(customers) >= _PAGINATION_OBJECT_CAP:
-                    # Truncating silently would understate churn — exactly the
+                    # Truncating silently would understate lost — exactly the
                     # wrong direction for this report.
                     result["customers"] = customers
                     result["pages"] = pages
@@ -2287,7 +2287,7 @@ async def fetch_customers_with_last_order(
     return result
 
 
-def _normalize_churn_customer(node: Dict[str, Any]) -> Dict[str, Any]:
+def _normalize_lost_customer(node: Dict[str, Any]) -> Dict[str, Any]:
     """Flatten one customer node, deriving the last order's fulfillment timeline."""
     last = node.get("lastOrder") or None
     spent = node.get("amountSpent") or {}

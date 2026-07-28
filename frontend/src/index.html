@@ -3998,8 +3998,8 @@
             <button type="button" class="sa-subnav-item" data-sa-tab="new-customers-by-month" role="tab" aria-selected="false">
               New Customers by Month
             </button>
-            <button type="button" class="sa-subnav-item" data-sa-tab="churned-customers" role="tab" aria-selected="false">
-              Churned Customers
+            <button type="button" class="sa-subnav-item" data-sa-tab="lost-customers" role="tab" aria-selected="false">
+              Lost Customers
             </button>
           </nav>
 
@@ -4289,7 +4289,7 @@
             </div>
           </section>
 
-          <section class="sa-panel" data-sa-panel="churned-customers" style="display: none">
+          <section class="sa-panel" data-sa-panel="lost-customers" style="display: none">
             <div class="card sa-setup-card" style="margin-bottom: 1.25rem">
               <div class="card-header"><h3>Setup</h3></div>
               <div style="padding: 1rem 1.5rem 1.25rem">
@@ -4333,7 +4333,7 @@
                         <button type="button" class="btn btn-secondary" data-sacr-silent="12" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">12 months</button>
                       </div>
                       <small style="color: var(--text-tertiary); font-size: 0.75rem; margin-top: 0.5rem; display: block;">
-                        Churned = last order falls between these two dates. Customers who ordered since the second date are the comparison group.
+                        A customer counts as lost when their last order falls between these two dates. Customers who ordered since the second date are the comparison group.
                       </small>
                     </div>
                   </div>
@@ -4359,14 +4359,14 @@
 
             <div class="sa-kpi-strip" id="sacr-kpi-strip" hidden>
               <div class="sa-kpi">
-                <span class="sa-kpi-label">Churned customers</span>
+                <span class="sa-kpi-label">Lost customers</span>
                 <span class="sa-kpi-value" id="sacr-kpi-count">0</span>
                 <span class="sa-kpi-sub" id="sacr-kpi-count-sub"></span>
               </div>
               <div class="sa-kpi">
                 <span class="sa-kpi-label">Revenue lost</span>
                 <span class="sa-kpi-value sa-kpi-value-money" id="sacr-kpi-revenue">0</span>
-                <span class="sa-kpi-sub" id="sacr-kpi-revenue-sub">lifetime spend of churned</span>
+                <span class="sa-kpi-sub" id="sacr-kpi-revenue-sub">lifetime spend of lost customers</span>
               </div>
               <div class="sa-kpi">
                 <span class="sa-kpi-label">Median orders each</span>
@@ -4382,12 +4382,12 @@
 
             <div class="sacr-benchmark" id="sacr-benchmark" hidden>
               <div class="sacr-benchmark-head">
-                <h3 class="sacr-benchmark-title">Last order: churned vs still active</h3>
+                <h3 class="sacr-benchmark-title">Last order: lost vs still active</h3>
                 <p class="sacr-benchmark-sub" id="sacr-benchmark-sub"></p>
               </div>
               <table class="sacr-benchmark-table">
                 <thead>
-                  <tr><th>Stage (median)</th><th class="sacr-num">Churned</th><th class="sacr-num">Active</th><th class="sacr-num">Difference</th></tr>
+                  <tr><th>Stage (median)</th><th class="sacr-num">Lost</th><th class="sacr-num">Active</th><th class="sacr-num">Difference</th></tr>
                 </thead>
                 <tbody id="sacr-benchmark-body"></tbody>
               </table>
@@ -4398,7 +4398,7 @@
               <div class="sancm-chart-head">
                 <div>
                   <h3 class="sancm-chart-title">When they left</h3>
-                  <p class="sancm-chart-sub" id="sacr-chart-sub">Churned customers by month of last order</p>
+                  <p class="sancm-chart-sub" id="sacr-chart-sub">Lost customers by month of last order</p>
                 </div>
               </div>
               <div class="sancm-chart-wrap" id="sacr-chart-wrap"></div>
@@ -4433,7 +4433,7 @@
               <div class="sa-empty-icon" aria-hidden="true">
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><path d="M21 21l-4.3-4.3"></path></svg>
               </div>
-              <p id="sacr-empty-msg">No churned customers found for these dates.</p>
+              <p id="sacr-empty-msg">No lost customers found for these dates.</p>
               <p class="sa-empty-hint">Try widening the "was ordering since" window or moving the cutoff further back.</p>
             </div>
 
@@ -4479,7 +4479,7 @@
       </main>
     </div>
 
-    <!-- Churned customer detail -->
+    <!-- Lost customer detail -->
     <div id="sacr-detail-modal" class="modal">
       <div class="modal-content" style="max-width: 900px; width: 95%">
         <div class="modal-header">

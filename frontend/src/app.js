@@ -12021,8 +12021,8 @@ function activateShopifyAnalyticsTab(tabId) {
     // The SVG sizes itself from wrap.clientWidth, which is 0 while the panel is
     // display:none — it must be redrawn once the panel is actually visible.
     sancmScheduleChartRender();
-  } else if (target === "churned-customers") {
-    loadChurnedCustomersPanel();
+  } else if (target === "lost-customers") {
+    loadLostCustomersPanel();
     sacrScheduleChartRender();
   }
 }
@@ -13487,7 +13487,7 @@ function sancmShowTooltip(index, hitRect) {
   tip.style.top = `${top}px`;
 }
 
-// ===== Shopify Analytics: Churned Customers =====
+// ===== Shopify Analytics: Lost Customers =====
 
 const SACR_PAGE_SIZE_KEY = "sacr_page_size";
 const SACR_SELECTION_KEY = "sacr_selected_store_ids";
@@ -13495,7 +13495,7 @@ const SACR_SELECTION_KEY = "sacr_selected_store_ids";
 const sacrState = {
   initialized: false,
   loading: false,
-  rows: [],            // churned customers, all stores
+  rows: [],            // lost customers, all stores
   stores: [],          // per-store status incl. ok/complete/error
   benchmark: null,
   totals: null,
@@ -13520,7 +13520,7 @@ const SACR_NUMERIC_COLUMNS = new Set([
   "days_to_deliver",
 ]);
 
-function loadChurnedCustomersPanel() {
+function loadLostCustomersPanel() {
   if (sacrState.initialized) return;
   sacrState.initialized = true;
 
@@ -13566,7 +13566,7 @@ function loadChurnedCustomersPanel() {
 
   document
     .getElementById("sacr-run-btn")
-    ?.addEventListener("click", runChurnedCustomersReport);
+    ?.addEventListener("click", runLostCustomersReport);
   document.getElementById("sacr-cancel-btn")?.addEventListener("click", () => {
     if (sacrState.abortController) sacrState.abortController.abort();
   });
@@ -13770,7 +13770,7 @@ function sacrDaysSilent(row) {
   return Math.floor((Date.now() - then.getTime()) / 86400000);
 }
 
-async function runChurnedCustomersReport() {
+async function runLostCustomersReport() {
   if (sacrState.loading) return;
 
   const storeIds = sacrSelectedStoreIds();
@@ -13811,7 +13811,7 @@ async function runChurnedCustomersReport() {
 
   try {
     const response = await fetch(
-      `${API_BASE}/shopify-analytics/churned-customers/stream`,
+      `${API_BASE}/shopify-analytics/lost-customers/stream`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -14058,7 +14058,7 @@ function renderSacrBenchmark() {
   // dashes invites the reader to fill in the blank; say why instead.
   if (!b.stores_included) {
     body.innerHTML =
-      '<tr><td colspan="4" class="sacr-benchmark-blocked">No store returned complete data, so the churned-vs-active comparison cannot be computed. See the warning above.</td></tr>';
+      '<tr><td colspan="4" class="sacr-benchmark-blocked">No store returned complete data, so the lost-vs-active comparison cannot be computed. See the warning above.</td></tr>';
     const sub0 = document.getElementById("sacr-benchmark-sub");
     if (sub0) sub0.textContent = `0 of ${b.stores_total} stores usable`;
     const note0 = document.getElementById("sacr-benchmark-note");
@@ -14077,7 +14077,7 @@ function renderSacrBenchmark() {
 
   body.innerHTML = stages
     .map(([label, key]) => {
-      const c = b.churned[key];
+      const c = b.lost[key];
       const a = b.active[key];
       const diff = c !== null && a !== null ? c - a : null;
       // Slower than the active cohort is the bad direction.
@@ -14100,7 +14100,7 @@ function renderSacrBenchmark() {
   const sub = document.getElementById("sacr-benchmark-sub");
   if (sub) {
     sub.textContent =
-      `Median time for the last order of ${b.churned.n.toLocaleString()} churned vs ` +
+      `Median time for the last order of ${b.lost.n.toLocaleString()} lost vs ` +
       `${b.active.n.toLocaleString()} still-active customers` +
       (b.stores_included < b.stores_total
         ? ` — ${b.stores_included} of ${b.stores_total} stores included`
@@ -14112,7 +14112,7 @@ function renderSacrBenchmark() {
   // difference (e.g. +0.38d shipping and +0.25d delivery is +0.64d total).
   const note = document.getElementById("sacr-benchmark-note");
   if (note) {
-    const c = b.churned.days_total;
+    const c = b.lost.days_total;
     const a = b.active.days_total;
     let text;
     let cls = "is-ok";
@@ -14123,13 +14123,13 @@ function renderSacrBenchmark() {
       const pct = a > 0 ? Math.abs(gap / a) * 100 : 0;
       const mag = `${Math.abs(gap).toFixed(2)} days (${pct.toFixed(0)}%) ${gap > 0 ? "slower" : "faster"} end to end`;
       if (gap >= 1) {
-        text = `Churned customers waited ${mag} than active ones — a large enough gap that fulfillment speed is worth investigating as a cause.`;
+        text = `Lost customers waited ${mag} than active ones — a large enough gap that fulfillment speed is worth investigating as a cause.`;
         cls = "is-warn";
       } else if (gap >= 0.25) {
-        text = `Churned customers were ${mag} than active ones. The gap is real but small — it may be a contributing factor rather than the main reason they left.`;
+        text = `Lost customers were ${mag} than active ones. The gap is real but small — it may be a contributing factor rather than the main reason they left.`;
         cls = "is-warn";
       } else if (gap <= -0.25) {
-        text = `Churned customers were actually ${mag} than active ones, so fulfillment speed does not explain why they left — look elsewhere (pricing, stock, competition).`;
+        text = `Lost customers were actually ${mag} than active ones, so fulfillment speed does not explain why they left — look elsewhere (pricing, stock, competition).`;
       } else {
         text =
           "Both groups were served at essentially the same speed, so fulfillment does not explain why these customers left — look elsewhere (pricing, stock, competition).";
@@ -14232,8 +14232,8 @@ function renderSacrTable() {
   if (count) {
     count.textContent =
       total === sacrState.rows.length
-        ? `${total.toLocaleString()} churned`
-        : `${total.toLocaleString()} of ${sacrState.rows.length.toLocaleString()} churned`;
+        ? `${total.toLocaleString()} lost customers`
+        : `${total.toLocaleString()} of ${sacrState.rows.length.toLocaleString()} lost customers`;
   }
 }
 
@@ -14259,7 +14259,7 @@ function renderSacrNote() {
   el.innerHTML = notes.map((n) => saEscape(n)).join("<br />");
 }
 
-// ----- Chart: churned customers by month of last order -----
+// ----- Chart: lost customers by month of last order -----
 
 function sacrScheduleChartRender() {
   if (sacrState.rafId) cancelAnimationFrame(sacrState.rafId);
@@ -14340,7 +14340,7 @@ function renderSacrChart() {
   });
 
   wrap.innerHTML =
-    `<svg width="100%" height="${SANCM_H}" viewBox="0 0 ${W} ${SANCM_H}" preserveAspectRatio="xMinYMid meet" role="group" aria-label="Churned customers by month of last order">` +
+    `<svg width="100%" height="${SANCM_H}" viewBox="0 0 ${W} ${SANCM_H}" preserveAspectRatio="xMinYMid meet" role="group" aria-label="Lost customers by month of last order">` +
     parts.join("") +
     "</svg>";
 }

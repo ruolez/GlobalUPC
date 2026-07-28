@@ -682,10 +682,10 @@ class NewCustomersByMonthRequest(BaseModel):
     tag: Optional[str] = None  # blank -> each store falls back to its own saved tag
 
 
-class ChurnedCustomersRequest(BaseModel):
+class LostCustomersRequest(BaseModel):
     store_ids: List[int]
     active_since: str          # YYYY-MM-DD — lower bound on the last order
-    silent_since: str          # YYYY-MM-DD — churn cutoff
+    silent_since: str          # YYYY-MM-DD — lost cutoff
     min_orders: int = 1
 
 

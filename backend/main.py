@@ -43,7 +43,7 @@ from schemas import (
     FirstCustomerReturnsRequest,
     ShopifyFirstOrderTagUpdate,
     NewCustomersByMonthRequest,
-    ChurnedCustomersRequest,
+    LostCustomersRequest,
     CustomerDetailRequest,
     QuotationsInProgressFilter, QuotationsInProgressListResponse,
     QuotationsInProgressFilterOptions, QuotationInProgressSummary,
@@ -6249,9 +6249,9 @@ async def shopify_analytics_new_customers_by_month_stream(
 
 
 # ============================================================================
-# Churned Customers
+# Lost Customers
 #
-# Churn is decided here, not by Shopify. The `order_date` search filter has
+# Whether a customer is lost is decided here, not by Shopify. The `order_date` filter has
 # any-order semantics ("has placed at least one order in this range"), and
 # negating it does not invert that — verified against live stores, where every
 # negated form still returned 12% of customers who HAD ordered after the
@@ -6261,11 +6261,11 @@ async def shopify_analytics_new_customers_by_month_stream(
 # Wall-clock per store is latency-bound (~5s per 250-customer page), so the
 # window is split into concurrent shards. This also keeps each cursor walk
 # under Shopify's 25,000-object pagination ceiling.
-_CHURN_MAX_SHARDS = 4
-_CHURN_SHARD_MIN_DAYS = 90
+_LOST_MAX_SHARDS = 4
+_LOST_SHARD_MIN_DAYS = 90
 
 
-def _churn_shards(active_since: str, upper: str) -> List[tuple]:
+def _lost_shards(active_since: str, upper: str) -> List[tuple]:
     """Split [active_since, upper) into up to 4 contiguous sub-ranges."""
     from datetime import date, timedelta
 
@@ -6276,10 +6276,10 @@ def _churn_shards(active_since: str, upper: str) -> List[tuple]:
         return [(active_since, None)]
 
     span = (end - start).days
-    if span <= _CHURN_SHARD_MIN_DAYS:
+    if span <= _LOST_SHARD_MIN_DAYS:
         return [(active_since, None)]
 
-    n = min(_CHURN_MAX_SHARDS, max(2, span // _CHURN_SHARD_MIN_DAYS))
+    n = min(_LOST_MAX_SHARDS, max(2, span // _LOST_SHARD_MIN_DAYS))
     step = span // n
     bounds = [start + timedelta(days=step * i) for i in range(n)] + [end]
     # Last shard is left open-ended so orders placed after `upper` (i.e. today)
@@ -6315,9 +6315,9 @@ def _timing_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
-@app.post("/api/shopify-analytics/churned-customers/stream")
-async def shopify_analytics_churned_customers_stream(
-    request: ChurnedCustomersRequest,
+@app.post("/api/shopify-analytics/lost-customers/stream")
+async def shopify_analytics_lost_customers_stream(
+    request: LostCustomersRequest,
     db: Session = Depends(get_db),
 ):
     async def generate() -> AsyncGenerator[str, None]:
@@ -6355,7 +6355,7 @@ async def shopify_analytics_churned_customers_stream(
         store_list.sort(key=lambda s: s["id"])
 
         today = datetime.now().strftime("%Y-%m-%d")
-        shards = _churn_shards(active_since, today)
+        shards = _lost_shards(active_since, today)
 
         yield f"event: progress\ndata: {json.dumps({'phase': 'started', 'active_since': active_since, 'silent_since': silent_since, 'min_orders': min_orders, 'shards': len(shards), 'stores': [{'store_id': s['id'], 'store_name': s['name']} for s in store_list]})}\n\n"
 
@@ -6412,10 +6412,10 @@ async def shopify_analytics_churned_customers_stream(
                     return {
                         "store": s, "ok": False, "complete": False,
                         "error": incomplete_reasons[0] if incomplete_reasons else "Fetch failed",
-                        "churned": [], "churned_all": [], "active": [],
+                        "lost": [], "lost_all": [], "active": [],
                     }
 
-                churned, active = [], []
+                lost, active = [], []
                 for c in by_id.values():
                     last = c.get("last_order_created_at")
                     if not last:
@@ -6423,10 +6423,10 @@ async def shopify_analytics_churned_customers_stream(
                     if last >= silent_since:
                         active.append(c)
                     elif last >= active_since:
-                        churned.append(c)
+                        lost.append(c)
 
-                churned_kept = [c for c in churned if c["orders_count"] >= min_orders]
-                churned_kept.sort(key=lambda c: c["amount_spent"], reverse=True)
+                lost_kept = [c for c in lost if c["orders_count"] >= min_orders]
+                lost_kept.sort(key=lambda c: c["amount_spent"], reverse=True)
 
                 return {
                     "store": s,
@@ -6437,8 +6437,8 @@ async def shopify_analytics_churned_customers_stream(
                     "incomplete_reason": incomplete_reasons[0] if incomplete_reasons else None,
                     "error": None,
                     "warnings": warnings[:3],
-                    "churned": churned_kept,
-                    "churned_all": churned,
+                    "lost": lost_kept,
+                    "lost_all": lost,
                     "active": active,
                 }
 
@@ -6451,7 +6451,7 @@ async def shopify_analytics_churned_customers_stream(
                 raise
             except Exception as e:
                 res = {"store": None, "ok": False, "complete": False,
-                       "error": f"Unexpected error: {e}", "churned": [], "churned_all": [], "active": []}
+                       "error": f"Unexpected error: {e}", "lost": [], "lost_all": [], "active": []}
             await events.put(("done", res))
 
         collectors = [asyncio.create_task(collect(t)) for t in tasks]
@@ -6476,15 +6476,15 @@ async def shopify_analytics_churned_customers_stream(
                 completed += 1
                 results.append(payload)
                 st = payload.get("store") or {}
-                churned = payload.get("churned") or []
-                yield f"event: store\ndata: {json.dumps({'store_id': st.get('id'), 'store_name': st.get('name'), 'ok': payload.get('ok'), 'complete': payload.get('complete'), 'incomplete_reason': payload.get('incomplete_reason'), 'error': payload.get('error'), 'warnings': payload.get('warnings') or [], 'churned_count': len(churned), 'active_count': len(payload.get('active') or []), 'churned_timing': _timing_summary(churned), 'active_timing': _timing_summary(payload.get('active') or []), 'rows': churned, 'completed': completed, 'total_stores': len(store_list)})}\n\n"
+                lost = payload.get("lost") or []
+                yield f"event: store\ndata: {json.dumps({'store_id': st.get('id'), 'store_name': st.get('name'), 'ok': payload.get('ok'), 'complete': payload.get('complete'), 'incomplete_reason': payload.get('incomplete_reason'), 'error': payload.get('error'), 'warnings': payload.get('warnings') or [], 'lost_count': len(lost), 'active_count': len(payload.get('active') or []), 'lost_timing': _timing_summary(lost), 'active_timing': _timing_summary(payload.get('active') or []), 'rows': lost, 'completed': completed, 'total_stores': len(store_list)})}\n\n"
 
                 now = asyncio.get_event_loop().time()
                 if now - last_heartbeat > 15:
                     yield ": heartbeat\n\n"
                     last_heartbeat = now
         except GeneratorExit:
-            print("[SHOPIFY-ANALYTICS] Churn client disconnected — cancelling")
+            print("[SHOPIFY-ANALYTICS] Lost client disconnected — cancelling")
             for t in list(tasks) + list(collectors):
                 if not t.done():
                     t.cancel()
@@ -6493,12 +6493,12 @@ async def shopify_analytics_churned_customers_stream(
         # Only stores with a complete fetch feed the benchmark. A partial store
         # is missing a date range, and the benchmark is the number the user acts on.
         complete = [r for r in results if r.get("ok") and r.get("complete")]
-        all_churned = [c for r in complete for c in (r.get("churned") or [])]
+        all_lost = [c for r in complete for c in (r.get("lost") or [])]
         all_active = [c for r in complete for c in (r.get("active") or [])]
 
         # "When did they leave" — month of last order.
         by_month: Dict[str, int] = {}
-        for c in all_churned:
+        for c in all_lost:
             key = (c.get("last_order_created_at") or "")[:7]
             if key:
                 by_month[key] = by_month.get(key, 0) + 1
@@ -6512,22 +6512,22 @@ async def shopify_analytics_churned_customers_stream(
                 "incomplete_reason": r.get("incomplete_reason"),
                 "error": r.get("error"),
                 "warnings": r.get("warnings") or [],
-                "churned_count": len(r.get("churned") or []),
+                "lost_count": len(r.get("lost") or []),
                 "active_count": len(r.get("active") or []),
-                "churned_timing": _timing_summary(r.get("churned") or []),
+                "lost_timing": _timing_summary(r.get("lost") or []),
                 "active_timing": _timing_summary(r.get("active") or []),
             } for r in results],
             "benchmark": {
-                "churned": _timing_summary(all_churned),
+                "lost": _timing_summary(all_lost),
                 "active": _timing_summary(all_active),
                 "stores_included": len(complete),
                 "stores_total": len(store_list),
             },
             "totals": {
-                "churned_customers": len(all_churned),
-                "revenue_lost": round(sum(c["amount_spent"] for c in all_churned), 2),
-                "median_orders": _median([float(c["orders_count"]) for c in all_churned]),
-                "currency": (all_churned[0]["currency"] if all_churned else "USD"),
+                "lost_customers": len(all_lost),
+                "revenue_lost": round(sum(c["amount_spent"] for c in all_lost), 2),
+                "median_orders": _median([float(c["orders_count"]) for c in all_lost]),
+                "currency": (all_lost[0]["currency"] if all_lost else "USD"),
             },
             "by_month": [{"month": m, "count": by_month[m]} for m in sorted(by_month)],
             "active_since": active_since,
@@ -6541,7 +6541,7 @@ async def shopify_analytics_churned_customers_stream(
             async for event in generate():
                 yield event
         except GeneratorExit:
-            print("[SHOPIFY-ANALYTICS] Churn stream cancelled")
+            print("[SHOPIFY-ANALYTICS] Lost stream cancelled")
             return
 
     return StreamingResponse(
