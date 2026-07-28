@@ -13564,12 +13564,11 @@ function renderSacrProgress() {
   }
 
   const scanned = p.stores.reduce((a, s) => a + sacrSum(s.shardScanned), 0);
-  const pages = p.stores.reduce((a, s) => a + sacrSum(s.shardPages), 0);
   const meta = document.getElementById("sacr-progress-meta");
   if (meta) {
-    // Scanned/pages tick up continuously between shard boundaries — that is
-    // the signal that work is still happening.
-    meta.textContent = `${scanned.toLocaleString()} customers scanned · ${pages.toLocaleString()} pages · ${sacrFmtElapsed(Date.now() - p.startedAt)}`;
+    // This total keeps climbing between the coarse bar steps — it is what tells
+    // the reader the run is alive.
+    meta.textContent = `${scanned.toLocaleString()} customers scanned · ${sacrFmtElapsed(Date.now() - p.startedAt)}`;
   }
 
   const list = document.getElementById("sacr-progress-stores");
@@ -13581,9 +13580,10 @@ function renderSacrProgress() {
       let detail;
       if (s.state === "queued") detail = "waiting…";
       else if (s.state === "scanning")
-        // Shards run concurrently, so "shard 2/4" would imply a sequential
-        // walk that isn't happening. Report how many have finished instead.
-        detail = `${s.shardsDone}/${s.shards} shards · ${pg.toLocaleString()} pages · ${sc.toLocaleString()} scanned`;
+        // Deliberately no shard/page counts: those are internal parallelism
+        // and API-pagination details. A rising customer count is the only
+        // thing here a reader can actually act on.
+        detail = `${sc.toLocaleString()} customers scanned…`;
       else if (s.state === "failed") detail = s.note || "failed";
       else detail = `${sc.toLocaleString()} scanned · ${(s.lost ?? 0).toLocaleString()} lost`;
       return (
@@ -13957,7 +13957,8 @@ async function runLostCustomersReport() {
           sacrResetProgress(data.stores || [], data.shards, data.total_units);
           sacrStartElapsedTimer();
           if (status) {
-            status.textContent = `Scanning ${sacrState.stores.length} store(s) across ${data.shards} shard(s) each`;
+            const n = sacrState.stores.length;
+            status.textContent = `Scanning ${n} store${n === 1 ? "" : "s"}…`;
           }
           renderSacrProgress();
         } else if (eventType === "progress" && data.phase === "store_start") {
@@ -14309,7 +14310,7 @@ function renderSacrBanner() {
   );
   partial.forEach((s) =>
     items.push(
-      `<li><strong>${saEscape(s.store_name || "Store")}</strong> — partial data: ${saEscape(s.incomplete_reason || "some pages failed")}. Rows shown, but excluded from the comparison above.</li>`,
+      `<li><strong>${saEscape(s.store_name || "Store")}</strong> — partial data: ${saEscape(s.incomplete_reason || "part of the scan did not finish")}. Rows shown, but excluded from the comparison above.</li>`,
     ),
   );
   el.innerHTML =

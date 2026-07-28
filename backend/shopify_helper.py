@@ -2261,8 +2261,9 @@ async def fetch_customers_with_last_order(
                     result["ok"] = True
                     result["complete"] = False
                     result["incomplete_reason"] = (
-                        f"Hit Shopify's {_PAGINATION_OBJECT_CAP:,}-record pagination "
-                        f"limit for {shop_domain}. Narrow the date range to see the rest."
+                        f"Shopify stops returning results after {_PAGINATION_OBJECT_CAP:,} "
+                        f"customers, and {shop_domain} has more than that in this date "
+                        f"range. Narrow the dates to see the rest."
                     )
                     return result
 
