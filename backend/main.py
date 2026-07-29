@@ -6940,6 +6940,18 @@ def _rate_probe_window(start_date: str, end_date: str) -> tuple:
     return (mid.isoformat(), (mid + timedelta(days=_RATE_PROBE_DAYS)).isoformat(), _RATE_PROBE_DAYS)
 
 
+# Add-ons and service lines are not products a customer chose to buy, and they
+# ride along on a large share of orders — "Shipping Protection" sat 2nd by
+# count. Excluded at source so they also drop out of the baskets and the
+# baseline, keeping the percentages and lift consistent.
+_EXCLUDED_PRODUCT_TERMS = ("shipping",)
+
+
+def _is_excluded_product(item: Dict[str, Any]) -> bool:
+    name = f"{item.get('product_title') or ''} {item.get('title') or ''}".lower()
+    return any(term in name for term in _EXCLUDED_PRODUCT_TERMS)
+
+
 def _product_key(item: Dict[str, Any]) -> tuple:
     """
     Group key and display title.
@@ -6964,10 +6976,14 @@ def _count_orders(orders: List[Dict[str, Any]]) -> tuple:
     simultaneously a distinct-customer count.
     """
     per_product: Dict[Any, Dict[str, Any]] = {}
+    excluded_lines = 0
     for order in orders:
         seen_products = set()
         seen_variants = set()
         for item in order.get("items") or []:
+            if _is_excluded_product(item):
+                excluded_lines += 1
+                continue
             key, title, deleted = _product_key(item)
             entry = per_product.setdefault(key, {
                 "key": key if isinstance(key, str) else str(key),
@@ -6995,7 +7011,7 @@ def _count_orders(orders: List[Dict[str, Any]]) -> tuple:
                 v["orders"] += 1
                 seen_variants.add((key, vkey))
 
-    return per_product, len(orders)
+    return per_product, len(orders), excluded_lines
 
 
 @app.post("/api/shopify-analytics/lost-products/stream")
@@ -7152,6 +7168,7 @@ async def shopify_analytics_lost_products_stream(
         per_store = []
         missing = 0
         truncated = 0
+        excluded_lines_total = 0
 
         for res in results:
             if not res.get("ok"):
@@ -7161,10 +7178,11 @@ async def shopify_analytics_lost_products_stream(
             missing += last.get("missing", 0)
             truncated += last.get("truncated", 0) + (base.get("truncated", 0) or 0)
 
-            lost_products, n_lost_s = _count_orders(last.get("orders") or [])
-            base_products, n_base_s = (
-                _count_orders(base.get("orders") or []) if base.get("ok") else ({}, 0)
+            lost_products, n_lost_s, excl_lost = _count_orders(last.get("orders") or [])
+            base_products, n_base_s, _excl_base = (
+                _count_orders(base.get("orders") or []) if base.get("ok") else ({}, 0, 0)
             )
+            excluded_lines_total += excl_lost
             slots_last = sum(e["orders"] for e in lost_products.values())
             slots_base = sum(e["orders"] for e in base_products.values())
             per_store.append({
@@ -7270,6 +7288,8 @@ async def shopify_analytics_lost_products_stream(
                 "orders_missing": missing,
                 "orders_truncated": truncated,
                 "distinct_products": len(products),
+                "excluded_addon_lines": excluded_lines_total,
+                "excluded_terms": list(_EXCLUDED_PRODUCT_TERMS),
                 "lift_min_orders": _LIFT_MIN_ORDERS,
                 "avg_products_last": round(avg_last, 2),
                 "avg_products_baseline": round(avg_base, 2),

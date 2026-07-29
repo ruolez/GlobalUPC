@@ -14719,6 +14719,7 @@ const sacrProductsState = {
   // suppressed independently by the backend at its own threshold, so a low
   // floor here surfaces every product without inviting noisy ratios.
   minOrders: 1,
+  minLift: 0,
   search: "",
   expanded: new Set(),
   startedAt: 0,
@@ -14831,6 +14832,10 @@ function sacrBindProductsModal() {
     sacrProductsState.minOrders = Math.max(1, parseInt(e.target.value, 10) || 1);
     renderSacrProducts();
   });
+  document.getElementById("sacr-products-minlift")?.addEventListener("input", (e) => {
+    sacrProductsState.minLift = Math.max(0, parseFloat(e.target.value) || 0);
+    renderSacrProducts();
+  });
   document.getElementById("sacr-products-search")?.addEventListener("input", (e) => {
     sacrProductsState.search = e.target.value.trim().toLowerCase();
     renderSacrProducts();
@@ -14879,6 +14884,9 @@ async function openSacrProductsModal() {
   sacrProductsState.totals = null;
   sacrProductsState.stores = [];
   sacrProductsState.expanded = new Set();
+  sacrProductsState.minLift = 0;
+  const liftInput = document.getElementById("sacr-products-minlift");
+  if (liftInput) liftInput.value = "";
   sacrProductsState.startedAt = Date.now();
   sacrProductsState.scope = `${rows.length.toLocaleString()} last order${rows.length === 1 ? "" : "s"} · ${storeCount} store${storeCount === 1 ? "" : "s"}`;
 
@@ -15033,6 +15041,11 @@ async function openSacrProductsModal() {
 function sacrProductRows() {
   const st = sacrProductsState;
   let rows = st.products.filter((p) => p.orders >= st.minOrders);
+  if (st.minLift > 0) {
+    // A suppressed lift is unknown, not low — filtering on a threshold has to
+    // drop those rather than treat them as zero.
+    rows = rows.filter((p) => p.lift !== null && p.lift !== undefined && p.lift >= st.minLift);
+  }
   if (st.search) {
     rows = rows.filter((p) => (p.title || "").toLowerCase().includes(st.search));
   }
@@ -15127,6 +15140,9 @@ function renderSacrProducts() {
       `Lift = % of last ÷ Expected %. Above 1.0x means the product shows up more often in last orders than normal. Hover a lift for the unadjusted figure.`,
       `Expected % is what each store's own ordinary orders would predict, from ${t.baseline_orders_sampled.toLocaleString()} orders in the same period.`,
       `Lift hidden below ${t.lift_min_orders} orders.`,
+      ...(t.excluded_addon_lines
+        ? [`Add-ons excluded (${(t.excluded_terms || []).join(", ")}): ${t.excluded_addon_lines.toLocaleString()} line(s).`]
+        : []),
     ];
     if (t.orders_missing) {
       bits.push(`${t.orders_missing.toLocaleString()} order(s) could not be read and are excluded.`);
