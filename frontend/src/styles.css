@@ -6151,3 +6151,30 @@ body.no-scroll {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* The sort arrow was inline-block, so on a wrapped caption it spilled onto its
+   own line and pushed the text up — which is why headings sat at a different
+   height in almost every column. Taking it out of flow lets every caption
+   share one bottom baseline. */
+/* `.sacr-num` has to be named explicitly: the earlier two-line-band rule sets
+   padding-bottom on `th.sacr-num`, which out-specifies a plain `thead th` and
+   left the numeric captions sitting 9px lower than the rest. */
+.sa-page #sacr-table thead th,
+.sa-page #sacr-table thead th.sacr-num {
+  position: relative;
+  padding-right: 1.15rem;
+  padding-bottom: 1.1rem;
+}
+.sa-page #sacr-table thead th .qip-sort-arrow {
+  position: absolute;
+  right: 0.5rem;
+  bottom: 0.55rem;
+  margin-left: 0;
+}
+
+/* Shorter dates free space for the method, which was truncating to
+   "Standard Shippi...". */
+.sa-page #sacr-table th:nth-child(6)  { width: 7%;  }  /* First order */
+.sa-page #sacr-table th:nth-child(7)  { width: 8%;  }  /* Last order  */
+.sa-page #sacr-table th:nth-child(11) { width: 14%; }  /* Method      */
+.sa-page #sacr-table th:nth-child(12) { width: 9%;  }  /* Carrier     */

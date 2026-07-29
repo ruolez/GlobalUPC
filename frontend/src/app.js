@@ -14170,11 +14170,13 @@ function sacrFilteredRows() {
   });
 }
 
-// "2025/12/03" reads tighter than "2025-12-03" and, kept on one line, stops
-// the date wrapping mid-value the way "2025-12-" / "03" did.
+// MM/DD/YY — eight characters instead of ten, which buys the width back for
+// the shipping method column.
 function sacrFmtDate(iso) {
   if (!iso) return "—";
-  return String(iso).slice(0, 10).replace(/-/g, "/");
+  const [y, m, d] = String(iso).slice(0, 10).split("-");
+  if (!y || !m || !d) return String(iso).slice(0, 10);
+  return `${m}/${d}/${y.slice(2)}`;
 }
 
 // Every store here is a Shopify store; repeating the word in each row just
