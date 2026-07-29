@@ -14791,9 +14791,9 @@ function renderSacrStates() {
   }
   const note = document.getElementById("sacr-states-note");
   if (note) {
+    // Naming the visible columns explains the metric better than a paragraph.
     note.textContent =
-      `Loss rate is a state's lost customers as a share of everyone there who qualified for this report, so it does not simply rank your biggest states. ` +
-      `It is hidden below ${sacrState.stateMinCustomers || 5} customers, where one person would swing it wildly.`;
+      `Loss rate = Lost ÷ Total. Hidden below ${sacrState.stateMinCustomers || 5} customers.`;
   }
 }
 
@@ -15107,19 +15107,19 @@ function renderSacrProducts() {
 
   if (note && st.totals) {
     const t = st.totals;
+    // Short enough to actually read. The columns carry the meaning; the note
+    // only says how they combine and when a number is withheld.
     const bits = [
-      `Ranked by how many last orders each product appears in — a product is counted once per order, so a single large basket cannot inflate it.`,
-      `Lift compares each product's share of these ${t.last_orders_analysed.toLocaleString()} last orders against what you would expect if those customers had shopped like their own store's ordinary orders (${t.baseline_orders_sampled.toLocaleString()} sampled from the same period). Each store is compared against itself and the results summed, so a store's size cannot distort another's products. Above 1.0x means over-represented among leavers.`,
-      // Without this adjustment every product would sit near 0.5x and an
-      // ordinary product would read as under-represented.
-      `Last orders held ${t.avg_products_last} different products on average versus ${t.avg_products_baseline} in comparable orders, which shrinks every product's share alike — lift is rescaled by x${t.basket_ratio} so that 1.0x means "typical". Hover a lift to see the unadjusted ratio.`,
-      `Lift is hidden below ${t.lift_min_orders} last orders, where the ratio would be noise.`,
+      `Counted once per order, so one big basket cannot inflate a product.`,
+      `Lift = % of last ÷ Expected %. Above 1.0x means the product shows up more often in last orders than normal. Hover a lift for the unadjusted figure.`,
+      `Expected % is what each store's own ordinary orders would predict, from ${t.baseline_orders_sampled.toLocaleString()} orders in the same period.`,
+      `Lift hidden below ${t.lift_min_orders} orders.`,
     ];
     if (t.orders_missing) {
       bits.push(`${t.orders_missing.toLocaleString()} order(s) could not be read and are excluded.`);
     }
     if (t.orders_truncated) {
-      bits.push(`${t.orders_truncated.toLocaleString()} basket(s) had more than 100 line items; only the first 100 were counted.`);
+      bits.push(`${t.orders_truncated.toLocaleString()} basket(s) over 100 items were counted to the first 100.`);
     }
     const failed = (st.stores || []).filter((s) => !s.ok);
     failed.forEach((s) =>
@@ -15131,12 +15131,12 @@ function renderSacrProducts() {
       .filter((s) => s.ok && s.complete === false)
       .forEach((s) =>
         bits.push(
-          `${s.store_name} returned incomplete data in the report (${s.incomplete_reason || "some pages failed"}), so its products are under-counted here.`,
+          `${s.store_name} had incomplete data, so its products are under-counted.`,
         ),
       );
     if (t.orders_missing && t.last_orders_analysed &&
         t.orders_missing / (t.orders_missing + t.last_orders_analysed) > 0.05) {
-      bits.push(`Over 5% of requested orders could not be read — treat these counts as indicative only.`);
+      bits.push(`Over 5% of orders could not be read — treat these counts as indicative.`);
     }
     note.innerHTML = bits.map((b) => saEscape(b)).join("<br />");
   }
