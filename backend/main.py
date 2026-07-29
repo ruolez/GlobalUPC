@@ -6215,7 +6215,31 @@ async def shopify_analytics_new_customers_by_month_stream(
             })
             prev_total = total
 
+        merged_states: Dict[str, Dict[str, Any]] = {}
+        for r in complete:
+            for k, e in (r.get("states") or {}).items():
+                tgt = merged_states.setdefault(
+                    k, {"code": e["code"], "label": e["label"], "lost": 0, "active": 0})
+                tgt["lost"] += e["lost"]
+                tgt["active"] += e["active"]
+        state_rows = []
+        for e in merged_states.values():
+            total = e["lost"] + e["active"]
+            state_rows.append({
+                "code": e["code"],
+                "label": e["label"],
+                "lost": e["lost"],
+                "active": e["active"],
+                "total": total,
+                # Suppressed on tiny samples: 1 of 1 is not a 100% loss rate.
+                "loss_rate": (round(e["lost"] / total * 100, 1)
+                              if total >= _STATE_MIN_CUSTOMERS else None),
+            })
+        state_rows.sort(key=lambda x: (-x["lost"], x["label"]))
+
         payload = {
+            "states": state_rows,
+            "state_min_customers": _STATE_MIN_CUSTOMERS,
             "stores": [{
                 "store_id": s["id"],
                 "store_name": s["name"],
@@ -6598,6 +6622,19 @@ async def shopify_analytics_lost_customers_stream(
                             "Could not check every other store for customers who moved: "
                             + "; ".join(cross_errors[:2]))
 
+                # Lost and still-active counted the same way, so the share of a
+                # state's customers that went quiet is comparable between
+                # states — a raw count would only rank population size.
+                states: Dict[str, Dict[str, Any]] = {}
+                for c in lost_kept:
+                    k, label = _state_key(c)
+                    e = states.setdefault(k, {"code": k, "label": label, "lost": 0, "active": 0})
+                    e["lost"] += 1
+                for c in active_kept:
+                    k, label = _state_key(c)
+                    e = states.setdefault(k, {"code": k, "label": label, "lost": 0, "active": 0})
+                    e["active"] += 1
+
                 return {
                     "store": s,
                     "ok": True,
@@ -6614,6 +6651,7 @@ async def shopify_analytics_lost_customers_stream(
                     "excluded_pre_existing": excluded_pre_existing,
                     "unknown_first_order": unknown_first,
                     "never_purchased": never_purchased,
+                    "states": states,
                     "moved_breakdown": moved_breakdown,
                     "moved_total": sum(moved_breakdown.values()),
                     "no_email": no_email,
@@ -6683,7 +6721,31 @@ async def shopify_analytics_lost_customers_stream(
             if key:
                 by_month[key] = by_month.get(key, 0) + 1
 
+        merged_states: Dict[str, Dict[str, Any]] = {}
+        for r in complete:
+            for k, e in (r.get("states") or {}).items():
+                tgt = merged_states.setdefault(
+                    k, {"code": e["code"], "label": e["label"], "lost": 0, "active": 0})
+                tgt["lost"] += e["lost"]
+                tgt["active"] += e["active"]
+        state_rows = []
+        for e in merged_states.values():
+            total = e["lost"] + e["active"]
+            state_rows.append({
+                "code": e["code"],
+                "label": e["label"],
+                "lost": e["lost"],
+                "active": e["active"],
+                "total": total,
+                # Suppressed on tiny samples: 1 of 1 is not a 100% loss rate.
+                "loss_rate": (round(e["lost"] / total * 100, 1)
+                              if total >= _STATE_MIN_CUSTOMERS else None),
+            })
+        state_rows.sort(key=lambda x: (-x["lost"], x["label"]))
+
         payload = {
+            "states": state_rows,
+            "state_min_customers": _STATE_MIN_CUSTOMERS,
             "stores": [{
                 "store_id": (r.get("store") or {}).get("id"),
                 "store_name": (r.get("store") or {}).get("name"),
@@ -6797,6 +6859,21 @@ _BASELINE_PAGE = 250
 _RATE_PROBE_DAYS = 14
 # Below this many last orders, a lift ratio is noise dressed up as a finding.
 _LIFT_MIN_ORDERS = 5
+
+# Below this many customers a loss rate is one or two people, not a trend.
+_STATE_MIN_CUSTOMERS = 5
+
+
+def _state_key(c: Dict[str, Any]) -> tuple:
+    """(code, label). Province codes repeat across countries, so keep country."""
+    code = c.get("state")
+    country = c.get("country") or ""
+    if not code:
+        return ("__unknown__", "Unknown")
+    label = c.get("state_name") or code
+    if country and country != "US":
+        return (f"{country}-{code}", f"{label} ({country})")
+    return (code, label)
 
 
 def _baseline_months(

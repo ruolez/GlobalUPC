@@ -13500,11 +13500,13 @@ const sacrState = {
   benchmark: null,
   totals: null,
   byMonth: [],
+  states: [],
+  stateMinCustomers: 5,
   activeSince: "",
   silentSince: "",
   sortColumn: "amount_spent",
   sortOrder: "desc",
-  filter: { search: "", method: "", carrier: "", slow: "" },
+  filter: { search: "", method: "", carrier: "", slow: "", state: "" },
   currentPage: 0,
   pageSize: 100,
   abortController: null,
@@ -13678,7 +13680,7 @@ function loadLostCustomersPanel() {
     sacrState.filter.search = e.target.value.trim().toLowerCase();
     rerender();
   });
-  ["method", "carrier", "slow"].forEach((k) => {
+  ["method", "carrier", "slow", "state"].forEach((k) => {
     document
       .getElementById(`sacr-filter-${k}`)
       ?.addEventListener("change", (e) => {
@@ -13687,10 +13689,10 @@ function loadLostCustomersPanel() {
       });
   });
   document.getElementById("sacr-reset-filters")?.addEventListener("click", () => {
-    sacrState.filter = { search: "", method: "", carrier: "", slow: "" };
+    sacrState.filter = { search: "", method: "", carrier: "", slow: "", state: "" };
     const s = document.getElementById("sacr-search");
     if (s) s.value = "";
-    ["method", "carrier", "slow"].forEach((k) => {
+    ["method", "carrier", "slow", "state"].forEach((k) => {
       const el = document.getElementById(`sacr-filter-${k}`);
       if (el) el.value = "";
     });
@@ -13758,6 +13760,7 @@ function loadLostCustomersPanel() {
     sacrState.resizeObserver.observe(wrap);
   }
 
+  sacrBindStatesModal();
   sacrBindProductsModal();
   updateSacrProductsBtn();
   updateSacrRunBtn();
@@ -13904,6 +13907,7 @@ async function runLostCustomersReport() {
   sacrState.benchmark = null;
   sacrState.totals = null;
   sacrState.byMonth = [];
+  sacrState.states = [];
   sacrState.currentPage = 0;
   sacrState.activeSince = activeSince;
   sacrState.silentSince = silentSince;
@@ -14051,6 +14055,8 @@ async function runLostCustomersReport() {
           sacrState.benchmark = data.benchmark;
           sacrState.totals = data.totals;
           sacrState.byMonth = data.by_month || [];
+          sacrState.states = data.states || [];
+          sacrState.stateMinCustomers = data.state_min_customers || 5;
           (data.stores || []).forEach((fresh) => {
             const s = sacrState.stores.find((x) => x.store_id === fresh.store_id);
             if (s) Object.assign(s, fresh);
@@ -14113,6 +14119,8 @@ function sacrPopulateFilterOptions() {
       values.map((v) => `<option value="${saEscape(v)}">${saEscape(v)}</option>`).join("");
     el.value = current || "";
   };
+  const states = [...new Set(sacrState.rows.map((r) => r.state).filter(Boolean))].sort();
+  fill("sacr-filter-state", states, sacrState.filter.state);
   fill("sacr-filter-method", methods, sacrState.filter.method);
   fill("sacr-filter-carrier", carriers, sacrState.filter.carrier);
 }
@@ -14130,6 +14138,7 @@ function sacrFilteredRows() {
         (r.email || "").toLowerCase().includes(f.search),
     );
   }
+  if (f.state) rows = rows.filter((r) => (r.state || "") === f.state);
   if (f.method) rows = rows.filter((r) => r.shipping_method === f.method);
   if (f.carrier) rows = rows.filter((r) => r.carrier === f.carrier);
   if (f.slow) {
@@ -14208,6 +14217,11 @@ function updateSacrProductsBtn() {
   const btn = document.getElementById("sacr-products-btn");
   if (!btn) return;
   const hasRows = sacrState.rows.length > 0;
+  const statesBtn = document.getElementById("sacr-states-btn");
+  if (statesBtn) {
+    statesBtn.disabled = sacrState.loading || !(sacrState.states || []).length;
+    statesBtn.title = statesBtn.disabled ? "Run the report first" : "";
+  }
   btn.disabled = sacrState.loading || !hasRows;
   btn.title = sacrState.loading
     ? "Wait for the report to finish"
@@ -14403,6 +14417,7 @@ function renderSacrTable() {
         `<tr data-customer-id="${saEscape(r.customer_id)}" data-store-id="${r.store_id}" data-customer-name="${saEscape(r.name)}" class="sacr-row">` +
         `<td><span class="sacr-cust">${saEscape(r.name || "(no name)")}</span>${r.email ? `<span class="sacr-email">${saEscape(r.email)}</span>` : ""}</td>` +
         `<td>${saEscape(r.store_name || "")}${badge}</td>` +
+        `<td>${saEscape(r.state || "—")}</td>` +
         `<td class="sacr-num">${(r.orders_count || 0).toLocaleString()}</td>` +
         `<td class="sacr-num">${sacrFmtMoney(r.amount_spent, "")}</td>` +
         `<td>${(r.first_order_created_at || "").slice(0, 10) || "—"}</td>` +
@@ -14421,9 +14436,11 @@ function renderSacrTable() {
     const spend = rows.reduce((s, r) => s + (r.amount_spent || 0), 0);
     const orders = rows.reduce((s, r) => s + (r.orders_count || 0), 0);
     tfoot.innerHTML =
-      `<tr class="sacr-foot-row"><td>Total (filtered)</td><td></td>` +
+      `<tr class="sacr-foot-row"><td>Total (filtered)</td><td></td><td></td>` +
       `<td class="sacr-num">${orders.toLocaleString()}</td>` +
       `<td class="sacr-num">${sacrFmtMoney(spend, "")}</td>` +
+      // Customer + Store + State + Orders + Spent = 5 cells, then the
+      // remaining 7 columns (First order .. Carrier) are spanned.
       `<td colspan="7"></td></tr>`;
   }
 
@@ -14695,6 +14712,90 @@ const sacrProductsState = {
   scope: "",
   abortController: null,
 };
+
+const sacrStatesState = { sortColumn: "lost", sortOrder: "desc" };
+
+function sacrBindStatesModal() {
+  document.getElementById("sacr-states-btn")?.addEventListener("click", () => {
+    // The counts arrive with the report itself — both cohorts are already in
+    // hand — so this opens instantly with no extra Shopify calls.
+    renderSacrStates();
+    openModal("sacr-states-modal");
+  });
+  document
+    .getElementById("sacr-states-close")
+    ?.addEventListener("click", () => closeModal("sacr-states-modal"));
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    const m = document.getElementById("sacr-states-modal");
+    if (m && m.classList.contains("active")) closeModal("sacr-states-modal");
+  });
+  document.getElementById("sacr-states-table")?.addEventListener("click", (e) => {
+    const th = e.target.closest("th.qip-sortable");
+    if (!th || !th.dataset.ssort) return;
+    const col = th.dataset.ssort;
+    if (sacrStatesState.sortColumn === col) {
+      sacrStatesState.sortOrder = sacrStatesState.sortOrder === "asc" ? "desc" : "asc";
+    } else {
+      sacrStatesState.sortColumn = col;
+      sacrStatesState.sortOrder = "desc";
+    }
+    renderSacrStates();
+  });
+}
+
+function renderSacrStates() {
+  const tbody = document.getElementById("sacr-states-tbody");
+  const tfoot = document.getElementById("sacr-states-tfoot");
+  if (!tbody) return;
+  const rows = [...(sacrState.states || [])];
+  const col = sacrStatesState.sortColumn;
+  const dir = sacrStatesState.sortOrder === "asc" ? 1 : -1;
+  rows.sort((a, b) => {
+    const av = a[col];
+    const bv = b[col];
+    // A suppressed rate is unknown, not zero — keep those off the top.
+    if (av === null || av === undefined) return 1;
+    if (bv === null || bv === undefined) return -1;
+    if (av === bv) return b.lost - a.lost;
+    return av < bv ? -dir : dir;
+  });
+
+  tbody.innerHTML = rows
+    .map((s) => {
+      const rate = s.loss_rate === null || s.loss_rate === undefined
+        ? '<span class="sacr-muted" title="Too few customers here to be meaningful">—</span>'
+        : `${s.loss_rate.toFixed(1)}%`;
+      const cls = s.loss_rate === null ? "" : s.loss_rate >= 60 ? "sacr-lift-high"
+        : s.loss_rate <= 30 ? "sacr-lift-low" : "sacr-lift-neutral";
+      return `<tr><td>${saEscape(s.label)}</td>` +
+        `<td class="sacr-num">${s.lost.toLocaleString()}</td>` +
+        `<td class="sacr-num">${s.active.toLocaleString()}</td>` +
+        `<td class="sacr-num">${s.total.toLocaleString()}</td>` +
+        `<td class="sacr-num ${cls}">${rate}</td></tr>`;
+    })
+    .join("");
+
+  const tl = rows.reduce((a, s) => a + s.lost, 0);
+  const ta = rows.reduce((a, s) => a + s.active, 0);
+  if (tfoot) {
+    tfoot.innerHTML = `<tr class="sacr-foot-row"><td>All states</td>` +
+      `<td class="sacr-num">${tl.toLocaleString()}</td>` +
+      `<td class="sacr-num">${ta.toLocaleString()}</td>` +
+      `<td class="sacr-num">${(tl + ta).toLocaleString()}</td>` +
+      `<td class="sacr-num">${tl + ta ? ((tl / (tl + ta)) * 100).toFixed(1) + "%" : "—"}</td></tr>`;
+  }
+  const scope = document.getElementById("sacr-states-scope");
+  if (scope) {
+    scope.textContent = `${rows.length} state(s) · ${tl.toLocaleString()} lost vs ${ta.toLocaleString()} still active, by the shipping address on their last order`;
+  }
+  const note = document.getElementById("sacr-states-note");
+  if (note) {
+    note.textContent =
+      `Loss rate is a state's lost customers as a share of everyone there who qualified for this report, so it does not simply rank your biggest states. ` +
+      `It is hidden below ${sacrState.stateMinCustomers || 5} customers, where one person would swing it wildly.`;
+  }
+}
 
 function sacrBindProductsModal() {
   document

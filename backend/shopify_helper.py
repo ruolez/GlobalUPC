@@ -2139,6 +2139,7 @@ query LostCustomers($q: String!, $after: String) {
           name
           createdAt
           displayFulfillmentStatus
+          shippingAddress { provinceCode province countryCode }
           shippingLine { title carrierIdentifier }
           fulfillments(first: 5) {
             createdAt
@@ -2327,6 +2328,9 @@ def _normalize_lost_customer(node: Dict[str, Any]) -> Dict[str, Any]:
         "last_order_created_at": None,
         "shipping_method": None,
         "shipping_method_raw": None,
+        "state": None,
+        "state_name": None,
+        "country": None,
         "carrier": None,
         "tracking_url": None,
         "fulfillment_status": None,
@@ -2346,6 +2350,12 @@ def _normalize_lost_customer(node: Dict[str, Any]) -> Dict[str, Any]:
     ship = last.get("shippingLine") or {}
     row["shipping_method_raw"] = ship.get("title")
     row["shipping_method"] = _normalize_shipping_method(ship.get("title"))
+
+    # Where the final order actually shipped to.
+    addr = last.get("shippingAddress") or {}
+    row["state"] = (addr.get("provinceCode") or "").strip().upper() or None
+    row["state_name"] = (addr.get("province") or "").strip() or None
+    row["country"] = (addr.get("countryCode") or "").strip().upper() or None
 
     fulfillments = last.get("fulfillments") or []
     if fulfillments:

@@ -4426,6 +4426,9 @@
               <label style="font-size: 0.75rem; color: var(--text-secondary);">Method
                 <select id="sacr-filter-method" style="max-width: 170px; margin-left: 0.375rem;"><option value="">All</option></select>
               </label>
+              <label style="font-size: 0.75rem; color: var(--text-secondary);">State
+                <select id="sacr-filter-state" style="max-width: 150px; margin-left: 0.375rem;"><option value="">All</option></select>
+              </label>
               <label style="font-size: 0.75rem; color: var(--text-secondary);">Carrier
                 <select id="sacr-filter-carrier" style="max-width: 130px; margin-left: 0.375rem;"><option value="">All</option></select>
               </label>
@@ -4440,6 +4443,7 @@
                 </select>
               </label>
               <button type="button" class="btn btn-secondary" id="sacr-reset-filters" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Reset</button>
+              <button type="button" class="btn btn-primary" id="sacr-states-btn" style="font-size: 0.6875rem; padding: 0.25rem 0.625rem;">Lost by state</button>
               <button type="button" class="btn btn-primary" id="sacr-products-btn" style="font-size: 0.6875rem; padding: 0.25rem 0.625rem;">Top products in last orders</button>
               <span class="sa-row-count" id="sacr-row-count" aria-live="polite"></span>
             </div>
@@ -4459,6 +4463,7 @@
                     <tr>
                       <th class="qip-sortable" data-sort="name">Customer <span class="qip-sort-arrow"></span></th>
                       <th class="qip-sortable" data-sort="store_name">Store <span class="qip-sort-arrow"></span></th>
+                      <th class="qip-sortable" data-sort="state">State <span class="qip-sort-arrow"></span></th>
                       <th class="qip-sortable sacr-num" data-sort="orders_count">Orders <span class="qip-sort-arrow"></span></th>
                       <th class="qip-sortable sacr-num qip-sort-desc" data-sort="amount_spent">Spent <span class="qip-sort-arrow"></span></th>
                       <th class="qip-sortable" data-sort="first_order_created_at">First order <span class="qip-sort-arrow"></span></th>
@@ -4503,6 +4508,35 @@
           <button type="button" class="modal-close" id="sacr-detail-close">&times;</button>
         </div>
         <div class="modal-body" id="sacr-detail-body" style="padding: 1rem 1.5rem 1.5rem"></div>
+      </div>
+    </div>
+
+    <!-- Lost customers by shipping state -->
+    <div id="sacr-states-modal" class="modal">
+      <div class="modal-content" style="max-width: 820px; width: 95%">
+        <div class="modal-header">
+          <h3>Lost customers by state</h3>
+          <button type="button" class="modal-close" id="sacr-states-close">&times;</button>
+        </div>
+        <div class="modal-body" id="sacr-states-body" style="padding: 1rem 1.5rem 1.5rem">
+          <p class="sacr-products-scope" id="sacr-states-scope"></p>
+          <div class="table-container">
+            <table class="data-table sacr-products-table" id="sacr-states-table">
+              <thead>
+                <tr>
+                  <th>State</th>
+                  <th class="qip-sortable qip-sort-desc sacr-num" data-ssort="lost">Lost <span class="qip-sort-arrow"></span></th>
+                  <th class="qip-sortable sacr-num" data-ssort="active">Still active <span class="qip-sort-arrow"></span></th>
+                  <th class="qip-sortable sacr-num" data-ssort="total">Total <span class="qip-sort-arrow"></span></th>
+                  <th class="qip-sortable sacr-num" data-ssort="loss_rate">Loss rate <span class="qip-sort-arrow"></span></th>
+                </tr>
+              </thead>
+              <tbody id="sacr-states-tbody"></tbody>
+              <tfoot id="sacr-states-tfoot"></tfoot>
+            </table>
+          </div>
+          <p class="sancm-note" id="sacr-states-note"></p>
+        </div>
       </div>
     </div>
 

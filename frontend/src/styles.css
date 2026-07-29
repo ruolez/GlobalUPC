@@ -5944,3 +5944,26 @@ body.no-scroll {
 #sacr-products-modal .sacr-lift-high { color: var(--danger); font-weight: 600; }
 #sacr-products-modal .sacr-lift-neutral { color: var(--text-secondary); }
 #sacr-products-modal .sacr-lift-low { color: var(--success); }
+
+/* Lost-by-state modal reuses the products-modal table treatment */
+#sacr-states-modal .sacr-products-table td.sacr-num,
+#sacr-states-modal .sacr-products-table th.sacr-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+#sacr-states-modal .sacr-products-scope {
+  margin: 0 0 0.875rem;
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+}
+#sacr-states-modal .sacr-muted { color: var(--text-tertiary); }
+#sacr-states-modal .sacr-lift-high { color: var(--danger); font-weight: 600; }
+#sacr-states-modal .sacr-lift-neutral { color: var(--text-secondary); }
+#sacr-states-modal .sacr-lift-low { color: var(--success); }
+#sacr-states-modal .sacr-foot-row td {
+  font-weight: 600;
+  border-top: 2px solid var(--border-color);
+  background: color-mix(in srgb, var(--accent-primary) 5%, var(--bg-secondary));
+}
+#sacr-states-modal .table-container { max-height: 60vh; overflow-y: auto; }
