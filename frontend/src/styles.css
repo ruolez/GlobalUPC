@@ -5967,3 +5967,119 @@ body.no-scroll {
   background: color-mix(in srgb, var(--accent-primary) 5%, var(--bg-secondary));
 }
 #sacr-states-modal .table-container { max-height: 60vh; overflow-y: auto; }
+
+/* ============================================================================
+   Lost Customers: form controls
+   The app only styles inputs via `.form-group input`, so bare inputs sitting
+   inside a <label> fell through to the browser default — white boxes with
+   square corners against a dark page.
+   ========================================================================= */
+
+.sa-page .sacr-field,
+#sacr-products-modal .sacr-field,
+#sacr-states-modal .sacr-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.sa-page .sacr-control,
+#sacr-products-modal .sacr-control,
+#sacr-states-modal .sacr-control {
+  padding: 0.5rem 0.75rem;
+  min-height: 2.25rem;
+  font-size: 0.8125rem;
+  font-family: inherit;
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  transition: var(--transition);
+  width: auto;
+  max-width: 13rem;
+}
+.sa-page .sacr-control::placeholder,
+#sacr-products-modal .sacr-control::placeholder {
+  color: var(--text-tertiary);
+}
+.sa-page .sacr-control:hover,
+#sacr-products-modal .sacr-control:hover {
+  border-color: color-mix(in srgb, var(--accent-primary) 45%, var(--border-color));
+}
+.sa-page .sacr-control:focus,
+#sacr-products-modal .sacr-control:focus,
+#sacr-states-modal .sacr-control:focus {
+  outline: none;
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-primary) 22%, transparent);
+}
+.sa-page .sacr-control-sm,
+#sacr-products-modal .sacr-control-sm { max-width: 6rem; }
+
+/* Native select chrome ignores a dark background on several browsers, so the
+   arrow is drawn here instead. A mid grey reads on both the dark themes and
+   Author's Light. */
+.sa-page select.sacr-control,
+#sacr-products-modal select.sacr-control,
+#sacr-states-modal select.sacr-control {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 2rem;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238b909a' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.625rem center;
+  cursor: pointer;
+}
+
+/* Buttons in these bars: bigger tap target, matching corner radius. The
+   previous inline font-size/padding made them noticeably smaller than the
+   controls they sit beside. */
+.sa-page .sacr-btn,
+#sacr-products-modal .sacr-btn {
+  padding: 0.5rem 0.9375rem;
+  min-height: 2.25rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  border-radius: var(--radius-lg);
+}
+.sa-page .sacr-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* The bars themselves get a little more room and rounding to match */
+.sa-page .sa-filter-bar {
+  gap: 0.625rem 1rem;
+  padding: 0.75rem 0.875rem;
+  border-radius: var(--radius-lg);
+}
+#sacr-products-modal .sacr-products-toolbar {
+  gap: 0.625rem 1rem;
+  padding: 0.75rem 0.875rem;
+  border-radius: var(--radius-lg);
+}
+.sa-page .sacr-pagination {
+  gap: 0.625rem 1rem;
+  align-items: center;
+}
+
+/* Selects size to their widest option, which let one long carrier name stretch
+   the control to 208px. Cap them; the native dropdown still shows full text. */
+.sa-page select.sacr-control,
+#sacr-products-modal select.sacr-control { max-width: 10rem; }
+.sa-page #sacr-filter-state.sacr-control { max-width: 7rem; }
+
+/* Twelve columns under table-layout:fixed leaves no room for a nowrap header —
+   "Days silent" was rendering as "Days silen". Let headings wrap; the numeric
+   cells themselves stay on one line. */
+/* Needs to out-specify `#sacr-table th.sacr-num { white-space: nowrap }`,
+   which otherwise keeps the numeric headings on one clipped line. */
+.sa-page #sacr-table thead th,
+.sa-page #sacr-table thead th.sacr-num {
+  white-space: normal;
+  line-height: 1.25;
+  vertical-align: bottom;
+}
