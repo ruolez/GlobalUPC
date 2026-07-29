@@ -14514,8 +14514,13 @@ function renderSacrNote() {
       .sort((a, b) => b[1] - a[1])
       .map(([k, v]) => `${v.toLocaleString()} to ${k}`)
       .join(", ");
+    const byName = sacrState.stores.reduce((a, s) => a + (s.matched_by_name || 0), 0);
     notes.push(
-      `${movedTotal.toLocaleString()} customer(s) did not leave — they have ordered at another store since ${sacrState.silentSince} (${where}) and are excluded from every figure.`,
+      `${movedTotal.toLocaleString()} customer(s) did not leave — they are still ordering since ${sacrState.silentSince} under another account (${where})` +
+        (byName
+          ? `, ${byName.toLocaleString()} of them found by name + ZIP rather than email`
+          : "") +
+        ` — and are excluded from every figure.`,
     );
   }
   const neverPurchased = sacrState.stores.reduce((a, s) => a + (s.never_purchased || 0), 0);
@@ -14527,7 +14532,7 @@ function renderSacrNote() {
   const noEmail = sacrState.stores.reduce((a, s) => a + (s.no_email || 0), 0);
   if (noEmail) {
     notes.push(
-      `${noEmail.toLocaleString()} customer(s) have no email address, so they could not be checked against other stores and remain listed.`,
+      `${noEmail.toLocaleString()} customer(s) have no email address; they were still checked by name + ZIP.`,
     );
   }
   const unknownFirst = sacrState.stores.reduce((a, s) => a + (s.unknown_first_order || 0), 0);

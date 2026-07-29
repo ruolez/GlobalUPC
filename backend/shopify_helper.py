@@ -2127,9 +2127,12 @@ query LostCustomers($q: String!, $after: String) {
     nodes {
       id
       displayName
+      firstName
+      lastName
       email
       createdAt
       numberOfOrders
+      defaultAddress { zip }
       amountSpent { amount currencyCode }
       lastValidOrder: orders(
         first: 1, sortKey: CREATED_AT, reverse: true, query: "%s"
@@ -2139,7 +2142,7 @@ query LostCustomers($q: String!, $after: String) {
           name
           createdAt
           displayFulfillmentStatus
-          shippingAddress { provinceCode province countryCode }
+          shippingAddress { provinceCode province countryCode zip }
           shippingLine { title carrierIdentifier }
           fulfillments(first: 5) {
             createdAt
@@ -2316,6 +2319,8 @@ def _normalize_lost_customer(node: Dict[str, Any]) -> Dict[str, Any]:
     row: Dict[str, Any] = {
         "customer_id": node.get("id"),
         "name": node.get("displayName") or "",
+        "first_name": node.get("firstName") or "",
+        "last_name": node.get("lastName") or "",
         # May be null when protected customer data is not approved.
         "email": node.get("email"),
         "customer_since": node.get("createdAt"),
@@ -2331,6 +2336,11 @@ def _normalize_lost_customer(node: Dict[str, Any]) -> Dict[str, Any]:
         "state": None,
         "state_name": None,
         "country": None,
+        # Populated below from the last order too; seeded here so a customer
+        # with no completed order still carries the key.
+        "zips": sorted({z for z in (
+            normalize_zip(((node.get("defaultAddress") or {}) or {}).get("zip")),
+        ) if z}),
         "carrier": None,
         "tracking_url": None,
         "fulfillment_status": None,
@@ -2354,6 +2364,12 @@ def _normalize_lost_customer(node: Dict[str, Any]) -> Dict[str, Any]:
     # Where the final order actually shipped to.
     addr = last.get("shippingAddress") or {}
     row["state"] = (addr.get("provinceCode") or "").strip().upper() or None
+    # Either address can identify the person; a re-registration often reuses
+    # one but not the other.
+    row["zips"] = sorted({z for z in (
+        normalize_zip(((node.get("defaultAddress") or {}) or {}).get("zip")),
+        normalize_zip(addr.get("zip")),
+    ) if z})
     row["state_name"] = (addr.get("province") or "").strip() or None
     row["country"] = (addr.get("countryCode") or "").strip().upper() or None
 
@@ -2919,6 +2935,149 @@ def normalize_email(email: Optional[str]) -> Optional[str]:
         return None
     e = email.strip().lower()
     return e or None
+
+
+def normalize_zip(z: Optional[str]) -> Optional[str]:
+    """First five characters of a US ZIP; "55119-1234" and "55119" are one place."""
+    if not z:
+        return None
+    v = "".join(str(z).split()).upper()
+    return (v.split("-")[0][:5] or None) if v else None
+
+
+def normalize_name(n: Optional[str]) -> str:
+    return " ".join(str(n or "").split()).lower()
+
+
+def name_key(first: Optional[str], last: Optional[str]) -> Optional[str]:
+    f, l = normalize_name(first), normalize_name(last)
+    return f"{f}|{l}" if f and l else None
+
+
+# Second pass over duplicate accounts. Shopify enforces one customer record per
+# email, so a shopper who re-registers necessarily uses a different address and
+# the email pass can never see them. Name plus ZIP does: measured on live data,
+# 22 of 125 name+ZIP keys were held by more than one customer record, one of
+# them by four.
+#
+# `first_name`/`last_name` filtering is honoured exactly, and up to 100 pairs
+# OR-group into a single query. `zip:` is NOT a working filter — it returned 20
+# records of which 1 actually matched — so ZIP is compared here rather than in
+# the query, which is also what makes it a useful tiebreak against people who
+# merely share a common name.
+_NAME_BATCH = 100
+_NAME_CONCURRENCY = 4
+
+_CUSTOMERS_BY_NAME_QUERY = """
+query CustomersByName($q: String!, $after: String) {
+  customers(first: 250, query: $q, sortKey: ID, after: $after) {
+    pageInfo { hasNextPage endCursor }
+    nodes {
+      id
+      firstName
+      lastName
+      email
+      defaultAddress { zip }
+      lastValidOrder: orders(
+        first: 1, sortKey: CREATED_AT, reverse: true, query: "%s"
+      ) { nodes { createdAt } }
+    }
+  }
+}
+""" % ORDER_STATUS_FILTER
+
+
+async def fetch_customers_by_name(
+    shop_domain: str,
+    admin_api_key: str,
+    names: List[tuple],
+    api_version: str = "2025-01",
+    on_batch=None,
+    on_retry=None,
+) -> Dict[str, Any]:
+    """
+    Look up customer records by (first name, last name) at one shop.
+
+    `names` is a list of (first, last). Returns {ok, error, candidates,
+    warnings}; each candidate is {id, name_key, zip, last_order, email}. ZIP
+    matching and self-exclusion are the caller's job.
+    """
+    out: Dict[str, Any] = {"ok": False, "error": None, "candidates": [], "warnings": []}
+
+    try:
+        shop_domain = validate_shop_domain(shop_domain)
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+
+    pairs = sorted({(normalize_name(a), normalize_name(b)) for a, b in names if a and b})
+    if not pairs:
+        out["ok"] = True
+        return out
+
+    batches = [pairs[i:i + _NAME_BATCH] for i in range(0, len(pairs), _NAME_BATCH)]
+    semaphore = asyncio.Semaphore(_NAME_CONCURRENCY)
+    done = 0
+
+    try:
+        async with aiohttp.ClientSession() as session:
+
+            async def run_batch(batch):
+                nonlocal done
+                async with semaphore:
+                    terms = " OR ".join(
+                        '(first_name:"{}" AND last_name:"{}")'.format(
+                            a.replace('"', ""), b.replace('"', "")
+                        )
+                        for a, b in batch
+                    )
+                    cursor = None
+                    # A common surname can exceed one page of records.
+                    for _ in range(10):
+                        data, warnings = await _shopify_graphql(
+                            session, shop_domain, admin_api_key, api_version,
+                            _CUSTOMERS_BY_NAME_QUERY, {"q": terms, "after": cursor},
+                            op_name="customers by name", on_retry=on_retry,
+                        )
+                        if warnings:
+                            out["warnings"].extend(warnings)
+                        conn = data.get("customers") or {}
+                        for node in conn.get("nodes") or []:
+                            if not node:
+                                continue
+                            k = name_key(node.get("firstName"), node.get("lastName"))
+                            if not k:
+                                continue
+                            nodes = (node.get("lastValidOrder") or {}).get("nodes") or []
+                            out["candidates"].append({
+                                "id": node.get("id"),
+                                "name_key": k,
+                                "zip": normalize_zip(
+                                    ((node.get("defaultAddress") or {}) or {}).get("zip")),
+                                "last_order": nodes[0].get("createdAt") if nodes else None,
+                                "email": normalize_email(node.get("email")),
+                            })
+                        page_info = conn.get("pageInfo") or {}
+                        if not page_info.get("hasNextPage"):
+                            break
+                        cursor = page_info.get("endCursor")
+                    done += len(batch)
+                    if on_batch:
+                        on_batch(done, len(pairs))
+
+            await asyncio.gather(*[run_batch(b) for b in batches])
+
+    except ShopifyFetchError as e:
+        out["error"] = str(e)
+        return out
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        out["error"] = f"Unexpected error: {e}"
+        return out
+
+    out["ok"] = True
+    return out
 
 
 async def fetch_customers_by_emails(
