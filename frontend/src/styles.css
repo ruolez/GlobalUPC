@@ -6083,3 +6083,71 @@ body.no-scroll {
   line-height: 1.25;
   vertical-align: bottom;
 }
+
+/* ---- Lost Customers table: column sizing and a uniform header band ---- */
+
+/* Under table-layout:fixed the browser gives every column the same width, so
+   a single digit in Orders got as much room as a customer name. */
+.sa-page #sacr-table { table-layout: fixed; }
+.sa-page #sacr-table th:nth-child(1)  { width: 18%; }  /* Customer   */
+.sa-page #sacr-table th:nth-child(2)  { width: 6%;  }  /* Store      */
+.sa-page #sacr-table th:nth-child(3)  { width: 5%;  }  /* State      */
+.sa-page #sacr-table th:nth-child(4)  { width: 5%;  }  /* Orders     */
+.sa-page #sacr-table th:nth-child(5)  { width: 9%;  }  /* Spent      */
+.sa-page #sacr-table th:nth-child(6)  { width: 9%;  }  /* First order*/
+.sa-page #sacr-table th:nth-child(7)  { width: 10%; }  /* Last order */
+.sa-page #sacr-table th:nth-child(8)  { width: 7%;  }  /* Days silent*/
+.sa-page #sacr-table th:nth-child(9)  { width: 6%;  }  /* Ship       */
+.sa-page #sacr-table th:nth-child(10) { width: 6%;  }  /* Deliver    */
+.sa-page #sacr-table th:nth-child(11) { width: 11%; }  /* Method     */
+.sa-page #sacr-table th:nth-child(12) { width: 8%;  }  /* Carrier    */
+
+/* Two-line-tall headings throughout, bottom aligned, so single-word captions
+   sit on the same baseline as the ones that wrap. */
+.sa-page #sacr-table thead th,
+.sa-page #sacr-table thead th.sacr-num {
+  height: 3.25rem;
+  vertical-align: bottom;
+  padding-bottom: 0.5rem;
+  line-height: 1.25;
+}
+
+/* Dates stay on one line — they were breaking as "2025-12-" / "03". */
+.sa-page #sacr-table td.sacr-date {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.sa-page #sacr-table td.sacr-date .sacr-ordname {
+  display: block;
+  margin-left: 0;
+  font-size: 0.6875rem;
+  color: var(--text-tertiary);
+}
+
+/* Orders and Deliver needed a little more room for their captions. */
+.sa-page #sacr-table th:nth-child(1)  { width: 16%; }
+.sa-page #sacr-table th:nth-child(4)  { width: 6%;  }
+.sa-page #sacr-table th:nth-child(10) { width: 7%;  }
+.sa-page #sacr-table thead th {
+  letter-spacing: 0.03em;
+}
+
+/* Long values (a 4-word carrier name, a wrapped shipping method) were pushing
+   some rows to 107px while others sat at 79px. Truncate instead; the full
+   value is on the cell title. */
+/* A <td> must keep display:table-cell — making it block drops it out of the
+   row and it renders as a stacked box. Under table-layout:fixed the cell
+   already has a width, so overflow+ellipsis works without it. */
+.sa-page #sacr-table td.sacr-ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The inner spans do need to stack: name above email. */
+.sa-page #sacr-table td .sacr-cust,
+.sa-page #sacr-table td .sacr-email {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

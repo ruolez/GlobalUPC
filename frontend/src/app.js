@@ -14170,6 +14170,19 @@ function sacrFilteredRows() {
   });
 }
 
+// "2025/12/03" reads tighter than "2025-12-03" and, kept on one line, stops
+// the date wrapping mid-value the way "2025-12-" / "03" did.
+function sacrFmtDate(iso) {
+  if (!iso) return "—";
+  return String(iso).slice(0, 10).replace(/-/g, "/");
+}
+
+// Every store here is a Shopify store; repeating the word in each row just
+// costs width. Full name stays in the cell title.
+function sacrShortStore(name) {
+  return String(name || "").replace(/\s*shopify\s*$/i, "").trim() || String(name || "");
+}
+
 function sacrFmtDays(v) {
   return v === null || v === undefined ? "—" : `${Number(v).toFixed(1)}d`;
 }
@@ -14415,18 +14428,18 @@ function renderSacrTable() {
         : "";
       return (
         `<tr data-customer-id="${saEscape(r.customer_id)}" data-store-id="${r.store_id}" data-customer-name="${saEscape(r.name)}" class="sacr-row">` +
-        `<td><span class="sacr-cust">${saEscape(r.name || "(no name)")}</span>${r.email ? `<span class="sacr-email">${saEscape(r.email)}</span>` : ""}</td>` +
-        `<td>${saEscape(r.store_name || "")}${badge}</td>` +
+        `<td title="${saEscape(r.name || "")}${r.email ? " · " + saEscape(r.email) : ""}"><span class="sacr-cust">${saEscape(r.name || "(no name)")}</span>${r.email ? `<span class="sacr-email">${saEscape(r.email)}</span>` : ""}</td>` +
+        `<td title="${saEscape(r.store_name || "")}">${saEscape(sacrShortStore(r.store_name))}${badge}</td>` +
         `<td>${saEscape(r.state || "—")}</td>` +
         `<td class="sacr-num">${(r.orders_count || 0).toLocaleString()}</td>` +
         `<td class="sacr-num">${sacrFmtMoney(r.amount_spent, "")}</td>` +
-        `<td>${(r.first_order_created_at || "").slice(0, 10) || "—"}</td>` +
-        `<td>${(r.last_order_created_at || "").slice(0, 10)}${r.last_order_name ? ` <span class="sacr-ordname">${saEscape(r.last_order_name)}</span>` : ""}</td>` +
+        `<td class="sacr-date">${sacrFmtDate(r.first_order_created_at)}</td>` +
+        `<td class="sacr-date">${sacrFmtDate(r.last_order_created_at)}${r.last_order_name ? `<span class="sacr-ordname">${saEscape(r.last_order_name)}</span>` : ""}</td>` +
         `<td class="sacr-num">${r.days_silent === null ? "—" : r.days_silent.toLocaleString()}</td>` +
         sacrDaysCell(r.days_to_fulfil) +
         sacrDaysCell(r.days_to_deliver) +
-        `<td>${saEscape(r.shipping_method || "—")}</td>` +
-        `<td>${saEscape(r.carrier || "—")}</td></tr>`
+        `<td class="sacr-ellipsis" title="${saEscape(r.shipping_method_raw || r.shipping_method || "")}">${saEscape(r.shipping_method || "—")}</td>` +
+        `<td class="sacr-ellipsis" title="${saEscape(r.carrier || "")}">${saEscape(r.carrier || "—")}</td></tr>`
       );
     })
     .join("");
