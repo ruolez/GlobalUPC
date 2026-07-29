@@ -6992,17 +6992,22 @@ def _count_orders(orders: List[Dict[str, Any]]) -> tuple:
                 "deleted": deleted,
                 "orders": 0,
                 "quantity": 0,
+                "barcodes": set(),
                 "variants": {},
             })
+            if item.get("barcode"):
+                entry["barcodes"].add(item["barcode"])
             entry["quantity"] += item.get("quantity") or 0
             if key not in seen_products:
                 entry["orders"] += 1
                 seen_products.add(key)
 
-            vkey = item.get("sku") or item.get("variant_title") or "—"
+            # Barcode first so a variant also matches across stores.
+            vkey = item.get("barcode") or item.get("sku") or item.get("variant_title") or "—"
             v = entry["variants"].setdefault(vkey, {
                 "title": item.get("variant_title") or "",
                 "sku": item.get("sku") or "",
+                "barcode": item.get("barcode") or "",
                 "orders": 0,
                 "quantity": 0,
             })
@@ -7012,6 +7017,67 @@ def _count_orders(orders: List[Dict[str, Any]]) -> tuple:
                 seen_variants.add((key, vkey))
 
     return per_product, len(orders), excluded_lines
+
+
+def _link_products_across_stores(per_store: List[Dict[str, Any]]) -> tuple:
+    """
+    Decide which per-store products are the same product.
+
+    Shopify product ids are per-store, and the same item is frequently titled
+    differently in each shop ("Kentucky Select Red" vs "Kentucky Select Full
+    Flavor"), so neither id nor title can match across stores. The variant
+    barcode is the only shared identifier — measured at 91% coverage on line
+    items, with over a thousand barcodes common to a single pair of stores.
+
+    Products are joined through the barcodes they share, so a product still
+    merges when its stores list only partly overlapping variants. Returns
+    (local key -> canonical key, canonical key -> display title).
+    """
+    parent: Dict[str, str] = {}
+
+    def find(x: str) -> str:
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: str, b: str) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    def node(store_id, key) -> str:
+        return f"p|{store_id}|{key}"
+
+    for ps in per_store:
+        sid = (ps.get("store") or {}).get("id")
+        for bucket in ("lost_products", "base_products"):
+            for key, entry in (ps.get(bucket) or {}).items():
+                n = node(sid, key)
+                find(n)
+                for bc in entry.get("barcodes") or ():
+                    union(n, f"bc|{bc}")
+
+    mapping: Dict[tuple, str] = {}
+    # Title chosen by order weight so the merged row carries the name attached
+    # to the most real purchases rather than whichever store sorted first.
+    titles: Dict[str, Dict[str, int]] = {}
+    for ps in per_store:
+        sid = (ps.get("store") or {}).get("id")
+        for bucket, weighted in (("lost_products", True), ("base_products", False)):
+            for key, entry in (ps.get(bucket) or {}).items():
+                canon = find(node(sid, key))
+                mapping[(sid, key)] = canon
+                if weighted:
+                    t = titles.setdefault(canon, {})
+                    t[entry["title"]] = t.get(entry["title"], 0) + entry["orders"]
+
+    labels = {
+        canon: max(sorted(counts), key=lambda t: counts[t])
+        for canon, counts in titles.items() if counts
+    }
+    return mapping, labels
 
 
 @app.post("/api/shopify-analytics/lost-products/stream")
@@ -7198,19 +7264,27 @@ async def shopify_analytics_lost_products_stream(
         n_last = sum(p["n_lost"] for p in per_store)
         n_base = sum(p["n_base"] for p in per_store)
 
+        canon_of, canon_titles = _link_products_across_stores(per_store)
+
         merged: Dict[Any, Dict[str, Any]] = {}
         for ps in per_store:
+            sid = (ps.get("store") or {}).get("id")
             for key, entry in ps["lost_products"].items():
-                tgt = merged.setdefault(key, {
-                    "key": entry["key"], "product_id": entry["product_id"],
-                    "title": entry["title"], "deleted": entry["deleted"],
+                ckey = canon_of.get((sid, key), key)
+                tgt = merged.setdefault(ckey, {
+                    "key": str(ckey),
+                    # Ids are per-store, so a merged row has no single one.
+                    "product_id": entry["product_id"],
+                    "title": canon_titles.get(ckey) or entry["title"],
+                    "deleted": entry["deleted"],
                     "orders": 0, "quantity": 0, "variants": {},
                 })
                 tgt["orders"] += entry["orders"]
                 tgt["quantity"] += entry["quantity"]
                 for vk, v in entry["variants"].items():
                     tv = tgt["variants"].setdefault(vk, {
-                        "title": v["title"], "sku": v["sku"], "orders": 0, "quantity": 0,
+                        "title": v["title"], "sku": v["sku"],
+                        "barcode": v.get("barcode", ""), "orders": 0, "quantity": 0,
                     })
                     tv["orders"] += v["orders"]
                     tv["quantity"] += v["quantity"]
@@ -7228,8 +7302,15 @@ async def shopify_analytics_lost_products_stream(
             for ps in per_store:
                 if not ps["n_base"]:
                     continue
-                share = (ps["base_products"].get(key, {}).get("orders", 0)) / ps["n_base"]
-                seen_base += ps["base_products"].get(key, {}).get("orders", 0)
+                sid = (ps.get("store") or {}).get("id")
+                # Sum every local product that maps to this canonical one, or a
+                # store whose title differs would contribute nothing.
+                b_orders_s = sum(
+                    e["orders"] for lk, e in ps["base_products"].items()
+                    if canon_of.get((sid, lk), lk) == key
+                )
+                share = b_orders_s / ps["n_base"]
+                seen_base += b_orders_s
                 e_raw += ps["n_lost"] * share
                 ratio = (ps["avg_base"] / ps["avg_last"]) if ps["avg_last"] else 1.0
                 e_adj += ps["n_lost"] * share / (ratio or 1.0)

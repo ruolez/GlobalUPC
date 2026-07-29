@@ -2563,6 +2563,7 @@ query OrderItems($ids: [ID!]!) {
           sku
           variantTitle
           product { id title }
+          variant { barcode }
         }
       }
     }
@@ -2584,6 +2585,7 @@ query BaselineItems($q: String!, $after: String) {
           sku
           variantTitle
           product { id title }
+          variant { barcode }
         }
       }
     }
@@ -2619,6 +2621,9 @@ def _normalize_order_items(node: Dict[str, Any]) -> Dict[str, Any]:
                 # discontinued item is exactly what this report might surface.
                 "product_id": ((it.get("product") or {}) or {}).get("id"),
                 "product_title": ((it.get("product") or {}) or {}).get("title"),
+                # The only identifier shared across shops: product ids are
+                # per-store, and the same item is often titled differently.
+                "barcode": (((it.get("variant") or {}) or {}).get("barcode") or "").strip() or None,
             }
             for it in (li.get("nodes") or [])
         ],

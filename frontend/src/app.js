@@ -15114,7 +15114,13 @@ function renderSacrProducts() {
         .map(
           (v) =>
             `<tr class="sacr-variant-row"><td>&#8627; ${saEscape(v.title || "(default)")}` +
-            (v.sku ? ` <span class="sacr-email">${saEscape(v.sku)}</span>` : "") +
+            // Barcode is what actually matched this variant across stores, so
+            // show it in preference to the per-store SKU.
+            (v.barcode
+              ? ` <span class="sacr-email">${saEscape(v.barcode)}</span>`
+              : v.sku
+                ? ` <span class="sacr-email">${saEscape(v.sku)}</span>`
+                : "") +
             `</td><td class="sacr-num">${v.orders.toLocaleString()}</td>` +
             `<td colspan="3"></td><td class="sacr-num">${v.quantity.toLocaleString()}</td></tr>`,
         )
@@ -15139,6 +15145,7 @@ function renderSacrProducts() {
     // only says how they combine and when a number is withheld.
     const bits = [
       `Counted once per order, so one big basket cannot inflate a product.`,
+      `Across stores, products are matched by variant barcode — product ids and titles differ per store.`,
       `Lift = % of last ÷ Expected %. Above 1.0x means the product shows up more often in last orders than normal. Hover a lift for the unadjusted figure.`,
       `Expected % is what each store's own ordinary orders would predict, from ${t.baseline_orders_sampled.toLocaleString()} orders in the same period.`,
       `Lift hidden below ${t.lift_min_orders} orders.`,
