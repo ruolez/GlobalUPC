@@ -6293,7 +6293,13 @@ async def shopify_analytics_new_customers_by_month_stream(
 # window is split into concurrent shards. This also keeps each cursor walk
 # under Shopify's 25,000-object pagination ceiling.
 _LOST_MAX_SHARDS = 4
-_LOST_SHARD_MIN_DAYS = 90
+# Sharding buys parallelism and keeps each cursor walk under Shopify's 25,000
+# object ceiling, but it is not free: a customer who ordered in three shards is
+# fetched three times. Measured on a two-year window, four shards scanned 403
+# records for 290 distinct customers — 1.4x duplicate work. 180 days keeps the
+# long windows sharded, where the ceiling and the wall-clock actually matter,
+# and leaves a one-year window on two shards instead of four.
+_LOST_SHARD_MIN_DAYS = 180
 
 
 def _lost_shards(active_since: str, upper: str) -> List[tuple]:
@@ -6401,6 +6407,9 @@ async def shopify_analytics_lost_customers_stream(
                 "admin_api_key": st_all.shopify_connection.admin_api_key,
                 "api_version": st_all.shopify_connection.api_version,
             })
+        # Fixed order so that when two shops both match a customer, the one
+        # credited with the move is the same on every run.
+        all_shopify.sort(key=lambda s: s["id"])
         cross_store = bool(request.exclude_cross_store) and len(all_shopify) > 1
 
         # Shopify filters on each shop's local date, so every window comparison
@@ -6640,11 +6649,13 @@ async def shopify_analytics_lost_customers_stream(
                 no_email = 0
                 cross_errors: List[str] = []
                 if cross_store and lost_kept:
-                    # Own store included: a shopper can re-register at the same
-                    # shop. The email lookup takes the latest order across every
-                    # record sharing an address, so someone with a single
-                    # account matches only their own pre-cutoff order.
-                    others = list(all_shopify)
+                    # The customer's own shop is skipped here: Shopify enforces
+                    # one customer record per email, so an email lookup against
+                    # the shop they are already lost at can only ever return
+                    # their own pre-cutoff order. Pass 2 keeps the own shop —
+                    # matching on name and ZIP is what catches a re-registration,
+                    # which is forced onto a different address by that same rule.
+                    others = [o for o in all_shopify if o["id"] != s["id"]]
                     emails = [normalize_email(c.get("email")) for c in lost_kept]
                     no_email = sum(1 for c in lost_kept if not normalize_email(c.get("email")))
                     lookup = [e for e in emails if e]
@@ -6654,12 +6665,13 @@ async def shopify_analytics_lost_customers_stream(
                         "label": f"checking {len(others)} store(s) for the same email",
                     }))
 
-                    # email -> name of the shop they are still buying from
-                    moved_to: Dict[str, str] = {}
-                    for other in others:
-                        if not lookup:
-                            break
-                        res = await fetch_customers_by_emails(
+                    # Shops are independent lookups against different hosts, so
+                    # they run together — this phase was 35% of the run when
+                    # serialised. Each shop's own rate-limit bucket still paces
+                    # it, and results are merged below in a fixed shop order so
+                    # the attribution cannot vary between runs.
+                    async def email_probe(other):
+                        return other, await fetch_customers_by_emails(
                             shop_domain=other["shop_domain"],
                             admin_api_key=other["admin_api_key"],
                             emails=lookup,
@@ -6670,6 +6682,19 @@ async def shopify_analytics_lost_customers_stream(
                             })),
                             on_retry=on_retry,
                         )
+
+                    email_results = []
+                    if lookup and others:
+                        email_results = await asyncio.gather(
+                            *[email_probe(o) for o in others], return_exceptions=True)
+
+                    # email -> name of the shop they are still buying from
+                    moved_to: Dict[str, str] = {}
+                    for item in email_results:
+                        if isinstance(item, BaseException):
+                            cross_errors.append(str(item)[:200])
+                            continue
+                        other, res = item
                         if not res.get("ok"):
                             # Never silently keep a customer we failed to check.
                             cross_errors.append(f"{other['name']}: {res.get('error')}")
@@ -6678,17 +6703,13 @@ async def shopify_analytics_lost_customers_stream(
                             cross_errors.append(
                                 f"{other['name']}: {res['malformed']} address(es) were too "
                                 f"malformed to search")
-                        same_store = other["id"] == s["id"]
                         other_tz = tz_by_shop.get(other["id"])
                         for em, last in (res.get("last_orders") or {}).items():
                             # That order happened at the other shop, so it is
                             # that shop's day that decides whether it is recent.
                             if last and local_date(last, other_tz) >= silent_since \
                                     and em not in moved_to:
-                                moved_to[em] = (
-                                    f"{other['name']} (another account)"
-                                    if same_store else other["name"]
-                                )
+                                moved_to[em] = other["name"]
 
                     if moved_to:
                         for c in lost_kept:
@@ -6711,17 +6732,21 @@ async def shopify_analytics_lost_customers_stream(
                         if name_key(c.get("first_name"), c.get("last_name")) and c.get("zips")
                     ]
                     if people:
+                        # The own shop is back in scope here — a re-registration
+                        # lives at the same shop under a different email.
+                        name_shops = list(all_shopify)
                         events.put_nowait(("phase", {
                             "store_id": s["id"], "store_name": s["name"],
-                            "label": f"checking {len(others)} store(s) by name and ZIP",
+                            "label": f"checking {len(name_shops)} store(s) by name and ZIP",
                         }))
-                        wanted = {(c["first_name"], c["last_name"]) for c in people}
+                        wanted = sorted({(c["first_name"], c["last_name"]) for c in people})
                         by_name: Dict[str, List[Dict[str, Any]]] = {}
-                        for other in others:
-                            res2 = await fetch_customers_by_name(
+
+                        async def name_probe(other):
+                            return other, await fetch_customers_by_name(
                                 shop_domain=other["shop_domain"],
                                 admin_api_key=other["admin_api_key"],
-                                names=sorted(wanted),
+                                names=wanted,
                                 api_version=other["api_version"],
                                 on_batch=lambda d, t, _s=s, _o=other: events.put_nowait(("cross_store", {
                                     "store_id": _s["id"], "store_name": _s["name"],
@@ -6729,6 +6754,15 @@ async def shopify_analytics_lost_customers_stream(
                                 })),
                                 on_retry=on_retry,
                             )
+
+                        name_results = await asyncio.gather(
+                            *[name_probe(o) for o in name_shops], return_exceptions=True)
+
+                        for item in name_results:
+                            if isinstance(item, BaseException):
+                                cross_errors.append(str(item)[:200])
+                                continue
+                            other, res2 = item
                             if not res2.get("ok"):
                                 cross_errors.append(f"{other['name']} (by name): {res2.get('error')}")
                                 continue
