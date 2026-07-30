@@ -13558,8 +13558,7 @@ const sacrState = {
     carrier: "",
     slow: "",
     state: "",
-    ordersMin: null,   // inclusive; null = unbounded
-    ordersMax: null,
+    ordersMin: null,   // inclusive; null = no minimum
   },
   currentPage: 0,
   pageSize: 100,
@@ -13741,17 +13740,12 @@ function loadLostCustomersPanel() {
         rerender();
       });
   });
-  [["min", "ordersMin"], ["max", "ordersMax"]].forEach(([suffix, key]) => {
-    document
-      .getElementById(`sacr-filter-orders-${suffix}`)
-      ?.addEventListener("input", (e) => {
-        const raw = e.target.value.trim();
-        const n = parseInt(raw, 10);
-        // "" and a half-typed "-" both mean unbounded, not zero.
-        sacrState.filter[key] = raw === "" || isNaN(n) ? null : Math.max(0, n);
-        sacrMarkOrdersRange();
-        rerender();
-      });
+  document.getElementById("sacr-filter-orders-min")?.addEventListener("input", (e) => {
+    const raw = e.target.value.trim();
+    const n = parseInt(raw, 10);
+    // "" and a half-typed "-" both mean no minimum, not zero.
+    sacrState.filter.ordersMin = raw === "" || isNaN(n) ? null : Math.max(0, n);
+    rerender();
   });
   document.getElementById("sacr-reset-filters")?.addEventListener("click", () => {
     sacrState.filter = {
@@ -13761,7 +13755,6 @@ function loadLostCustomersPanel() {
       slow: "",
       state: "",
       ordersMin: null,
-      ordersMax: null,
     };
     const s = document.getElementById("sacr-search");
     if (s) s.value = "";
@@ -13769,11 +13762,8 @@ function loadLostCustomersPanel() {
       const el = document.getElementById(`sacr-filter-${k}`);
       if (el) el.value = "";
     });
-    ["min", "max"].forEach((k) => {
-      const el = document.getElementById(`sacr-filter-orders-${k}`);
-      if (el) el.value = "";
-    });
-    sacrMarkOrdersRange();
+    const om = document.getElementById("sacr-filter-orders-min");
+    if (om) om.value = "";
     rerender();
   });
 
@@ -14252,22 +14242,8 @@ function sacrIsFiltered() {
   const f = sacrState.filter;
   return Boolean(
     f.search || f.method || f.carrier || f.slow || f.state ||
-      f.ordersMin !== null || f.ordersMax !== null,
+      f.ordersMin !== null,
   );
-}
-
-// min above max matches nothing, and an empty table with no stated cause reads
-// as a broken report rather than a typo.
-function sacrMarkOrdersRange() {
-  const f = sacrState.filter;
-  const bad =
-    f.ordersMin !== null && f.ordersMax !== null && f.ordersMin > f.ordersMax;
-  ["min", "max"].forEach((k) => {
-    const el = document.getElementById(`sacr-filter-orders-${k}`);
-    if (!el) return;
-    el.classList.toggle("is-invalid", bad);
-    el.title = bad ? "Minimum is above maximum, so no rows can match" : "";
-  });
 }
 
 function sacrFilteredRows() {
@@ -14283,13 +14259,9 @@ function sacrFilteredRows() {
         (r.email || "").toLowerCase().includes(f.search),
     );
   }
-  // Lifetime orders. Bounds are inclusive, so 1–1 isolates one-time buyers and
-  // 2– isolates the repeat customers who stopped.
+  // Completed orders, inclusive: 2 keeps the repeat customers who stopped.
   if (f.ordersMin !== null) {
     rows = rows.filter((r) => (r.orders_count || 0) >= f.ordersMin);
-  }
-  if (f.ordersMax !== null) {
-    rows = rows.filter((r) => (r.orders_count || 0) <= f.ordersMax);
   }
   if (f.state) rows = rows.filter((r) => (r.state || "") === f.state);
   if (f.method) rows = rows.filter((r) => r.shipping_method === f.method);

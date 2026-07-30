@@ -6220,14 +6220,8 @@ tr:hover > td .sacr-copy { opacity: 0.8; }
 }
 .sa-page .sacr-control-sm,
 #sacr-products-modal .sacr-control-sm { max-width: 6rem; }
-/* Two of these sit side by side in an already crowded filter bar, and they
-   never hold more than a few digits. */
+/* Never holds more than a few digits, in an already crowded filter bar. */
 .sa-page .sacr-control-xs { max-width: 4.5rem; padding-left: 0.5rem; padding-right: 0.5rem; }
-.sa-page .sacr-range-sep { color: var(--text-tertiary); margin: 0 -0.125rem; }
-.sa-page .sacr-control.is-invalid {
-  border-color: var(--danger);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 18%, transparent);
-}
 
 /* A filtered table is a different claim from the full one; the count says so
    loudly enough that nobody reads a subtotal as the report total. */
