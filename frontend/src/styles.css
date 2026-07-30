@@ -5635,6 +5635,14 @@ body.no-scroll {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+/* Positional, not data — kept quiet so it never competes with the figures.
+   Named alongside .sacr-num, which sets its own colour on the same element. */
+.sa-page #sacr-table td.sacr-idx,
+.sa-page #sacr-table th.sacr-idx {
+  color: var(--text-tertiary);
+  padding-right: 0.5rem;
+  font-weight: 400;
+}
 .sa-page .sacr-row { cursor: pointer; }
 .sa-page .sacr-row:hover { background: var(--bg-hover); }
 .sa-page .sacr-cust { display: block; color: var(--text-primary); }
@@ -6115,18 +6123,23 @@ body.no-scroll {
 /* Under table-layout:fixed the browser gives every column the same width, so
    a single digit in Orders got as much room as a customer name. */
 .sa-page #sacr-table { table-layout: fixed; }
-.sa-page #sacr-table th:nth-child(1)  { width: 18%; }  /* Customer   */
-.sa-page #sacr-table th:nth-child(2)  { width: 6%;  }  /* Store      */
-.sa-page #sacr-table th:nth-child(3)  { width: 5%;  }  /* State      */
-.sa-page #sacr-table th:nth-child(4)  { width: 5%;  }  /* Orders     */
-.sa-page #sacr-table th:nth-child(5)  { width: 9%;  }  /* Spent      */
-.sa-page #sacr-table th:nth-child(6)  { width: 9%;  }  /* First order*/
-.sa-page #sacr-table th:nth-child(7)  { width: 10%; }  /* Last order */
-.sa-page #sacr-table th:nth-child(8)  { width: 7%;  }  /* Days silent*/
-.sa-page #sacr-table th:nth-child(9)  { width: 6%;  }  /* Ship       */
-.sa-page #sacr-table th:nth-child(10) { width: 6%;  }  /* Deliver    */
-.sa-page #sacr-table th:nth-child(11) { width: 11%; }  /* Method     */
-.sa-page #sacr-table th:nth-child(12) { width: 8%;  }  /* Carrier    */
+/* Every width lives here and nowhere else. Successive rounds of tweaking had
+   left three separate nth-child blocks, and inserting a column at the front
+   silently re-pointed the later two at their neighbours. Sums to 100. */
+.sa-page #sacr-table th:nth-child(1)  { width: 3.5%; } /* #           */
+.sa-page #sacr-table th:nth-child(2)  { width: 16%;  } /* Customer    */
+.sa-page #sacr-table th:nth-child(3)  { width: 6%;   } /* Store       */
+.sa-page #sacr-table th:nth-child(4)  { width: 5%;   } /* State       */
+.sa-page #sacr-table th:nth-child(5)  { width: 6%;   } /* Orders      */
+.sa-page #sacr-table th:nth-child(6)  { width: 7.5%; } /* Spent       */
+.sa-page #sacr-table th:nth-child(7)  { width: 6.5%; } /* First order */
+.sa-page #sacr-table th:nth-child(8)  { width: 8%;   } /* Last order  */
+.sa-page #sacr-table th:nth-child(9)  { width: 6%;   } /* Days silent */
+.sa-page #sacr-table th:nth-child(10) { width: 6%;   } /* To ship     */
+.sa-page #sacr-table th:nth-child(11) { width: 6.5%; } /* To deliver  */
+/* 14% is load-bearing: below it "Standard Shipping" ellipsises. */
+.sa-page #sacr-table th:nth-child(12) { width: 14%;  } /* Method      */
+.sa-page #sacr-table th:nth-child(13) { width: 9%;   } /* Carrier     */
 
 /* Two-line-tall headings throughout, bottom aligned, so single-word captions
    sit on the same baseline as the ones that wrap. */
@@ -6150,10 +6163,6 @@ body.no-scroll {
   color: var(--text-tertiary);
 }
 
-/* Orders and Deliver needed a little more room for their captions. */
-.sa-page #sacr-table th:nth-child(1)  { width: 16%; }
-.sa-page #sacr-table th:nth-child(4)  { width: 6%;  }
-.sa-page #sacr-table th:nth-child(10) { width: 7%;  }
 .sa-page #sacr-table thead th {
   letter-spacing: 0.03em;
 }
@@ -6198,9 +6207,3 @@ body.no-scroll {
   margin-left: 0;
 }
 
-/* Shorter dates free space for the method, which was truncating to
-   "Standard Shippi...". */
-.sa-page #sacr-table th:nth-child(6)  { width: 7%;  }  /* First order */
-.sa-page #sacr-table th:nth-child(7)  { width: 8%;  }  /* Last order  */
-.sa-page #sacr-table th:nth-child(11) { width: 14%; }  /* Method      */
-.sa-page #sacr-table th:nth-child(12) { width: 9%;  }  /* Carrier     */

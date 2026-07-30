@@ -14494,19 +14494,24 @@ function renderSacrTable() {
   );
 
   tbody.innerHTML = page
-    .map((r) => {
+    .map((r, i) => {
       const badge = partialIds.has(r.store_id)
         ? ' <span class="sacr-badge" title="This store returned partial data">partial</span>'
         : "";
       return (
         `<tr data-customer-id="${saEscape(r.customer_id)}" data-store-id="${r.store_id}" data-customer-name="${saEscape(r.name)}" class="sacr-row">` +
+        // Numbered across the whole filtered set, not per page: page 2 opening
+        // at 1 again would make "the 3rd biggest spender" ambiguous.
+        `<td class="sacr-num sacr-idx">${(start + i + 1).toLocaleString()}</td>` +
         `<td title="${saEscape(r.name || "")}${r.email ? " · " + saEscape(r.email) : ""}"><span class="sacr-cust">${saEscape(r.name || "(no name)")}</span>${r.email ? `<span class="sacr-email">${saEscape(r.email)}</span>` : ""}</td>` +
         `<td title="${saEscape(r.store_name || "")}">${saEscape(sacrShortStore(r.store_name))}${badge}</td>` +
         `<td>${saEscape(r.state || "—")}</td>` +
         `<td class="sacr-num">${(r.orders_count || 0).toLocaleString()}</td>` +
         `<td class="sacr-num">${sacrFmtMoney(r.amount_spent, "")}</td>` +
         `<td class="sacr-date">${sacrFmtDate(r.first_order_created_at)}</td>` +
-        `<td class="sacr-date">${sacrFmtDate(r.last_order_created_at)}${r.last_order_name ? `<span class="sacr-ordname">${saEscape(r.last_order_name)}</span>` : ""}</td>` +
+        // The order number is narrower than its column and truncates with no
+        // tooltip of its own, unlike the long names and carriers around it.
+        `<td class="sacr-date"${r.last_order_name ? ` title="${saEscape(r.last_order_name)}"` : ""}>${sacrFmtDate(r.last_order_created_at)}${r.last_order_name ? `<span class="sacr-ordname">${saEscape(r.last_order_name)}</span>` : ""}</td>` +
         `<td class="sacr-num">${r.days_silent === null ? "—" : r.days_silent.toLocaleString()}</td>` +
         sacrDaysCell(r.days_to_fulfil) +
         sacrDaysCell(r.days_to_deliver) +
@@ -14524,10 +14529,10 @@ function renderSacrTable() {
     // Labelled "(filtered)" unconditionally, the qualifier stopped meaning
     // anything — it has to appear only when a filter is actually narrowing it.
     tfoot.innerHTML =
-      `<tr class="sacr-foot-row"><td>${filtered ? "Total (filtered)" : "Total"}</td><td></td><td></td>` +
+      `<tr class="sacr-foot-row"><td></td><td>${filtered ? "Total (filtered)" : "Total"}</td><td></td><td></td>` +
       `<td class="sacr-num">${orders.toLocaleString()}</td>` +
       `<td class="sacr-num">${sacrFmtMoney(spend, "")}</td>` +
-      // Customer + Store + State + Orders + Spent = 5 cells, then the
+      // # + Customer + Store + State + Orders + Spent = 6 cells, then the
       // remaining 7 columns (First order .. Carrier) are spanned.
       `<td colspan="7"></td></tr>`;
   }
