@@ -15663,7 +15663,9 @@ async function openSacrProductsModal() {
               status.textContent = `Reading last orders from ${data.store_name}…`;
             }
           } else if (status) {
-            status.textContent = `Sampling comparison orders from ${data.store_name}…`;
+            // Same word the table and its footnote use, so the reader is not
+            // asked to work out that these are the same thing.
+            status.textContent = `Reading ordinary orders from ${data.store_name}…`;
           }
           if (bar && totalOrders) {
             bar.style.width = `${Math.min(95, Math.round((fetched / totalOrders) * 95))}%`;
