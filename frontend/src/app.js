@@ -14266,6 +14266,25 @@ function sacrDaysCell(v) {
   return `<td class="sacr-num" title="${Number(v).toFixed(2)} days">${sacrFmtDays(v)}</td>`;
 }
 
+// Completed orders only. Shopify's own lifetime count includes cancelled and
+// refunded ones, so where the two differ the cell says what was taken off
+// rather than leaving the reader to wonder why it disagrees with Shopify admin.
+function sacrOrdersCell(r) {
+  const n = r.orders_count || 0;
+  const all = r.orders_count_all;
+  const dropped = all === null || all === undefined ? 0 : all - n;
+  const title =
+    dropped > 0
+      ? ` title="${all} lifetime, ${dropped} cancelled or refunded"`
+      : "";
+  // Bracketed: a bare "3−1" reads as arithmetic rather than as a footnote.
+  // Worth showing rather than hiding in the tooltip — a cancelled order is
+  // itself a signal about why someone stopped.
+  return `<td class="sacr-num"${title}>${n.toLocaleString()}${
+    dropped > 0 ? '<span class="sacr-ord-adj">(−' + dropped + ")</span>" : ""
+  }</td>`;
+}
+
 function sacrFmtMoney(v, currency) {
   const n = Number(v) || 0;
   return `${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}${currency ? " " + currency : ""}`;
@@ -14506,7 +14525,7 @@ function renderSacrTable() {
         `<td title="${saEscape(r.name || "")}${r.email ? " · " + saEscape(r.email) : ""}"><span class="sacr-cust">${saEscape(r.name || "(no name)")}</span>${r.email ? `<span class="sacr-email">${saEscape(r.email)}</span>` : ""}</td>` +
         `<td title="${saEscape(r.store_name || "")}">${saEscape(sacrShortStore(r.store_name))}${badge}</td>` +
         `<td>${saEscape(r.state || "—")}</td>` +
-        `<td class="sacr-num">${(r.orders_count || 0).toLocaleString()}</td>` +
+        sacrOrdersCell(r) +
         `<td class="sacr-num">${sacrFmtMoney(r.amount_spent, "")}</td>` +
         // Shop-local dates, matching the ones the cohort was decided on. Using
         // the raw UTC timestamps here would let a row show a date that

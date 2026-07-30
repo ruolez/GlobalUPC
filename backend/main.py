@@ -6538,8 +6538,19 @@ async def shopify_analytics_lost_customers_stream(
                 # at this stage. Look up each candidate's oldest order and drop
                 # the pre-existing ones outright — they must not reach the rows,
                 # the totals, the KPIs or the benchmark.
-                candidates = [c["customer_id"] for c in (lost + active) if c.get("customer_id")]
+                # Pre-filtered on Shopify's inflated lifetime count before the
+                # lookup, so we stop paying for customers we are about to
+                # discard. Safe in one direction only, which is the one we need:
+                # the inflated count is always >= the true one, so nobody who
+                # would qualify on the true count can be dropped here. The real
+                # filter runs again below on the corrected number.
+                lost_pre = [c for c in lost if c["orders_count"] >= min_orders]
+                active_pre = [c for c in active if c["orders_count"] >= min_orders]
+                candidates = [c["customer_id"] for c in (lost_pre + active_pre)
+                              if c.get("customer_id")]
                 first_map: Dict[str, Any] = {}
+                count_map: Dict[str, Any] = {}
+                undercounted = 0
                 first_err = None
                 unknown_first = 0
                 if candidates:
@@ -6561,8 +6572,22 @@ async def shopify_analytics_lost_customers_stream(
                     if fo.get("ok"):
                         first_map = fo.get("first_orders") or {}
                         unknown_first = fo.get("missing", 0)
+                        count_map = fo.get("order_counts") or {}
+                        undercounted = fo.get("undercounted", 0)
                     else:
                         first_err = fo.get("error")
+
+                # Replace Shopify's lifetime count with the completed one. The
+                # raw value is kept so the cell can show what was subtracted.
+                for c in lost_pre + active_pre:
+                    completed, lifetime = count_map.get(c.get("customer_id"), (None, None))
+                    c["orders_count_all"] = lifetime if lifetime is not None else c["orders_count"]
+                    if completed is not None:
+                        c["orders_count"] = completed
+                if undercounted:
+                    incomplete_reasons.append(
+                        f"{undercounted} customer(s) have more cancelled or refunded orders "
+                        f"than one page holds, so their order count is a lower bound.")
 
                 def acquired_in_window(c):
                     first = first_map.get(c.get("customer_id"))
@@ -6580,16 +6605,20 @@ async def shopify_analytics_lost_customers_stream(
                     # silently falling back to the old, wider meaning.
                     incomplete_reasons.append(
                         f"Could not determine when customers started ordering: {first_err}")
-                    for c in lost + active:
+                    for c in lost_pre + active_pre:
                         c["first_order_created_at"] = None
                         c["first_order_local"] = None
-                    lost_in, active_in = lost, active
+                    lost_in, active_in = lost_pre, active_pre
                 else:
-                    lost_in = [c for c in lost if acquired_in_window(c)]
-                    active_in = [c for c in active if acquired_in_window(c)]
+                    lost_in = [c for c in lost_pre if acquired_in_window(c)]
+                    active_in = [c for c in active_pre if acquired_in_window(c)]
 
-                excluded_pre_existing = (len(lost) - len(lost_in)) + (len(active) - len(active_in))
+                # Measured against the pre-filtered sets, so a customer dropped
+                # for too few orders is never miscounted as "already ordering".
+                excluded_pre_existing = ((len(lost_pre) - len(lost_in))
+                                         + (len(active_pre) - len(active_in)))
 
+                # Second application, now on the corrected count.
                 lost_kept = [c for c in lost_in if c["orders_count"] >= min_orders]
                 lost_kept.sort(key=lambda c: c["amount_spent"], reverse=True)
                 # The comparison group must be filtered identically. Applying
