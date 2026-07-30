@@ -2397,6 +2397,10 @@ async def fetch_customers_with_last_order(
     Note `created_at:` does NOT work on this connection — it is silently
     ignored, returning an unfiltered set. `customer_date:` is the working field.
 
+    `on_page(scanned, ids)` fires per page with the running count for THIS walk
+    and that page's customer ids, so a caller running several walks can report
+    distinct customers instead of summing records.
+
     `page_budget` caps how many pages one call will walk. Ranges are equal in
     date span but not in customer volume — a store grows unevenly — so without
     it the densest range decides the wall clock while every other cursor sits
@@ -2460,7 +2464,10 @@ async def fetch_customers_with_last_order(
 
                 pages += 1
                 if on_page:
-                    on_page(len(customers))
+                    # The ids go with the count so the caller can report unique
+                    # customers rather than records: ranges overlap by a day at
+                    # their boundaries, so records exceed customers by ~1%.
+                    on_page(len(customers), [n.get("id") for n in nodes if n.get("id")])
 
                 page_info = conn.get("pageInfo") or {}
                 if not page_info.get("hasNextPage"):

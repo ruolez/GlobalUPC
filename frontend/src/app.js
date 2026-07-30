@@ -11750,6 +11750,8 @@ async function copyText(text) {
     ta.style.top = "-1000px";
     ta.style.opacity = "0";
     document.body.appendChild(ta);
+    // Kept strictly synchronous: an await here would end the user-activation
+    // window that execCommand depends on in a real browser.
     ta.select();
     ta.setSelectionRange(0, value.length);
     const ok = document.execCommand("copy");
@@ -13583,6 +13585,7 @@ function sacrResetProgress(stores, shardsPerStore, totalUnits) {
       shardsDone: 0,
       shardPages: {},
       shardScanned: {},
+      distinct: 0,
       lost: null,
       note: "",
     })),
@@ -13617,7 +13620,11 @@ function renderSacrProgress() {
     bar.classList.toggle("is-active", sacrState.loading);
   }
 
-  const scanned = p.stores.reduce((a, s) => a + sacrSum(s.shardScanned), 0);
+  // Distinct customers, counted server-side. Summing each walk's own tally
+  // counted the boundary day twice wherever two ranges meet, so this line read
+  // ~900 high on a 17,700-customer store and disagreed with every figure after
+  // it — including the "checking when N customers started" line below it.
+  const scanned = p.stores.reduce((a, s) => a + (s.distinct || 0), 0);
   const meta = document.getElementById("sacr-progress-meta");
   if (meta) {
     // This total keeps climbing between the coarse bar steps — it is what tells
@@ -13629,7 +13636,7 @@ function renderSacrProgress() {
   if (!list) return;
   list.innerHTML = p.stores
     .map((s) => {
-      const sc = sacrSum(s.shardScanned);
+      const sc = s.distinct || 0;
       const pg = sacrSum(s.shardPages);
       let detail;
       if (s.state === "queued") detail = "waiting…";
@@ -14090,6 +14097,9 @@ async function runLostCustomersReport() {
             // Both values are cumulative per shard, so assign rather than add.
             ps.shardPages[data.shard] = data.pages;
             ps.shardScanned[data.shard] = data.scanned;
+            // Distinct customers is a whole-store figure from the server, not
+            // a per-shard one — it must never be summed.
+            if (typeof data.distinct === "number") ps.distinct = data.distinct;
           }
           renderSacrProgress();
         } else if (eventType === "progress" && data.phase === "shard_split") {
@@ -14105,6 +14115,7 @@ async function runLostCustomersReport() {
           if (ps) {
             ps.shardPages[data.shard] = data.pages;
             ps.shardScanned[data.shard] = data.scanned;
+            if (typeof data.distinct === "number") ps.distinct = data.distinct;
             ps.shardsDone += 1;
           }
           sacrState.progress.doneUnits += 1;

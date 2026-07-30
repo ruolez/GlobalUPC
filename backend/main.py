@@ -6624,6 +6624,11 @@ async def shopify_analytics_lost_customers_stream(
 
                 store_tz = tz_by_shop.get(s["id"])
                 collected: List[Dict[str, Any]] = []
+                # Distinct customers seen so far, so progress reports customers
+                # and not records. Ranges overlap by a day at their boundaries,
+                # which made the counter read ~900 high on a 17,700-customer
+                # store and disagree with every figure that followed it.
+                seen_ids: set = set()
                 # Every walk needs its own id. The client keys per-walk page and
                 # customer counts by this and sums them, so two walks sharing an
                 # id overwrite each other — a split child reporting its first
@@ -6642,12 +6647,14 @@ async def shopify_analytics_lost_customers_stream(
                     # long cursor walk — a store can spend minutes on one shard.
                     pages = 0
 
-                    def on_page(scanned: int, _i=index):
+                    def on_page(scanned: int, ids: List[str], _i=index):
                         nonlocal pages
                         pages += 1
+                        seen_ids.update(ids)
                         events.put_nowait(("page", {
                             "store_id": s["id"], "store_name": s["name"],
                             "shard": _i, "pages": pages, "scanned": scanned,
+                            "distinct": len(seen_ids),
                         }))
 
                     async with scan_pool:
@@ -6668,6 +6675,7 @@ async def shopify_analytics_lost_customers_stream(
                         "store_id": s["id"], "store_name": s["name"], "shard": index,
                         "ok": bool(res.get("ok")), "pages": res.get("pages", 0),
                         "scanned": len(res.get("customers") or []),
+                        "distinct": len(seen_ids),
                     }))
 
                     # This range turned out denser than its neighbours. Hand the
