@@ -13500,6 +13500,8 @@ const sacrState = {
   benchmark: null,
   totals: null,
   byMonth: [],
+  monthStats: null,    // month key -> {count, revenue, orders[], byStore}
+  storeColors: null,   // store_id -> palette color, for the chart tooltip
   states: [],
   stateMinCustomers: 5,
   activeSince: "",
@@ -13754,6 +13756,8 @@ function loadLostCustomersPanel() {
     if (m && m.classList.contains("active")) closeModal("sacr-detail-modal");
   });
 
+  sacrBindChartInteraction();
+
   const wrap = document.getElementById("sacr-chart-wrap");
   if (wrap && window.ResizeObserver) {
     sacrState.resizeObserver = new ResizeObserver(() => sacrScheduleChartRender());
@@ -13907,8 +13911,11 @@ async function runLostCustomersReport() {
   sacrState.benchmark = null;
   sacrState.totals = null;
   sacrState.byMonth = [];
+  sacrState.monthStats = null;
+  sacrState.storeColors = null;
   sacrState.states = [];
   sacrState.currentPage = 0;
+  sacrHideTooltip();
   sacrState.activeSince = activeSince;
   sacrState.silentSince = silentSince;
 
@@ -14561,11 +14568,16 @@ function sacrScheduleChartRender() {
 function renderSacrChart() {
   const wrap = document.getElementById("sacr-chart-wrap");
   if (!wrap) return;
+  // The SVG under the cursor is about to be replaced, so no pointerleave will
+  // fire; a stale tooltip would otherwise sit over the redrawn bars.
+  sacrHideTooltip();
   const months = sacrState.byMonth || [];
   if (!wrap.clientWidth || months.length === 0) {
     if (!months.length) wrap.innerHTML = "";
     return;
   }
+
+  sacrBuildMonthStats();
 
   const W = Math.max(320, wrap.clientWidth);
   const innerW = W - SANCM_PAD.left - SANCM_PAD.right;
@@ -14632,6 +14644,200 @@ function renderSacrChart() {
     `<svg width="100%" height="${SANCM_H}" viewBox="0 0 ${W} ${SANCM_H}" preserveAspectRatio="xMinYMid meet" role="group" aria-label="Lost customers by month of last order">` +
     parts.join("") +
     "</svg>";
+}
+
+// ----- Chart tooltip -----
+
+// The bars come from the server's by_month, which counts only stores that
+// finished a complete fetch. The tooltip breakdown is derived from the rows,
+// so it has to apply the same store filter — otherwise a partially-fetched
+// store would contribute a line to a bar it was never counted in, and the
+// tooltip's own lines would not add up to the bar it points at.
+//
+// Rebuilt from renderSacrChart rather than cached against a mutable row list:
+// rows arrive per store while the run streams, and a store's `complete` flag
+// can flip at the final event without the row count changing.
+function sacrBuildMonthStats() {
+  const counted = new Set(
+    sacrState.stores.filter((s) => s.ok && s.complete).map((s) => s.store_id),
+  );
+  const colors = new Map();
+  sacrState.stores.forEach((s, i) => {
+    colors.set(s.store_id, SANCM_PALETTE[i % SANCM_PALETTE.length]);
+  });
+
+  const stats = new Map();
+  sacrState.rows.forEach((r) => {
+    if (!counted.has(r.store_id)) return;
+    const key = String(r.last_order_created_at || "").slice(0, 7);
+    if (!key) return;
+    let e = stats.get(key);
+    if (!e) {
+      e = { count: 0, revenue: 0, orders: [], byStore: new Map() };
+      stats.set(key, e);
+    }
+    e.count += 1;
+    e.revenue += Number(r.amount_spent) || 0;
+    e.orders.push(Number(r.orders_count) || 0);
+    const cur = e.byStore.get(r.store_id) || { name: r.store_name, count: 0 };
+    cur.count += 1;
+    e.byStore.set(r.store_id, cur);
+  });
+
+  sacrState.monthStats = stats;
+  sacrState.storeColors = colors;
+}
+
+function sacrBindChartInteraction() {
+  const wrap = document.getElementById("sacr-chart-wrap");
+  if (!wrap) return;
+
+  const show = (target) => {
+    const hit = target && target.closest("[data-month-index]");
+    if (!hit) return;
+    sacrShowTooltip(parseInt(hit.dataset.monthIndex, 10), hit);
+  };
+
+  wrap.addEventListener("pointermove", (e) => show(e.target));
+  wrap.addEventListener("pointerleave", sacrHideTooltip);
+  wrap.addEventListener("focusin", (e) => show(e.target));
+  wrap.addEventListener("focusout", sacrHideTooltip);
+}
+
+function sacrHideTooltip() {
+  const tip = document.getElementById("sacr-tooltip");
+  if (tip) tip.hidden = true;
+  document
+    .querySelectorAll("#sacr-chart-wrap .sancm-band-wash.is-active")
+    .forEach((r) => r.classList.remove("is-active"));
+}
+
+// A month is only comparable to the bar on its left when that bar is the
+// calendar-previous month. by_month omits months where nobody left, so
+// neighbouring bars can be a year apart.
+function sacrPrevMonthKey(monthKey) {
+  const y = parseInt(monthKey.slice(0, 4), 10);
+  const m = parseInt(monthKey.slice(5, 7), 10);
+  if (!y || !m) return null;
+  const d = new Date(Date.UTC(y, m - 2, 1));
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+function sacrShowTooltip(index, hitRect) {
+  const tip = document.getElementById("sacr-tooltip");
+  const card = document.getElementById("sacr-chart-card");
+  const month = (sacrState.byMonth || [])[index];
+  if (!tip || !card || !month) return;
+
+  document
+    .querySelectorAll("#sacr-chart-wrap .sancm-band-wash")
+    .forEach((r) => r.classList.toggle("is-active", r.dataset.band === String(index)));
+
+  const stats = sacrState.monthStats?.get(month.month) || null;
+  const grand = sacrState.byMonth.reduce((a, m) => a + m.count, 0);
+  tip.innerHTML = "";
+
+  const head = document.createElement("div");
+  head.className = "sancm-tip-head";
+  head.textContent = sancmMonthTick(month.month, true);
+  tip.appendChild(head);
+
+  // Store names are user data — built with textContent, never innerHTML.
+  const addRow = (value, label, opts = {}) => {
+    const row = document.createElement("div");
+    row.className = `sancm-tip-row ${opts.rowClass || ""}`.trim();
+    if (opts.color) {
+      const key = document.createElement("span");
+      key.className = "sancm-tip-key";
+      key.style.background = opts.color;
+      row.appendChild(key);
+    }
+    const val = document.createElement("span");
+    val.className = "sancm-tip-val";
+    val.textContent = value;
+    const name = document.createElement("span");
+    name.className = "sancm-tip-name";
+    name.textContent = label;
+    row.appendChild(val);
+    row.appendChild(name);
+    tip.appendChild(row);
+    return row;
+  };
+
+  // One store means the breakdown would just restate the total.
+  const byStore = stats ? [...stats.byStore.entries()] : [];
+  if (byStore.length > 1) {
+    byStore
+      .sort((a, b) => b[1].count - a[1].count)
+      .forEach(([storeId, e]) =>
+        addRow(e.count.toLocaleString(), sacrShortStore(e.name), {
+          color: sacrState.storeColors?.get(storeId) || SANCM_OTHER_COLOR,
+        }),
+      );
+  }
+
+  addRow(month.count.toLocaleString(), "customers lost", {
+    rowClass: "sancm-tip-total",
+  });
+
+  if (grand > 0) {
+    addRow(`${((month.count / grand) * 100).toFixed(1)}%`, "of all lost");
+  }
+
+  if (stats) {
+    const cur = sacrState.totals?.currency || "";
+    addRow(
+      `${Math.round(stats.revenue).toLocaleString()}${cur ? " " + cur : ""}`,
+      "revenue lost",
+    );
+    const medOrders = sacrMedian(stats.orders);
+    if (medOrders !== null) {
+      addRow(String(medOrders), "median orders each");
+    }
+  }
+
+  const prev = sacrState.byMonth[index - 1];
+  if (prev && prev.month === sacrPrevMonthKey(month.month) && prev.count > 0) {
+    const pct = Math.round(((month.count - prev.count) / prev.count) * 1000) / 10;
+    // Inverted against the New Customers chart on purpose: more customers
+    // leaving is the bad direction.
+    const cls = pct > 0 ? "sancm-mom-down" : pct < 0 ? "sancm-mom-up" : "sancm-mom-flat";
+    addRow(sancmFormatMom(pct), `vs ${sancmMonthTick(prev.month, false)}`, {
+      rowClass: `sancm-tip-mom ${cls}`,
+    });
+  }
+
+  tip.hidden = false;
+  const cardBox = card.getBoundingClientRect();
+  const hitBox = hitRect.getBoundingClientRect();
+  const tipBox = tip.getBoundingClientRect();
+  const cx = hitBox.left + hitBox.width / 2 - cardBox.left;
+  let left = cx - tipBox.width / 2;
+  let top = hitBox.top - cardBox.top - tipBox.height - 12;
+
+  // This tooltip carries up to seven rows, so it is routinely taller than the
+  // headroom above the plot and than the strip below it. Falling straight
+  // through to "below" would hang it off the card and over the filter bar.
+  if (top < 4) {
+    const below = hitBox.bottom - cardBox.top + 12;
+    if (below + tipBox.height <= cardBox.height - 4) {
+      top = below;
+    } else {
+      top = Math.max(
+        4,
+        Math.min(hitBox.top - cardBox.top, cardBox.height - tipBox.height - 4),
+      );
+      // Pinned alongside instead, so it never covers the band it describes.
+      const rightOf = hitBox.right - cardBox.left + 12;
+      const leftOf = hitBox.left - cardBox.left - tipBox.width - 12;
+      if (rightOf + tipBox.width <= cardBox.width - 4) left = rightOf;
+      else if (leftOf >= 4) left = leftOf;
+    }
+  }
+
+  left = Math.max(4, Math.min(left, cardBox.width - tipBox.width - 4));
+  tip.style.left = `${left}px`;
+  tip.style.top = `${top}px`;
 }
 
 // ----- Detail modal -----

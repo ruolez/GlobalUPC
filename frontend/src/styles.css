@@ -5488,6 +5488,13 @@ body.no-scroll {
   border-top: 1px solid var(--border-color);
 }
 .sa-page .sancm-tip-mom .sancm-tip-val { font-weight: 600; }
+/* The sentiment class sits on the row, but .sancm-tip-val sets its own color
+   and so keeps winning on the element itself. Name the value explicitly.
+   Which direction is "good" differs per chart, so the caller picks the class:
+   more new customers is up/green, more lost customers is down/red. */
+.sa-page .sancm-tip-mom.sancm-mom-up .sancm-tip-val { color: var(--success); }
+.sa-page .sancm-tip-mom.sancm-mom-down .sancm-tip-val { color: var(--danger); }
+.sa-page .sancm-tip-mom.sancm-mom-flat .sancm-tip-val { color: var(--text-tertiary); }
 
 /* Table */
 .sa-page #sancm-table td.sancm-num,
