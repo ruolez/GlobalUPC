@@ -7324,9 +7324,6 @@ _BASELINE_PAGE = 250
 # Days used to measure the store's order rate. Short enough to stay under
 # Shopify's 10,000 ordersCount saturation on the busiest store.
 _RATE_PROBE_DAYS = 14
-# Below this many last orders, a lift ratio is noise dressed up as a finding.
-_LIFT_MIN_ORDERS = 5
-
 # Below this many customers a loss rate is one or two people, not a trend.
 _STATE_MIN_CUSTOMERS = 5
 
@@ -7793,11 +7790,12 @@ async def shopify_analytics_lost_products_stream(
             # their own store's ordinary orders. Displayed so lift stays
             # checkable: lift_raw == pct_lost / pct_expected.
             pct_expected = (exp["raw"] / n_last * 100) if n_last else 0.0
-            # Suppress rather than fabricate: a ratio built on 4 orders is
-            # noise, and a zero expectation is not infinity.
+            # A zero expectation is not infinity, so it stays withheld and is
+            # shown as "only here". No minimum order count: a comparison built
+            # on few orders is shakier, but hiding it hid real products too.
             lift = None
             lift_raw = None
-            if entry["orders"] >= _LIFT_MIN_ORDERS and exp["raw"] > 0 and exp["adj"] > 0:
+            if exp["raw"] > 0 and exp["adj"] > 0:
                 lift_raw = round(entry["orders"] / exp["raw"], 2)
                 lift = round(entry["orders"] / exp["adj"], 2)
             products.append({
@@ -7838,7 +7836,6 @@ async def shopify_analytics_lost_products_stream(
                 "distinct_products": len(products),
                 "excluded_addon_lines": excluded_lines_total,
                 "excluded_terms": list(_EXCLUDED_PRODUCT_TERMS),
-                "lift_min_orders": _LIFT_MIN_ORDERS,
                 "avg_products_last": round(avg_last, 2),
                 "avg_products_baseline": round(avg_base, 2),
                 "basket_ratio": round(basket_ratio, 2),

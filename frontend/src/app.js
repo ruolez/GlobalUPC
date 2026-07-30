@@ -15769,13 +15769,12 @@ function renderSacrProducts() {
           ? p.only_in_lost
             ? "only here"
             : "—"
-          : `${p.lift.toFixed(2)}x`;
-      const liftTitle =
-        p.lift === null && !p.only_in_lost
-          ? ` title="Too few orders to compare reliably (needs ${st.totals?.lift_min_orders ?? 5})"`
-          : p.only_in_lost
-            ? ' title="Did not appear in the comparison sample at all"'
-            : ` title="${p.pct_lost.toFixed(1)}% actual vs ${p.pct_base.toFixed(1)}% expected = ${p.lift_raw ?? "—"}x before adjusting for basket size (x${st.totals?.basket_ratio ?? 1}). Seen in ${p.baseline_orders.toLocaleString()} baseline order(s)."`;
+          : `${p.lift.toFixed(1)}x`;
+      const liftTitle = p.only_in_lost
+        ? ' title="Never appeared in an ordinary order from the same period"'
+        : p.lift === null || p.lift === undefined
+          ? ""
+          : ` title="In ${p.pct_lost.toFixed(1)}% of these last orders, ${p.pct_base.toFixed(1)}% of ordinary ones. Seen in ${p.baseline_orders.toLocaleString()} ordinary order(s)."`;
       const head =
         `<tr class="sacr-product-row" data-product-key="${saEscape(p.key)}">` +
         `<td><span class="sacr-expand${open ? " is-open" : ""}">▸</span>${saEscape(p.title)}` +
@@ -15820,14 +15819,13 @@ function renderSacrProducts() {
     const t = st.totals;
     // Short enough to actually read. The columns carry the meaning; the note
     // only says how they combine and when a number is withheld.
+    // Two lines. The columns and their tooltips carry the detail; a wall of
+    // text under the table just goes unread.
     const bits = [
-      `Counted once per order, so one big basket cannot inflate a product.`,
-      `Across stores, products are matched by variant barcode — product ids and titles differ per store.`,
-      `Lift = % of last ÷ Expected %. Above 1.0x means the product shows up more often in last orders than normal. Hover a lift for the unadjusted figure.`,
-      `Expected % is what each store's own ordinary orders would predict, from ${t.baseline_orders_sampled.toLocaleString()} orders in the same period.`,
-      `Lift hidden below ${t.lift_min_orders} orders.`,
+      `"vs usual" compares these last orders against ${t.baseline_orders_sampled.toLocaleString()} ordinary orders from the same period. 2.0x means twice as often.`,
+      `Each product counts once per order, so one big basket cannot inflate it.`,
       ...(t.excluded_addon_lines
-        ? [`Add-ons excluded (${(t.excluded_terms || []).join(", ")}): ${t.excluded_addon_lines.toLocaleString()} line(s).`]
+        ? [`Shipping and other add-ons are not counted (${t.excluded_addon_lines.toLocaleString()} line(s)).`]
         : []),
     ];
     if (t.orders_missing) {
