@@ -82,6 +82,7 @@ from shopify_helper import (
     fetch_customer_first_orders, fetch_customers_by_emails, normalize_email,
     fetch_customers_by_name, name_key, normalize_zip,
     fetch_shop_timezone, local_date,
+    fetch_earliest_customer_date, shopify_bucket_rate,
     ORDER_STATUS_FILTER
 )
 from item_tracker_helper import (
@@ -6289,38 +6290,83 @@ async def shopify_analytics_new_customers_by_month_stream(
 # cutoff. So the query only bounds the window; classification is ours.
 # ============================================================================
 
-# Wall-clock per store is latency-bound (~5s per 250-customer page), so the
-# window is split into concurrent shards. This also keeps each cursor walk
-# under Shopify's 25,000-object pagination ceiling.
-_LOST_MAX_SHARDS = 4
-# Sharding buys parallelism and keeps each cursor walk under Shopify's 25,000
-# object ceiling, but it is not free: a customer who ordered in three shards is
-# fetched three times. Measured on a two-year window, four shards scanned 403
-# records for 290 distinct customers — 1.4x duplicate work. 180 days keeps the
-# long windows sharded, where the ceiling and the wall-clock actually matter,
-# and leaves a one-year window on two shards instead of four.
-_LOST_SHARD_MIN_DAYS = 180
+# The scan is latency-bound, not rate-limited: a 250-customer page costs 57-90
+# points against a 20,000 bucket refilling at 1,000/s, and takes ~1.5s. Wall
+# clock is therefore (pages per cursor) x 1.5s, and the only lever is running
+# more cursors — provided the slices do not overlap.
+#
+# Splitting the ORDER-date window does overlap, badly: a customer who ordered in
+# several windows is fetched from each. Measured on a 17,732-customer store,
+# duplication rose 1.97x -> 3.35x -> 5.15x at 3, 6 and 10 shards while pages per
+# shard only fell 47 -> 40 -> 37. Adding shards there buys almost nothing.
+#
+# Splitting by CUSTOMER CREATION date partitions instead: every customer has
+# exactly one, so nobody is fetched twice. Same store, same 17,732 customers:
+# 8 shards ran 47.1s and 16 ran 24.5s at 1.01x duplication, against 78-195s for
+# the old 3-way order-date split.
+_LOST_MAX_SHARDS = 16
+_LOST_MIN_SHARDS = 2
+# Equal date spans do not match how a store actually grew: on a live store the
+# busiest slice held 3,560 customers (15 pages) while two others were empty, a
+# 3x imbalance, and wall clock is the deepest cursor.
+#
+# Balancing by volume is not possible — `customersCount` ignores its query
+# filter and saturates at 10,000 AT_LEAST, so every range reports the same
+# number. Over-provisioning to 32 shards to split the fat slice was measured
+# instead: it moved the scan 25.4s -> 22.5s and provoked a throttle retry,
+# because 32 cursors draw ~1,900 points/s against a 1,000/s refill. Not worth
+# ~10% and someone else's rate budget, so the count stays at what the shop can
+# actually sustain.
+# Below this a shard is too thin to be worth its round trip, and a young store
+# would otherwise fragment into a shard per day.
+_LOST_SHARD_MIN_DAYS = 7
+# One page's cost, and how long it takes. Together these say how many cursors a
+# shop's refill rate can sustain: rate * seconds / cost.
+_SCAN_PAGE_COST = 90.0
+_SCAN_PAGE_SECONDS = 1.5
 
 
-def _lost_shards(active_since: str, upper: str) -> List[tuple]:
-    """Split [active_since, upper) into up to 4 contiguous sub-ranges."""
+def _shard_count_for_rate(restore_rate: Optional[float]) -> int:
+    """
+    How many concurrent cursors this shop can feed.
+
+    Rate-limit budgets differ five-fold across shops here (1,000/s on most,
+    200/s on one), so a constant would either throttle the small shop or waste
+    the large ones. Unknown rate falls back to the floor.
+    """
+    if not restore_rate or restore_rate <= 0:
+        return _LOST_MIN_SHARDS
+    sustainable = int(restore_rate * _SCAN_PAGE_SECONDS / _SCAN_PAGE_COST)
+    return max(_LOST_MIN_SHARDS, min(_LOST_MAX_SHARDS, sustainable))
+
+
+def _lost_shards(earliest_customer: Optional[str], upper: str,
+                 max_shards: int = _LOST_MAX_SHARDS) -> List[tuple]:
+    """
+    Partition [earliest_customer, upper] into contiguous CREATION-date ranges.
+
+    Returns (created_start, created_end) pairs; the last is open-ended so a
+    record created today is still caught. Without an earliest date the caller
+    gets one unbounded walk — guessing a floor would silently drop every
+    customer created before it.
+    """
     from datetime import date, timedelta
 
+    if not earliest_customer:
+        return [(None, None)]
     try:
-        start = date.fromisoformat(active_since)
+        start = date.fromisoformat(earliest_customer)
         end = date.fromisoformat(upper)
     except ValueError:
-        return [(active_since, None)]
+        return [(None, None)]
 
     span = (end - start).days
-    if span <= _LOST_SHARD_MIN_DAYS:
-        return [(active_since, None)]
+    if span < _LOST_SHARD_MIN_DAYS * _LOST_MIN_SHARDS:
+        return [(None, None)]
 
-    n = min(_LOST_MAX_SHARDS, max(2, span // _LOST_SHARD_MIN_DAYS))
+    n = max(_LOST_MIN_SHARDS, min(max_shards, span // _LOST_SHARD_MIN_DAYS))
     step = span // n
     bounds = [start + timedelta(days=step * i) for i in range(n)] + [end]
-    # Last shard is left open-ended so orders placed after `upper` (i.e. today)
-    # still classify their owner as active.
     return [
         (bounds[i].isoformat(), bounds[i + 1].isoformat() if i < n - 1 else None)
         for i in range(n)
@@ -6475,9 +6521,28 @@ async def shopify_analytics_lost_customers_stream(
         }
 
         today = datetime.now().strftime("%Y-%m-%d")
-        shards = _lost_shards(active_since, today)
+        tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
 
-        yield f"event: progress\ndata: {json.dumps({'phase': 'started', 'active_since': active_since, 'silent_since': silent_since, 'min_orders': min_orders, 'shards': len(shards), 'total_units': len(shards) * len(store_list), 'stores': [{'store_id': s['id'], 'store_name': s['name']} for s in store_list]})}\n\n"
+        # The partition is per shop: it spans that shop's own customer history,
+        # and its width is set by that shop's own refill rate. Both probes are
+        # one cheap query each, run together.
+        earliest_values = await asyncio.gather(*[
+            fetch_earliest_customer_date(
+                shop_domain=s["shop_domain"],
+                admin_api_key=s["admin_api_key"],
+                api_version=s["api_version"],
+            ) for s in store_list
+        ], return_exceptions=True)
+        shards_by_store: Dict[int, List[tuple]] = {}
+        for s, earliest in zip(store_list, earliest_values):
+            first = earliest if isinstance(earliest, str) else None
+            shards_by_store[s["id"]] = _lost_shards(
+                first, tomorrow,
+                max_shards=_shard_count_for_rate(shopify_bucket_rate(s["shop_domain"])),
+            )
+        total_units = sum(len(v) for v in shards_by_store.values())
+
+        yield f"event: progress\ndata: {json.dumps({'phase': 'started', 'active_since': active_since, 'silent_since': silent_since, 'min_orders': min_orders, 'shards': max((len(v) for v in shards_by_store.values()), default=1), 'total_units': total_units, 'stores': [{'store_id': s['id'], 'store_name': s['name'], 'shards': len(shards_by_store[s['id']])} for s in store_list]})}\n\n"
 
         # Retries and page progress must reach the client while work is still in
         # flight, so workers publish to a queue rather than only returning.
@@ -6492,11 +6557,12 @@ async def shopify_analytics_lost_customers_stream(
                         "attempt": attempt, "max_attempts": max_attempts, "reason": reason,
                     }))
 
+                shards = shards_by_store.get(s["id"]) or [(None, None)]
                 events.put_nowait(("store_start", {
                     "store_id": s["id"], "store_name": s["name"], "shards": len(shards),
                 }))
 
-                async def run_shard(index: int, lo: str, hi: Optional[str]):
+                async def run_shard(index: int, lo: Optional[str], hi: Optional[str]):
                     # Page callbacks are what prove the run is alive during a
                     # long cursor walk — a store can spend minutes on one shard.
                     pages = 0
@@ -6514,8 +6580,8 @@ async def shopify_analytics_lost_customers_stream(
                         admin_api_key=s["admin_api_key"],
                         active_since=active_since,
                         api_version=s["api_version"],
-                        shard_start=lo,
-                        shard_end=hi,
+                        created_start=lo,
+                        created_end=hi,
                         on_retry=on_retry,
                         on_page=on_page,
                     )

@@ -1910,6 +1910,16 @@ class _ShopBucket:
 _shop_buckets: Dict[str, _ShopBucket] = {}
 
 
+def shopify_bucket_rate(shop_domain: str) -> Optional[float]:
+    """
+    The shop's observed leaky-bucket refill rate, or None before any response
+    has taught us one. Callers use it to size how much work to run concurrently
+    against this shop; it is populated by the first request of any kind.
+    """
+    bucket = _shop_buckets.get(shop_domain)
+    return bucket.restore_rate if bucket and bucket.restore_rate > 0 else None
+
+
 def _bucket_for(shop_domain: str) -> _ShopBucket:
     bucket = _shop_buckets.get(shop_domain)
     if bucket is None:
@@ -2166,6 +2176,60 @@ async def fetch_shop_timezone(
     return tz
 
 
+# Anchors the creation-date partition. Cached like the timezone: a shop's
+# oldest customer record only ever moves if that record is deleted.
+_shop_earliest_customer: Dict[str, str] = {}
+
+_EARLIEST_CUSTOMER_QUERY = """
+query EarliestCustomer {
+  customers(first: 1, sortKey: CREATED_AT) { nodes { createdAt } }
+}
+"""
+
+
+async def fetch_earliest_customer_date(
+    shop_domain: str,
+    admin_api_key: str,
+    api_version: str = "2025-01",
+    on_retry=None,
+) -> Optional[str]:
+    """
+    ISO date of the shop's oldest customer record, or None if it has none or
+    cannot be read. Measured at 0.22s, so it is cheap enough to run per report.
+
+    None means the caller must fall back to a single unbounded walk rather than
+    guess a floor — a guessed floor that is too recent would silently drop every
+    customer created before it.
+    """
+    cached = _shop_earliest_customer.get(shop_domain)
+    if cached:
+        return cached
+
+    try:
+        shop_domain = validate_shop_domain(shop_domain)
+    except Exception:
+        return None
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            data, _ = await _shopify_graphql(
+                session, shop_domain, admin_api_key, api_version,
+                _EARLIEST_CUSTOMER_QUERY, {},
+                op_name="earliest customer", on_retry=on_retry,
+            )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        return None
+
+    nodes = ((data.get("customers") or {}).get("nodes") or [])
+    created = (nodes[0].get("createdAt") if nodes else None) or ""
+    day = created[:10]
+    if day:
+        _shop_earliest_customer[shop_domain] = day
+    return day or None
+
+
 def local_date(iso_utc: Optional[str], tz: Optional[str]) -> Optional[str]:
     """
     The calendar date an instant fell on in the shop's own timezone, "YYYY-MM-DD".
@@ -2283,8 +2347,8 @@ async def fetch_customers_with_last_order(
     admin_api_key: str,
     active_since: str,
     api_version: str = "2025-01",
-    shard_start: Optional[str] = None,
-    shard_end: Optional[str] = None,
+    created_start: Optional[str] = None,
+    created_end: Optional[str] = None,
     on_page=None,
     on_retry=None,
 ) -> Dict[str, Any]:
@@ -2302,6 +2366,19 @@ async def fetch_customers_with_last_order(
     semantics and negating it does not invert that — verified against live
     stores, where every negated form still returned 12% customers who had
     ordered after the cutoff. The caller classifies on `last_order_created_at`.
+
+    `created_start`/`created_end` bound the customer's RECORD creation date, and
+    exist to split the walk into concurrent cursors. Creation date is the right
+    axis because every customer has exactly one, so the shards partition the
+    customer base instead of overlapping. Splitting on `order_date` — the
+    obvious choice — re-fetches anyone who ordered in more than one window:
+    measured 1.97x duplication at 3 shards rising to 5.15x at 10, which is why
+    adding shards there barely moved the wall clock. Here duplication is 1.01x,
+    all of it Shopify's `<date` bound including that whole day, and the caller's
+    dedup absorbs it.
+
+    Note `created_at:` does NOT work on this connection — it is silently
+    ignored, returning an unfiltered set. `customer_date:` is the working field.
 
     Returns {ok, complete, incomplete_reason, error, customers[], warnings[], pages}.
     """
@@ -2321,9 +2398,13 @@ async def fetch_customers_with_last_order(
         result["error"] = str(e)
         return result
 
-    query_filter = f"order_date:>={shard_start or active_since}"
-    if shard_end:
-        query_filter += f" order_date:<{shard_end}"
+    # The order-date floor always applies; the creation-date bounds only carve
+    # that same set into concurrent slices.
+    query_filter = f"order_date:>={active_since}"
+    if created_start:
+        query_filter += f" customer_date:>={created_start}"
+    if created_end:
+        query_filter += f" customer_date:<{created_end}"
 
     customers: List[Dict[str, Any]] = []
     cursor: Optional[str] = None
@@ -2890,7 +2971,10 @@ async def fetch_baseline_order_items(
 # nodes(ids:) it costs 4 points per 250 customers, so a 25,000-customer cohort
 # is ~100 cheap calls rather than 25,000.
 _FIRST_ORDER_BATCH = 250
-_FIRST_ORDER_CONCURRENCY = 5
+# Raised from 5 after measuring: 6,000 customers took 9.0s at 5 and 3.1s at 12,
+# with identical results. A batch costs 12 points, so 12 in flight is ~110
+# points/s — comfortably inside even the smallest shop's 200/s budget.
+_FIRST_ORDER_CONCURRENCY = 12
 
 # The same batch also corrects the order count. `numberOfOrders` is a lifetime
 # total that INCLUDES cancelled and refunded orders — verified on live data,
