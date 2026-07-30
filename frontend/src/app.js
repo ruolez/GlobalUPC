@@ -14092,6 +14092,14 @@ async function runLostCustomersReport() {
             ps.shardScanned[data.shard] = data.scanned;
           }
           renderSacrProgress();
+        } else if (eventType === "progress" && data.phase === "shard_split") {
+          // A dense stretch was divided further, so there is genuinely more
+          // work than we announced. Grow the denominator instead of letting
+          // the bar sit at 100% while cursors are still running.
+          const ps = sacrProgressStore(data.store_id);
+          if (ps) ps.shards += data.added;
+          sacrState.progress.totalUnits += data.added;
+          renderSacrProgress();
         } else if (eventType === "progress" && data.phase === "shard_done") {
           const ps = sacrProgressStore(data.store_id);
           if (ps) {

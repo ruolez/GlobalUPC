@@ -6304,51 +6304,72 @@ async def shopify_analytics_new_customers_by_month_stream(
 # exactly one, so nobody is fetched twice. Same store, same 17,732 customers:
 # 8 shards ran 47.1s and 16 ran 24.5s at 1.01x duplication, against 78-195s for
 # the old 3-way order-date split.
-_LOST_MAX_SHARDS = 16
-_LOST_MIN_SHARDS = 2
-# Equal date spans do not match how a store actually grew: on a live store the
-# busiest slice held 3,560 customers (15 pages) while two others were empty, a
-# 3x imbalance, and wall clock is the deepest cursor.
+_LOST_MAX_CONCURRENCY = 16
+_LOST_MIN_CONCURRENCY = 2
+# Ranges outnumber cursors on purpose. Equal date spans do not match how a
+# store grew, so with one range per cursor the deepest range decides the wall
+# clock: measured, half the cursors finished in the first 27% of the time and
+# one ground on alone for the rest. Cutting the same history into finer ranges
+# and feeding them through a bounded pool splits the dense period across
+# several cursors instead.
 #
-# Balancing by volume is not possible — `customersCount` ignores its query
-# filter and saturates at 10,000 AT_LEAST, so every range reports the same
-# number. Over-provisioning to 32 shards to split the fat slice was measured
-# instead: it moved the scan 25.4s -> 22.5s and provoked a throttle retry,
-# because 32 cursors draw ~1,900 points/s against a 1,000/s refill. Not worth
-# ~10% and someone else's rate budget, so the count stays at what the shop can
-# actually sustain.
-# Below this a shard is too thin to be worth its round trip, and a young store
-# would otherwise fragment into a shard per day.
-_LOST_SHARD_MIN_DAYS = 7
+# Simulated against the measured distribution (concurrency 16): 16 ranges took
+# 9.1s with a 15-page deepest range; 64 took 4.2s with 4 pages; 128 took 5.4s,
+# where the per-range request cost starts to outweigh the parallelism. Finer is
+# only better while there are cursors to use them — on the 200/s shop, which
+# sustains 3, going from 16 to 64 ranges made it worse (16.9s -> 20.5s) — so
+# the count follows concurrency rather than being fixed.
+_RANGES_PER_CURSOR = 4
+_LOST_MAX_RANGES = 64
+# Pages one cursor walks before handing the rest of its range back to be split.
+# Low enough that a dense range is noticed early, high enough that a normal
+# range finishes in one go and costs nothing extra.
+_SCAN_PAGE_BUDGET = 4
+# Splitting is bounded so a pathological range cannot recurse forever; at the
+# limit the range is simply walked to the end.
+_SCAN_MAX_SPLIT_DEPTH = 3
+# Balancing the ranges by volume would be better still, but is not possible:
+# `customersCount` ignores its query filter and saturates at 10,000 AT_LEAST,
+# so every range reports the same number.
+#
+# Below this a range is too thin to be worth its round trip, and a young store
+# would otherwise fragment into one range per day.
+_LOST_RANGE_MIN_DAYS = 3
 # One page's cost, and how long it takes. Together these say how many cursors a
 # shop's refill rate can sustain: rate * seconds / cost.
 _SCAN_PAGE_COST = 90.0
 _SCAN_PAGE_SECONDS = 1.5
 
 
-def _shard_count_for_rate(restore_rate: Optional[float]) -> int:
+def _scan_concurrency_for_rate(restore_rate: Optional[float]) -> int:
     """
-    How many concurrent cursors this shop can feed.
+    How many cursors this shop's refill rate can feed at once.
 
     Rate-limit budgets differ five-fold across shops here (1,000/s on most,
     200/s on one), so a constant would either throttle the small shop or waste
     the large ones. Unknown rate falls back to the floor.
     """
     if not restore_rate or restore_rate <= 0:
-        return _LOST_MIN_SHARDS
+        return _LOST_MIN_CONCURRENCY
     sustainable = int(restore_rate * _SCAN_PAGE_SECONDS / _SCAN_PAGE_COST)
-    return max(_LOST_MIN_SHARDS, min(_LOST_MAX_SHARDS, sustainable))
+    return max(_LOST_MIN_CONCURRENCY, min(_LOST_MAX_CONCURRENCY, sustainable))
 
 
 def _lost_shards(earliest_customer: Optional[str], upper: str,
-                 max_shards: int = _LOST_MAX_SHARDS) -> List[tuple]:
+                 max_ranges: int = _LOST_MAX_RANGES) -> List[tuple]:
     """
     Partition [earliest_customer, upper] into contiguous CREATION-date ranges.
 
-    Returns (created_start, created_end) pairs; the last is open-ended so a
-    record created today is still caught. Without an earliest date the caller
-    gets one unbounded walk — guessing a floor would silently drop every
-    customer created before it.
+    Returns (created_start, created_end) pairs. Both ends are deliberately
+    open: the last range has no upper bound so a record created today is still
+    caught, and the FIRST has no lower bound so nothing older than the floor can
+    be missed. That matters because the floor is a UTC date while
+    `customer_date:` filters on the shop's local date — a shop whose oldest
+    record was created between midnight and dawn UTC would otherwise have that
+    record, and everyone else created that local day, silently excluded.
+
+    Without an earliest date the caller gets one unbounded walk; guessing a
+    floor would drop every customer created before it.
     """
     from datetime import date, timedelta
 
@@ -6361,14 +6382,44 @@ def _lost_shards(earliest_customer: Optional[str], upper: str,
         return [(None, None)]
 
     span = (end - start).days
-    if span < _LOST_SHARD_MIN_DAYS * _LOST_MIN_SHARDS:
+    if span < _LOST_RANGE_MIN_DAYS * 2:
         return [(None, None)]
 
-    n = max(_LOST_MIN_SHARDS, min(max_shards, span // _LOST_SHARD_MIN_DAYS))
+    n = max(2, min(max_ranges, span // _LOST_RANGE_MIN_DAYS))
     step = span // n
     bounds = [start + timedelta(days=step * i) for i in range(n)] + [end]
     return [
-        (bounds[i].isoformat(), bounds[i + 1].isoformat() if i < n - 1 else None)
+        (
+            bounds[i].isoformat() if i > 0 else None,
+            bounds[i + 1].isoformat() if i < n - 1 else None,
+        )
+        for i in range(n)
+    ]
+
+
+def _split_dates(lo: str, hi: Optional[str], upper: str, parts: int) -> List[tuple]:
+    """
+    Cut [lo, hi) into `parts` contiguous ranges, preserving an open upper end.
+
+    `upper` stands in for `hi` when the range is open-ended, so the tail of the
+    store's history can still be divided; the final part keeps `hi` verbatim so
+    records created after `upper` are never fenced out.
+    """
+    from datetime import date, timedelta
+
+    try:
+        start = date.fromisoformat(lo)
+        end = date.fromisoformat(hi or upper)
+    except ValueError:
+        return []
+    span = (end - start).days
+    if span < _LOST_RANGE_MIN_DAYS * 2:
+        return []
+    n = max(2, min(parts, span // _LOST_RANGE_MIN_DAYS))
+    step = span // n
+    bounds = [start + timedelta(days=step * i) for i in range(n)] + [end]
+    return [
+        (bounds[i].isoformat(), bounds[i + 1].isoformat() if i < n - 1 else hi)
         for i in range(n)
     ]
 
@@ -6534,12 +6585,21 @@ async def shopify_analytics_lost_customers_stream(
             ) for s in store_list
         ], return_exceptions=True)
         shards_by_store: Dict[int, List[tuple]] = {}
+        concurrency_by_store: Dict[int, int] = {}
+        unpartitioned: List[str] = []
         for s, earliest in zip(store_list, earliest_values):
             first = earliest if isinstance(earliest, str) else None
+            conc = _scan_concurrency_for_rate(shopify_bucket_rate(s["shop_domain"]))
+            concurrency_by_store[s["id"]] = conc
             shards_by_store[s["id"]] = _lost_shards(
                 first, tomorrow,
-                max_shards=_shard_count_for_rate(shopify_bucket_rate(s["shop_domain"])),
+                max_ranges=min(_LOST_MAX_RANGES, conc),
             )
+            # A failed probe silently collapses the scan to a single cursor,
+            # which is correct but many times slower. Say so rather than let the
+            # run look mysteriously slow.
+            if not first:
+                unpartitioned.append(s["name"])
         total_units = sum(len(v) for v in shards_by_store.values())
 
         yield f"event: progress\ndata: {json.dumps({'phase': 'started', 'active_since': active_since, 'silent_since': silent_since, 'min_orders': min_orders, 'shards': max((len(v) for v in shards_by_store.values()), default=1), 'total_units': total_units, 'stores': [{'store_id': s['id'], 'store_name': s['name'], 'shards': len(shards_by_store[s['id']])} for s in store_list]})}\n\n"
@@ -6562,7 +6622,11 @@ async def shopify_analytics_lost_customers_stream(
                     "store_id": s["id"], "store_name": s["name"], "shards": len(shards),
                 }))
 
-                async def run_shard(index: int, lo: Optional[str], hi: Optional[str]):
+                store_tz = tz_by_shop.get(s["id"])
+                collected: List[Dict[str, Any]] = []
+
+                async def run_shard(index: int, lo: Optional[str], hi: Optional[str],
+                                    depth: int = 0):
                     # Page callbacks are what prove the run is alive during a
                     # long cursor walk — a store can spend minutes on one shard.
                     pages = 0
@@ -6575,29 +6639,69 @@ async def shopify_analytics_lost_customers_stream(
                             "shard": _i, "pages": pages, "scanned": scanned,
                         }))
 
-                    res = await fetch_customers_with_last_order(
-                        shop_domain=s["shop_domain"],
-                        admin_api_key=s["admin_api_key"],
-                        active_since=active_since,
-                        api_version=s["api_version"],
-                        created_start=lo,
-                        created_end=hi,
-                        on_retry=on_retry,
-                        on_page=on_page,
-                    )
+                    async with scan_pool:
+                        res = await fetch_customers_with_last_order(
+                            shop_domain=s["shop_domain"],
+                            admin_api_key=s["admin_api_key"],
+                            active_since=active_since,
+                            api_version=s["api_version"],
+                            created_start=lo,
+                            created_end=hi,
+                            page_budget=(_SCAN_PAGE_BUDGET
+                                         if depth < _SCAN_MAX_SPLIT_DEPTH else None),
+                            on_retry=on_retry,
+                            on_page=on_page,
+                        )
+                    collected.append(res)
                     events.put_nowait(("shard_done", {
                         "store_id": s["id"], "store_name": s["name"], "shard": index,
                         "ok": bool(res.get("ok")), "pages": res.get("pages", 0),
                         "scanned": len(res.get("customers") or []),
                     }))
-                    return res
 
-                shard_results = await asyncio.gather(*[
+                    # This range turned out denser than its neighbours. Hand the
+                    # remainder to several cursors rather than let one finish it
+                    # while the others idle — the tail of a single deep range was
+                    # 73% of the scan's wall clock.
+                    resume = res.get("resume_from")
+                    if not resume:
+                        return
+                    nxt = local_date(resume, store_tz)
+                    parts = _split_dates(nxt, hi, tomorrow, _RANGES_PER_CURSOR) if nxt else []
+                    if not parts or (lo and parts[0][0] <= lo):
+                        # No room to divide (or no forward progress): finish the
+                        # remainder in one uninterrupted walk. Still announced,
+                        # because it is one more shard_done than we promised and
+                        # an unannounced one pushes the progress bar past 100%.
+                        events.put_nowait(("shard_split", {
+                            "store_id": s["id"], "store_name": s["name"], "added": 1,
+                        }))
+                        await run_shard(index, nxt or lo, hi, depth=_SCAN_MAX_SPLIT_DEPTH)
+                        return
+                    events.put_nowait(("shard_split", {
+                        "store_id": s["id"], "store_name": s["name"], "added": len(parts),
+                    }))
+                    await asyncio.gather(*[
+                        run_shard(index, a, b, depth + 1) for a, b in parts
+                    ], return_exceptions=True)
+
+                # Ranges are equal in date span but not in customer volume, so
+                # each cursor stops after a page budget and whatever is left of a
+                # dense range is split across cursors that have gone idle.
+                scan_pool = asyncio.Semaphore(concurrency_by_store.get(s["id"], 4))
+                await asyncio.gather(*[
                     run_shard(i, lo, hi) for i, (lo, hi) in enumerate(shards)
                 ], return_exceptions=True)
+                shard_results = collected
 
                 by_id: Dict[str, Dict[str, Any]] = {}
                 warnings: List[str] = []
+                if s["name"] in unpartitioned:
+                    # Correct, just slow, so it is a warning rather than a
+                    # partial-data flag — but it must not pass unremarked.
+                    warnings.append(
+                        "Could not read this shop's customer history, so the scan ran "
+                        "as a single pass instead of in parallel — slower than usual.")
                 failed_shards = 0
                 incomplete_reasons: List[str] = []
 
@@ -6619,7 +6723,7 @@ async def shopify_analytics_lost_customers_stream(
                         if c.get("customer_id"):
                             by_id.setdefault(c["customer_id"], c)
 
-                if failed_shards >= len(shards):
+                if not collected or failed_shards >= len(collected):
                     return {
                         "store": s, "ok": False, "complete": False,
                         "error": incomplete_reasons[0] if incomplete_reasons else "Fetch failed",
@@ -7008,7 +7112,10 @@ async def shopify_analytics_lost_customers_stream(
 
                 # Everything except "done" is liveness reporting and must not
                 # advance the completed-store counter.
-                if kind in ("retry", "store_start", "page", "shard_done",
+                # Anything not listed here is taken to be a finished store, so a
+                # new progress event MUST be added: omitting one ends the run
+                # early and truncates the scan.
+                if kind in ("retry", "store_start", "page", "shard_done", "shard_split",
                             "phase", "first_orders", "cross_store"):
                     yield f"event: progress\ndata: {json.dumps({'phase': kind, **payload})}\n\n"
                     continue

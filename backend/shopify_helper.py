@@ -1778,6 +1778,9 @@ _MAX_BACKOFF_SECONDS = 30.0
 # Fraction of the shop's bucket to keep in reserve. Below this we wait for the
 # leaky bucket to refill rather than gambling on a 429.
 _BUCKET_SAFETY_FLOOR = 0.20
+# Give up waiting after this many rounds and let the throttle handling take
+# over, so a shop whose bucket never recovers cannot hang the report.
+_BUCKET_MAX_WAITS = 8
 
 # Cost assumed for the first request to a shop, before any throttleStatus has
 # been observed. A 250-record page with nested fulfillments measured 57.
@@ -1881,17 +1884,30 @@ class _ShopBucket:
         return min(self.maximum, self.available + elapsed * self.restore_rate)
 
     async def acquire(self) -> None:
-        """Wait until the shop's bucket can absorb another query of typical cost."""
-        async with self._lock:
-            if self.maximum <= 0 or self.restore_rate <= 0:
-                return  # nothing observed yet; the first response teaches us
-            need = max(self.last_cost, _ASSUMED_QUERY_COST)
-            floor = self.maximum * _BUCKET_SAFETY_FLOOR
-            projected = self._projected_available()
-            if projected >= need + floor:
-                return
-            deficit = (need + floor) - projected
-            await asyncio.sleep(min(_MAX_BACKOFF_SECONDS, deficit / self.restore_rate))
+        """
+        Wait until the shop's bucket can absorb another query of typical cost.
+
+        The sleep is deliberately OUTSIDE the lock. Holding it across the sleep
+        turned this from a rate governor into a serialiser: one waiter stalled
+        every other request to the same shop, so pacing arrived as stop/go
+        bursts instead of a steady stream. Re-checking after each sleep also
+        makes the wait actually mean something — it used to sleep once and
+        proceed regardless of whether the bucket had recovered.
+        """
+        for _ in range(_BUCKET_MAX_WAITS):
+            async with self._lock:
+                if self.maximum <= 0 or self.restore_rate <= 0:
+                    return  # nothing observed yet; the first response teaches us
+                need = max(self.last_cost, _ASSUMED_QUERY_COST)
+                floor = self.maximum * _BUCKET_SAFETY_FLOOR
+                projected = self._projected_available()
+                if projected >= need + floor:
+                    return
+                wait = min(_MAX_BACKOFF_SECONDS,
+                           ((need + floor) - projected) / self.restore_rate)
+            await asyncio.sleep(wait)
+        # Still short after repeated waits: proceed and let the 429/THROTTLED
+        # handling deal with it rather than stalling the report indefinitely.
 
     def observe(self, cost: Optional[Dict[str, Any]]) -> None:
         if not cost:
@@ -2268,7 +2284,7 @@ ORDER_STATUS_FILTER = "-status:cancelled -financial_status:refunded"
 
 _LOST_CUSTOMERS_QUERY = """
 query LostCustomers($q: String!, $after: String) {
-  customers(first: 250, query: $q, sortKey: ID, after: $after) {
+  customers(first: 250, query: $q, sortKey: CREATED_AT, after: $after) {
     pageInfo { hasNextPage endCursor }
     nodes {
       id
@@ -2349,6 +2365,7 @@ async def fetch_customers_with_last_order(
     api_version: str = "2025-01",
     created_start: Optional[str] = None,
     created_end: Optional[str] = None,
+    page_budget: Optional[int] = None,
     on_page=None,
     on_retry=None,
 ) -> Dict[str, Any]:
@@ -2380,7 +2397,14 @@ async def fetch_customers_with_last_order(
     Note `created_at:` does NOT work on this connection — it is silently
     ignored, returning an unfiltered set. `customer_date:` is the working field.
 
-    Returns {ok, complete, incomplete_reason, error, customers[], warnings[], pages}.
+    `page_budget` caps how many pages one call will walk. Ranges are equal in
+    date span but not in customer volume — a store grows unevenly — so without
+    it the densest range decides the wall clock while every other cursor sits
+    idle. Stopping early and reporting `resume_from` lets the caller split the
+    remainder across those idle cursors.
+
+    Returns {ok, complete, incomplete_reason, error, customers[], warnings[],
+    pages, resume_from}.
     """
     result: Dict[str, Any] = {
         "ok": False,
@@ -2390,6 +2414,9 @@ async def fetch_customers_with_last_order(
         "customers": [],
         "warnings": [],
         "pages": 0,
+        # Set when `page_budget` stopped the walk early: the createdAt of the
+        # last customer returned, i.e. where a continuation should pick up.
+        "resume_from": None,
     }
 
     try:
@@ -2427,7 +2454,8 @@ async def fetch_customers_with_last_order(
                     result["warnings"].extend(warnings)
 
                 conn = data.get("customers") or {}
-                for node in conn.get("nodes") or []:
+                nodes = conn.get("nodes") or []
+                for node in nodes:
                     customers.append(_normalize_lost_customer(node))
 
                 pages += 1
@@ -2452,6 +2480,16 @@ async def fetch_customers_with_last_order(
                         f"range. Narrow the dates to see the rest."
                     )
                     return result
+
+                # Budget spent with pages still to come. Stop and tell the
+                # caller where we got to, so it can split what remains across
+                # several cursors instead of grinding on alone — walking in
+                # creation order is what makes this position meaningful. Not an
+                # incomplete result: the caller covers the rest.
+                if page_budget and pages >= page_budget:
+                    result["resume_from"] = nodes[-1].get("createdAt") if nodes else None
+                    if result["resume_from"]:
+                        break
 
     except ShopifyFetchError as e:
         result["error"] = str(e)
