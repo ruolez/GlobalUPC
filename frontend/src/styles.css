@@ -5678,7 +5678,12 @@ body.no-scroll {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.sa-page .sacr-copy {
+/* Deliberately NOT scoped to .sa-page. The modals are rendered outside it, so a
+   .sa-page prefix left the button with no width, height or icon size and it
+   collapsed to a 1px sliver next to the email. The class name is unique to this
+   control, so unscoping is safe and stops the next place it is used from
+   inheriting the same bug. */
+.sacr-copy {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
@@ -5696,14 +5701,15 @@ body.no-scroll {
   opacity: 0.45;
   transition: opacity 0.12s ease, color 0.12s ease, background 0.12s ease;
 }
-.sa-page .sacr-copy svg { width: 0.75rem; height: 0.75rem; }
-.sa-page .sacr-row:hover .sacr-copy { opacity: 0.8; }
-.sa-page .sacr-copy:hover {
+.sacr-copy svg { width: 0.75rem; height: 0.75rem; display: block; }
+.sacr-row:hover .sacr-copy,
+tr:hover > td .sacr-copy { opacity: 0.8; }
+.sacr-copy:hover {
   opacity: 1;
   color: var(--accent-primary);
   background: color-mix(in srgb, var(--accent-primary) 14%, transparent);
 }
-.sa-page .sacr-copy:focus-visible {
+.sacr-copy:focus-visible {
   opacity: 1;
   outline: 2px solid var(--accent-primary);
   outline-offset: 1px;
@@ -5711,14 +5717,14 @@ body.no-scroll {
 /* Swap the glyph rather than only recolouring it — the button is 12px, where a
    colour change alone is easy to miss. The box is a fixed size, so nothing
    shifts. */
-.sa-page .sacr-copy.is-copied,
-.sa-page .sacr-copy.is-failed { opacity: 1; }
-.sa-page .sacr-copy.is-copied { color: var(--success); }
-.sa-page .sacr-copy.is-failed { color: var(--danger); }
-.sa-page .sacr-copy.is-copied svg,
-.sa-page .sacr-copy.is-failed svg { display: none; }
-.sa-page .sacr-copy.is-copied::after { content: "✓"; font-size: 0.75rem; line-height: 1; }
-.sa-page .sacr-copy.is-failed::after { content: "✕"; font-size: 0.6875rem; line-height: 1; }
+.sacr-copy.is-copied,
+.sacr-copy.is-failed { opacity: 1; }
+.sacr-copy.is-copied { color: var(--success); }
+.sacr-copy.is-failed { color: var(--danger); }
+.sacr-copy.is-copied svg,
+.sacr-copy.is-failed svg { display: none; }
+.sacr-copy.is-copied::after { content: "✓"; font-size: 0.75rem; line-height: 1; }
+.sacr-copy.is-failed::after { content: "✕"; font-size: 0.6875rem; line-height: 1; }
 .sa-page .sacr-badge {
   display: inline-block;
   font-size: 0.625rem;
