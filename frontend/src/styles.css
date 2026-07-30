@@ -6025,6 +6025,25 @@ body.no-scroll {
 }
 .sa-page .sacr-control-sm,
 #sacr-products-modal .sacr-control-sm { max-width: 6rem; }
+/* Two of these sit side by side in an already crowded filter bar, and they
+   never hold more than a few digits. */
+.sa-page .sacr-control-xs { max-width: 4.5rem; padding-left: 0.5rem; padding-right: 0.5rem; }
+.sa-page .sacr-range-sep { color: var(--text-tertiary); margin: 0 -0.125rem; }
+.sa-page .sacr-control.is-invalid {
+  border-color: var(--danger);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 18%, transparent);
+}
+
+/* A filtered table is a different claim from the full one; the count says so
+   loudly enough that nobody reads a subtotal as the report total. */
+.sa-page .sa-row-count.sacr-count-filtered {
+  color: var(--accent-primary);
+  font-weight: 600;
+  padding: 0.25rem 0.625rem;
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--accent-primary) 12%, var(--bg-secondary));
+  border: 1px solid color-mix(in srgb, var(--accent-primary) 35%, transparent);
+}
 
 /* Native select chrome ignores a dark background on several browsers, so the
    arrow is drawn here instead. A mid grey reads on both the dark themes and

@@ -4423,6 +4423,11 @@
               <label class="sacr-field">Search
                 <input type="text" id="sacr-search" class="sacr-control" placeholder="name or email" />
               </label>
+              <span class="sacr-field">Orders
+                <input type="number" id="sacr-filter-orders-min" class="sacr-control sacr-control-xs" min="0" step="1" placeholder="min" aria-label="Minimum lifetime orders" />
+                <span class="sacr-range-sep" aria-hidden="true">&ndash;</span>
+                <input type="number" id="sacr-filter-orders-max" class="sacr-control sacr-control-xs" min="0" step="1" placeholder="max" aria-label="Maximum lifetime orders" />
+              </span>
               <label class="sacr-field">Method
                 <select id="sacr-filter-method" class="sacr-control"><option value="">All</option></select>
               </label>

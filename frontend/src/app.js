@@ -13508,7 +13508,15 @@ const sacrState = {
   silentSince: "",
   sortColumn: "amount_spent",
   sortOrder: "desc",
-  filter: { search: "", method: "", carrier: "", slow: "", state: "" },
+  filter: {
+    search: "",
+    method: "",
+    carrier: "",
+    slow: "",
+    state: "",
+    ordersMin: null,   // inclusive; null = unbounded
+    ordersMax: null,
+  },
   currentPage: 0,
   pageSize: 100,
   abortController: null,
@@ -13690,14 +13698,39 @@ function loadLostCustomersPanel() {
         rerender();
       });
   });
+  [["min", "ordersMin"], ["max", "ordersMax"]].forEach(([suffix, key]) => {
+    document
+      .getElementById(`sacr-filter-orders-${suffix}`)
+      ?.addEventListener("input", (e) => {
+        const raw = e.target.value.trim();
+        const n = parseInt(raw, 10);
+        // "" and a half-typed "-" both mean unbounded, not zero.
+        sacrState.filter[key] = raw === "" || isNaN(n) ? null : Math.max(0, n);
+        sacrMarkOrdersRange();
+        rerender();
+      });
+  });
   document.getElementById("sacr-reset-filters")?.addEventListener("click", () => {
-    sacrState.filter = { search: "", method: "", carrier: "", slow: "", state: "" };
+    sacrState.filter = {
+      search: "",
+      method: "",
+      carrier: "",
+      slow: "",
+      state: "",
+      ordersMin: null,
+      ordersMax: null,
+    };
     const s = document.getElementById("sacr-search");
     if (s) s.value = "";
     ["method", "carrier", "slow", "state"].forEach((k) => {
       const el = document.getElementById(`sacr-filter-${k}`);
       if (el) el.value = "";
     });
+    ["min", "max"].forEach((k) => {
+      const el = document.getElementById(`sacr-filter-orders-${k}`);
+      if (el) el.value = "";
+    });
+    sacrMarkOrdersRange();
     rerender();
   });
 
@@ -14132,6 +14165,28 @@ function sacrPopulateFilterOptions() {
   fill("sacr-filter-carrier", carriers, sacrState.filter.carrier);
 }
 
+function sacrIsFiltered() {
+  const f = sacrState.filter;
+  return Boolean(
+    f.search || f.method || f.carrier || f.slow || f.state ||
+      f.ordersMin !== null || f.ordersMax !== null,
+  );
+}
+
+// min above max matches nothing, and an empty table with no stated cause reads
+// as a broken report rather than a typo.
+function sacrMarkOrdersRange() {
+  const f = sacrState.filter;
+  const bad =
+    f.ordersMin !== null && f.ordersMax !== null && f.ordersMin > f.ordersMax;
+  ["min", "max"].forEach((k) => {
+    const el = document.getElementById(`sacr-filter-orders-${k}`);
+    if (!el) return;
+    el.classList.toggle("is-invalid", bad);
+    el.title = bad ? "Minimum is above maximum, so no rows can match" : "";
+  });
+}
+
 function sacrFilteredRows() {
   const f = sacrState.filter;
   // Recomputed per render: frozen at arrival it silently drifts a day stale
@@ -14144,6 +14199,14 @@ function sacrFilteredRows() {
         (r.name || "").toLowerCase().includes(f.search) ||
         (r.email || "").toLowerCase().includes(f.search),
     );
+  }
+  // Lifetime orders. Bounds are inclusive, so 1–1 isolates one-time buyers and
+  // 2– isolates the repeat customers who stopped.
+  if (f.ordersMin !== null) {
+    rows = rows.filter((r) => (r.orders_count || 0) >= f.ordersMin);
+  }
+  if (f.ordersMax !== null) {
+    rows = rows.filter((r) => (r.orders_count || 0) <= f.ordersMax);
   }
   if (f.state) rows = rows.filter((r) => (r.state || "") === f.state);
   if (f.method) rows = rows.filter((r) => r.shipping_method === f.method);
@@ -14454,11 +14517,14 @@ function renderSacrTable() {
     .join("");
 
   // Footer totals cover the whole filtered set, not just the visible page.
+  const filtered = sacrIsFiltered();
+  const spend = rows.reduce((s, r) => s + (r.amount_spent || 0), 0);
   if (tfoot) {
-    const spend = rows.reduce((s, r) => s + (r.amount_spent || 0), 0);
     const orders = rows.reduce((s, r) => s + (r.orders_count || 0), 0);
+    // Labelled "(filtered)" unconditionally, the qualifier stopped meaning
+    // anything — it has to appear only when a filter is actually narrowing it.
     tfoot.innerHTML =
-      `<tr class="sacr-foot-row"><td>Total (filtered)</td><td></td><td></td>` +
+      `<tr class="sacr-foot-row"><td>${filtered ? "Total (filtered)" : "Total"}</td><td></td><td></td>` +
       `<td class="sacr-num">${orders.toLocaleString()}</td>` +
       `<td class="sacr-num">${sacrFmtMoney(spend, "")}</td>` +
       // Customer + Store + State + Orders + Spent = 5 cells, then the
@@ -14477,12 +14543,17 @@ function renderSacrTable() {
   if (prev) prev.disabled = sacrState.currentPage === 0;
   if (next) next.disabled = sacrState.currentPage >= maxPage;
 
+  // The whole point of a filter is the subtotal it produces, so once one is on
+  // this stops being a quiet row count and states the narrowed set outright.
   const count = document.getElementById("sacr-row-count");
   if (count) {
-    count.textContent =
-      total === sacrState.rows.length
-        ? `${total.toLocaleString()} lost customers`
-        : `${total.toLocaleString()} of ${sacrState.rows.length.toLocaleString()} lost customers`;
+    const all = sacrState.rows.length;
+    const currency = rows[0]?.currency || sacrState.totals?.currency || "";
+    count.classList.toggle("sacr-count-filtered", filtered);
+    count.textContent = filtered
+      ? `Filtered: ${total.toLocaleString()} of ${all.toLocaleString()} lost customers` +
+        (total ? ` · ${sacrFmtMoney(spend, currency)}` : "")
+      : `${all.toLocaleString()} lost customers`;
   }
 }
 
