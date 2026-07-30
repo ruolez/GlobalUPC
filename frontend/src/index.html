@@ -4292,62 +4292,60 @@
           <section class="sa-panel" data-sa-panel="lost-customers" style="display: none">
             <div class="card sa-setup-card" style="margin-bottom: 1.25rem">
               <div class="card-header"><h3>Setup</h3></div>
-              <div style="padding: 1rem 1.5rem 1.25rem">
-                <div class="sa-setup-grid">
-                  <div class="sa-setup-col">
-                    <div class="form-group">
-                      <label for="sacr-store-select">Shopify Store</label>
-                      <select id="sacr-store-select" class="sacr-control" style="max-width: 260px"></select>
-                    </div>
+              <!-- One row of controls. The three explanations that used to sit
+                   permanently beside them are behind a disclosure: they are
+                   read once, not every run, and they were most of the height. -->
+              <div class="sacr-setup">
+                <div class="sacr-setup-row">
+                  <div class="sacr-setup-field">
+                    <label for="sacr-store-select">Store</label>
+                    <select id="sacr-store-select" class="sacr-control"></select>
+                  </div>
 
-                    <div class="form-group" style="margin-top: 0.875rem">
-                      <label style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;white-space:nowrap;">
-                        <input type="checkbox" id="sacr-cross-store" checked style="width:auto;margin:0;" />
-                        <span>Exclude customers still ordering under another account</span>
-                      </label>
-                      <small style="color: var(--text-tertiary); font-size: 0.75rem; margin-top: 0.375rem; display: block;">
-                        Two passes against <strong>every</strong> active Shopify store, including ones not selected above and the customer&rsquo;s own store: first by email, then by first name + last name + ZIP. The second catches a re-registration, which Shopify forces onto a different email. Anyone still ordering since the cutoff did not leave, and is excluded from every figure.
-                      </small>
-                    </div>
-
-                    <div class="form-group" style="margin-top: 0.875rem">
-                      <label for="sacr-min-orders">Minimum Lifetime Orders</label>
-                      <input type="number" id="sacr-min-orders" min="1" step="1" value="1" style="max-width: 110px" />
-                      <small style="color: var(--text-tertiary); font-size: 0.75rem; margin-top: 0.375rem; display: block;">
-                        1 includes one-time buyers. Raise it to focus on repeat customers who stopped.
-                      </small>
+                  <div class="sacr-setup-field">
+                    <label for="sacr-active-since">First ordered on or after</label>
+                    <input type="date" id="sacr-active-since" class="sacr-control" />
+                    <div class="sacr-quick">
+                      <button type="button" data-sacr-active="12">1 yr</button>
+                      <button type="button" data-sacr-active="24">2 yr</button>
+                      <button type="button" data-sacr-active="36">3 yr</button>
                     </div>
                   </div>
 
-                  <div class="sa-setup-col">
-                    <div class="form-group">
-                      <label for="sacr-active-since">First Ordered On or After</label>
-                      <input type="date" id="sacr-active-since" style="max-width: 170px" />
-                      <div style="display: flex; gap: 0.375rem; margin-top: 0.5rem; flex-wrap: wrap;">
-                        <button type="button" class="btn btn-secondary" data-sacr-active="12" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">1 year</button>
-                        <button type="button" class="btn btn-secondary" data-sacr-active="24" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">2 years</button>
-                        <button type="button" class="btn btn-secondary" data-sacr-active="36" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">3 years</button>
-                      </div>
+                  <div class="sacr-setup-field">
+                    <label for="sacr-silent-since">Has not ordered since</label>
+                    <input type="date" id="sacr-silent-since" class="sacr-control" />
+                    <div class="sacr-quick">
+                      <button type="button" data-sacr-silent="3">3 mo</button>
+                      <button type="button" data-sacr-silent="6">6 mo</button>
+                      <button type="button" data-sacr-silent="12">12 mo</button>
                     </div>
+                  </div>
 
-                    <div class="form-group" style="margin-top: 0.875rem">
-                      <label for="sacr-silent-since">Has Not Ordered Since</label>
-                      <input type="date" id="sacr-silent-since" style="max-width: 170px" />
-                      <div style="display: flex; gap: 0.375rem; margin-top: 0.5rem; flex-wrap: wrap;">
-                        <button type="button" class="btn btn-secondary" data-sacr-silent="3" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">3 months</button>
-                        <button type="button" class="btn btn-secondary" data-sacr-silent="6" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">6 months</button>
-                        <button type="button" class="btn btn-secondary" data-sacr-silent="12" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">12 months</button>
-                      </div>
-                      <small style="color: var(--text-tertiary); font-size: 0.75rem; margin-top: 0.5rem; display: block;">
-                        Cancelled and fully refunded orders are ignored everywhere in this report. Only customers whose <strong>very first completed order</strong> falls on or after the first date are included &mdash; anyone already buying before it is excluded from the table and from every total. Of those, a customer counts as lost if they have not ordered since the second date; the rest are the comparison group.
-                      </small>
-                    </div>
+                  <div class="sacr-setup-field">
+                    <label for="sacr-min-orders">Min. orders</label>
+                    <input type="number" id="sacr-min-orders" class="sacr-control sacr-control-xs" min="1" step="1" value="1" title="1 includes one-time buyers. Raise it to focus on repeat customers who stopped." />
+                  </div>
+
+                  <div class="sacr-setup-run">
+                    <button type="button" class="btn btn-primary" id="sacr-run-btn" disabled>Run Report</button>
+                    <button type="button" class="btn btn-secondary" id="sacr-cancel-btn" style="display: none;">Cancel</button>
                   </div>
                 </div>
 
-                <div style="margin-top: 1rem; display: flex; gap: 0.5rem;">
-                  <button type="button" class="btn btn-primary" id="sacr-run-btn" disabled>Run Report</button>
-                  <button type="button" class="btn btn-secondary" id="sacr-cancel-btn" style="display: none;">Cancel</button>
+                <div class="sacr-setup-row sacr-setup-secondary">
+                  <label class="sacr-check">
+                    <input type="checkbox" id="sacr-cross-store" checked />
+                    <span>Exclude customers still ordering under another account</span>
+                  </label>
+                  <details class="sacr-help">
+                    <summary>How this works</summary>
+                    <div class="sacr-help-body">
+                      <p><strong>Dates.</strong> Cancelled and fully refunded orders are ignored everywhere in this report. Only customers whose <strong>very first completed order</strong> falls on or after the first date are included &mdash; anyone already buying before it is excluded from the table and from every total. Of those, a customer counts as lost if they have not ordered since the second date; the rest are the comparison group.</p>
+                      <p><strong>Another account.</strong> Two passes against <strong>every</strong> active Shopify store, including the customer&rsquo;s own: first by email, then by first name + last name + ZIP. The second catches a re-registration, which Shopify forces onto a different email. Anyone still ordering since the cutoff did not leave, and is excluded from every figure.</p>
+                      <p><strong>Min. orders.</strong> 1 includes one-time buyers. Raise it to focus on repeat customers who stopped. Cancelled and refunded orders do not count towards it.</p>
+                    </div>
+                  </details>
                 </div>
               </div>
             </div>
