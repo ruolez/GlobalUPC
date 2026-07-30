@@ -14489,7 +14489,7 @@ function renderSacrBenchmark() {
   // dashes invites the reader to fill in the blank; say why instead.
   if (!b.stores_included) {
     body.innerHTML =
-      '<tr><td colspan="4" class="sacr-benchmark-blocked">No store returned complete data, so the lost-vs-active comparison cannot be computed. See the warning above.</td></tr>';
+      '<p class="sacr-benchmark-blocked">No store returned complete data, so the lost-vs-active comparison cannot be computed. See the warning above.</p>';
     const sub0 = document.getElementById("sacr-benchmark-sub");
     if (sub0) sub0.textContent = `0 of ${b.stores_total} stores usable`;
     const note0 = document.getElementById("sacr-benchmark-note");
@@ -14520,21 +14520,27 @@ function renderSacrBenchmark() {
             : "sacr-diff-better";
       const sign = diff !== null && diff > 0 ? "+" : diff !== null && diff < 0 ? "−" : "";
       return (
-        `<tr><td>${label}</td>` +
-        `<td class="sacr-num">${sacrFmtDays(c)}</td>` +
-        `<td class="sacr-num">${sacrFmtDays(a)}</td>` +
-        `<td class="sacr-num ${cls}">${diff === null ? "—" : sign + Math.abs(diff).toFixed(2) + "d"}</td></tr>`
+        '<div class="sacr-stage">' +
+        `<div class="sacr-stage-label">${saEscape(label)}</div>` +
+        '<div class="sacr-stage-row">' +
+        `<div class="sacr-stage-metric"><b>${sacrFmtDays(c)}</b><span>lost</span></div>` +
+        `<div class="sacr-stage-metric"><b>${sacrFmtDays(a)}</b><span>active</span></div>` +
+        `<div class="sacr-stage-delta ${cls}">${
+          diff === null ? "—" : sign + Math.abs(diff).toFixed(2) + "d"
+        }</div></div></div>`
       );
     })
     .join("");
 
   const sub = document.getElementById("sacr-benchmark-sub");
   if (sub) {
+    // Each stage already labels its own two figures, so this only has to say
+    // how many customers are behind them.
     sub.textContent =
-      `Median time for the last order of ${b.lost.n.toLocaleString()} lost vs ` +
-      `${b.active.n.toLocaleString()} still-active customers` +
+      `Medians from ${b.lost.n.toLocaleString()} lost and ` +
+      `${b.active.n.toLocaleString()} active` +
       (b.stores_included < b.stores_total
-        ? ` — ${b.stores_included} of ${b.stores_total} stores included`
+        ? ` · ${b.stores_included} of ${b.stores_total} stores`
         : "");
   }
 
