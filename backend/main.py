@@ -6516,6 +6516,7 @@ async def shopify_analytics_lost_customers_stream(
 
                 lost, active = [], []
                 never_purchased = 0
+                ordered_before_window = 0
                 for c in by_id.values():
                     last = c.get("last_order_created_at")
                     if not last:
@@ -6531,6 +6532,12 @@ async def shopify_analytics_lost_customers_stream(
                         active.append(c)
                     elif c["last_order_local"] >= active_since:
                         lost.append(c)
+                    else:
+                        # Their in-window orders were all cancelled or refunded,
+                        # leaving an older real purchase as their last. Correctly
+                        # excluded — they did not start here — but counted, so
+                        # the reconciliation adds up instead of losing people.
+                        ordered_before_window += 1
 
                 # "Was ordering since" means the customer STARTED here. Shopify's
                 # order_date filter only proves they ordered at some point in the
@@ -6796,6 +6803,7 @@ async def shopify_analytics_lost_customers_stream(
                     "excluded_pre_existing": excluded_pre_existing,
                     "unknown_first_order": unknown_first,
                     "never_purchased": never_purchased,
+                    "ordered_before_window": ordered_before_window,
                     "states": states,
                     "moved_breakdown": moved_breakdown,
                     "moved_total": sum(moved_breakdown.values()),
@@ -6841,7 +6849,7 @@ async def shopify_analytics_lost_customers_stream(
                 results.append(payload)
                 st = payload.get("store") or {}
                 lost = payload.get("lost") or []
-                yield f"event: store\ndata: {json.dumps({'store_id': st.get('id'), 'store_name': st.get('name'), 'ok': payload.get('ok'), 'complete': payload.get('complete'), 'incomplete_reason': payload.get('incomplete_reason'), 'error': payload.get('error'), 'warnings': payload.get('warnings') or [], 'excluded_pre_existing': payload.get('excluded_pre_existing', 0), 'unknown_first_order': payload.get('unknown_first_order', 0), 'never_purchased': payload.get('never_purchased', 0), 'moved_total': payload.get('moved_total', 0), 'moved_breakdown': payload.get('moved_breakdown', {}), 'matched_by_name': payload.get('matched_by_name', 0), 'no_email': payload.get('no_email', 0), 'lost_count': len(lost), 'active_count': len(payload.get('active') or []), 'lost_timing': _timing_summary(lost), 'active_timing': _timing_summary(payload.get('active') or []), 'rows': lost, 'completed': completed, 'total_stores': len(store_list)})}\n\n"
+                yield f"event: store\ndata: {json.dumps({'store_id': st.get('id'), 'store_name': st.get('name'), 'ok': payload.get('ok'), 'complete': payload.get('complete'), 'incomplete_reason': payload.get('incomplete_reason'), 'error': payload.get('error'), 'warnings': payload.get('warnings') or [], 'excluded_pre_existing': payload.get('excluded_pre_existing', 0), 'unknown_first_order': payload.get('unknown_first_order', 0), 'never_purchased': payload.get('never_purchased', 0), 'ordered_before_window': payload.get('ordered_before_window', 0), 'moved_total': payload.get('moved_total', 0), 'moved_breakdown': payload.get('moved_breakdown', {}), 'matched_by_name': payload.get('matched_by_name', 0), 'no_email': payload.get('no_email', 0), 'lost_count': len(lost), 'active_count': len(payload.get('active') or []), 'lost_timing': _timing_summary(lost), 'active_timing': _timing_summary(payload.get('active') or []), 'rows': lost, 'completed': completed, 'total_stores': len(store_list)})}\n\n"
 
                 now = asyncio.get_event_loop().time()
                 if now - last_heartbeat > 15:
@@ -6854,11 +6862,21 @@ async def shopify_analytics_lost_customers_stream(
                     t.cancel()
             raise
 
-        # Only stores with a complete fetch feed the benchmark. A partial store
-        # is missing a date range, and the benchmark is the number the user acts on.
-        complete = [r for r in results if r.get("ok") and r.get("complete")]
-        all_lost = [c for r in complete for c in (r.get("lost") or [])]
-        all_active = [c for r in complete for c in (r.get("active") or [])]
+        # Two different scopes, deliberately.
+        #
+        # Counts describe the rows on screen: every store that returned any, so
+        # the chart, the KPI strip and the table can never disagree about how
+        # many customers there are. A partial store is flagged in the banner.
+        #
+        # The benchmark keeps the stricter scope. It compares lost against
+        # still-active, and a store missing a contiguous date range contributes
+        # a biased sample to both sides — that is a different kind of wrong from
+        # an undercount, and it is the number the user acts on.
+        shown = [r for r in results if r.get("ok")]
+        complete = [r for r in shown if r.get("complete")]
+        all_lost = [c for r in shown for c in (r.get("lost") or [])]
+        bench_lost = [c for r in complete for c in (r.get("lost") or [])]
+        bench_active = [c for r in complete for c in (r.get("active") or [])]
 
         # "When did they leave" — month of last order, in the shop's own
         # calendar, so an order placed late on the last evening of a month is
@@ -6869,8 +6887,10 @@ async def shopify_analytics_lost_customers_stream(
             if key:
                 by_month[key] = by_month.get(key, 0) + 1
 
+        # Same scope as the rows: a state breakdown that omitted a partial
+        # store's customers would not add up to the table beneath it.
         merged_states: Dict[str, Dict[str, Any]] = {}
-        for r in complete:
+        for r in shown:
             for k, e in (r.get("states") or {}).items():
                 tgt = merged_states.setdefault(
                     k, {"code": e["code"], "label": e["label"], "lost": 0, "active": 0})
@@ -6907,6 +6927,7 @@ async def shopify_analytics_lost_customers_stream(
                 "excluded_pre_existing": r.get("excluded_pre_existing", 0),
                 "unknown_first_order": r.get("unknown_first_order", 0),
                 "never_purchased": r.get("never_purchased", 0),
+                "ordered_before_window": r.get("ordered_before_window", 0),
                 "moved_total": r.get("moved_total", 0),
                 "moved_breakdown": r.get("moved_breakdown", {}),
                 "matched_by_name": r.get("matched_by_name", 0),
@@ -6915,18 +6936,19 @@ async def shopify_analytics_lost_customers_stream(
                 "active_timing": _timing_summary(r.get("active") or []),
             } for r in results],
             "benchmark": {
-                "lost": _timing_summary(all_lost),
-                "active": _timing_summary(all_active),
+                "lost": _timing_summary(bench_lost),
+                "active": _timing_summary(bench_active),
                 "stores_included": len(complete),
                 "stores_total": len(store_list),
             },
             "totals": {
-                "excluded_pre_existing": sum(r.get("excluded_pre_existing", 0) for r in complete),
-                "moved_to_other_store": sum(r.get("moved_total", 0) for r in complete),
-                "matched_by_name": sum(r.get("matched_by_name", 0) for r in complete),
-                "never_purchased": sum(r.get("never_purchased", 0) for r in complete),
-                "no_email": sum(r.get("no_email", 0) for r in complete),
-                "unknown_first_order": sum(r.get("unknown_first_order", 0) for r in complete),
+                "excluded_pre_existing": sum(r.get("excluded_pre_existing", 0) for r in shown),
+                "moved_to_other_store": sum(r.get("moved_total", 0) for r in shown),
+                "matched_by_name": sum(r.get("matched_by_name", 0) for r in shown),
+                "never_purchased": sum(r.get("never_purchased", 0) for r in shown),
+                "ordered_before_window": sum(r.get("ordered_before_window", 0) for r in shown),
+                "no_email": sum(r.get("no_email", 0) for r in shown),
+                "unknown_first_order": sum(r.get("unknown_first_order", 0) for r in shown),
                 "lost_customers": len(all_lost),
                 "revenue_lost": round(sum(c["amount_spent"] for c in all_lost), 2),
                 "median_orders": _median([float(c["orders_count"]) for c in all_lost]),

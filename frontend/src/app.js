@@ -14606,6 +14606,22 @@ function renderSacrNote() {
       `${excluded.toLocaleString()} customer(s) who were already ordering before ${sacrState.activeSince} were excluded entirely — from this table and from every total, KPI and comparison above.`,
     );
   }
+  // Counted rather than silently dropped, so the arithmetic reconciles.
+  const older = sacrState.stores.reduce((a, s) => a + (s.ordered_before_window || 0), 0);
+  if (older) {
+    notes.push(
+      `${older.toLocaleString()} customer(s) ordered in this window but every one of those orders was cancelled or refunded, leaving an earlier purchase as their last — so they did not start here and are excluded.`,
+    );
+  }
+  const adjusted = sacrState.rows.filter(
+    (r) => r.orders_count_all !== null && r.orders_count_all !== undefined &&
+      r.orders_count_all !== r.orders_count,
+  ).length;
+  if (adjusted) {
+    notes.push(
+      `${adjusted.toLocaleString()} customer(s) show fewer orders than Shopify's lifetime count because cancelled and refunded orders are not counted here; the deduction is shown beside the number.`,
+    );
+  }
   // Where they went is a finding in its own right, not just a filter count.
   const movedTotal = sacrState.stores.reduce((a, s) => a + (s.moved_total || 0), 0);
   if (movedTotal) {
@@ -14746,18 +14762,18 @@ function renderSacrChart() {
 
 // ----- Chart tooltip -----
 
-// The bars come from the server's by_month, which counts only stores that
-// finished a complete fetch. The tooltip breakdown is derived from the rows,
-// so it has to apply the same store filter — otherwise a partially-fetched
-// store would contribute a line to a bar it was never counted in, and the
-// tooltip's own lines would not add up to the bar it points at.
+// The bars count every store that returned rows, so the tooltip breakdown —
+// derived from those same rows — applies the same filter and always adds up to
+// the bar it points at. Only the benchmark uses the stricter complete-only
+// scope, because a missing date range biases a comparison rather than merely
+// undercounting it.
 //
 // Rebuilt from renderSacrChart rather than cached against a mutable row list:
-// rows arrive per store while the run streams, and a store's `complete` flag
-// can flip at the final event without the row count changing.
+// rows arrive per store while the run streams, and a store's flags can change
+// at the final event without the row count changing.
 function sacrBuildMonthStats() {
   const counted = new Set(
-    sacrState.stores.filter((s) => s.ok && s.complete).map((s) => s.store_id),
+    sacrState.stores.filter((s) => s.ok).map((s) => s.store_id),
   );
   const colors = new Map();
   sacrState.stores.forEach((s, i) => {
