@@ -13537,6 +13537,7 @@ const sacrState = {
   initialized: false,
   loading: false,
   rows: [],            // lost customers, all stores
+  moved: [],           // did not leave — still buying at another store
   stores: [],          // per-store status incl. ok/complete/error
   benchmark: null,
   totals: null,
@@ -13848,6 +13849,7 @@ function loadLostCustomersPanel() {
   }
 
   sacrBindStatesModal();
+  sacrBindMovedModal();
   sacrBindProductsModal();
   updateSacrProductsBtn();
   updateSacrRunBtn();
@@ -13990,6 +13992,7 @@ async function runLostCustomersReport() {
   sacrState.loading = true;
   sacrState.abortController = new AbortController();
   sacrState.rows = [];
+  sacrState.moved = [];
   sacrState.stores = [];
   sacrState.benchmark = null;
   sacrState.totals = null;
@@ -14121,6 +14124,13 @@ async function runLostCustomersReport() {
               r.store_name = data.store_name;
             }
             sacrState.rows.push(...data.rows);
+          }
+          if (data.ok && Array.isArray(data.moved_rows)) {
+            for (const r of data.moved_rows) {
+              r.store_id = data.store_id;
+              r.store_name = data.store_name;
+            }
+            sacrState.moved.push(...data.moved_rows);
           }
           const ps = sacrProgressStore(data.store_id);
           if (ps) {
@@ -14408,6 +14418,19 @@ function updateSacrProductsBtn() {
   if (statesBtn) {
     statesBtn.disabled = sacrState.loading || !(sacrState.states || []).length;
     statesBtn.title = statesBtn.disabled ? "Run the report first" : "";
+  }
+  const movedBtn = document.getElementById("sacr-moved-btn");
+  if (movedBtn) {
+    const n = (sacrState.moved || []).length;
+    movedBtn.disabled = sacrState.loading || !n;
+    movedBtn.title = sacrState.loading
+      ? "Wait for the report to finish"
+      : !n
+        ? "No customer was found still ordering at another store"
+        : `${n.toLocaleString()} customer(s) moved rather than left`;
+    movedBtn.textContent = n
+      ? `Moved to another store (${n.toLocaleString()})`
+      : "Moved to another store";
   }
   btn.disabled = sacrState.loading || !hasRows;
   btn.title = sacrState.loading
@@ -15145,6 +15168,217 @@ const sacrProductsState = {
   scope: "",
   abortController: null,
 };
+
+// ----- "Moved to another store" modal -----
+//
+// These customers are removed from every figure in the report, which is right —
+// they did not leave — but it left the reader with a count and no way to see
+// who or where. The rows arrive with the report, so this opens instantly.
+
+const sacrMovedState = { sortColumn: "amount_spent", sortOrder: "desc", dest: "" };
+
+function sacrBindMovedModal() {
+  document.getElementById("sacr-moved-btn")?.addEventListener("click", () => {
+    sacrMovedState.dest = "";
+    sacrPopulateMovedFilter();
+    renderSacrMoved();
+    openModal("sacr-moved-modal");
+  });
+  document
+    .getElementById("sacr-moved-close")
+    ?.addEventListener("click", () => closeModal("sacr-moved-modal"));
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    const m = document.getElementById("sacr-moved-modal");
+    if (m && m.classList.contains("active")) closeModal("sacr-moved-modal");
+  });
+  document.getElementById("sacr-moved-filter")?.addEventListener("change", (e) => {
+    sacrMovedState.dest = e.target.value;
+    renderSacrMoved();
+  });
+  document.getElementById("sacr-moved-table")?.addEventListener("click", (e) => {
+    const th = e.target.closest("th.qip-sortable");
+    if (!th || !th.dataset.msort) return;
+    const col = th.dataset.msort;
+    if (sacrMovedState.sortColumn === col) {
+      sacrMovedState.sortOrder = sacrMovedState.sortOrder === "asc" ? "desc" : "asc";
+    } else {
+      sacrMovedState.sortColumn = col;
+      sacrMovedState.sortOrder = SACR_NUMERIC_COLUMNS.has(col) ? "desc" : "asc";
+    }
+    sacrApplyMovedSortHeaders();
+    renderSacrMoved();
+  });
+  // Same copy affordance as the main table.
+  document.getElementById("sacr-moved-tbody")?.addEventListener("click", async (e) => {
+    const copy = e.target.closest(".sacr-copy");
+    if (!copy) return;
+    e.stopPropagation();
+    sacrFlashCopied(copy, await copyText(copy.dataset.copy));
+  });
+}
+
+function sacrApplyMovedSortHeaders() {
+  document.querySelectorAll("#sacr-moved-table th.qip-sortable").forEach((th) => {
+    th.classList.remove("qip-sort-asc", "qip-sort-desc");
+    if (th.dataset.msort === sacrMovedState.sortColumn) {
+      th.classList.add(
+        sacrMovedState.sortOrder === "asc" ? "qip-sort-asc" : "qip-sort-desc",
+      );
+    }
+  });
+}
+
+function sacrPopulateMovedFilter() {
+  const sel = document.getElementById("sacr-moved-filter");
+  if (!sel) return;
+  const dests = [...new Set((sacrState.moved || []).map((r) => r.moved_to_store))]
+    .filter(Boolean)
+    .sort();
+  sel.innerHTML =
+    '<option value="">All</option>' +
+    dests.map((d) => `<option value="${saEscape(d)}">${saEscape(d)}</option>`).join("");
+  sel.value = sacrMovedState.dest;
+}
+
+function sacrMovedRows() {
+  let rows = sacrState.moved || [];
+  if (sacrMovedState.dest) {
+    rows = rows.filter((r) => r.moved_to_store === sacrMovedState.dest);
+  }
+  const col = sacrMovedState.sortColumn;
+  const dir = sacrMovedState.sortOrder === "asc" ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    let av = a[col];
+    let bv = b[col];
+    if (av === null || av === undefined) return 1;
+    if (bv === null || bv === undefined) return -1;
+    if (SACR_NUMERIC_COLUMNS.has(col)) {
+      av = parseFloat(av) || 0;
+      bv = parseFloat(bv) || 0;
+    } else {
+      av = String(av).toLowerCase();
+      bv = String(bv).toLowerCase();
+    }
+    return av < bv ? -dir : av > bv ? dir : 0;
+  });
+}
+
+// Which shop lost customers to which — the shape of the migration, above the
+// per-customer detail. Ordered by volume so the dominant flow reads first.
+function renderSacrMovedFlows() {
+  const el = document.getElementById("sacr-moved-flows");
+  if (!el) return;
+  const flows = new Map();
+  (sacrState.moved || []).forEach((r) => {
+    // Keyed on the bare shop name plus the same-store flag, so a chip reads
+    // "TSW → TSW" rather than wrapping onto three lines.
+    const to = r.moved_to_store_name || r.moved_to_store;
+    const key = `${r.store_name} → ${to}${r.moved_same_store ? " (self)" : ""}`;
+    const e = flows.get(key) || {
+      from: r.store_name, to, self: !!r.moved_same_store, n: 0, spend: 0,
+    };
+    e.n += 1;
+    e.spend += Number(r.amount_spent) || 0;
+    flows.set(key, e);
+  });
+  const list = [...flows.values()].sort((a, b) => b.n - a.n);
+  const cur = sacrState.totals?.currency || "";
+  el.innerHTML = list
+    .map(
+      (f) =>
+        '<div class="sacr-flow">' +
+        `<span class="sacr-flow-n">${f.n.toLocaleString()}</span>` +
+        `<span class="sacr-flow-path">${saEscape(sacrShortStore(f.from))}` +
+        ' <span class="sacr-flow-arrow">→</span> ' +
+        `${saEscape(sacrShortStore(f.to))}${
+          f.self ? '<span class="sacr-flow-self" title="A second account at the same store">new account</span>' : ""
+        }</span>` +
+        `<span class="sacr-flow-spend">${sacrFmtMoney(f.spend, cur)}</span>` +
+        "</div>",
+    )
+    .join("");
+}
+
+function renderSacrMoved() {
+  const tbody = document.getElementById("sacr-moved-tbody");
+  const tfoot = document.getElementById("sacr-moved-tfoot");
+  if (!tbody) return;
+
+  renderSacrMovedFlows();
+  const all = sacrState.moved || [];
+  const rows = sacrMovedRows();
+  const cur = sacrState.totals?.currency || "";
+
+  const scope = document.getElementById("sacr-moved-scope");
+  if (scope) {
+    scope.textContent =
+      `${all.length.toLocaleString()} customer(s) stopped ordering at their store but are ` +
+      `still buying elsewhere since ${sacrState.silentSince}. They are excluded from the ` +
+      `lost table and from every total, KPI and comparison — they did not leave the business.`;
+  }
+
+  tbody.innerHTML = rows
+    .map((r, i) => {
+      const via =
+        (r.moved_matched_by === "name + ZIP"
+          ? '<span class="sacr-badge-soft" title="Matched on first name, last name and ZIP — Shopify forces a re-registration onto a different email">name + ZIP</span>'
+          : '<span class="sacr-muted">email</span>') +
+        (r.moved_same_store
+          ? ' <span class="sacr-badge-soft" title="A second account at the same store — they re-registered rather than moving away">same store</span>'
+          : "");
+      return (
+        "<tr>" +
+        `<td class="sacr-num sacr-idx">${(i + 1).toLocaleString()}</td>` +
+        `<td title="${saEscape(r.name || "")}${r.email ? " · " + saEscape(r.email) : ""}">` +
+        `<span class="sacr-cust">${saEscape(r.name || "(no name)")}</span>` +
+        (r.email
+          ? `<span class="sacr-sub"><span class="sacr-email">${saEscape(r.email)}</span>${sacrCopyBtn(r.email, "email address")}</span>`
+          : "") +
+        "</td>" +
+        `<td title="${saEscape(r.store_name || "")}">${saEscape(sacrShortStore(r.store_name))}</td>` +
+        // Bare shop name only: the "(another account)" nuance lives in the
+        // Matched by column, which has the room for it.
+        `<td title="${saEscape(r.moved_to_store || "")}">${saEscape(sacrShortStore(r.moved_to_store_name || r.moved_to_store))}</td>` +
+        `<td class="sacr-date">${sacrFmtDate(r.last_order_local)}</td>` +
+        `<td class="sacr-date">${sacrFmtDate(r.moved_last_order)}</td>` +
+        `<td class="sacr-num">${(r.orders_count || 0).toLocaleString()}</td>` +
+        `<td class="sacr-num">${sacrFmtMoney(r.amount_spent, "")}</td>` +
+        `<td>${via}</td></tr>`
+      );
+    })
+    .join("");
+
+  if (tfoot) {
+    const spend = rows.reduce((a, r) => a + (Number(r.amount_spent) || 0), 0);
+    const orders = rows.reduce((a, r) => a + (Number(r.orders_count) || 0), 0);
+    tfoot.innerHTML =
+      `<tr class="sacr-foot-row"><td></td><td>${
+        sacrMovedState.dest ? "Total (filtered)" : "Total"
+      }</td><td></td><td></td><td></td><td></td>` +
+      `<td class="sacr-num">${orders.toLocaleString()}</td>` +
+      `<td class="sacr-num">${sacrFmtMoney(spend, "")}</td><td></td></tr>`;
+  }
+
+  const count = document.getElementById("sacr-moved-count");
+  if (count) {
+    count.textContent = sacrMovedState.dest
+      ? `${rows.length.toLocaleString()} of ${all.length.toLocaleString()} shown`
+      : `${all.length.toLocaleString()} customer(s)`;
+  }
+
+  const note = document.getElementById("sacr-moved-note");
+  if (note) {
+    const byName = all.filter((r) => r.moved_matched_by === "name + ZIP").length;
+    note.textContent =
+      `"Spent here" is their lifetime spend at the store they left, not at the one they ` +
+      `moved to. Each date is that shop's own calendar day.` +
+      (byName
+        ? ` ${byName.toLocaleString()} were found by name + ZIP rather than email, which is how a re-registration is caught.`
+        : "");
+  }
+  sacrApplyMovedSortHeaders();
+}
 
 const sacrStatesState = { sortColumn: "lost", sortOrder: "desc" };
 

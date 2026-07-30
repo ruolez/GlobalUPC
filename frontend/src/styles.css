@@ -5916,7 +5916,8 @@ body.no-scroll {
 }
 
 /* Lost Customers: top-products modal */
-#sacr-products-modal .sacr-products-scope {
+#sacr-products-modal .sacr-products-scope,
+#sacr-moved-modal .sacr-products-scope {
   margin: 0 0 0.875rem;
   font-size: 0.8125rem;
   color: var(--text-secondary);
@@ -5953,7 +5954,8 @@ body.no-scroll {
   border-radius: 3px;
   transition: width 0.4s ease;
 }
-#sacr-products-modal .sacr-products-toolbar {
+#sacr-products-modal .sacr-products-toolbar,
+#sacr-moved-modal .sacr-products-toolbar {
   display: flex;
   align-items: center;
   gap: 1rem;
@@ -5964,7 +5966,115 @@ body.no-scroll {
   border-radius: var(--radius-md);
 }
 #sacr-products-modal .sacr-products-toolbar input { width: auto; }
-#sacr-products-modal .sacr-products-toolbar .sa-row-count { margin-left: auto; }
+#sacr-products-modal .sacr-products-toolbar .sa-row-count,
+#sacr-moved-modal .sacr-products-toolbar .sa-row-count { margin-left: auto; }
+
+/* Migration summary: the shape of the movement, above the per-customer rows. */
+#sacr-moved-modal .sacr-moved-flows {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0 0 1rem;
+}
+#sacr-moved-modal .sacr-flow {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.4375rem 0.75rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--accent-primary) 6%, var(--bg-secondary));
+  font-size: 0.75rem;
+}
+#sacr-moved-modal .sacr-flow-n {
+  font-weight: 700;
+  font-size: 0.9375rem;
+  color: var(--accent-primary);
+  font-variant-numeric: tabular-nums;
+}
+#sacr-moved-modal .sacr-flow-path { color: var(--text-primary); font-weight: 500; }
+#sacr-moved-modal .sacr-flow-arrow { color: var(--text-tertiary); }
+#sacr-moved-modal .sacr-flow-self {
+  margin-left: 0.3125rem;
+  font-size: 0.625rem;
+  font-weight: 600;
+  padding: 0.0625rem 0.3125rem;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--warning) 20%, transparent);
+  cursor: help;
+}
+#sacr-moved-modal .sacr-flow-spend {
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+#sacr-moved-modal .sacr-cust { display: block; color: var(--text-primary); }
+#sacr-moved-modal .sacr-email { font-size: 0.6875rem; color: var(--text-tertiary); }
+#sacr-moved-modal .sacr-sub {
+  display: flex;
+  align-items: center;
+  gap: 0.125rem;
+  min-width: 0;
+}
+#sacr-moved-modal .sacr-sub > .sacr-email {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#sacr-moved-modal .sacr-muted { color: var(--text-tertiary); }
+#sacr-moved-modal td.sacr-idx { color: var(--text-tertiary); }
+#sacr-moved-modal .sacr-date { white-space: nowrap; }
+/* Distinguishes the weaker match without shouting about it. */
+#sacr-moved-modal .sacr-badge-soft {
+  display: inline-block;
+  font-size: 0.625rem;
+  font-weight: 600;
+  padding: 0.0625rem 0.375rem;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--warning) 18%, transparent);
+  color: var(--text-primary);
+  cursor: help;
+  white-space: nowrap;
+}
+#sacr-moved-modal .sacr-foot-row td {
+  font-weight: 600;
+  border-top: 2px solid var(--border-color);
+  background: color-mix(in srgb, var(--accent-primary) 5%, var(--bg-secondary));
+}
+
+/* Own rules rather than joining the id-enumerated lists above: those get
+   forgotten every time a modal is added, which is how this table first
+   rendered with native select chrome. */
+#sacr-moved-modal .sacr-products-table td.sacr-num,
+#sacr-moved-modal .sacr-products-table th.sacr-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+/* Values stay on one line; headings may wrap. nowrap on the heading is what
+   clipped "Orders" to its column instead of letting it use two lines. */
+#sacr-moved-modal .sacr-products-table td.sacr-num { white-space: nowrap; }
+#sacr-moved-modal .sacr-products-table thead th {
+  white-space: normal;
+  line-height: 1.25;
+  vertical-align: bottom;
+}
+#sacr-moved-modal .sacr-products-table { table-layout: fixed; width: 100%; }
+/* Names were wrapping to two lines and making every row a different height. */
+#sacr-moved-modal .sacr-products-table .sacr-cust {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#sacr-moved-modal .sacr-products-table th:nth-child(1) { width: 4%;  }  /* #        */
+#sacr-moved-modal .sacr-products-table th:nth-child(2) { width: 28%; }  /* Customer */
+#sacr-moved-modal .sacr-products-table th:nth-child(3) { width: 7%;  }  /* From     */
+#sacr-moved-modal .sacr-products-table th:nth-child(4) { width: 7%;  }  /* To       */
+#sacr-moved-modal .sacr-products-table th:nth-child(5) { width: 11%; }  /* here     */
+#sacr-moved-modal .sacr-products-table th:nth-child(6) { width: 11%; }  /* there    */
+#sacr-moved-modal .sacr-products-table th:nth-child(7) { width: 8%;  }  /* Orders   */
+#sacr-moved-modal .sacr-products-table th:nth-child(8) { width: 12%; }  /* Spent    */
+#sacr-moved-modal .sacr-products-table th:nth-child(9) { width: 12%; }  /* Matched  */
 #sacr-products-modal .sacr-products-error {
   padding: 0.75rem 1rem;
   border-radius: var(--radius-md);
@@ -6058,7 +6168,8 @@ body.no-scroll {
 
 .sa-page .sacr-field,
 #sacr-products-modal .sacr-field,
-#sacr-states-modal .sacr-field {
+#sacr-states-modal .sacr-field,
+#sacr-moved-modal .sacr-field {
   display: inline-flex;
   align-items: center;
   gap: 0.5rem;
@@ -6069,7 +6180,8 @@ body.no-scroll {
 
 .sa-page .sacr-control,
 #sacr-products-modal .sacr-control,
-#sacr-states-modal .sacr-control {
+#sacr-states-modal .sacr-control,
+#sacr-moved-modal .sacr-control {
   padding: 0.5rem 0.75rem;
   min-height: 2.25rem;
   font-size: 0.8125rem;
@@ -6083,16 +6195,19 @@ body.no-scroll {
   max-width: 13rem;
 }
 .sa-page .sacr-control::placeholder,
-#sacr-products-modal .sacr-control::placeholder {
+#sacr-products-modal .sacr-control::placeholder,
+#sacr-moved-modal .sacr-control::placeholder {
   color: var(--text-tertiary);
 }
 .sa-page .sacr-control:hover,
-#sacr-products-modal .sacr-control:hover {
+#sacr-products-modal .sacr-control:hover,
+#sacr-moved-modal .sacr-control:hover {
   border-color: color-mix(in srgb, var(--accent-primary) 45%, var(--border-color));
 }
 .sa-page .sacr-control:focus,
 #sacr-products-modal .sacr-control:focus,
-#sacr-states-modal .sacr-control:focus {
+#sacr-states-modal .sacr-control:focus,
+#sacr-moved-modal .sacr-control:focus {
   outline: none;
   border-color: var(--accent-primary);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-primary) 22%, transparent);
@@ -6124,7 +6239,8 @@ body.no-scroll {
    Author's Light. */
 .sa-page select.sacr-control,
 #sacr-products-modal select.sacr-control,
-#sacr-states-modal select.sacr-control {
+#sacr-states-modal select.sacr-control,
+#sacr-moved-modal select.sacr-control {
   appearance: none;
   -webkit-appearance: none;
   padding-right: 2rem;

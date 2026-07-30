@@ -4450,6 +4450,7 @@
               <button type="button" class="btn btn-secondary sacr-btn" id="sacr-reset-filters">Reset</button>
               <button type="button" class="btn btn-primary sacr-btn" id="sacr-states-btn">Lost by state</button>
               <button type="button" class="btn btn-primary sacr-btn" id="sacr-products-btn">Top products in last orders</button>
+              <button type="button" class="btn btn-primary sacr-btn" id="sacr-moved-btn">Moved to another store</button>
               <span class="sa-row-count" id="sacr-row-count" aria-live="polite"></span>
             </div>
 
@@ -4542,6 +4543,46 @@
             </table>
           </div>
           <p class="sancm-note" id="sacr-states-note"></p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Customers who did not leave: they moved to another store -->
+    <div id="sacr-moved-modal" class="modal">
+      <div class="modal-content" style="max-width: 1180px; width: 96%">
+        <div class="modal-header">
+          <h3>Moved to another store</h3>
+          <button type="button" class="modal-close" id="sacr-moved-close">&times;</button>
+        </div>
+        <div class="modal-body" id="sacr-moved-body" style="padding: 1rem 1.5rem 1.5rem">
+          <p class="sacr-products-scope" id="sacr-moved-scope"></p>
+          <div class="sacr-moved-flows" id="sacr-moved-flows"></div>
+          <div class="sacr-products-toolbar">
+            <label class="sacr-field">Destination
+              <select id="sacr-moved-filter" class="sacr-control"><option value="">All</option></select>
+            </label>
+            <span class="sa-row-count" id="sacr-moved-count" aria-live="polite"></span>
+          </div>
+          <div class="table-container">
+            <table class="data-table sacr-products-table" id="sacr-moved-table">
+              <thead>
+                <tr>
+                  <th class="sacr-num sacr-idx">#</th>
+                  <th class="qip-sortable" data-msort="name">Customer <span class="qip-sort-arrow"></span></th>
+                  <th class="qip-sortable" data-msort="store_name">From <span class="qip-sort-arrow"></span></th>
+                  <th class="qip-sortable" data-msort="moved_to_store">To <span class="qip-sort-arrow"></span></th>
+                  <th class="qip-sortable" data-msort="last_order_local">Last order here <span class="qip-sort-arrow"></span></th>
+                  <th class="qip-sortable" data-msort="moved_last_order">Last order there <span class="qip-sort-arrow"></span></th>
+                  <th class="qip-sortable sacr-num" data-msort="orders_count">Orders <span class="qip-sort-arrow"></span></th>
+                  <th class="qip-sortable sacr-num qip-sort-desc" data-msort="amount_spent">Spent here <span class="qip-sort-arrow"></span></th>
+                  <th class="qip-sortable" data-msort="moved_matched_by">Matched by <span class="qip-sort-arrow"></span></th>
+                </tr>
+              </thead>
+              <tbody id="sacr-moved-tbody"></tbody>
+              <tfoot id="sacr-moved-tfoot"></tfoot>
+            </table>
+          </div>
+          <p class="sancm-note" id="sacr-moved-note"></p>
         </div>
       </div>
     </div>

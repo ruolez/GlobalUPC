@@ -6337,6 +6337,26 @@ def _bump_moved(breakdown: Dict[Any, Dict[str, Any]], key: Any, label: str) -> N
     entry["count"] += 1
 
 
+def _record_move(c: Dict[str, Any], store_id: Any, label: str, store_name: str,
+                 dest_last_order: Optional[str], matched_by: str,
+                 same_store: bool = False) -> None:
+    """
+    Stamp a customer with where they went, so the move can be listed and not
+    merely counted. Both dates are shop-local, but each in its OWN shop's
+    calendar — they are events at different businesses.
+
+    `label` is the display string (which may say "another account");
+    `store_name` is the bare shop name, so a table column does not have to
+    parse a suffix back out of the label to stay narrow.
+    """
+    c["moved_to_store"] = label
+    c["moved_to_store_name"] = store_name
+    c["moved_to_store_id"] = store_id
+    c["moved_same_store"] = same_store
+    c["moved_last_order"] = dest_last_order
+    c["moved_matched_by"] = matched_by
+
+
 def _merge_moved(breakdowns) -> Dict[str, int]:
     """Collapse per-store breakdowns to {label: count} for the client."""
     totals: Dict[Any, Dict[str, Any]] = {}
@@ -6668,6 +6688,7 @@ async def shopify_analytics_lost_customers_stream(
 
                 # Cross-store check runs last, on the smallest possible list.
                 moved_breakdown: Dict[Any, Dict[str, Any]] = {}
+                moved_rows: List[Dict[str, Any]] = []
                 matched_by_name = 0
                 no_email = 0
                 cross_errors: List[str] = []
@@ -6735,7 +6756,11 @@ async def shopify_analytics_lost_customers_stream(
                                 # Keyed by id: two shops can share a display
                                 # name, and merging them would misattribute the
                                 # move. The name travels alongside for display.
-                                moved_to[em] = (other["id"], other["name"])
+                                moved_to[em] = {
+                                    "id": other["id"],
+                                    "name": other["name"],
+                                    "last_order": local_date(last, other_tz),
+                                }
 
                     if moved_to:
                         kept = []
@@ -6743,8 +6768,10 @@ async def shopify_analytics_lost_customers_stream(
                             em = normalize_email(c.get("email"))
                             dest = moved_to.get(em) if em else None
                             if dest:
-                                c["moved_to_store"] = dest[1]
-                                _bump_moved(moved_breakdown, dest[0], dest[1])
+                                _record_move(c, dest["id"], dest["name"], dest["name"],
+                                             dest["last_order"], "email")
+                                _bump_moved(moved_breakdown, dest["id"], dest["name"])
+                                moved_rows.append(c)
                             else:
                                 kept.append(c)
                         lost_kept = kept
@@ -6821,7 +6848,11 @@ async def shopify_analytics_lost_customers_stream(
                             if hit:
                                 label = (f"{hit['store_name']} (another account)"
                                          if hit["same_store"] else hit["store_name"])
-                                c["moved_to_store"] = label
+                                _record_move(
+                                    c, hit["store_id"], label, hit["store_name"],
+                                    local_date(hit["last_order"],
+                                               tz_by_shop.get(hit["store_id"])),
+                                    "name + ZIP", same_store=hit["same_store"])
                                 # Same-store matches are a distinct destination
                                 # from cross-store ones at that shop, so they
                                 # get their own key rather than merging.
@@ -6830,6 +6861,7 @@ async def shopify_analytics_lost_customers_stream(
                                     f"{hit['store_id']}{':self' if hit['same_store'] else ''}",
                                     label)
                                 matched_by_name += 1
+                                moved_rows.append(c)
                             else:
                                 kept2.append(c)
                         lost_kept = kept2
@@ -6872,6 +6904,11 @@ async def shopify_analytics_lost_customers_stream(
                     # keying exists to keep the tally correct, not to be sent.
                     "moved_breakdown": _merge_moved([moved_breakdown]),
                     "moved_total": sum(e["count"] for e in moved_breakdown.values()),
+                    # The customers behind that count. Sorted by spend, like the
+                    # lost table — the expensive departures are the ones worth
+                    # reading first.
+                    "moved_rows": sorted(
+                        moved_rows, key=lambda c: c.get("amount_spent") or 0, reverse=True),
                     "matched_by_name": matched_by_name,
                     "no_email": no_email,
                 }
@@ -6914,7 +6951,7 @@ async def shopify_analytics_lost_customers_stream(
                 results.append(payload)
                 st = payload.get("store") or {}
                 lost = payload.get("lost") or []
-                yield f"event: store\ndata: {json.dumps({'store_id': st.get('id'), 'store_name': st.get('name'), 'ok': payload.get('ok'), 'complete': payload.get('complete'), 'incomplete_reason': payload.get('incomplete_reason'), 'error': payload.get('error'), 'warnings': payload.get('warnings') or [], 'excluded_pre_existing': payload.get('excluded_pre_existing', 0), 'unknown_first_order': payload.get('unknown_first_order', 0), 'never_purchased': payload.get('never_purchased', 0), 'ordered_before_window': payload.get('ordered_before_window', 0), 'moved_total': payload.get('moved_total', 0), 'moved_breakdown': payload.get('moved_breakdown', {}), 'matched_by_name': payload.get('matched_by_name', 0), 'no_email': payload.get('no_email', 0), 'lost_count': len(lost), 'active_count': len(payload.get('active') or []), 'lost_timing': _timing_summary(lost), 'active_timing': _timing_summary(payload.get('active') or []), 'rows': lost, 'completed': completed, 'total_stores': len(store_list)})}\n\n"
+                yield f"event: store\ndata: {json.dumps({'store_id': st.get('id'), 'store_name': st.get('name'), 'ok': payload.get('ok'), 'complete': payload.get('complete'), 'incomplete_reason': payload.get('incomplete_reason'), 'error': payload.get('error'), 'warnings': payload.get('warnings') or [], 'excluded_pre_existing': payload.get('excluded_pre_existing', 0), 'unknown_first_order': payload.get('unknown_first_order', 0), 'never_purchased': payload.get('never_purchased', 0), 'ordered_before_window': payload.get('ordered_before_window', 0), 'moved_total': payload.get('moved_total', 0), 'moved_breakdown': payload.get('moved_breakdown', {}), 'moved_rows': payload.get('moved_rows', []), 'matched_by_name': payload.get('matched_by_name', 0), 'no_email': payload.get('no_email', 0), 'lost_count': len(lost), 'active_count': len(payload.get('active') or []), 'lost_timing': _timing_summary(lost), 'active_timing': _timing_summary(payload.get('active') or []), 'rows': lost, 'completed': completed, 'total_stores': len(store_list)})}\n\n"
 
                 now = asyncio.get_event_loop().time()
                 if now - last_heartbeat > 15:
