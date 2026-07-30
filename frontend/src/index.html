@@ -4415,37 +4415,44 @@
               <div class="sancm-tooltip" id="sacr-tooltip" role="status" aria-live="polite" hidden></div>
             </div>
 
-            <div class="sa-filter-bar" id="sacr-filter-bar" hidden>
-              <label class="sacr-field">Search
-                <input type="text" id="sacr-search" class="sacr-control" placeholder="name or email" />
-              </label>
-              <label class="sacr-field">Min. orders
-                <input type="number" id="sacr-filter-orders-min" class="sacr-control sacr-control-xs" min="0" step="1" placeholder="any" aria-label="Minimum completed orders" />
-              </label>
-              <label class="sacr-field">Method
-                <select id="sacr-filter-method" class="sacr-control"><option value="">All</option></select>
-              </label>
-              <label class="sacr-field">State
-                <select id="sacr-filter-state" class="sacr-control"><option value="">All</option></select>
-              </label>
-              <label class="sacr-field">Carrier
-                <select id="sacr-filter-carrier" class="sacr-control"><option value="">All</option></select>
-              </label>
-              <label class="sacr-field">Slow last order
-                <select id="sacr-filter-slow" class="sacr-control">
-                  <option value="">Off</option>
-                  <option value="fulfil:3">Took over 3d to ship</option>
-                  <option value="fulfil:7">Took over 7d to ship</option>
-                  <option value="deliver:7">Took over 7d to deliver</option>
-                  <option value="deliver:14">Took over 14d to deliver</option>
-                  <option value="unfulfilled">Never fulfilled</option>
-                </select>
-              </label>
-              <button type="button" class="btn btn-secondary sacr-btn" id="sacr-reset-filters">Reset</button>
-              <button type="button" class="btn btn-primary sacr-btn" id="sacr-states-btn">Lost by state</button>
-              <button type="button" class="btn btn-primary sacr-btn" id="sacr-products-btn">Top products</button>
-              <button type="button" class="btn btn-primary sacr-btn" id="sacr-moved-btn">Moved to another store</button>
-              <span class="sa-row-count" id="sacr-row-count" aria-live="polite"></span>
+            <!-- Two jobs, two rows: narrowing the table, and opening an
+                 analysis of whatever it currently shows. In one wrapping row
+                 they interleaved and neither read as a group. -->
+            <div class="sa-filter-bar sacr-toolbar" id="sacr-filter-bar" hidden>
+              <div class="sacr-toolbar-row sacr-toolbar-filters" role="group" aria-label="Filter customers">
+                <label class="sacr-field sacr-field-grow">Search
+                  <input type="text" id="sacr-search" class="sacr-control" placeholder="name or email" />
+                </label>
+                <label class="sacr-field">Min. orders
+                  <input type="number" id="sacr-filter-orders-min" class="sacr-control sacr-control-xs" min="0" step="1" placeholder="any" aria-label="Minimum completed orders" />
+                </label>
+                <label class="sacr-field">Method
+                  <select id="sacr-filter-method" class="sacr-control"><option value="">All</option></select>
+                </label>
+                <label class="sacr-field">State
+                  <select id="sacr-filter-state" class="sacr-control"><option value="">All</option></select>
+                </label>
+                <label class="sacr-field">Carrier
+                  <select id="sacr-filter-carrier" class="sacr-control"><option value="">All</option></select>
+                </label>
+                <label class="sacr-field" title="Filter on how slow the customer's last order was">Slow order
+                  <select id="sacr-filter-slow" class="sacr-control">
+                    <option value="">Off</option>
+                    <option value="fulfil:3">Took over 3d to ship</option>
+                    <option value="fulfil:7">Took over 7d to ship</option>
+                    <option value="deliver:7">Took over 7d to deliver</option>
+                    <option value="deliver:14">Took over 14d to deliver</option>
+                    <option value="unfulfilled">Never fulfilled</option>
+                  </select>
+                </label>
+                <button type="button" class="btn btn-secondary sacr-btn sacr-reset" id="sacr-reset-filters" disabled>Reset</button>
+              </div>
+              <div class="sacr-toolbar-row sacr-toolbar-actions" role="group" aria-label="Analyse these customers">
+                <button type="button" class="btn btn-primary sacr-btn" id="sacr-states-btn">Lost by state</button>
+                <button type="button" class="btn btn-primary sacr-btn" id="sacr-products-btn">Top products</button>
+                <button type="button" class="btn btn-primary sacr-btn" id="sacr-moved-btn">Moved to another store</button>
+                <span class="sa-row-count" id="sacr-row-count" aria-live="polite"></span>
+              </div>
             </div>
 
             <div id="sacr-empty" style="display: none;">

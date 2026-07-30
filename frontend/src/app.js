@@ -14672,6 +14672,14 @@ function renderSacrTable() {
       `<td colspan="7"></td></tr>`;
   }
 
+  // Nothing to reset reads as nothing to do, and it doubles as a quiet
+  // indicator that a filter is on.
+  const resetBtn = document.getElementById("sacr-reset-filters");
+  if (resetBtn) {
+    resetBtn.disabled = !filtered;
+    resetBtn.title = filtered ? "Clear every filter" : "No filters applied";
+  }
+
   const info = document.getElementById("sacr-page-info");
   if (info) {
     info.textContent = total

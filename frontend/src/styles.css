@@ -6272,6 +6272,47 @@ tr:hover > td .sacr-copy { opacity: 0.8; }
   padding: 0.75rem 0.875rem;
   border-radius: var(--radius-lg);
 }
+
+/* ---- Lost Customers toolbar: filters above, analyses below ---- */
+
+/* The shared .sa-filter-bar is a single wrapping flex row. This one holds two
+   groups that do different things, so it stacks them and lets each wrap on its
+   own; mixed together they wrapped into each other and read as a jumble. */
+.sa-page #sacr-filter-bar.sacr-toolbar {
+  display: block;
+  padding: 0;
+  overflow: hidden;
+}
+.sa-page .sacr-toolbar-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.625rem 1.25rem;
+  padding: 0.75rem 0.875rem;
+}
+.sa-page .sacr-toolbar-filters {
+  border-bottom: 1px solid var(--border-color);
+}
+/* Recessed, so the eye reads it as a different kind of control rather than
+   more filters that happen to be buttons. */
+.sa-page .sacr-toolbar-actions {
+  gap: 0.5rem 0.625rem;
+  background: color-mix(in srgb, var(--bg-tertiary) 55%, transparent);
+}
+/* Search may take slack but not all of it: unbounded it grew to 483px and
+   pushed the last filter onto a line of its own. */
+.sa-page .sacr-field-grow { flex: 1 1 9rem; min-width: 8rem; max-width: 16rem; }
+.sa-page .sacr-field-grow .sacr-control { flex: 1 1 auto; max-width: none; width: 100%; }
+/* Six filters and a Reset do not fit one line at this width, so the wrap is
+   made deliberate rather than fought: a tighter gap and shorter select caps
+   keep the break in one place instead of leaving a ragged tail. */
+.sa-page .sacr-toolbar-filters { gap: 0.625rem 0.875rem; }
+.sa-page .sacr-toolbar-filters select.sacr-control { max-width: 10rem; }
+.sa-page #sacr-filter-bar .sacr-reset { margin-left: auto; }
+.sa-page #sacr-filter-bar .sa-row-count { margin-left: auto; }
+/* Nothing to reset reads as nothing to do. */
+.sa-page .sacr-reset:disabled { opacity: 0.4; cursor: default; }
+.sa-page .sacr-field { color: var(--text-tertiary); }
 #sacr-products-modal .sacr-products-toolbar {
   gap: 0.625rem 1rem;
   padding: 0.75rem 0.875rem;
