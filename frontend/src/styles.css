@@ -5659,6 +5659,66 @@ body.no-scroll {
   color: var(--text-tertiary);
 }
 .sa-page .sacr-ordname { display: inline; margin-left: 0.25rem; }
+
+/* Secondary line: value, then its copy button. The value takes the slack and
+   truncates, so the button keeps its place at the end of the line instead of
+   being pushed out of the cell by a long email. */
+.sa-page #sacr-table td .sacr-sub {
+  display: flex;
+  align-items: center;
+  gap: 0.125rem;
+  min-width: 0;
+}
+.sa-page #sacr-table td .sacr-sub > .sacr-email,
+.sa-page #sacr-table td .sacr-sub > .sacr-ordname {
+  display: block;
+  min-width: 0;
+  margin-left: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sa-page .sacr-copy {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.125rem;
+  height: 1.125rem;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  /* Kept faint rather than hidden until hover: a hover-only control is
+     invisible on touch and unreachable by keyboard. */
+  opacity: 0.45;
+  transition: opacity 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+.sa-page .sacr-copy svg { width: 0.75rem; height: 0.75rem; }
+.sa-page .sacr-row:hover .sacr-copy { opacity: 0.8; }
+.sa-page .sacr-copy:hover {
+  opacity: 1;
+  color: var(--accent-primary);
+  background: color-mix(in srgb, var(--accent-primary) 14%, transparent);
+}
+.sa-page .sacr-copy:focus-visible {
+  opacity: 1;
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 1px;
+}
+/* Swap the glyph rather than only recolouring it — the button is 12px, where a
+   colour change alone is easy to miss. The box is a fixed size, so nothing
+   shifts. */
+.sa-page .sacr-copy.is-copied,
+.sa-page .sacr-copy.is-failed { opacity: 1; }
+.sa-page .sacr-copy.is-copied { color: var(--success); }
+.sa-page .sacr-copy.is-failed { color: var(--danger); }
+.sa-page .sacr-copy.is-copied svg,
+.sa-page .sacr-copy.is-failed svg { display: none; }
+.sa-page .sacr-copy.is-copied::after { content: "✓"; font-size: 0.75rem; line-height: 1; }
+.sa-page .sacr-copy.is-failed::after { content: "✕"; font-size: 0.6875rem; line-height: 1; }
 .sa-page .sacr-badge {
   display: inline-block;
   font-size: 0.625rem;
@@ -6139,13 +6199,19 @@ body.no-scroll {
 .sa-page #sacr-table th:nth-child(5)  { width: 6%;   } /* Orders      */
 .sa-page #sacr-table th:nth-child(6)  { width: 7.5%; } /* Spent       */
 .sa-page #sacr-table th:nth-child(7)  { width: 6.5%; } /* First order */
-.sa-page #sacr-table th:nth-child(8)  { width: 8%;   } /* Last order  */
-.sa-page #sacr-table th:nth-child(9)  { width: 6%;   } /* Days silent */
-.sa-page #sacr-table th:nth-child(10) { width: 6%;   } /* To ship     */
+/* Carries a date, an order number and a copy button, taken from the numeric
+   columns beside it which were sitting on 30-40px of slack each. Deliberately
+   NOT widened to fit the longest order number: "A2Z100011859" measures 110px,
+   so showing it in full would cost 13% of the table and push Method back into
+   ellipsis. The number is a value to copy rather than read, and the copy
+   button plus the cell tooltip make the whole of it reachable. */
+.sa-page #sacr-table th:nth-child(8)  { width: 10%;  } /* Last order  */
+.sa-page #sacr-table th:nth-child(9)  { width: 5.5%; } /* Days silent */
+.sa-page #sacr-table th:nth-child(10) { width: 5.5%; } /* To ship     */
 .sa-page #sacr-table th:nth-child(11) { width: 6.5%; } /* To deliver  */
 /* 14% is load-bearing: below it "Standard Shipping" ellipsises. */
 .sa-page #sacr-table th:nth-child(12) { width: 14%;  } /* Method      */
-.sa-page #sacr-table th:nth-child(13) { width: 9%;   } /* Carrier     */
+.sa-page #sacr-table th:nth-child(13) { width: 8%;   } /* Carrier     */
 
 /* Two-line-tall headings throughout, bottom aligned, so single-word captions
    sit on the same baseline as the ones that wrap. */

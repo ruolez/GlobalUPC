@@ -11719,6 +11719,47 @@ function saEscape(s) {
   return String(s).replace(/[&<>"']/g, (c) => SA_ESCAPE_MAP[c]);
 }
 
+// Copy to the clipboard, working on plain HTTP as well as HTTPS.
+//
+// navigator.clipboard only exists in a secure context. This app is served over
+// http:// on a LAN address in production, so the modern API is present while
+// developing against localhost (which counts as secure) and absent for real
+// users — the exact shape of bug that passes every local test. execCommand is
+// deprecated but is the only thing that works there, so it stays as the
+// fallback rather than the primary.
+async function copyText(text) {
+  const value = String(text == null ? "" : text);
+  if (!value) return false;
+
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(value);
+      return true;
+    } catch (e) {
+      // Permission denied or a non-focused document — fall through.
+    }
+  }
+
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = value;
+    // Off-screen rather than hidden: display:none and visibility:hidden are
+    // both unselectable, so the copy would silently do nothing.
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.top = "-1000px";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, value.length);
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return ok;
+  } catch (e) {
+    return false;
+  }
+}
+
 // Render coalescer: customer events arrive faster than we can usefully
 // repaint a 10k-row table. Trailing-edge throttle keeps the main thread
 // responsive; forced render flushes pending work (used on `complete`).
@@ -13774,7 +13815,16 @@ function loadLostCustomersPanel() {
   });
 
   // Row click -> detail modal
-  document.getElementById("sacr-tbody")?.addEventListener("click", (e) => {
+  document.getElementById("sacr-tbody")?.addEventListener("click", async (e) => {
+    // Copy first: the whole row opens the detail modal, so without this a copy
+    // would also pop the modal over the table.
+    const copy = e.target.closest(".sacr-copy");
+    if (copy) {
+      e.stopPropagation();
+      const ok = await copyText(copy.dataset.copy);
+      sacrFlashCopied(copy, ok);
+      return;
+    }
     const tr = e.target.closest("tr[data-customer-id]");
     if (!tr) return;
     openSacrDetail(tr.dataset.storeId, tr.dataset.customerId, tr.dataset.customerName);
@@ -14266,6 +14316,39 @@ function sacrDaysCell(v) {
   return `<td class="sacr-num" title="${Number(v).toFixed(2)} days">${sacrFmtDays(v)}</td>`;
 }
 
+// A copy affordance for a value that is otherwise unselectable — the row is a
+// click target that opens the detail modal, so dragging to select text in it
+// is not really possible. The handler is delegated on the tbody.
+function sacrCopyBtn(value, what) {
+  if (!value) return "";
+  return (
+    `<button type="button" class="sacr-copy" data-copy="${saEscape(value)}"` +
+    ` title="Copy ${saEscape(what)}" aria-label="Copy ${saEscape(what)}">` +
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"' +
+    ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<rect x="9" y="9" width="13" height="13" rx="2"></rect>' +
+    '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>' +
+    "</svg></button>"
+  );
+}
+
+// Confirm the copy on the button itself. A silent success is indistinguishable
+// from a dead button, and the failure path is real: execCommand can be refused.
+function sacrFlashCopied(btn, ok) {
+  if (btn._copyTimer) clearTimeout(btn._copyTimer);
+  btn.classList.remove("is-copied", "is-failed");
+  btn.classList.add(ok ? "is-copied" : "is-failed");
+  const original = btn.getAttribute("aria-label");
+  btn.setAttribute("aria-label", ok ? "Copied" : "Copy failed");
+  btn.title = ok ? "Copied" : "Could not copy — select the text manually";
+  btn._copyTimer = setTimeout(() => {
+    btn.classList.remove("is-copied", "is-failed");
+    btn.setAttribute("aria-label", original);
+    btn.title = original;
+    btn._copyTimer = null;
+  }, 1400);
+}
+
 // Completed orders only. Shopify's own lifetime count includes cancelled and
 // refunded ones, so where the two differ the cell says what was taken off
 // rather than leaving the reader to wonder why it disagrees with Shopify admin.
@@ -14522,7 +14605,11 @@ function renderSacrTable() {
         // Numbered across the whole filtered set, not per page: page 2 opening
         // at 1 again would make "the 3rd biggest spender" ambiguous.
         `<td class="sacr-num sacr-idx">${(start + i + 1).toLocaleString()}</td>` +
-        `<td title="${saEscape(r.name || "")}${r.email ? " · " + saEscape(r.email) : ""}"><span class="sacr-cust">${saEscape(r.name || "(no name)")}</span>${r.email ? `<span class="sacr-email">${saEscape(r.email)}</span>` : ""}</td>` +
+        `<td title="${saEscape(r.name || "")}${r.email ? " · " + saEscape(r.email) : ""}"><span class="sacr-cust">${saEscape(r.name || "(no name)")}</span>${
+          r.email
+            ? `<span class="sacr-sub"><span class="sacr-email">${saEscape(r.email)}</span>${sacrCopyBtn(r.email, "email address")}</span>`
+            : ""
+        }</td>` +
         `<td title="${saEscape(r.store_name || "")}">${saEscape(sacrShortStore(r.store_name))}${badge}</td>` +
         `<td>${saEscape(r.state || "—")}</td>` +
         sacrOrdersCell(r) +
@@ -14533,7 +14620,11 @@ function renderSacrTable() {
         `<td class="sacr-date">${sacrFmtDate(r.first_order_local || r.first_order_created_at)}</td>` +
         // The order number is narrower than its column and truncates with no
         // tooltip of its own, unlike the long names and carriers around it.
-        `<td class="sacr-date"${r.last_order_name ? ` title="${saEscape(r.last_order_name)}"` : ""}>${sacrFmtDate(r.last_order_local || r.last_order_created_at)}${r.last_order_name ? `<span class="sacr-ordname">${saEscape(r.last_order_name)}</span>` : ""}</td>` +
+        `<td class="sacr-date"${r.last_order_name ? ` title="${saEscape(r.last_order_name)}"` : ""}>${sacrFmtDate(r.last_order_local || r.last_order_created_at)}${
+          r.last_order_name
+            ? `<span class="sacr-sub"><span class="sacr-ordname">${saEscape(r.last_order_name)}</span>${sacrCopyBtn(r.last_order_name, "order number")}</span>`
+            : ""
+        }</td>` +
         `<td class="sacr-num">${r.days_silent === null ? "—" : r.days_silent.toLocaleString()}</td>` +
         sacrDaysCell(r.days_to_fulfil) +
         sacrDaysCell(r.days_to_deliver) +
