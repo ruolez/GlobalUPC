@@ -6624,6 +6624,17 @@ async def shopify_analytics_lost_customers_stream(
 
                 store_tz = tz_by_shop.get(s["id"])
                 collected: List[Dict[str, Any]] = []
+                # Every walk needs its own id. The client keys per-walk page and
+                # customer counts by this and sums them, so two walks sharing an
+                # id overwrite each other — a split child reporting its first
+                # page would wipe out its parent's total and the counter would
+                # visibly drop, climb, and drop again.
+                next_walk = [len(shards)]
+
+                def new_walk_id() -> int:
+                    wid = next_walk[0]
+                    next_walk[0] += 1
+                    return wid
 
                 async def run_shard(index: int, lo: Optional[str], hi: Optional[str],
                                     depth: int = 0):
@@ -6676,13 +6687,14 @@ async def shopify_analytics_lost_customers_stream(
                         events.put_nowait(("shard_split", {
                             "store_id": s["id"], "store_name": s["name"], "added": 1,
                         }))
-                        await run_shard(index, nxt or lo, hi, depth=_SCAN_MAX_SPLIT_DEPTH)
+                        await run_shard(new_walk_id(), nxt or lo, hi,
+                                        depth=_SCAN_MAX_SPLIT_DEPTH)
                         return
                     events.put_nowait(("shard_split", {
                         "store_id": s["id"], "store_name": s["name"], "added": len(parts),
                     }))
                     await asyncio.gather(*[
-                        run_shard(index, a, b, depth + 1) for a, b in parts
+                        run_shard(new_walk_id(), a, b, depth + 1) for a, b in parts
                     ], return_exceptions=True)
 
                 # Ranges are equal in date span but not in customer volume, so
