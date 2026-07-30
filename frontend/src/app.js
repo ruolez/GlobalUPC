@@ -14428,11 +14428,12 @@ function updateSacrProductsBtn() {
       : "Moved to another store";
   }
   btn.disabled = sacrState.loading || !hasRows;
+  // The short label lost the context, so the tooltip carries it.
   btn.title = sacrState.loading
     ? "Wait for the report to finish"
     : !hasRows
       ? "Run the report first"
-      : "";
+      : "What these customers bought in their last order";
 }
 
 function renderSacrKpis() {
