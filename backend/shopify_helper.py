@@ -2909,12 +2909,20 @@ async def fetch_customer_first_orders(
 # Batched as `email:"a" OR email:"b" OR ...`, 250 addresses cost 24 points and
 # return in under a second — so checking a cohort against another store scales
 # with the cohort, not with that store's size.
-_EMAIL_BATCH = 250
+#
+# The batch is smaller than the page for a reason. `email:` is TOKENIZED, not an
+# exact match: `email:"yahoo.com"` returns a full page of 250 with more behind
+# it. A full batch against a full page therefore has no headroom, and a shop
+# holding two records for one address — the exact thing this pass hunts for —
+# would push the page over and silently drop the rest of the batch. Missing a
+# match means failing to notice the customer moved, which inflates "lost".
+_EMAIL_BATCH = 200
 _EMAIL_CONCURRENCY = 4
 
 _CUSTOMERS_BY_EMAIL_QUERY = """
-query CustomersByEmail($q: String!) {
-  customers(first: 250, query: $q) {
+query CustomersByEmail($q: String!, $after: String) {
+  customers(first: 250, query: $q, sortKey: ID, after: $after) {
+    pageInfo { hasNextPage endCursor }
     nodes {
       id
       email
@@ -2927,6 +2935,13 @@ query CustomersByEmail($q: String!) {
   }
 }
 """ % ORDER_STATUS_FILTER
+
+# A term without a local part matches every customer at that domain. One
+# malformed value in the customer data would otherwise turn a targeted lookup
+# into a scan that truncates and takes the rest of its batch down with it.
+def _is_usable_email_term(email: str) -> bool:
+    local, sep, domain = email.partition("@")
+    return bool(local and sep and "." in domain and not domain.startswith("."))
 
 
 def normalize_email(email: Optional[str]) -> Optional[str]:
@@ -2968,6 +2983,14 @@ def name_key(first: Optional[str], last: Optional[str]) -> Optional[str]:
 _NAME_BATCH = 100
 _NAME_CONCURRENCY = 4
 
+_NAME_MAX_PAGES = 10
+
+# Both ZIP sources are read, mirroring how the lost side builds its own set.
+# Belt and braces rather than a measured fix: across 246 live candidates that
+# had a completed order, every single one already carried defaultAddress.zip, so
+# the order's shipping ZIP added nothing. It costs nothing either, and it keeps
+# the two sides of the comparison symmetrical, so an account that ships without
+# ever saving a profile address cannot quietly become unmatchable.
 _CUSTOMERS_BY_NAME_QUERY = """
 query CustomersByName($q: String!, $after: String) {
   customers(first: 250, query: $q, sortKey: ID, after: $after) {
@@ -2980,7 +3003,7 @@ query CustomersByName($q: String!, $after: String) {
       defaultAddress { zip }
       lastValidOrder: orders(
         first: 1, sortKey: CREATED_AT, reverse: true, query: "%s"
-      ) { nodes { createdAt } }
+      ) { nodes { createdAt shippingAddress { zip } } }
     }
   }
 }
@@ -2999,10 +3022,16 @@ async def fetch_customers_by_name(
     Look up customer records by (first name, last name) at one shop.
 
     `names` is a list of (first, last). Returns {ok, error, candidates,
-    warnings}; each candidate is {id, name_key, zip, last_order, email}. ZIP
-    matching and self-exclusion are the caller's job.
+    truncated, warnings}; each candidate is {id, name_key, zips, last_order,
+    email}. ZIP matching and self-exclusion are the caller's job.
+
+    `truncated` is True when a batch still had pages left at the page cap. The
+    caller must report it: a missed candidate means failing to notice the
+    customer moved, which inflates "lost".
     """
-    out: Dict[str, Any] = {"ok": False, "error": None, "candidates": [], "warnings": []}
+    out: Dict[str, Any] = {
+        "ok": False, "error": None, "candidates": [], "truncated": False, "warnings": [],
+    }
 
     try:
         shop_domain = validate_shop_domain(shop_domain)
@@ -3033,7 +3062,7 @@ async def fetch_customers_by_name(
                     )
                     cursor = None
                     # A common surname can exceed one page of records.
-                    for _ in range(10):
+                    for page in range(_NAME_MAX_PAGES):
                         data, warnings = await _shopify_graphql(
                             session, shop_domain, admin_api_key, api_version,
                             _CUSTOMERS_BY_NAME_QUERY, {"q": terms, "after": cursor},
@@ -3049,18 +3078,27 @@ async def fetch_customers_by_name(
                             if not k:
                                 continue
                             nodes = (node.get("lastValidOrder") or {}).get("nodes") or []
+                            order = nodes[0] if nodes else {}
+                            ship = order.get("shippingAddress") or {}
                             out["candidates"].append({
                                 "id": node.get("id"),
                                 "name_key": k,
-                                "zip": normalize_zip(
-                                    ((node.get("defaultAddress") or {}) or {}).get("zip")),
-                                "last_order": nodes[0].get("createdAt") if nodes else None,
+                                # Either address can identify the person, the
+                                # same way the lost side is built.
+                                "zips": sorted({z for z in (
+                                    normalize_zip(
+                                        ((node.get("defaultAddress") or {}) or {}).get("zip")),
+                                    normalize_zip(ship.get("zip")),
+                                ) if z}),
+                                "last_order": order.get("createdAt"),
                                 "email": normalize_email(node.get("email")),
                             })
                         page_info = conn.get("pageInfo") or {}
                         if not page_info.get("hasNextPage"):
                             break
                         cursor = page_info.get("endCursor")
+                        if page == _NAME_MAX_PAGES - 1:
+                            out["truncated"] = True
                     done += len(batch)
                     if on_batch:
                         on_batch(done, len(pairs))
@@ -3091,12 +3129,17 @@ async def fetch_customers_by_emails(
     """
     Look up a set of email addresses in one shop.
 
-    Returns {ok, error, last_orders, warnings} where last_orders maps a
-    normalized email to the most recent order date at THIS shop, or None when
+    Returns {ok, error, last_orders, malformed, warnings} where last_orders maps
+    a normalized email to the most recent order date at THIS shop, or None when
     the customer exists but has never ordered. A shop can hold more than one
     record for an address, so the latest order across duplicates wins.
+
+    `malformed` counts addresses too broken to search safely; the caller must
+    report them rather than let the check silently narrow.
     """
-    out: Dict[str, Any] = {"ok": False, "error": None, "last_orders": {}, "warnings": []}
+    out: Dict[str, Any] = {
+        "ok": False, "error": None, "last_orders": {}, "malformed": 0, "warnings": [],
+    }
 
     try:
         shop_domain = validate_shop_domain(shop_domain)
@@ -3104,7 +3147,9 @@ async def fetch_customers_by_emails(
         out["error"] = str(e)
         return out
 
-    clean = sorted({e for e in (normalize_email(x) for x in emails) if e})
+    candidates = sorted({e for e in (normalize_email(x) for x in emails) if e})
+    clean = [e for e in candidates if _is_usable_email_term(e)]
+    out["malformed"] = len(candidates) - len(clean)
     if not clean:
         out["ok"] = True
         return out
@@ -3124,24 +3169,31 @@ async def fetch_customers_by_emails(
                     terms = " OR ".join(
                         'email:"{}"'.format(e.replace('"', "")) for e in batch
                     )
-                    data, warnings = await _shopify_graphql(
-                        session, shop_domain, admin_api_key, api_version,
-                        _CUSTOMERS_BY_EMAIL_QUERY, {"q": terms},
-                        op_name="cross-store email lookup", on_retry=on_retry,
-                    )
-                    if warnings:
-                        out["warnings"].extend(warnings)
-                    for node in (data.get("customers") or {}).get("nodes") or []:
-                        em = normalize_email((node or {}).get("email"))
-                        if not em:
-                            continue
-                        _n = (node.get("lastValidOrder") or {}).get("nodes") or []
-                        last = _n[0].get("createdAt") if _n else None
-                        prev = out["last_orders"].get(em)
-                        if last and (prev is None or last > prev):
-                            out["last_orders"][em] = last
-                        else:
-                            out["last_orders"].setdefault(em, prev)
+                    cursor = None
+                    while True:
+                        data, warnings = await _shopify_graphql(
+                            session, shop_domain, admin_api_key, api_version,
+                            _CUSTOMERS_BY_EMAIL_QUERY, {"q": terms, "after": cursor},
+                            op_name="cross-store email lookup", on_retry=on_retry,
+                        )
+                        if warnings:
+                            out["warnings"].extend(warnings)
+                        conn = data.get("customers") or {}
+                        for node in conn.get("nodes") or []:
+                            em = normalize_email((node or {}).get("email"))
+                            if not em:
+                                continue
+                            _n = (node.get("lastValidOrder") or {}).get("nodes") or []
+                            last = _n[0].get("createdAt") if _n else None
+                            prev = out["last_orders"].get(em)
+                            if last and (prev is None or last > prev):
+                                out["last_orders"][em] = last
+                            else:
+                                out["last_orders"].setdefault(em, prev)
+                        page_info = conn.get("pageInfo") or {}
+                        if not page_info.get("hasNextPage"):
+                            break
+                        cursor = page_info.get("endCursor")
                     done += len(batch)
                     if on_batch:
                         on_batch(done, len(clean))

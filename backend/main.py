@@ -6606,6 +6606,10 @@ async def shopify_analytics_lost_customers_stream(
                             # Never silently keep a customer we failed to check.
                             cross_errors.append(f"{other['name']}: {res.get('error')}")
                             continue
+                        if res.get("malformed"):
+                            cross_errors.append(
+                                f"{other['name']}: {res['malformed']} address(es) were too "
+                                f"malformed to search")
                         same_store = other["id"] == s["id"]
                         for em, last in (res.get("last_orders") or {}).items():
                             if last and last >= silent_since and em not in moved_to:
@@ -6656,6 +6660,10 @@ async def shopify_analytics_lost_customers_stream(
                             if not res2.get("ok"):
                                 cross_errors.append(f"{other['name']} (by name): {res2.get('error')}")
                                 continue
+                            if res2.get("truncated"):
+                                cross_errors.append(
+                                    f"{other['name']}: too many customers share these names "
+                                    f"to check them all")
                             for cand in res2.get("candidates") or []:
                                 if not cand.get("last_order") or cand["last_order"] < silent_since:
                                     continue  # that account has not ordered since either
@@ -6674,7 +6682,7 @@ async def shopify_analytics_lost_customers_stream(
                                 # unrelated people who share a common name.
                                 if cand["id"] == c.get("customer_id"):
                                     continue
-                                if cand["zip"] and cand["zip"] in zips:
+                                if zips.intersection(cand["zips"]):
                                     hit = cand
                                     break
                             if hit:
