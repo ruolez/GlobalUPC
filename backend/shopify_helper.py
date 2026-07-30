@@ -2226,7 +2226,10 @@ query LostCustomers($q: String!, $after: String) {
           displayFulfillmentStatus
           shippingAddress { provinceCode province countryCode zip }
           shippingLine { title carrierIdentifier }
-          fulfillments(first: 5) {
+          # A plain list, not a connection, so there is no pageInfo and a
+          # truncation here would be invisible — it would silently understate
+          # the last delivery on a heavily split order. 50 covers any real one.
+          fulfillments(first: 50) {
             createdAt
             inTransitAt
             deliveredAt

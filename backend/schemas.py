@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional, Literal, List, Dict
 from datetime import datetime, date
 
@@ -690,6 +690,18 @@ class LostCustomersRequest(BaseModel):
     # Drop customers who kept buying at another shop; checked against every
     # active Shopify store, including ones not selected for the report.
     exclude_cross_store: bool = True
+
+    # Every window decision in this report is a string comparison against these
+    # two values, so a non-ISO date does not fail — it quietly compares wrong
+    # ("2024-8-1" sorts after "2024-12-31"). The date inputs protect the UI
+    # path only; this protects the endpoint.
+    @field_validator("active_since", "silent_since")
+    @classmethod
+    def _iso_date(cls, v: str) -> str:
+        try:
+            return date.fromisoformat((v or "").strip()).isoformat()
+        except ValueError:
+            raise ValueError("must be a calendar date in YYYY-MM-DD form")
 
 
 class CustomerDetailRequest(BaseModel):

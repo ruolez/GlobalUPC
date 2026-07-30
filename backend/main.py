@@ -6327,6 +6327,29 @@ def _lost_shards(active_since: str, upper: str) -> List[tuple]:
     ]
 
 
+def _bump_moved(breakdown: Dict[Any, Dict[str, Any]], key: Any, label: str) -> None:
+    """
+    Tally one customer against the shop they moved to, keyed by shop rather
+    than by display name — two shops can share a name, and merging them would
+    misattribute the move. The label rides along for display.
+    """
+    entry = breakdown.setdefault(key, {"label": label, "count": 0})
+    entry["count"] += 1
+
+
+def _merge_moved(breakdowns) -> Dict[str, int]:
+    """Collapse per-store breakdowns to {label: count} for the client."""
+    totals: Dict[Any, Dict[str, Any]] = {}
+    for b in breakdowns:
+        for key, entry in (b or {}).items():
+            tgt = totals.setdefault(key, {"label": entry["label"], "count": 0})
+            tgt["count"] += entry["count"]
+    out: Dict[str, int] = {}
+    for entry in totals.values():
+        out[entry["label"]] = out.get(entry["label"], 0) + entry["count"]
+    return out
+
+
 def _median(values: List[float]) -> Optional[float]:
     """Median, not mean — delivery times are right-skewed and a few stuck
     parcels would drag a mean somewhere no customer actually experienced."""
@@ -6514,7 +6537,7 @@ async def shopify_analytics_lost_customers_stream(
                     return {
                         "store": s, "ok": False, "complete": False,
                         "error": incomplete_reasons[0] if incomplete_reasons else "Fetch failed",
-                        "lost": [], "lost_all": [], "active": [],
+                        "lost": [], "active": [],
                     }
 
                 tz = tz_by_shop.get(s["id"])
@@ -6644,7 +6667,7 @@ async def shopify_analytics_lost_customers_stream(
                 active_kept = [c for c in active_in if c["orders_count"] >= min_orders]
 
                 # Cross-store check runs last, on the smallest possible list.
-                moved_breakdown: Dict[str, int] = {}
+                moved_breakdown: Dict[Any, Dict[str, Any]] = {}
                 matched_by_name = 0
                 no_email = 0
                 cross_errors: List[str] = []
@@ -6709,18 +6732,19 @@ async def shopify_analytics_lost_customers_stream(
                             # that shop's day that decides whether it is recent.
                             if last and local_date(last, other_tz) >= silent_since \
                                     and em not in moved_to:
-                                moved_to[em] = other["name"]
+                                # Keyed by id: two shops can share a display
+                                # name, and merging them would misattribute the
+                                # move. The name travels alongside for display.
+                                moved_to[em] = (other["id"], other["name"])
 
                     if moved_to:
-                        for c in lost_kept:
-                            em = normalize_email(c.get("email"))
-                            if em and em in moved_to:
-                                c["moved_to_store"] = moved_to[em]
                         kept = []
                         for c in lost_kept:
-                            if c.get("moved_to_store"):
-                                moved_breakdown[c["moved_to_store"]] = (
-                                    moved_breakdown.get(c["moved_to_store"], 0) + 1)
+                            em = normalize_email(c.get("email"))
+                            dest = moved_to.get(em) if em else None
+                            if dest:
+                                c["moved_to_store"] = dest[1]
+                                _bump_moved(moved_breakdown, dest[0], dest[1])
                             else:
                                 kept.append(c)
                         lost_kept = kept
@@ -6775,6 +6799,7 @@ async def shopify_analytics_lost_customers_stream(
                                 if not cand.get("last_order") or \
                                         local_date(cand["last_order"], other_tz2) < silent_since:
                                     continue  # that account has not ordered since either
+                                cand["store_id"] = other["id"]
                                 cand["store_name"] = other["name"]
                                 cand["same_store"] = other["id"] == s["id"]
                                 by_name.setdefault(cand["name_key"], []).append(cand)
@@ -6797,7 +6822,13 @@ async def shopify_analytics_lost_customers_stream(
                                 label = (f"{hit['store_name']} (another account)"
                                          if hit["same_store"] else hit["store_name"])
                                 c["moved_to_store"] = label
-                                moved_breakdown[label] = moved_breakdown.get(label, 0) + 1
+                                # Same-store matches are a distinct destination
+                                # from cross-store ones at that shop, so they
+                                # get their own key rather than merging.
+                                _bump_moved(
+                                    moved_breakdown,
+                                    f"{hit['store_id']}{':self' if hit['same_store'] else ''}",
+                                    label)
                                 matched_by_name += 1
                             else:
                                 kept2.append(c)
@@ -6831,16 +6862,16 @@ async def shopify_analytics_lost_customers_stream(
                     "error": None,
                     "warnings": warnings[:3],
                     "lost": lost_kept,
-                    "lost_all": lost_in,
                     "active": active_kept,
-                    "active_all": active_in,
                     "excluded_pre_existing": excluded_pre_existing,
                     "unknown_first_order": unknown_first,
                     "never_purchased": never_purchased,
                     "ordered_before_window": ordered_before_window,
                     "states": states,
-                    "moved_breakdown": moved_breakdown,
-                    "moved_total": sum(moved_breakdown.values()),
+                    # Collapsed to {label: count} at the boundary; the shop-id
+                    # keying exists to keep the tally correct, not to be sent.
+                    "moved_breakdown": _merge_moved([moved_breakdown]),
+                    "moved_total": sum(e["count"] for e in moved_breakdown.values()),
                     "matched_by_name": matched_by_name,
                     "no_email": no_email,
                 }
@@ -6854,7 +6885,7 @@ async def shopify_analytics_lost_customers_stream(
                 raise
             except Exception as e:
                 res = {"store": None, "ok": False, "complete": False,
-                       "error": f"Unexpected error: {e}", "lost": [], "lost_all": [], "active": []}
+                       "error": f"Unexpected error: {e}", "lost": [], "active": []}
             await events.put(("done", res))
 
         collectors = [asyncio.create_task(collect(t)) for t in tasks]
