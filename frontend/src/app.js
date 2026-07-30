@@ -13676,7 +13676,7 @@ function loadLostCustomersPanel() {
   if (sacrState.initialized) return;
   sacrState.initialized = true;
 
-  renderSacrStoreCheckboxes();
+  renderSacrStoreSelect();
   sacrSetDefaultDates();
 
   try {
@@ -13699,18 +13699,12 @@ function loadLostCustomersPanel() {
     );
   });
 
-  document
-    .getElementById("sacr-store-checkboxes")
-    ?.addEventListener("change", () => {
-      sacrPersistSelection();
-      updateSacrRunBtn();
-    });
-  document
-    .getElementById("sacr-select-all")
-    ?.addEventListener("click", () => sacrSetAll(true));
-  document
-    .getElementById("sacr-deselect-all")
-    ?.addEventListener("click", () => sacrSetAll(false));
+  document.getElementById("sacr-store-select")?.addEventListener("change", () => {
+    sacrPersistSelection();
+    // Nothing on screen may describe a store other than the selected one.
+    sacrClearResults();
+    updateSacrRunBtn();
+  });
 
   ["sacr-active-since", "sacr-silent-since", "sacr-min-orders"].forEach((id) => {
     document.getElementById(id)?.addEventListener("change", updateSacrRunBtn);
@@ -13874,47 +13868,57 @@ function sacrPersistSelection() {
   }
 }
 
+// One store at a time. The request body still carries a list, so the streaming,
+// per-store and partial-store handling on both sides is untouched.
 function sacrSelectedStoreIds() {
-  return Array.from(document.querySelectorAll(".sacr-store-cb"))
-    .filter((cb) => cb.checked)
-    .map((cb) => parseInt(cb.value, 10));
+  const v = parseInt(document.getElementById("sacr-store-select")?.value || "", 10);
+  return isNaN(v) ? [] : [v];
 }
 
-function renderSacrStoreCheckboxes() {
-  const container = document.getElementById("sacr-store-checkboxes");
-  if (!container) return;
-  container.innerHTML = "";
+function sacrSelectedStoreName() {
+  const sel = document.getElementById("sacr-store-select");
+  return sel && sel.selectedIndex >= 0 ? sel.options[sel.selectedIndex].textContent : "";
+}
+
+function renderSacrStoreSelect() {
+  const sel = document.getElementById("sacr-store-select");
+  if (!sel) return;
   const stores = shopifyAnalyticsState.shopifyStores || [];
   if (stores.length === 0) {
-    container.innerHTML =
-      '<span style="color: var(--text-tertiary); font-size: 0.8125rem;">No active Shopify stores configured</span>';
+    sel.innerHTML = '<option value="">No active Shopify stores configured</option>';
+    sel.disabled = true;
     return;
   }
+  sel.disabled = false;
+  sel.innerHTML = stores
+    .map((s) => `<option value="${s.id}">${saEscape(s.name)}</option>`)
+    .join("");
   const remembered = sacrReadSelection();
-  stores.forEach((s) => {
-    const label = document.createElement("label");
-    label.style.cssText =
-      "display:flex;align-items:center;gap:0.5rem;cursor:pointer;white-space:nowrap;";
-    const cb = document.createElement("input");
-    cb.type = "checkbox";
-    cb.value = String(s.id);
-    cb.className = "sacr-store-cb";
-    cb.checked = remembered ? remembered.has(s.id) : true;
-    cb.style.cssText = "width:auto;margin:0;";
-    const span = document.createElement("span");
-    span.textContent = s.name;
-    label.appendChild(cb);
-    label.appendChild(span);
-    container.appendChild(label);
-  });
+  const first = remembered && stores.find((s) => remembered.has(s.id));
+  sel.value = String((first || stores[0]).id);
 }
 
-function sacrSetAll(checked) {
-  document.querySelectorAll(".sacr-store-cb").forEach((cb) => {
-    cb.checked = checked;
-  });
-  sacrPersistSelection();
-  updateSacrRunBtn();
+// Results describe the store that produced them, so they cannot outlive a
+// change of store. Cleared rather than refetched: the scan is expensive enough
+// that starting it should stay a deliberate press of Run.
+function sacrClearResults() {
+  sacrState.rows = [];
+  sacrState.moved = [];
+  sacrState.stores = [];
+  sacrState.benchmark = null;
+  sacrState.totals = null;
+  sacrState.byMonth = [];
+  sacrState.monthStats = null;
+  sacrState.storeColors = null;
+  sacrState.states = [];
+  sacrState.currentPage = 0;
+  sacrHideTooltip();
+  renderSacrBanner();
+  renderSacrAll();
+  const progress = document.getElementById("sacr-progress");
+  if (progress) progress.style.display = "none";
+  const empty = document.getElementById("sacr-empty");
+  if (empty) empty.style.display = "none";
 }
 
 function sacrApplyMonthsAgo(inputId, months) {
@@ -14467,7 +14471,9 @@ function renderSacrKpis() {
     "sacr-kpi-count-sub",
     filtered
       ? `filtered from ${allRows.length.toLocaleString()}`
-      : `across ${sacrState.stores.filter((s) => s.ok).length} store(s)`,
+      : sacrShortStore(
+          (sacrState.stores.find((s) => s.ok) || {}).store_name || "",
+        ) || "this store",
   );
   set("sacr-kpi-revenue", sacrFmtMoney(revenue, currency) + mark);
   // These are lifetime figures from Shopify, including orders placed before
@@ -14628,12 +14634,13 @@ function renderSacrTable() {
         // Numbered across the whole filtered set, not per page: page 2 opening
         // at 1 again would make "the 3rd biggest spender" ambiguous.
         `<td class="sacr-num sacr-idx">${(start + i + 1).toLocaleString()}</td>` +
-        `<td title="${saEscape(r.name || "")}${r.email ? " · " + saEscape(r.email) : ""}"><span class="sacr-cust">${saEscape(r.name || "(no name)")}</span>${
+        // The badge rides with the name now that the Store column is gone; it
+        // must not disappear along with the column it used to live in.
+        `<td title="${saEscape(r.name || "")}${r.email ? " · " + saEscape(r.email) : ""}"><span class="sacr-cust">${saEscape(r.name || "(no name)")}${badge}</span>${
           r.email
             ? `<span class="sacr-sub"><span class="sacr-email">${saEscape(r.email)}</span>${sacrCopyBtn(r.email, "email address")}</span>`
             : ""
         }</td>` +
-        `<td title="${saEscape(r.store_name || "")}">${saEscape(sacrShortStore(r.store_name))}${badge}</td>` +
         `<td>${saEscape(r.state || "—")}</td>` +
         sacrOrdersCell(r) +
         `<td class="sacr-num">${sacrFmtMoney(r.amount_spent, "")}</td>` +
@@ -14665,11 +14672,11 @@ function renderSacrTable() {
     // Labelled "(filtered)" unconditionally, the qualifier stopped meaning
     // anything — it has to appear only when a filter is actually narrowing it.
     tfoot.innerHTML =
-      `<tr class="sacr-foot-row"><td></td><td>${filtered ? "Total (filtered)" : "Total"}</td><td></td><td></td>` +
+      `<tr class="sacr-foot-row"><td></td><td>${filtered ? "Total (filtered)" : "Total"}</td><td></td>` +
       `<td class="sacr-num">${orders.toLocaleString()}</td>` +
       `<td class="sacr-num">${sacrFmtMoney(spend, "")}</td>` +
-      // # + Customer + Store + State + Orders + Spent = 6 cells, then the
-      // remaining 7 columns (First order .. Carrier) are spanned.
+      // # + Customer + State + Orders + Spent = 5 cells, then the remaining
+      // 7 columns (First order .. Carrier) are spanned.
       `<td colspan="7"></td></tr>`;
   }
 

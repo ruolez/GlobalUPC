@@ -6309,25 +6309,23 @@ body.no-scroll {
    left three separate nth-child blocks, and inserting a column at the front
    silently re-pointed the later two at their neighbours. Sums to 100. */
 .sa-page #sacr-table th:nth-child(1)  { width: 3.5%; } /* #           */
-.sa-page #sacr-table th:nth-child(2)  { width: 16%;  } /* Customer    */
-.sa-page #sacr-table th:nth-child(3)  { width: 6%;   } /* Store       */
-.sa-page #sacr-table th:nth-child(4)  { width: 5%;   } /* State       */
-.sa-page #sacr-table th:nth-child(5)  { width: 6%;   } /* Orders      */
-.sa-page #sacr-table th:nth-child(6)  { width: 7.5%; } /* Spent       */
-.sa-page #sacr-table th:nth-child(7)  { width: 6.5%; } /* First order */
-/* Carries a date, an order number and a copy button, taken from the numeric
-   columns beside it which were sitting on 30-40px of slack each. Deliberately
-   NOT widened to fit the longest order number: "A2Z100011859" measures 110px,
-   so showing it in full would cost 13% of the table and push Method back into
-   ellipsis. The number is a value to copy rather than read, and the copy
-   button plus the cell tooltip make the whole of it reachable. */
-.sa-page #sacr-table th:nth-child(8)  { width: 10%;  } /* Last order  */
-.sa-page #sacr-table th:nth-child(9)  { width: 5.5%; } /* Days silent */
-.sa-page #sacr-table th:nth-child(10) { width: 5.5%; } /* To ship     */
-.sa-page #sacr-table th:nth-child(11) { width: 6.5%; } /* To deliver  */
+/* The rest of the freed Store width. Emails are the worst-truncated value in
+   the table (the widest measured 242px), so they get it. */
+.sa-page #sacr-table th:nth-child(2)  { width: 19%;  } /* Customer    */
+.sa-page #sacr-table th:nth-child(3)  { width: 5%;   } /* State       */
+.sa-page #sacr-table th:nth-child(4)  { width: 6%;   } /* Orders      */
+.sa-page #sacr-table th:nth-child(5)  { width: 7.5%; } /* Spent       */
+.sa-page #sacr-table th:nth-child(6)  { width: 6.5%; } /* First order */
+/* The report runs one store at a time, so the Store column went and its width
+   came here — enough at last for a full order number ("A2Z100011859" measures
+   110px) plus its copy button, instead of the "A2Z1..." it used to show. */
+.sa-page #sacr-table th:nth-child(7)  { width: 13%;  } /* Last order  */
+.sa-page #sacr-table th:nth-child(8)  { width: 5.5%; } /* Days silent */
+.sa-page #sacr-table th:nth-child(9)  { width: 5.5%; } /* To ship     */
+.sa-page #sacr-table th:nth-child(10) { width: 6.5%; } /* To deliver  */
 /* 14% is load-bearing: below it "Standard Shipping" ellipsises. */
-.sa-page #sacr-table th:nth-child(12) { width: 14%;  } /* Method      */
-.sa-page #sacr-table th:nth-child(13) { width: 8%;   } /* Carrier     */
+.sa-page #sacr-table th:nth-child(11) { width: 14%;  } /* Method      */
+.sa-page #sacr-table th:nth-child(12) { width: 8%;   } /* Carrier     */
 
 /* Two-line-tall headings throughout, bottom aligned, so single-word captions
    sit on the same baseline as the ones that wrap. */
