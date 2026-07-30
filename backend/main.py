@@ -81,6 +81,7 @@ from shopify_helper import (
     fetch_orders_line_items, fetch_baseline_order_items, count_orders,
     fetch_customer_first_orders, fetch_customers_by_emails, normalize_email,
     fetch_customers_by_name, name_key, normalize_zip,
+    fetch_shop_timezone, local_date,
     ORDER_STATUS_FILTER
 )
 from item_tracker_helper import (
@@ -6402,6 +6403,25 @@ async def shopify_analytics_lost_customers_stream(
             })
         cross_store = bool(request.exclude_cross_store) and len(all_shopify) > 1
 
+        # Shopify filters on each shop's local date, so every window comparison
+        # has to be made in that shop's calendar — including the cross-store
+        # ones, where the date being judged belongs to a different shop.
+        # Resolved once here (and cached in the helper) rather than per store.
+        # Concurrent: these are independent one-shot queries against different
+        # shops, and serialising them added a second to every cold run.
+        tz_shops = list({s["id"]: s for s in (store_list + all_shopify)}.values())
+        tz_values = await asyncio.gather(*[
+            fetch_shop_timezone(
+                shop_domain=sh["shop_domain"],
+                admin_api_key=sh["admin_api_key"],
+                api_version=sh["api_version"],
+            ) for sh in tz_shops
+        ], return_exceptions=True)
+        tz_by_shop: Dict[int, Optional[str]] = {
+            sh["id"]: (tz if isinstance(tz, str) else None)
+            for sh, tz in zip(tz_shops, tz_values)
+        }
+
         today = datetime.now().strftime("%Y-%m-%d")
         shards = _lost_shards(active_since, today)
 
@@ -6488,6 +6508,12 @@ async def shopify_analytics_lost_customers_stream(
                         "lost": [], "lost_all": [], "active": [],
                     }
 
+                tz = tz_by_shop.get(s["id"])
+                if not tz:
+                    incomplete_reasons.append(
+                        "Could not read this shop's timezone, so dates near the "
+                        "window edges are judged in UTC and may be off by a day.")
+
                 lost, active = [], []
                 never_purchased = 0
                 for c in by_id.values():
@@ -6497,9 +6523,13 @@ async def shopify_analytics_lost_customers_stream(
                         # there is no purchase here to have lost.
                         never_purchased += 1
                         continue
-                    if last >= silent_since:
+                    # The shop's own calendar day, matching what Shopify filtered
+                    # on. Carried on the row so the table shows the same date the
+                    # classification used and can never appear to contradict it.
+                    c["last_order_local"] = local_date(last, tz)
+                    if c["last_order_local"] >= silent_since:
                         active.append(c)
-                    elif last >= active_since:
+                    elif c["last_order_local"] >= active_since:
                         lost.append(c)
 
                 # "Was ordering since" means the customer STARTED here. Shopify's
@@ -6541,7 +6571,8 @@ async def shopify_analytics_lost_customers_stream(
                         # in, so a lookup gap can never inflate the cohort.
                         return False
                     c["first_order_created_at"] = first
-                    return first >= active_since
+                    c["first_order_local"] = local_date(first, tz)
+                    return c["first_order_local"] >= active_since
 
                 if first_err:
                     # Without first-order data the acquisition filter cannot be
@@ -6551,6 +6582,7 @@ async def shopify_analytics_lost_customers_stream(
                         f"Could not determine when customers started ordering: {first_err}")
                     for c in lost + active:
                         c["first_order_created_at"] = None
+                        c["first_order_local"] = None
                     lost_in, active_in = lost, active
                 else:
                     lost_in = [c for c in lost if acquired_in_window(c)]
@@ -6611,8 +6643,12 @@ async def shopify_analytics_lost_customers_stream(
                                 f"{other['name']}: {res['malformed']} address(es) were too "
                                 f"malformed to search")
                         same_store = other["id"] == s["id"]
+                        other_tz = tz_by_shop.get(other["id"])
                         for em, last in (res.get("last_orders") or {}).items():
-                            if last and last >= silent_since and em not in moved_to:
+                            # That order happened at the other shop, so it is
+                            # that shop's day that decides whether it is recent.
+                            if last and local_date(last, other_tz) >= silent_since \
+                                    and em not in moved_to:
                                 moved_to[em] = (
                                     f"{other['name']} (another account)"
                                     if same_store else other["name"]
@@ -6664,8 +6700,10 @@ async def shopify_analytics_lost_customers_stream(
                                 cross_errors.append(
                                     f"{other['name']}: too many customers share these names "
                                     f"to check them all")
+                            other_tz2 = tz_by_shop.get(other["id"])
                             for cand in res2.get("candidates") or []:
-                                if not cand.get("last_order") or cand["last_order"] < silent_since:
+                                if not cand.get("last_order") or \
+                                        local_date(cand["last_order"], other_tz2) < silent_since:
                                     continue  # that account has not ordered since either
                                 cand["store_name"] = other["name"]
                                 cand["same_store"] = other["id"] == s["id"]
@@ -6793,10 +6831,12 @@ async def shopify_analytics_lost_customers_stream(
         all_lost = [c for r in complete for c in (r.get("lost") or [])]
         all_active = [c for r in complete for c in (r.get("active") or [])]
 
-        # "When did they leave" — month of last order.
+        # "When did they leave" — month of last order, in the shop's own
+        # calendar, so an order placed late on the last evening of a month is
+        # not bucketed into the next one.
         by_month: Dict[str, int] = {}
         for c in all_lost:
-            key = (c.get("last_order_created_at") or "")[:7]
+            key = (c.get("last_order_local") or c.get("last_order_created_at") or "")[:7]
             if key:
                 by_month[key] = by_month.get(key, 0) + 1
 

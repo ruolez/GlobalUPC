@@ -14508,10 +14508,13 @@ function renderSacrTable() {
         `<td>${saEscape(r.state || "—")}</td>` +
         `<td class="sacr-num">${(r.orders_count || 0).toLocaleString()}</td>` +
         `<td class="sacr-num">${sacrFmtMoney(r.amount_spent, "")}</td>` +
-        `<td class="sacr-date">${sacrFmtDate(r.first_order_created_at)}</td>` +
+        // Shop-local dates, matching the ones the cohort was decided on. Using
+        // the raw UTC timestamps here would let a row show a date that
+        // contradicts why it was included.
+        `<td class="sacr-date">${sacrFmtDate(r.first_order_local || r.first_order_created_at)}</td>` +
         // The order number is narrower than its column and truncates with no
         // tooltip of its own, unlike the long names and carriers around it.
-        `<td class="sacr-date"${r.last_order_name ? ` title="${saEscape(r.last_order_name)}"` : ""}>${sacrFmtDate(r.last_order_created_at)}${r.last_order_name ? `<span class="sacr-ordname">${saEscape(r.last_order_name)}</span>` : ""}</td>` +
+        `<td class="sacr-date"${r.last_order_name ? ` title="${saEscape(r.last_order_name)}"` : ""}>${sacrFmtDate(r.last_order_local || r.last_order_created_at)}${r.last_order_name ? `<span class="sacr-ordname">${saEscape(r.last_order_name)}</span>` : ""}</td>` +
         `<td class="sacr-num">${r.days_silent === null ? "—" : r.days_silent.toLocaleString()}</td>` +
         sacrDaysCell(r.days_to_fulfil) +
         sacrDaysCell(r.days_to_deliver) +
@@ -14745,7 +14748,8 @@ function sacrBuildMonthStats() {
   const stats = new Map();
   sacrState.rows.forEach((r) => {
     if (!counted.has(r.store_id)) return;
-    const key = String(r.last_order_created_at || "").slice(0, 7);
+    // Same shop-local month the server bucketed the bars by.
+    const key = String(r.last_order_local || r.last_order_created_at || "").slice(0, 7);
     if (!key) return;
     let e = stats.get(key);
     if (!e) {

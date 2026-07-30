@@ -3,7 +3,9 @@ import aiohttp
 import asyncio
 import random
 import time
+from datetime import datetime
 from typing import Optional, Dict, Any, List, Tuple
+from zoneinfo import ZoneInfo
 
 def test_shopify_connection(
     shop_domain: str,
@@ -2104,6 +2106,86 @@ async def _shopify_graphql(
         attempts=_MAX_ATTEMPTS,
         retryable=True,
     )
+
+
+# ============================================================================
+# Shop timezone
+# ============================================================================
+
+# Shopify's search filters run on the SHOP'S LOCAL DATE, not UTC. Verified on a
+# live America/Chicago shop: `created_at:>=2025-06-10` returns its first order
+# at 2025-06-10T05:05Z — local midnight. The API then hands back UTC timestamps.
+#
+# Comparing those UTC timestamps against the same date strings therefore
+# straddles two different calendars, and the error is one-directional: an order
+# placed in the local evening carries the next UTC day, so a customer whose
+# first purchase was the evening before `active_since` reads as newly acquired.
+#
+# Cached per shop for the process lifetime, like _shop_buckets — a shop's
+# timezone effectively never changes, and this is on the hot path of every run.
+_shop_timezones: Dict[str, str] = {}
+
+_SHOP_TIMEZONE_QUERY = "query ShopTimezone { shop { ianaTimezone } }"
+
+
+async def fetch_shop_timezone(
+    shop_domain: str,
+    admin_api_key: str,
+    api_version: str = "2025-01",
+    on_retry=None,
+) -> Optional[str]:
+    """
+    The shop's IANA timezone, e.g. "America/Chicago". None if it cannot be read.
+
+    A None return means callers must fall back to comparing raw UTC — wrong at
+    the margins, but the report still runs.
+    """
+    cached = _shop_timezones.get(shop_domain)
+    if cached:
+        return cached
+
+    try:
+        shop_domain = validate_shop_domain(shop_domain)
+    except Exception:
+        return None
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            data, _ = await _shopify_graphql(
+                session, shop_domain, admin_api_key, api_version,
+                _SHOP_TIMEZONE_QUERY, {}, op_name="shop timezone", on_retry=on_retry,
+            )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        return None
+
+    tz = ((data.get("shop") or {}).get("ianaTimezone") or "").strip() or None
+    if tz:
+        _shop_timezones[shop_domain] = tz
+    return tz
+
+
+def local_date(iso_utc: Optional[str], tz: Optional[str]) -> Optional[str]:
+    """
+    The calendar date an instant fell on in the shop's own timezone, "YYYY-MM-DD".
+
+    This is what every window comparison in the report must use, so that our
+    idea of a day matches the one Shopify filtered on. Durations must NOT use
+    it — elapsed time is timezone-free and already correct on the timestamps.
+    """
+    if not iso_utc:
+        return None
+    if not tz:
+        return iso_utc[:10]  # no timezone resolved: raw UTC, as before
+    try:
+        dt = datetime.fromisoformat(iso_utc.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return iso_utc[:10]
+    try:
+        return dt.astimezone(ZoneInfo(tz)).strftime("%Y-%m-%d")
+    except Exception:
+        return iso_utc[:10]
 
 
 # ============================================================================
