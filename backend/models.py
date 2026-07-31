@@ -1,5 +1,5 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Enum, Text, Numeric
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import Column, Integer, BigInteger, String, Boolean, DateTime, ForeignKey, Enum, Text, Numeric, UniqueConstraint, ForeignKeyConstraint
+from sqlalchemy.dialects.postgresql import JSONB, ARRAY
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from database import Base
@@ -195,3 +195,131 @@ class ItemTrackerExclusion(Base):
     void_status = Column(Integer, nullable=True)  # NULL=all, 0=non-voided, 1=voided
     excluded_at = Column(DateTime(timezone=True), server_default=func.now())
     notes = Column(Text)
+
+
+class ShopifySyncState(Base):
+    __tablename__ = "shopify_sync_state"
+
+    id = Column(Integer, primary_key=True, index=True)
+    store_id = Column(Integer, ForeignKey("stores.id", ondelete="CASCADE"), nullable=False, unique=True)
+    status = Column(String(20), nullable=False, server_default="idle")
+    phase = Column(String(40))
+    mode = Column(String(12))
+    run_started_at = Column(DateTime(timezone=True))
+    heartbeat_at = Column(DateTime(timezone=True))
+    last_completed_at = Column(DateTime(timezone=True))
+    last_sync_started_at = Column(DateTime(timezone=True))
+    shop_timezone = Column(String(64))
+    customers_count = Column(Integer, default=0)
+    orders_count = Column(Integer, default=0)
+    line_items_count = Column(Integer, default=0)
+    error = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    store = relationship("Store")
+
+
+class ShopifyCustomer(Base):
+    __tablename__ = "shopify_customers"
+
+    id = Column(BigInteger, primary_key=True)
+    store_id = Column(Integer, ForeignKey("stores.id", ondelete="CASCADE"), nullable=False)
+    shopify_id = Column(BigInteger, nullable=False)
+    shopify_gid = Column(Text, nullable=False)
+    email = Column(Text)
+    email_normalized = Column(Text)
+    first_name = Column(Text)
+    last_name = Column(Text)
+    display_name = Column(Text)
+    phone = Column(Text)
+    state = Column(String(30))
+    verified_email = Column(Boolean)
+    tags = Column(ARRAY(Text))
+    note = Column(Text)
+    number_of_orders = Column(Integer)
+    amount_spent = Column(Numeric(14, 2))
+    currency = Column(String(10))
+    default_address_zip = Column(Text)
+    default_province_code = Column(Text)
+    default_country_code = Column(Text)
+    created_at = Column(DateTime(timezone=True))
+    shopify_updated_at = Column(DateTime(timezone=True))
+    raw = Column(JSONB, nullable=False)
+    synced_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (UniqueConstraint("store_id", "shopify_id"),)
+
+
+class ShopifyOrder(Base):
+    __tablename__ = "shopify_orders"
+
+    id = Column(BigInteger, primary_key=True)
+    store_id = Column(Integer, ForeignKey("stores.id", ondelete="CASCADE"), nullable=False)
+    shopify_id = Column(BigInteger, nullable=False)
+    shopify_gid = Column(Text, nullable=False)
+    name = Column(Text)
+    customer_shopify_id = Column(BigInteger)
+    email = Column(Text)
+    created_at = Column(DateTime(timezone=True))
+    processed_at = Column(DateTime(timezone=True))
+    shopify_updated_at = Column(DateTime(timezone=True))
+    cancelled_at = Column(DateTime(timezone=True))
+    closed_at = Column(DateTime(timezone=True))
+    financial_status = Column(String(30))
+    fulfillment_status = Column(String(30))
+    tags = Column(ARRAY(Text))
+    note = Column(Text)
+    total_price = Column(Numeric(14, 2))
+    subtotal_price = Column(Numeric(14, 2))
+    total_discounts = Column(Numeric(14, 2))
+    total_refunded = Column(Numeric(14, 2))
+    currency = Column(String(10))
+    ship_province_code = Column(Text)
+    ship_province = Column(Text)
+    ship_country_code = Column(Text)
+    ship_zip = Column(Text)
+    ship_city = Column(Text)
+    shipping_line_title = Column(Text)
+    shipping_carrier_identifier = Column(Text)
+    fulfilled_at = Column(DateTime(timezone=True))
+    in_transit_at = Column(DateTime(timezone=True))
+    delivered_at = Column(DateTime(timezone=True))
+    tracking_company = Column(Text)
+    tracking_number = Column(Text)
+    tracking_url = Column(Text)
+    fulfillments = Column(JSONB)
+    raw = Column(JSONB, nullable=False)
+    synced_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (UniqueConstraint("store_id", "shopify_id"),)
+
+
+class ShopifyOrderLineItem(Base):
+    __tablename__ = "shopify_order_line_items"
+
+    id = Column(BigInteger, primary_key=True)
+    store_id = Column(Integer, ForeignKey("stores.id", ondelete="CASCADE"), nullable=False)
+    order_shopify_id = Column(BigInteger, nullable=False)
+    shopify_id = Column(BigInteger, nullable=False)
+    title = Column(Text)
+    variant_title = Column(Text)
+    sku = Column(Text)
+    vendor = Column(Text)
+    barcode = Column(Text)
+    product_title = Column(Text)
+    product_shopify_id = Column(BigInteger)
+    variant_shopify_id = Column(BigInteger)
+    quantity = Column(Integer)
+    original_unit_price = Column(Numeric(14, 2))
+    discounted_total = Column(Numeric(14, 2))
+    raw = Column(JSONB)
+
+    __table_args__ = (
+        UniqueConstraint("store_id", "shopify_id"),
+        ForeignKeyConstraint(
+            ["store_id", "order_shopify_id"],
+            ["shopify_orders.store_id", "shopify_orders.shopify_id"],
+            ondelete="CASCADE",
+        ),
+    )

@@ -1011,3 +1011,12 @@ class CheckedOrdersResponse(BaseModel):
     slow_threshold_minutes: float = 0.0
     seconds_per_product: float = 10.0
     orders: List[CheckedOrder] = []
+
+
+class ShopifySyncRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # incremental re-fetches records whose updated_at moved since the last
+    # successful run; full re-downloads everything and prunes deleted records.
+    # The first-ever sync of a store always runs full regardless.
+    mode: Literal["incremental", "full"] = "incremental"

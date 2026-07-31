@@ -58,6 +58,7 @@ from schemas import (
     InventoryTimeRequest, InventoryTimeResponse, InventoryTimeSession,
     InventoryTimeUsersResponse,
     CheckedOrdersRequest, CheckedOrdersResponse, CheckedOrder,
+    ShopifySyncRequest,
     CheckedOrderUser, CheckedOrdersUsersResponse,
 )
 from mssql_helper import (
@@ -130,6 +131,9 @@ async def lifespan(app: FastAPI):
     print("[SHUTDOWN] Shutting down Checked Orders thread pool...")
     from checked_orders_helper import shutdown_chkord_executor
     shutdown_chkord_executor()
+    print("[SHUTDOWN] Shutting down Shopify Sync thread pool...")
+    from shopify_sync_helper import shutdown_sync_executor
+    shutdown_sync_executor()
     print("[SHUTDOWN] Cleanup complete.")
 
 app = FastAPI(title="Global UPC API", version="1.0.0", lifespan=lifespan)
@@ -6935,18 +6939,32 @@ async def shopify_analytics_lost_customers_stream(
         # Resolved once here (and cached in the helper) rather than per store.
         # Concurrent: these are independent one-shot queries against different
         # shops, and serialising them added a second to every cold run.
+        # Which stores have a completed local sync. Those are served from
+        # PostgreSQL (scan, first orders, cross-store probes); the rest use the
+        # live API exactly as before, so partial coverage degrades per store
+        # rather than per report.
+        synced_map = await asyncio.to_thread(shopify_sync.get_synced_stores)
+        local_ids = {sid for sid in synced_map}
+
         tz_shops = list({s["id"]: s for s in (store_list + all_shopify)}.values())
+        # Synced shops carry the timezone captured at sync time, so a local run
+        # does not depend on the Shopify API being reachable at all.
+        tz_by_shop: Dict[int, Optional[str]] = {
+            sid: info.get("shop_timezone")
+            for sid, info in synced_map.items() if info.get("shop_timezone")
+        }
+        tz_need = [sh for sh in tz_shops if not tz_by_shop.get(sh["id"])]
         tz_values = await asyncio.gather(*[
             fetch_shop_timezone(
                 shop_domain=sh["shop_domain"],
                 admin_api_key=sh["admin_api_key"],
                 api_version=sh["api_version"],
-            ) for sh in tz_shops
+            ) for sh in tz_need
         ], return_exceptions=True)
-        tz_by_shop: Dict[int, Optional[str]] = {
-            sh["id"]: (tz if isinstance(tz, str) else None)
-            for sh, tz in zip(tz_shops, tz_values)
-        }
+        for sh, tz_val in zip(tz_need, tz_values):
+            tz_by_shop[sh["id"]] = tz_val if isinstance(tz_val, str) else None
+        for sh in tz_shops:
+            tz_by_shop.setdefault(sh["id"], None)
 
         # The silence cutoff, per shop, in that shop's own calendar. Shops in
         # different timezones are not on the same day — measured live, a US shop
@@ -6967,18 +6985,24 @@ async def shopify_analytics_lost_customers_stream(
         tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
 
         # The partition is per shop: it spans that shop's own customer history.
-        # Both probes are one cheap query each, run together.
+        # Both probes are one cheap query each, run together. Locally-served
+        # stores skip them — a single SQL query needs no creation-date shards.
+        probe_stores = [s for s in store_list if s["id"] not in local_ids]
         earliest_values = await asyncio.gather(*[
             fetch_earliest_customer_date(
                 shop_domain=s["shop_domain"],
                 admin_api_key=s["admin_api_key"],
                 api_version=s["api_version"],
-            ) for s in store_list
+            ) for s in probe_stores
         ], return_exceptions=True)
         shards_by_store: Dict[int, List[tuple]] = {}
         concurrency_by_store: Dict[int, int] = {}
         unpartitioned: List[str] = []
-        for s, earliest in zip(store_list, earliest_values):
+        for s in store_list:
+            if s["id"] in local_ids:
+                shards_by_store[s["id"]] = [(None, None)]
+                concurrency_by_store[s["id"]] = 1
+        for s, earliest in zip(probe_stores, earliest_values):
             first = earliest if isinstance(earliest, str) else None
             conc = _scan_concurrency_for_rate(shopify_bucket_rate(s["shop_domain"]))
             concurrency_by_store[s["id"]] = conc
@@ -7025,8 +7049,10 @@ async def shopify_analytics_lost_customers_stream(
                     }))
 
                 shards = shards_by_store.get(s["id"]) or [(None, None)]
+                data_source = "local" if s["id"] in local_ids else "live"
                 events.put_nowait(("store_start", {
                     "store_id": s["id"], "store_name": s["name"], "shards": len(shards),
+                    "data_source": data_source,
                 }))
 
                 store_tz = tz_by_shop.get(s["id"])
@@ -7112,13 +7138,42 @@ async def shopify_analytics_lost_customers_stream(
                         run_shard(new_walk_id(), a, b, depth + 1) for a, b in parts
                     ], return_exceptions=True)
 
-                # Ranges are equal in date span but not in customer volume, so
-                # each cursor stops after a page budget and whatever is left of a
-                # dense range is split across cursors that have gone idle.
-                scan_pool = asyncio.Semaphore(concurrency_by_store.get(s["id"], 4))
-                await asyncio.gather(*[
-                    run_shard(i, lo, hi) for i, (lo, hi) in enumerate(shards)
-                ], return_exceptions=True)
+                if data_source == "local":
+                    # One SQL query replaces the whole sharded cursor walk: the
+                    # 25k pagination cap, page budgets and adaptive splitting
+                    # exist only to cope with the live API.
+                    events.put_nowait(("phase", {
+                        "store_id": s["id"], "store_name": s["name"],
+                        "label": "reading synced local data",
+                    }))
+                    try:
+                        local_res = await lost_customers_local.scan_store(
+                            s["id"], tz_by_shop.get(s["id"]), history_from)
+                    except Exception as e:
+                        local_res = {
+                            "ok": False, "complete": False, "incomplete_reason": None,
+                            "error": f"Local data read failed: {e}",
+                            "customers": [], "warnings": [], "pages": 0,
+                            "resume_from": None,
+                        }
+                    collected.append(local_res)
+                    seen_ids.update(
+                        c["customer_id"] for c in local_res.get("customers") or []
+                        if c.get("customer_id"))
+                    events.put_nowait(("shard_done", {
+                        "store_id": s["id"], "store_name": s["name"], "shard": 0,
+                        "ok": bool(local_res.get("ok")), "pages": 0,
+                        "scanned": len(local_res.get("customers") or []),
+                        "distinct": len(seen_ids),
+                    }))
+                else:
+                    # Ranges are equal in date span but not in customer volume, so
+                    # each cursor stops after a page budget and whatever is left of a
+                    # dense range is split across cursors that have gone idle.
+                    scan_pool = asyncio.Semaphore(concurrency_by_store.get(s["id"], 4))
+                    await asyncio.gather(*[
+                        run_shard(i, lo, hi) for i, (lo, hi) in enumerate(shards)
+                    ], return_exceptions=True)
                 shard_results = collected
 
                 by_id: Dict[str, Dict[str, Any]] = {}
@@ -7237,17 +7292,20 @@ async def shopify_analytics_lost_customers_stream(
                         "store_id": s["id"], "store_name": s["name"],
                         "label": "checking when each customer started",
                     }))
-                    fo = await fetch_customer_first_orders(
-                        shop_domain=s["shop_domain"],
-                        admin_api_key=s["admin_api_key"],
-                        customer_ids=candidates,
-                        api_version=s["api_version"],
-                        on_batch=lambda d, t, _s=s: events.put_nowait(("first_orders", {
-                            "store_id": _s["id"], "store_name": _s["name"],
-                            "done": d, "total": t,
-                        })),
-                        on_retry=on_retry,
-                    )
+                    if data_source == "local":
+                        fo = await lost_customers_local.first_orders(s["id"], candidates)
+                    else:
+                        fo = await fetch_customer_first_orders(
+                            shop_domain=s["shop_domain"],
+                            admin_api_key=s["admin_api_key"],
+                            customer_ids=candidates,
+                            api_version=s["api_version"],
+                            on_batch=lambda d, t, _s=s: events.put_nowait(("first_orders", {
+                                "store_id": _s["id"], "store_name": _s["name"],
+                                "done": d, "total": t,
+                            })),
+                            on_retry=on_retry,
+                        )
                     if fo.get("ok"):
                         first_map = fo.get("first_orders") or {}
                         unknown_first = fo.get("missing", 0)
@@ -7438,6 +7496,10 @@ async def shopify_analytics_lost_customers_stream(
                             # bucket still paces it, and results are merged in a
                             # fixed shop order so attribution cannot vary.
                             async def email_probe(other):
+                                if other["id"] in local_ids:
+                                    return other, await lost_customers_local.emails_probe(
+                                        other["id"], tz_by_shop.get(other["id"]),
+                                        lookup, window=win)
                                 return other, await fetch_customers_by_emails(
                                     shop_domain=other["shop_domain"],
                                     admin_api_key=other["admin_api_key"],
@@ -7537,6 +7599,10 @@ async def shopify_analytics_lost_customers_stream(
                             by_name: Dict[str, List[Dict[str, Any]]] = {}
 
                             async def name_probe(other):
+                                if other["id"] in local_ids:
+                                    return other, await lost_customers_local.names_probe(
+                                        other["id"], tz_by_shop.get(other["id"]),
+                                        wanted, window=win)
                                 return other, await fetch_customers_by_name(
                                     shop_domain=other["shop_domain"],
                                     admin_api_key=other["admin_api_key"],
@@ -7741,6 +7807,10 @@ async def shopify_analytics_lost_customers_stream(
                                 }))
 
                                 async def origin_probe(other):
+                                    if other["id"] in local_ids:
+                                        return other, await lost_customers_local.emails_probe(
+                                            other["id"], tz_by_shop.get(other["id"]),
+                                            emails, want_origin=True)
                                     return other, await fetch_customers_by_emails(
                                         shop_domain=other["shop_domain"],
                                         admin_api_key=other["admin_api_key"],
@@ -7812,6 +7882,10 @@ async def shopify_analytics_lost_customers_stream(
                             wanted = sorted({(c["first_name"], c["last_name"]) for c in people})
 
                             async def origin_name_probe(other):
+                                if other["id"] in local_ids:
+                                    return other, await lost_customers_local.names_probe(
+                                        other["id"], tz_by_shop.get(other["id"]),
+                                        wanted, want_origin=True)
                                 return other, await fetch_customers_by_name(
                                     shop_domain=other["shop_domain"],
                                     admin_api_key=other["admin_api_key"],
@@ -8013,6 +8087,7 @@ async def shopify_analytics_lost_customers_stream(
                     "moved_unresolved": moved_unresolved,
                     "cutoff": cutoff,
                     "shop_timezone": tz,
+                    "data_source": data_source,
                     # The departures whose cross-store check was incomplete. They
                     # belong in the table but not in the comparison, so the
                     # benchmark filters on this rather than dropping the store.
@@ -8080,6 +8155,7 @@ async def shopify_analytics_lost_customers_stream(
                 store_event = {
                     "store_id": st.get("id"), "store_name": st.get("name"),
                     "ok": payload.get("ok"),
+                    "data_source": payload.get("data_source"),
                     "complete": payload.get("complete"),
                     "cohort_complete": payload.get("cohort_complete"),
                     "incomplete_reason": payload.get("incomplete_reason"),
@@ -8351,13 +8427,22 @@ async def shopify_analytics_customer_detail(
         raise HTTPException(status_code=404, detail="Shopify store not found")
 
     conn = store.shopify_connection
-    result = await fetch_customer_recent_orders(
-        shop_domain=conn.shop_domain,
-        admin_api_key=conn.admin_api_key,
-        customer_id=request.customer_id,
-        api_version=conn.api_version,
-        limit=request.limit or 5,
-    )
+    result = None
+    synced_map = await asyncio.to_thread(shopify_sync.get_synced_stores)
+    if store.id in synced_map:
+        result = await lost_customers_local.recent_orders(
+            store.id, request.customer_id, request.limit or 5)
+        # A local read failing is a code/data problem; the live API still works.
+        if not result.get("ok"):
+            result = None
+    if result is None:
+        result = await fetch_customer_recent_orders(
+            shop_domain=conn.shop_domain,
+            admin_api_key=conn.admin_api_key,
+            customer_id=request.customer_id,
+            api_version=conn.api_version,
+            limit=request.limit or 5,
+        )
     if not result.get("ok"):
         raise HTTPException(status_code=502, detail=result.get("error") or "Shopify request failed")
     return {"store_name": store.name, "orders": result["orders"]}
@@ -8665,6 +8750,10 @@ async def shopify_analytics_lost_products_stream(
             return
         work.sort(key=lambda w: w["id"])
 
+        # Same routing rule as the report itself: a synced store is analysed
+        # from local line items, everything else from the live API.
+        lp_synced = await asyncio.to_thread(shopify_sync.get_synced_stores)
+
         total_orders = sum(len(w["order_ids"]) for w in work)
 
         yield f"event: progress\ndata: {json.dumps({'phase': 'started', 'total_orders': total_orders, 'stores': [{'store_id': w['id'], 'store_name': w['name'], 'orders': len(w['order_ids'])} for w in work]})}\n\n"
@@ -8686,11 +8775,18 @@ async def shopify_analytics_lost_products_stream(
                         "kind": kind, "done": done, "total": total,
                     }))
 
-                last = await fetch_orders_line_items(
-                    shop_domain=w["shop_domain"], admin_api_key=w["admin_api_key"],
-                    order_ids=w["order_ids"], api_version=w["api_version"],
-                    on_batch=on_batch, on_retry=on_retry,
-                )
+                is_local = w["id"] in lp_synced
+                local_tz = (lp_synced.get(w["id"]) or {}).get("shop_timezone")
+
+                if is_local:
+                    last = await lost_customers_local.orders_line_items(
+                        w["id"], w["order_ids"])
+                else:
+                    last = await fetch_orders_line_items(
+                        shop_domain=w["shop_domain"], admin_api_key=w["admin_api_key"],
+                        order_ids=w["order_ids"], api_version=w["api_version"],
+                        on_batch=on_batch, on_retry=on_retry,
+                    )
                 if not last.get("ok"):
                     return {"store": w, "ok": False, "error": last.get("error") or "Fetch failed",
                             "last": None, "baseline": None, "windows": []}
@@ -8701,25 +8797,35 @@ async def shopify_analytics_lost_products_stream(
                 pstart, pend, pdays = _rate_probe_window(
                     request.active_since, request.silent_since)
                 rate = 0.0
-                ok_c, _err_c, cnt = await count_orders(
-                    shop_domain=w["shop_domain"], admin_api_key=w["admin_api_key"],
-                    query=f"created_at:>={pstart} created_at:<{pend} {ORDER_STATUS_FILTER}",
-                    api_version=w["api_version"],
-                )
-                if ok_c and cnt:
-                    rate = cnt / max(1, pdays)
+                if is_local:
+                    cnt = await lost_customers_local.count_completed_orders(
+                        w["id"], local_tz, pstart, pend)
+                    if cnt:
+                        rate = cnt / max(1, pdays)
+                else:
+                    ok_c, _err_c, cnt = await count_orders(
+                        shop_domain=w["shop_domain"], admin_api_key=w["admin_api_key"],
+                        query=f"created_at:>={pstart} created_at:<{pend} {ORDER_STATUS_FILTER}",
+                        api_version=w["api_version"],
+                    )
+                    if ok_c and cnt:
+                        rate = cnt / max(1, pdays)
                 windows = _baseline_months(
                     request.active_since, request.silent_since, rate)
 
-                base = await fetch_baseline_order_items(
-                    shop_domain=w["shop_domain"], admin_api_key=w["admin_api_key"],
-                    windows=windows, api_version=w["api_version"],
-                    on_batch=lambda d, t, _w=w: events.put_nowait(("batch", {
-                        "store_id": _w["id"], "store_name": _w["name"],
-                        "kind": "baseline", "done": d, "total": t,
-                    })),
-                    on_retry=on_retry,
-                )
+                if is_local:
+                    base = await lost_customers_local.baseline_order_items(
+                        w["id"], local_tz, windows)
+                else:
+                    base = await fetch_baseline_order_items(
+                        shop_domain=w["shop_domain"], admin_api_key=w["admin_api_key"],
+                        windows=windows, api_version=w["api_version"],
+                        on_batch=lambda d, t, _w=w: events.put_nowait(("batch", {
+                            "store_id": _w["id"], "store_name": _w["name"],
+                            "kind": "baseline", "done": d, "total": t,
+                        })),
+                        on_retry=on_retry,
+                    )
                 return {"store": w, "ok": True, "error": None, "last": last,
                         "baseline": base, "windows": windows, "orders_per_day": round(rate, 1)}
 
@@ -8950,6 +9056,136 @@ async def shopify_analytics_lost_products_stream(
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )
 
+
+
+# ============================================================================
+# Shopify Local Data Sync
+#
+# Downloads each Shopify store's full customer + order history (line items,
+# fulfillments, tags, notes included) into PostgreSQL so reports can run from
+# local SQL instead of live GraphQL. Full syncs go through the Bulk Operations
+# API; repeat syncs paginate an updated_at delta. See shopify_sync_helper.py.
+# ============================================================================
+
+import shopify_sync_helper as shopify_sync
+import lost_customers_local
+from sqlalchemy import text as sa_text
+
+
+def _load_sync_store(db: Session, store_id: int) -> Dict[str, Any]:
+    store = db.query(Store).filter(
+        Store.id == store_id, Store.store_type == StoreType.shopify,
+    ).first()
+    if not store or not store.shopify_connection:
+        raise HTTPException(status_code=404, detail="Shopify store not found")
+    conn = store.shopify_connection
+    return {
+        "id": store.id, "name": store.name,
+        "shop_domain": conn.shop_domain,
+        "admin_api_key": conn.admin_api_key,
+        "api_version": conn.api_version,
+    }
+
+
+@app.get("/api/shopify-sync/status")
+async def shopify_sync_status():
+    return {"stores": await asyncio.to_thread(shopify_sync.get_sync_states)}
+
+
+@app.post("/api/shopify-sync/{store_id}/stream")
+async def shopify_sync_stream(
+    store_id: int,
+    request: ShopifySyncRequest,
+    db: Session = Depends(get_db),
+):
+    store = _load_sync_store(db, store_id)
+
+    # The anchor for an incremental run is the start of the last successful one.
+    # No successful run yet -> the store has never fully synced -> force full.
+    state_row = db.execute(
+        sa_text(
+            "SELECT last_completed_at, last_sync_started_at "
+            "FROM shopify_sync_state WHERE store_id = :sid"
+        ),
+        {"sid": store_id},
+    ).mappings().first()
+    anchor = state_row["last_sync_started_at"] if state_row else None
+    mode = request.mode
+    if not state_row or state_row["last_completed_at"] is None or anchor is None:
+        mode = "full"
+
+    claimed = await asyncio.to_thread(shopify_sync.claim_sync, store_id, mode)
+    if claimed is None:
+        raise HTTPException(status_code=409, detail="A sync is already running for this store")
+
+    events: asyncio.Queue = asyncio.Queue()
+    tracker = shopify_sync._BulkTracker()
+
+    async def emit(kind: str, payload: Dict[str, Any]):
+        events.put_nowait((kind, payload))
+
+    async def worker():
+        try:
+            summary = await shopify_sync.run_store_sync(
+                store, mode, anchor, emit, tracker=tracker
+            )
+            await asyncio.to_thread(
+                shopify_sync.release_sync, store_id,
+                counts=summary["totals"], run_started=summary["run_started"],
+            )
+            events.put_nowait(("complete", {
+                "mode": summary["mode"],
+                "seconds": summary["seconds"],
+                "synced": summary["synced"],
+                "totals": summary["totals"],
+            }))
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            message = str(e)
+            print(f"[SHOPIFY-SYNC] store {store_id} failed: {message}")
+            try:
+                await asyncio.to_thread(shopify_sync.release_sync, store_id, error=message[:500])
+            finally:
+                events.put_nowait(("error", {"message": message}))
+
+    async def generate() -> AsyncGenerator[str, None]:
+        task = asyncio.create_task(worker())
+        finished = False
+        try:
+            yield f"event: progress\ndata: {json.dumps({'phase': 'starting', 'mode': mode, 'store_id': store_id, 'store_name': store['name']})}\n\n"
+            while True:
+                try:
+                    kind, payload = await asyncio.wait_for(events.get(), timeout=15)
+                except asyncio.TimeoutError:
+                    yield ": heartbeat\n\n"
+                    continue
+                yield f"event: {kind}\ndata: {json.dumps(payload)}\n\n"
+                if kind in ("complete", "error"):
+                    finished = True
+                    break
+        finally:
+            # A client disconnect surfaces as CancelledError inside the awaits
+            # (uvicorn cancels the response task), NOT only as GeneratorExit —
+            # so the cleanup lives in finally, keyed on whether the run ended
+            # normally. Without this the claim stays "running" until the stale
+            # heartbeat takeover, and the bulk op keeps exporting shop-side.
+            if not finished:
+                task.cancel()
+                if tracker.current_id:
+                    asyncio.create_task(
+                        shopify_sync.cancel_bulk_operation(store, tracker.current_id)
+                    )
+                asyncio.create_task(
+                    asyncio.to_thread(shopify_sync.release_sync, store_id, error="cancelled")
+                )
+                print(f"[SHOPIFY-SYNC] store {store_id} sync cancelled by client")
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
 
 
 if __name__ == "__main__":

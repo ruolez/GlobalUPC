@@ -12067,6 +12067,8 @@ function activateShopifyAnalyticsTab(tabId) {
   } else if (target === "lost-customers") {
     loadLostCustomersPanel();
     sacrScheduleChartRender();
+  } else if (target === "data-sync") {
+    loadDataSyncPanel();
   }
 }
 
@@ -13700,6 +13702,9 @@ const SACR_NUMERIC_COLUMNS = new Set([
 ]);
 
 function loadLostCustomersPanel() {
+  // Refreshed on every visit, not just first init: a sync finishing in the
+  // Data Sync tab must be reflected here without a reload.
+  sacrUpdateDataSourceNote();
   if (sacrState.initialized) return;
   sacrState.initialized = true;
 
@@ -13728,6 +13733,7 @@ function loadLostCustomersPanel() {
     // Nothing on screen may describe a store other than the selected one.
     sacrClearResults();
     updateSacrRunBtn();
+    sacrUpdateDataSourceNote();
   });
 
   [
@@ -17498,3 +17504,276 @@ async function saveCheckedOrdersSettings() {
 document
   .getElementById("checked-orders-settings-save")
   ?.addEventListener("click", saveCheckedOrdersSettings);
+
+// ============================================================================
+// Shopify Data Sync (Shopify Analytics > Data Sync)
+//
+// Per-store local mirror of Shopify customers + orders. Cards show the last
+// successful sync and live progress; the report pages consult the same status
+// endpoint to decide whether a run will use local data or the live API.
+// ============================================================================
+
+const syncState = {
+  stores: [],
+  loaded: false,
+  running: {}, // store_id -> { abort, phase, detail, objectCount, upserted, lineItems }
+};
+
+async function fetchSyncStatus() {
+  const data = await apiRequest("/shopify-sync/status");
+  syncState.stores = data.stores || [];
+  syncState.loaded = true;
+  return syncState.stores;
+}
+
+function syncTimeAgo(iso) {
+  if (!iso) return "";
+  const then = new Date(iso).getTime();
+  if (!isFinite(then)) return "";
+  const mins = Math.floor((Date.now() - then) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+function loadDataSyncPanel() {
+  const list = document.getElementById("sync-store-list");
+  if (!list) return;
+  if (!list.dataset.bound) {
+    list.dataset.bound = "1";
+    list.addEventListener("click", (e) => {
+      const btn = e.target.closest("button[data-sync-action]");
+      if (!btn) return;
+      const storeId = parseInt(btn.dataset.storeId, 10);
+      const action = btn.dataset.syncAction;
+      if (action === "sync") {
+        startSync(storeId, "incremental");
+      } else if (action === "full") {
+        if (
+          confirm(
+            "Full resync re-downloads this store's entire history and can take a while. Continue?",
+          )
+        ) {
+          startSync(storeId, "full");
+        }
+      } else if (action === "cancel") {
+        cancelSync(storeId);
+      }
+    });
+    document
+      .getElementById("sync-refresh-btn")
+      ?.addEventListener("click", () => loadDataSyncPanel());
+  }
+  fetchSyncStatus()
+    .then(renderSyncStores)
+    .catch((e) => {
+      list.innerHTML = `<p style="color: var(--danger); font-size: 0.8125rem;">Failed to load sync status: ${escapeHtml(e.message)}</p>`;
+    });
+}
+
+function syncProgressText(entry) {
+  const bits = [];
+  if (entry.detail) bits.push(entry.detail);
+  if (entry.objectCount != null)
+    bits.push(`${entry.objectCount.toLocaleString()} exported`);
+  if (entry.upserted != null)
+    bits.push(`${entry.upserted.toLocaleString()} saved`);
+  if (entry.lineItems != null)
+    bits.push(`${entry.lineItems.toLocaleString()} line items`);
+  return bits.join(" · ") || "Working…";
+}
+
+function updateSyncProgressLine(storeId) {
+  const el = document.getElementById(`sync-progress-${storeId}`);
+  const entry = syncState.running[storeId];
+  if (el && entry) el.textContent = syncProgressText(entry);
+}
+
+function renderSyncStores() {
+  const list = document.getElementById("sync-store-list");
+  if (!list) return;
+  if (!syncState.stores.length) {
+    list.innerHTML =
+      '<p style="color: var(--text-secondary); font-size: 0.8125rem;">No Shopify stores configured.</p>';
+    return;
+  }
+  list.innerHTML = syncState.stores
+    .map((s) => {
+      const mine = syncState.running[s.store_id];
+      const runningElsewhere = !mine && s.status === "running";
+      let statusHtml;
+      if (mine) {
+        statusHtml = `
+          <div class="sync-running-row">
+            <span class="sync-spinner"></span>
+            <span class="sync-progress-line" id="sync-progress-${s.store_id}">${escapeHtml(syncProgressText(mine))}</span>
+          </div>`;
+      } else if (runningElsewhere) {
+        statusHtml = `
+          <div class="sync-running-row">
+            <span class="sync-spinner"></span>
+            <span class="sync-progress-line">Sync in progress (started from another session)</span>
+          </div>`;
+      } else if (s.last_completed_at) {
+        const counts = [
+          `${(s.customers_count || 0).toLocaleString()} customers`,
+          `${(s.orders_count || 0).toLocaleString()} orders`,
+          `${(s.line_items_count || 0).toLocaleString()} line items`,
+        ].join(" · ");
+        statusHtml = `
+          <div class="sync-status-line">
+            <span class="sync-badge sync-badge-ok">Synced ${escapeHtml(syncTimeAgo(s.last_completed_at))}</span>
+            <span style="color: var(--text-secondary);">${counts}</span>
+          </div>`;
+      } else {
+        statusHtml = `
+          <div class="sync-status-line">
+            <span class="sync-badge sync-badge-never">Never synced</span>
+            <span style="color: var(--text-secondary);">Reports use the live Shopify API for this store</span>
+          </div>`;
+      }
+      const errorHtml =
+        !mine && s.status === "error" && s.error && s.error !== "cancelled"
+          ? `<div class="sync-error-line">Last sync failed: ${escapeHtml(s.error)}</div>`
+          : "";
+      const busy = Boolean(mine || runningElsewhere);
+      const buttons = mine
+        ? `<button type="button" class="btn btn-secondary sync-btn" data-sync-action="cancel" data-store-id="${s.store_id}">Cancel</button>`
+        : `
+          <button type="button" class="btn btn-primary sync-btn" data-sync-action="sync" data-store-id="${s.store_id}" ${busy ? "disabled" : ""}>
+            ${s.last_completed_at ? "Sync" : "Sync now"}
+          </button>
+          <button type="button" class="btn btn-secondary sync-btn" data-sync-action="full" data-store-id="${s.store_id}" ${busy || !s.last_completed_at ? "disabled" : ""}>
+            Full resync
+          </button>`;
+      return `
+        <div class="sync-store-card${s.is_active ? "" : " sync-store-inactive"}">
+          <div class="sync-store-head">
+            <span class="sync-store-name">${escapeHtml(s.name)}${s.is_active ? "" : ' <span class="sync-badge sync-badge-never">inactive</span>'}</span>
+            <div class="sync-store-actions">${buttons}</div>
+          </div>
+          ${statusHtml}
+          ${errorHtml}
+        </div>`;
+    })
+    .join("");
+}
+
+async function startSync(storeId, mode) {
+  if (syncState.running[storeId]) return;
+  const abort = new AbortController();
+  syncState.running[storeId] = { abort, phase: "starting", detail: "Starting…" };
+  renderSyncStores();
+  try {
+    const response = await fetch(`${API_BASE}/shopify-sync/${storeId}/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode }),
+      signal: abort.signal,
+    });
+    if (!response.ok) {
+      let msg = `HTTP ${response.status}`;
+      try {
+        const j = await response.json();
+        msg = j.detail || j.error?.message || msg;
+      } catch (e) {
+        /* not json */
+      }
+      throw new Error(msg);
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const messages = buffer.split("\n\n");
+      buffer = messages.pop();
+      for (const raw of messages) {
+        const msg = raw.trim();
+        if (!msg || msg.startsWith(":")) continue;
+        const match = msg.match(/event: (\w+)\ndata: (.+)/s);
+        if (!match) continue;
+        let data;
+        try {
+          data = JSON.parse(match[2]);
+        } catch (e) {
+          continue;
+        }
+        handleSyncEvent(storeId, match[1], data);
+      }
+    }
+  } catch (err) {
+    if (err.name !== "AbortError") {
+      showToast(`✗ Sync failed: ${err.message}`, "error");
+    }
+  } finally {
+    delete syncState.running[storeId];
+    loadDataSyncPanel();
+  }
+}
+
+function handleSyncEvent(storeId, type, data) {
+  const entry = syncState.running[storeId];
+  if (type === "progress") {
+    if (!entry) return;
+    entry.phase = data.phase || entry.phase;
+    if (data.detail) entry.detail = data.detail;
+    if (data.object_count != null) entry.objectCount = data.object_count;
+    if (data.upserted != null) entry.upserted = data.upserted;
+    if (data.line_items != null) entry.lineItems = data.line_items;
+    updateSyncProgressLine(storeId);
+  } else if (type === "complete") {
+    const totals = data.totals || {};
+    showToast(
+      `✓ Sync complete — ${(totals.customers || 0).toLocaleString()} customers, ${(totals.orders || 0).toLocaleString()} orders`,
+      "success",
+    );
+  } else if (type === "error") {
+    showToast(`✗ Sync failed: ${data.message || "unknown error"}`, "error");
+  }
+}
+
+function cancelSync(storeId) {
+  const entry = syncState.running[storeId];
+  if (entry?.abort) entry.abort.abort();
+}
+
+// Data-source note on the Lost Customers panel: tells the user before they run
+// whether this store will be served from local synced data or the live API.
+async function sacrUpdateDataSourceNote() {
+  const el = document.getElementById("sacr-data-source");
+  if (!el) return;
+  try {
+    await fetchSyncStatus();
+  } catch (e) {
+    el.textContent = "";
+    return;
+  }
+  const ids = sacrSelectedStoreIds();
+  if (!ids.length) {
+    el.textContent = "";
+    return;
+  }
+  const byId = new Map(syncState.stores.map((s) => [s.store_id, s]));
+  const sel = byId.get(ids[0]);
+  const unsyncedOthers = syncState.stores.filter(
+    (s) => s.is_active && !s.last_completed_at && s.store_id !== ids[0],
+  ).length;
+  if (sel?.last_completed_at) {
+    let txt = `Local data — synced ${syncTimeAgo(sel.last_completed_at)}`;
+    if (unsyncedOthers) {
+      txt += ` · ${unsyncedOthers} other store(s) not synced; cross-store checks use the Shopify API for them`;
+    }
+    el.innerHTML = `<span style="color: var(--success);">●</span> ${escapeHtml(txt)}`;
+  } else {
+    el.innerHTML =
+      `<span style="color: var(--warning);">●</span> ` +
+      escapeHtml(
+        "Not synced — this report will use the live Shopify API. Sync this store in the Data Sync tab for faster, more reliable runs.",
+      );
+  }
+}
