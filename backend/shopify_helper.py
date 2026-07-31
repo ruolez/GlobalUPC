@@ -3191,6 +3191,36 @@ query CustomersByEmail($q: String!, $after: String) {
 }
 """ % ORDER_STATUS_FILTER
 
+# The arrivals check asks a different question of the same connection: not "are
+# they still buying there" but "were they buying there BEFORE they turned up
+# here". That needs the oldest order as well as the newest, plus when the
+# account itself was opened, so an account that exists but never bought can be
+# told apart from a genuine switch. Kept as a separate document so the moved
+# check — which runs on every cross-store run — does not pay for fields it
+# never reads.
+_CUSTOMERS_BY_EMAIL_ORIGIN_QUERY = """
+query CustomersByEmailOrigin($q: String!, $after: String) {
+  customers(first: 250, query: $q, sortKey: ID, after: $after) {
+    pageInfo { hasNextPage endCursor }
+    nodes {
+      id
+      email
+      createdAt
+      firstValidOrder: orders(
+        first: 1, sortKey: CREATED_AT, query: "%s"
+      ) {
+        nodes { id createdAt }
+      }
+      lastValidOrder: orders(
+        first: 1, sortKey: CREATED_AT, reverse: true, query: "%s"
+      ) {
+        nodes { id createdAt }
+      }
+    }
+  }
+}
+""" % (ORDER_STATUS_FILTER, ORDER_STATUS_FILTER)
+
 # A term without a local part matches every customer at that domain. One
 # malformed value in the customer data would otherwise turn a targeted lookup
 # into a scan that truncates and takes the rest of its batch down with it.
@@ -3264,6 +3294,30 @@ query CustomersByName($q: String!, $after: String) {
 }
 """ % ORDER_STATUS_FILTER
 
+# Same document plus the oldest order, for the arrivals check — see the note on
+# _CUSTOMERS_BY_EMAIL_ORIGIN_QUERY.
+_CUSTOMERS_BY_NAME_ORIGIN_QUERY = """
+query CustomersByNameOrigin($q: String!, $after: String) {
+  customers(first: 250, query: $q, sortKey: ID, after: $after) {
+    pageInfo { hasNextPage endCursor }
+    nodes {
+      id
+      firstName
+      lastName
+      email
+      createdAt
+      defaultAddress { zip }
+      firstValidOrder: orders(
+        first: 1, sortKey: CREATED_AT, query: "%s"
+      ) { nodes { createdAt } }
+      lastValidOrder: orders(
+        first: 1, sortKey: CREATED_AT, reverse: true, query: "%s"
+      ) { nodes { createdAt shippingAddress { zip } } }
+    }
+  }
+}
+""" % (ORDER_STATUS_FILTER, ORDER_STATUS_FILTER)
+
 
 async def fetch_customers_by_name(
     shop_domain: str,
@@ -3272,6 +3326,7 @@ async def fetch_customers_by_name(
     api_version: str = "2025-01",
     on_batch=None,
     on_retry=None,
+    want_origin: bool = False,
 ) -> Dict[str, Any]:
     """
     Look up customer records by (first name, last name) at one shop.
@@ -3279,6 +3334,9 @@ async def fetch_customers_by_name(
     `names` is a list of (first, last). Returns {ok, error, candidates,
     truncated, warnings}; each candidate is {id, name_key, zips, last_order,
     email}. ZIP matching and self-exclusion are the caller's job.
+
+    `want_origin` adds `first_order` and `account_created` to each candidate,
+    which the arrivals check needs to tell a switch from a shop-both.
 
     `truncated` is True when a batch still had pages left at the page cap. The
     caller must report it: a missed candidate means failing to notice the
@@ -3320,7 +3378,9 @@ async def fetch_customers_by_name(
                     for page in range(_NAME_MAX_PAGES):
                         data, warnings = await _shopify_graphql(
                             session, shop_domain, admin_api_key, api_version,
-                            _CUSTOMERS_BY_NAME_QUERY, {"q": terms, "after": cursor},
+                            (_CUSTOMERS_BY_NAME_ORIGIN_QUERY if want_origin
+                             else _CUSTOMERS_BY_NAME_QUERY),
+                            {"q": terms, "after": cursor},
                             op_name="customers by name", on_retry=on_retry,
                         )
                         if warnings:
@@ -3335,7 +3395,13 @@ async def fetch_customers_by_name(
                             nodes = (node.get("lastValidOrder") or {}).get("nodes") or []
                             order = nodes[0] if nodes else {}
                             ship = order.get("shippingAddress") or {}
+                            _f = (node.get("firstValidOrder") or {}).get("nodes") or []
+                            extra = {
+                                "first_order": (_f[0].get("createdAt") if _f else None),
+                                "account_created": node.get("createdAt"),
+                            } if want_origin else {}
                             out["candidates"].append({
+                                **extra,
                                 "id": node.get("id"),
                                 "name_key": k,
                                 # Either address can identify the person, the
@@ -3380,6 +3446,7 @@ async def fetch_customers_by_emails(
     api_version: str = "2025-01",
     on_batch=None,
     on_retry=None,
+    want_origin: bool = False,
 ) -> Dict[str, Any]:
     """
     Look up a set of email addresses in one shop.
@@ -3389,11 +3456,18 @@ async def fetch_customers_by_emails(
     the customer exists but has never ordered. A shop can hold more than one
     record for an address, so the latest order across duplicates wins.
 
+    `want_origin` additionally fills `first_orders` (oldest order date, earliest
+    across duplicate records) and `accounts` (account creation date, likewise
+    earliest). Both are keyed by normalized email, and an email present in
+    `accounts` with None in `first_orders` is an account that never bought.
+    It costs an extra nested connection per node, so it is opt-in.
+
     `malformed` counts addresses too broken to search safely; the caller must
     report them rather than let the check silently narrow.
     """
     out: Dict[str, Any] = {
-        "ok": False, "error": None, "last_orders": {}, "malformed": 0, "warnings": [],
+        "ok": False, "error": None, "last_orders": {}, "first_orders": {},
+        "accounts": {}, "malformed": 0, "warnings": [],
     }
 
     try:
@@ -3428,7 +3502,9 @@ async def fetch_customers_by_emails(
                     while True:
                         data, warnings = await _shopify_graphql(
                             session, shop_domain, admin_api_key, api_version,
-                            _CUSTOMERS_BY_EMAIL_QUERY, {"q": terms, "after": cursor},
+                            (_CUSTOMERS_BY_EMAIL_ORIGIN_QUERY if want_origin
+                             else _CUSTOMERS_BY_EMAIL_QUERY),
+                            {"q": terms, "after": cursor},
                             op_name="cross-store email lookup", on_retry=on_retry,
                         )
                         if warnings:
@@ -3445,6 +3521,24 @@ async def fetch_customers_by_emails(
                                 out["last_orders"][em] = last
                             else:
                                 out["last_orders"].setdefault(em, prev)
+                            if not want_origin:
+                                continue
+                            # Mirrored, but earliest-wins: across duplicate
+                            # records the question is when this person first
+                            # appeared at this shop, not most recently.
+                            _f = (node.get("firstValidOrder") or {}).get("nodes") or []
+                            first = _f[0].get("createdAt") if _f else None
+                            prevf = out["first_orders"].get(em)
+                            if first and (prevf is None or first < prevf):
+                                out["first_orders"][em] = first
+                            else:
+                                out["first_orders"].setdefault(em, prevf)
+                            made = node.get("createdAt")
+                            preva = out["accounts"].get(em)
+                            if made and (preva is None or made < preva):
+                                out["accounts"][em] = made
+                            else:
+                                out["accounts"].setdefault(em, preva)
                         page_info = conn.get("pageInfo") or {}
                         if not page_info.get("hasNextPage"):
                             break

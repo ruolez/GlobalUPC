@@ -4338,12 +4338,17 @@
                     <input type="checkbox" id="sacr-cross-store" checked />
                     <span>Exclude customers still ordering under another account</span>
                   </label>
+                  <label class="sacr-check">
+                    <input type="checkbox" id="sacr-check-arrivals" />
+                    <span>Trace where new customers came from</span>
+                  </label>
                   <details class="sacr-help">
                     <summary>How this works</summary>
                     <div class="sacr-help-body">
                       <p><strong>Dates.</strong> Cancelled and fully refunded orders are ignored everywhere in this report. Only customers whose <strong>very first completed order</strong> falls on or after the first date are included &mdash; anyone already buying before it is excluded from the table and from every total. Of those, a customer counts as lost if they have not ordered since the second date; the rest are the comparison group.</p>
                       <p><strong>Another account.</strong> Two passes against <strong>every</strong> active Shopify store, including the customer&rsquo;s own: first by email, then by first name + last name + ZIP. The second catches a re-registration, which Shopify forces onto a different email. Anyone still ordering since the cutoff did not leave, and is excluded from every figure.</p>
                       <p><strong>Min. orders.</strong> 1 includes one-time buyers. Raise it to focus on repeat customers who stopped. Cancelled and refunded orders do not count towards it.</p>
+                      <p><strong>Where new customers came from.</strong> Optional, and slower, because it runs the same two passes over everyone acquired in the window rather than just the leavers. It answers whether a &ldquo;new&rdquo; customer was already yours somewhere else &mdash; measured on one store, only half of them were genuinely new to the business.</p>
                     </div>
                   </details>
                 </div>
@@ -4451,6 +4456,7 @@
                 <button type="button" class="btn btn-primary sacr-btn" id="sacr-states-btn">Lost by state</button>
                 <button type="button" class="btn btn-primary sacr-btn" id="sacr-products-btn">Top products</button>
                 <button type="button" class="btn btn-primary sacr-btn" id="sacr-moved-btn">Moved to another store</button>
+                <button type="button" class="btn btn-primary sacr-btn" id="sacr-arrivals-btn" style="display: none">Where new customers came from</button>
                 <span class="sa-row-count" id="sacr-row-count" aria-live="polite"></span>
               </div>
             </div>
@@ -4583,6 +4589,51 @@
             </table>
           </div>
           <p class="sancm-note" id="sacr-moved-note"></p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Were the newly-acquired customers actually new to the business? -->
+    <div id="sacr-arrivals-modal" class="modal">
+      <div class="modal-content" style="max-width: 1240px; width: 96%">
+        <div class="modal-header">
+          <h3>Where new customers came from</h3>
+          <button type="button" class="modal-close" id="sacr-arrivals-close">&times;</button>
+        </div>
+        <div class="modal-body" id="sacr-arrivals-body" style="padding: 1rem 1.5rem 1.5rem">
+          <p class="sacr-products-scope" id="sacr-arrivals-scope"></p>
+          <div class="sacr-arr-verdicts" id="sacr-arrivals-verdicts"></div>
+          <div class="sacr-moved-flows" id="sacr-arrivals-origins"></div>
+          <div class="sacr-products-toolbar">
+            <label class="sacr-field">Show
+              <select id="sacr-arrivals-filter" class="sacr-control"><option value="">All that were not new</option></select>
+            </label>
+            <label class="sacr-field">Known from
+              <select id="sacr-arrivals-origin" class="sacr-control"><option value="">Any store</option></select>
+            </label>
+            <span class="sa-row-count" id="sacr-arrivals-count" aria-live="polite"></span>
+          </div>
+          <div class="table-container">
+            <table class="data-table sacr-products-table" id="sacr-arrivals-table">
+              <thead>
+                <tr>
+                  <th class="sacr-num sacr-idx">#</th>
+                  <th class="qip-sortable" data-asort="name">Customer <span class="qip-sort-arrow"></span></th>
+                  <th class="qip-sortable" data-asort="verdict">What they were <span class="qip-sort-arrow"></span></th>
+                  <th class="qip-sortable" data-asort="origin_store">Known from <span class="qip-sort-arrow"></span></th>
+                  <th class="qip-sortable" data-asort="arrived">First order here <span class="qip-sort-arrow"></span></th>
+                  <th class="qip-sortable" data-asort="origin_first_order">First order there <span class="qip-sort-arrow"></span></th>
+                  <th class="qip-sortable" data-asort="origin_last_order">Last order there <span class="qip-sort-arrow"></span></th>
+                  <th class="qip-sortable sacr-num" data-asort="orders_count">Orders here <span class="qip-sort-arrow"></span></th>
+                  <th class="qip-sortable sacr-num qip-sort-desc" data-asort="amount_spent">Spent here <span class="qip-sort-arrow"></span></th>
+                  <th class="qip-sortable" data-asort="matched_by">Matched by <span class="qip-sort-arrow"></span></th>
+                </tr>
+              </thead>
+              <tbody id="sacr-arrivals-tbody"></tbody>
+              <tfoot id="sacr-arrivals-tfoot"></tfoot>
+            </table>
+          </div>
+          <p class="sancm-note" id="sacr-arrivals-note"></p>
         </div>
       </div>
     </div>

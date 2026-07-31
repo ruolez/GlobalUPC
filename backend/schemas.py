@@ -690,6 +690,10 @@ class LostCustomersRequest(BaseModel):
     # Drop customers who kept buying at another shop; checked against every
     # active Shopify store, including ones not selected for the report.
     exclude_cross_store: bool = True
+    # Trace where the newly-acquired customers came from. Off by default: it is
+    # a second cross-store sweep, over a cohort that is far larger than the lost
+    # list, so it is worth paying for only when the answer is being read.
+    check_arrivals: bool = False
 
     # Every window decision in this report is a string comparison against these
     # two values, so a non-ISO date does not fail — it quietly compares wrong

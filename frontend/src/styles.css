@@ -6012,13 +6012,15 @@ tr:hover > td .sacr-copy { opacity: 0.8; }
 #sacr-moved-modal .sacr-products-toolbar .sa-row-count { margin-left: auto; }
 
 /* Migration summary: the shape of the movement, above the per-customer rows. */
-#sacr-moved-modal .sacr-moved-flows {
+#sacr-moved-modal .sacr-moved-flows,
+#sacr-arrivals-modal .sacr-moved-flows {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
   margin: 0 0 1rem;
 }
-#sacr-moved-modal .sacr-flow {
+#sacr-moved-modal .sacr-flow,
+#sacr-arrivals-modal .sacr-flow {
   display: flex;
   align-items: baseline;
   gap: 0.5rem;
@@ -6028,15 +6030,19 @@ tr:hover > td .sacr-copy { opacity: 0.8; }
   background: color-mix(in srgb, var(--accent-primary) 6%, var(--bg-secondary));
   font-size: 0.75rem;
 }
-#sacr-moved-modal .sacr-flow-n {
+#sacr-moved-modal .sacr-flow-n,
+#sacr-arrivals-modal .sacr-flow-n {
   font-weight: 700;
   font-size: 0.9375rem;
   color: var(--accent-primary);
   font-variant-numeric: tabular-nums;
 }
-#sacr-moved-modal .sacr-flow-path { color: var(--text-primary); font-weight: 500; }
-#sacr-moved-modal .sacr-flow-arrow { color: var(--text-tertiary); }
-#sacr-moved-modal .sacr-flow-self {
+#sacr-moved-modal .sacr-flow-path,
+#sacr-arrivals-modal .sacr-flow-path { color: var(--text-primary); font-weight: 500; }
+#sacr-moved-modal .sacr-flow-arrow,
+#sacr-arrivals-modal .sacr-flow-arrow { color: var(--text-tertiary); }
+#sacr-moved-modal .sacr-flow-self,
+#sacr-arrivals-modal .sacr-flow-self {
   margin-left: 0.3125rem;
   font-size: 0.625rem;
   font-weight: 600;
@@ -6045,30 +6051,39 @@ tr:hover > td .sacr-copy { opacity: 0.8; }
   background: color-mix(in srgb, var(--warning) 20%, transparent);
   cursor: help;
 }
-#sacr-moved-modal .sacr-flow-spend {
+#sacr-moved-modal .sacr-flow-spend,
+#sacr-arrivals-modal .sacr-flow-spend {
   color: var(--text-tertiary);
   font-variant-numeric: tabular-nums;
 }
-#sacr-moved-modal .sacr-cust { display: block; color: var(--text-primary); }
-#sacr-moved-modal .sacr-email { font-size: 0.6875rem; color: var(--text-tertiary); }
-#sacr-moved-modal .sacr-sub {
+#sacr-moved-modal .sacr-cust,
+#sacr-arrivals-modal .sacr-cust { display: block; color: var(--text-primary); }
+#sacr-moved-modal .sacr-email,
+#sacr-arrivals-modal .sacr-email { font-size: 0.6875rem; color: var(--text-tertiary); }
+#sacr-moved-modal .sacr-sub,
+#sacr-arrivals-modal .sacr-sub {
   display: flex;
   align-items: center;
   gap: 0.125rem;
   min-width: 0;
 }
-#sacr-moved-modal .sacr-sub > .sacr-email {
+#sacr-moved-modal .sacr-sub > .sacr-email,
+#sacr-arrivals-modal .sacr-sub > .sacr-email {
   display: block;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-#sacr-moved-modal .sacr-muted { color: var(--text-tertiary); }
-#sacr-moved-modal td.sacr-idx { color: var(--text-tertiary); }
-#sacr-moved-modal .sacr-date { white-space: nowrap; }
+#sacr-moved-modal .sacr-muted,
+#sacr-arrivals-modal .sacr-muted { color: var(--text-tertiary); }
+#sacr-moved-modal td.sacr-idx,
+#sacr-arrivals-modal td.sacr-idx { color: var(--text-tertiary); }
+#sacr-moved-modal .sacr-date,
+#sacr-arrivals-modal .sacr-date { white-space: nowrap; }
 /* Distinguishes the weaker match without shouting about it. */
-#sacr-moved-modal .sacr-badge-soft {
+#sacr-moved-modal .sacr-badge-soft,
+#sacr-arrivals-modal .sacr-badge-soft {
   display: inline-block;
   font-size: 0.625rem;
   font-weight: 600;
@@ -6079,24 +6094,101 @@ tr:hover > td .sacr-copy { opacity: 0.8; }
   cursor: help;
   white-space: nowrap;
 }
-#sacr-moved-modal .sacr-foot-row td {
+#sacr-moved-modal .sacr-foot-row td,
+#sacr-arrivals-modal .sacr-foot-row td {
   font-weight: 600;
   border-top: 2px solid var(--border-color);
   background: color-mix(in srgb, var(--accent-primary) 5%, var(--bg-secondary));
 }
 
+/* One authoritative width block, summing to 100 — the lesson from the main
+   table, where three separate nth-child blocks meant inserting a column
+   silently re-pointed the overrides at their neighbours. The verdict column is
+   the widest of the text columns because its values are whole phrases; left
+   narrow they wrapped onto four lines and tripled every row's height. */
+#sacr-arrivals-table { table-layout: fixed; width: 100%; }
+#sacr-arrivals-table th:nth-child(1),
+#sacr-arrivals-table td:nth-child(1) { width: 3%; }
+#sacr-arrivals-table th:nth-child(2),
+#sacr-arrivals-table td:nth-child(2) { width: 19%; }
+#sacr-arrivals-table th:nth-child(3),
+#sacr-arrivals-table td:nth-child(3) { width: 18%; }
+#sacr-arrivals-table th:nth-child(4),
+#sacr-arrivals-table td:nth-child(4) { width: 8%; }
+#sacr-arrivals-table th:nth-child(5),
+#sacr-arrivals-table td:nth-child(5) { width: 9%; }
+#sacr-arrivals-table th:nth-child(6),
+#sacr-arrivals-table td:nth-child(6) { width: 9%; }
+#sacr-arrivals-table th:nth-child(7),
+#sacr-arrivals-table td:nth-child(7) { width: 9%; }
+#sacr-arrivals-table th:nth-child(8),
+#sacr-arrivals-table td:nth-child(8) { width: 6%; }
+#sacr-arrivals-table th:nth-child(9),
+#sacr-arrivals-table td:nth-child(9) { width: 9%; }
+#sacr-arrivals-table th:nth-child(10),
+#sacr-arrivals-table td:nth-child(10) { width: 10%; }
+
+/* The verdict summary: how much of "new" was actually new. Sized above the
+   flow chips because it is the finding, not the supporting detail. */
+#sacr-arrivals-modal .sacr-arr-verdicts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0 0 0.875rem;
+}
+#sacr-arrivals-modal .sacr-arr-chip {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4375rem;
+  padding: 0.5rem 0.8125rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--warning) 8%, var(--bg-secondary));
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+#sacr-arrivals-modal .sacr-arr-chip:hover { border-color: var(--accent-primary); }
+/* The one verdict that is not a finding, so it neither tints nor filters. */
+#sacr-arrivals-modal .sacr-arr-chip-new {
+  background: color-mix(in srgb, var(--success) 8%, var(--bg-secondary));
+  cursor: default;
+}
+#sacr-arrivals-modal .sacr-arr-chip-new:hover { border-color: var(--border-color); }
+#sacr-arrivals-modal .sacr-arr-chip-on {
+  border-color: var(--accent-primary);
+  background: color-mix(in srgb, var(--accent-primary) 14%, var(--bg-secondary));
+}
+#sacr-arrivals-modal .sacr-arr-n {
+  font-weight: 700;
+  font-size: 1rem;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+#sacr-arrivals-modal .sacr-arr-pct {
+  font-weight: 600;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+#sacr-arrivals-modal .sacr-arr-label { color: var(--text-secondary); }
+
 /* Own rules rather than joining the id-enumerated lists above: those get
    forgotten every time a modal is added, which is how this table first
-   rendered with native select chrome. */
+   rendered with native select chrome. Every selector in this section names
+   both detail modals for that reason — add the next one here too. */
 #sacr-moved-modal .sacr-products-table td.sacr-num,
-#sacr-moved-modal .sacr-products-table th.sacr-num {
+#sacr-arrivals-modal .sacr-products-table td.sacr-num,
+#sacr-moved-modal .sacr-products-table th.sacr-num,
+#sacr-arrivals-modal .sacr-products-table th.sacr-num {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
 /* Values stay on one line; headings may wrap. nowrap on the heading is what
    clipped "Orders" to its column instead of letting it use two lines. */
-#sacr-moved-modal .sacr-products-table td.sacr-num { white-space: nowrap; }
-#sacr-moved-modal .sacr-products-table thead th {
+#sacr-moved-modal .sacr-products-table td.sacr-num,
+#sacr-arrivals-modal .sacr-products-table td.sacr-num { white-space: nowrap; }
+#sacr-moved-modal .sacr-products-table thead th,
+#sacr-arrivals-modal .sacr-products-table thead th {
   white-space: normal;
   line-height: 1.25;
   vertical-align: bottom;

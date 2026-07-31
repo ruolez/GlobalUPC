@@ -13540,6 +13540,7 @@ const sacrState = {
   loading: false,
   rows: [],            // lost customers, all stores
   moved: [],           // did not leave — still buying at another store
+  arrivals: null,      // opt-in: were the new customers new to the business?
   stores: [],          // per-store status incl. ok/complete/error
   benchmark: null,
   totals: null,
@@ -13841,6 +13842,7 @@ function loadLostCustomersPanel() {
 
   sacrBindStatesModal();
   sacrBindMovedModal();
+  sacrBindArrivalsModal();
   sacrBindProductsModal();
   updateSacrProductsBtn();
   updateSacrRunBtn();
@@ -13901,6 +13903,7 @@ function renderSacrStoreSelect() {
 function sacrClearResults() {
   sacrState.rows = [];
   sacrState.moved = [];
+  sacrState.arrivals = null;
   sacrState.stores = [];
   sacrState.benchmark = null;
   sacrState.totals = null;
@@ -13994,6 +13997,7 @@ async function runLostCustomersReport() {
   sacrState.abortController = new AbortController();
   sacrState.rows = [];
   sacrState.moved = [];
+  sacrState.arrivals = null;
   sacrState.stores = [];
   sacrState.benchmark = null;
   sacrState.totals = null;
@@ -14031,6 +14035,8 @@ async function runLostCustomersReport() {
           min_orders: minOrders,
           exclude_cross_store:
             document.getElementById("sacr-cross-store")?.checked !== false,
+          check_arrivals:
+            document.getElementById("sacr-check-arrivals")?.checked === true,
         }),
         signal: sacrState.abortController.signal,
       },
@@ -14168,6 +14174,11 @@ async function runLostCustomersReport() {
           sacrState.benchmark = data.benchmark;
           sacrState.totals = data.totals;
           sacrState.byMonth = data.by_month || [];
+          // Empty object when the check did not run, which is what keeps the
+          // button hidden rather than opening onto a blank modal.
+          sacrState.arrivals = (data.arrivals && data.arrivals.total)
+            ? data.arrivals
+            : null;
           sacrState.states = data.states || [];
           sacrState.stateMinCustomers = data.state_min_customers || 5;
           (data.stores || []).forEach((fresh) => {
@@ -14413,6 +14424,19 @@ function updateSacrProductsBtn() {
   if (statesBtn) {
     statesBtn.disabled = sacrState.loading || !(sacrState.states || []).length;
     statesBtn.title = statesBtn.disabled ? "Run the report first" : "";
+  }
+  // Hidden rather than disabled when the check was not requested: an always-
+  // visible dead button would read as "no one came from another store", which
+  // is a different claim from "nobody asked".
+  const arrBtn = document.getElementById("sacr-arrivals-btn");
+  if (arrBtn) {
+    const arr = sacrState.arrivals;
+    arrBtn.style.display = arr ? "" : "none";
+    arrBtn.disabled = sacrState.loading || !arr;
+    if (arr) {
+      const notNew = (arr.total || 0) - (arr.verdicts?.["new to the business"] || 0);
+      arrBtn.title = `${notNew.toLocaleString()} of ${(arr.total || 0).toLocaleString()} new customers were already known to the business`;
+    }
   }
   const movedBtn = document.getElementById("sacr-moved-btn");
   if (movedBtn) {
@@ -15432,6 +15456,323 @@ function renderSacrMoved() {
         : "");
   }
   sacrApplyMovedSortHeaders();
+}
+
+// --- Where new customers came from ------------------------------------------
+//
+// The mirror of the moved-away modal. "New" in this report means first
+// completed order inside the window at THIS store, which says nothing about
+// whether the person was already a customer of the business somewhere else.
+
+// Ordered by how much each verdict matters, not alphabetically — a switch is
+// the finding, a genuinely new customer is the baseline.
+const SACR_ARRIVAL_ORDER = [
+  "switched from another store",
+  "shops here and there",
+  "already bought here under an earlier account",
+  "had an account, never bought there",
+  "started here, joined another store later",
+  "new to the business",
+];
+
+const SACR_ARRIVAL_HINT = {
+  "switched from another store":
+    "They were buying at another store first and have not bought there since — the same person, moved between stores.",
+  "shops here and there":
+    "They were buying at another store first and still are. You gained a store from them, not a customer.",
+  "already bought here under an earlier account":
+    "Not a move between stores: they were already buying at this store under a different account, then re-registered, which is what made them look new.",
+  "had an account, never bought there":
+    "An account already existed at another store but never completed an order, so their first purchase really was here.",
+  "started here, joined another store later":
+    "Their first purchase anywhere was here; the other store came afterwards.",
+  "new to the business":
+    "No account and no order at any other store — genuinely new.",
+};
+
+// The backend labels a second account at the same shop "<name> (another
+// account)". Shown whole it defeats sacrShortStore and wraps the chip, so the
+// suffix is split back off and rendered as a badge — the same treatment the
+// moved modal gives it.
+function sacrSplitOrigin(name) {
+  const suffix = " (another account)";
+  const self = typeof name === "string" && name.endsWith(suffix);
+  return { bare: self ? name.slice(0, -suffix.length) : name || "", self };
+}
+
+const sacrArrivalsState = {
+  sortColumn: "amount_spent",
+  sortOrder: "desc",
+  verdict: "",
+  origin: "",
+};
+
+function sacrBindArrivalsModal() {
+  document.getElementById("sacr-arrivals-btn")?.addEventListener("click", () => {
+    sacrArrivalsState.verdict = "";
+    sacrArrivalsState.origin = "";
+    sacrPopulateArrivalsFilters();
+    renderSacrArrivals();
+    openModal("sacr-arrivals-modal");
+  });
+  document
+    .getElementById("sacr-arrivals-close")
+    ?.addEventListener("click", () => closeModal("sacr-arrivals-modal"));
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    const m = document.getElementById("sacr-arrivals-modal");
+    if (m && m.classList.contains("active")) closeModal("sacr-arrivals-modal");
+  });
+  document.getElementById("sacr-arrivals-filter")?.addEventListener("change", (e) => {
+    sacrArrivalsState.verdict = e.target.value;
+    renderSacrArrivals();
+  });
+  document.getElementById("sacr-arrivals-origin")?.addEventListener("change", (e) => {
+    sacrArrivalsState.origin = e.target.value;
+    renderSacrArrivals();
+  });
+  document.getElementById("sacr-arrivals-table")?.addEventListener("click", (e) => {
+    const th = e.target.closest("th.qip-sortable");
+    if (!th || !th.dataset.asort) return;
+    const col = th.dataset.asort;
+    if (sacrArrivalsState.sortColumn === col) {
+      sacrArrivalsState.sortOrder = sacrArrivalsState.sortOrder === "asc" ? "desc" : "asc";
+    } else {
+      sacrArrivalsState.sortColumn = col;
+      sacrArrivalsState.sortOrder = SACR_NUMERIC_COLUMNS.has(col) ? "desc" : "asc";
+    }
+    sacrApplyArrivalsSortHeaders();
+    renderSacrArrivals();
+  });
+  // Clicking a verdict chip filters to it, so the summary and the table are
+  // one control rather than two.
+  document.getElementById("sacr-arrivals-verdicts")?.addEventListener("click", (e) => {
+    const chip = e.target.closest("[data-verdict]");
+    if (!chip || chip.dataset.verdict === "new to the business") return;
+    sacrArrivalsState.verdict =
+      sacrArrivalsState.verdict === chip.dataset.verdict ? "" : chip.dataset.verdict;
+    const sel = document.getElementById("sacr-arrivals-filter");
+    if (sel) sel.value = sacrArrivalsState.verdict;
+    renderSacrArrivals();
+  });
+  document.getElementById("sacr-arrivals-tbody")?.addEventListener("click", async (e) => {
+    const copy = e.target.closest(".sacr-copy");
+    if (!copy) return;
+    e.stopPropagation();
+    sacrFlashCopied(copy, await copyText(copy.dataset.copy));
+  });
+}
+
+function sacrApplyArrivalsSortHeaders() {
+  document.querySelectorAll("#sacr-arrivals-table th.qip-sortable").forEach((th) => {
+    th.classList.remove("qip-sort-asc", "qip-sort-desc");
+    if (th.dataset.asort === sacrArrivalsState.sortColumn) {
+      th.classList.add(
+        sacrArrivalsState.sortOrder === "asc" ? "qip-sort-asc" : "qip-sort-desc",
+      );
+    }
+  });
+}
+
+function sacrPopulateArrivalsFilters() {
+  const rows = sacrState.arrivals?.rows || [];
+  const sel = document.getElementById("sacr-arrivals-filter");
+  if (sel) {
+    // Only verdicts that actually have rows — the table never holds the
+    // genuinely-new, so offering that option would filter to nothing.
+    const present = SACR_ARRIVAL_ORDER.filter((v) => rows.some((r) => r.verdict === v));
+    sel.innerHTML =
+      '<option value="">All that were not new</option>' +
+      present
+        .map((v) => `<option value="${saEscape(v)}">${saEscape(v)}</option>`)
+        .join("");
+    sel.value = sacrArrivalsState.verdict;
+  }
+  const osel = document.getElementById("sacr-arrivals-origin");
+  if (osel) {
+    const stores = [...new Set(rows.map((r) => r.origin_store))].filter(Boolean).sort();
+    osel.innerHTML =
+      '<option value="">Any store</option>' +
+      stores
+        .map((d) => `<option value="${saEscape(d)}">${saEscape(d)}</option>`)
+        .join("");
+    osel.value = sacrArrivalsState.origin;
+  }
+}
+
+function sacrArrivalsRows() {
+  let rows = sacrState.arrivals?.rows || [];
+  if (sacrArrivalsState.verdict) {
+    rows = rows.filter((r) => r.verdict === sacrArrivalsState.verdict);
+  }
+  if (sacrArrivalsState.origin) {
+    rows = rows.filter((r) => r.origin_store === sacrArrivalsState.origin);
+  }
+  const col = sacrArrivalsState.sortColumn;
+  const dir = sacrArrivalsState.sortOrder === "asc" ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    let av = a[col];
+    let bv = b[col];
+    if (av === null || av === undefined) return 1;
+    if (bv === null || bv === undefined) return -1;
+    if (SACR_NUMERIC_COLUMNS.has(col)) {
+      av = parseFloat(av) || 0;
+      bv = parseFloat(bv) || 0;
+    } else {
+      av = String(av).toLowerCase();
+      bv = String(bv).toLowerCase();
+    }
+    return av < bv ? -dir : av > bv ? dir : 0;
+  });
+}
+
+// The headline: of everyone the report counted as newly acquired, how many
+// were actually new to the business.
+function renderSacrArrivalsVerdicts() {
+  const el = document.getElementById("sacr-arrivals-verdicts");
+  const arr = sacrState.arrivals;
+  if (!el || !arr) return;
+  const total = arr.total || 0;
+  el.innerHTML = SACR_ARRIVAL_ORDER.filter((v) => (arr.verdicts || {})[v])
+    .map((v) => {
+      const n = arr.verdicts[v];
+      const pct = total ? Math.round((n / total) * 1000) / 10 : 0;
+      const isNew = v === "new to the business";
+      const on = sacrArrivalsState.verdict === v;
+      return (
+        `<div class="sacr-arr-chip${isNew ? " sacr-arr-chip-new" : ""}${on ? " sacr-arr-chip-on" : ""}"` +
+        `${isNew ? "" : ` data-verdict="${saEscape(v)}"`}` +
+        ` title="${saEscape(SACR_ARRIVAL_HINT[v] || "")}">` +
+        `<span class="sacr-arr-n">${n.toLocaleString()}</span>` +
+        `<span class="sacr-arr-pct">${pct}%</span>` +
+        `<span class="sacr-arr-label">${saEscape(v)}</span>` +
+        "</div>"
+      );
+    })
+    .join("");
+}
+
+// Which store each non-new arrival was already known at.
+function renderSacrArrivalsOrigins() {
+  const el = document.getElementById("sacr-arrivals-origins");
+  const arr = sacrState.arrivals;
+  if (!el || !arr) return;
+  const entries = Object.entries(arr.origins || {}).sort((a, b) => b[1] - a[1]);
+  const here = sacrShortStore(sacrState.stores?.[0]?.store_name || "here");
+  el.innerHTML = entries
+    .map(([name, n]) => {
+      const o = sacrSplitOrigin(name);
+      return (
+        '<div class="sacr-flow">' +
+        `<span class="sacr-flow-n">${n.toLocaleString()}</span>` +
+        `<span class="sacr-flow-path">${saEscape(sacrShortStore(o.bare))}` +
+        (o.self
+          ? '<span class="sacr-flow-self" title="An earlier account at this same store, found by name and ZIP">earlier account</span>'
+          : "") +
+        ' <span class="sacr-flow-arrow">→</span> ' +
+        `${saEscape(here)}</span>` +
+        "</div>"
+      );
+    })
+    .join("");
+}
+
+function renderSacrArrivals() {
+  const tbody = document.getElementById("sacr-arrivals-tbody");
+  const tfoot = document.getElementById("sacr-arrivals-tfoot");
+  const arr = sacrState.arrivals;
+  if (!tbody || !arr) return;
+
+  renderSacrArrivalsVerdicts();
+  renderSacrArrivalsOrigins();
+  const all = arr.rows || [];
+  const rows = sacrArrivalsRows();
+  const total = arr.total || 0;
+  const brandNew = (arr.verdicts || {})["new to the business"] || 0;
+
+  const scope = document.getElementById("sacr-arrivals-scope");
+  if (scope) {
+    const pct = total ? Math.round((brandNew / total) * 1000) / 10 : 0;
+    scope.textContent =
+      `${total.toLocaleString()} customer(s) placed their first completed order here on or ` +
+      `after ${sacrState.activeSince} — the "New" bars on the chart. ${brandNew.toLocaleString()} ` +
+      `of them (${pct}%) were new to the business; the rest were already known at another ` +
+      `store, or under an earlier account here.`;
+  }
+
+  tbody.innerHTML = rows
+    .map((r, i) => {
+      const via =
+        r.matched_by === "name + ZIP"
+          ? '<span class="sacr-badge-soft" title="Matched on first name, last name and ZIP — Shopify forces a second account onto a different email">name + ZIP</span>'
+          : '<span class="sacr-muted">email</span>';
+      return (
+        "<tr>" +
+        `<td class="sacr-num sacr-idx">${(i + 1).toLocaleString()}</td>` +
+        `<td title="${saEscape(r.name || "")}${r.email ? " · " + saEscape(r.email) : ""}">` +
+        `<span class="sacr-cust">${saEscape(r.name || "(no name)")}</span>` +
+        (r.email
+          ? `<span class="sacr-sub"><span class="sacr-email">${saEscape(r.email)}</span>${sacrCopyBtn(r.email, "email address")}</span>`
+          : "") +
+        "</td>" +
+        `<td title="${saEscape(SACR_ARRIVAL_HINT[r.verdict] || "")}">${saEscape(r.verdict || "")}</td>` +
+        `<td title="${saEscape(r.origin_store || "")}">${saEscape(sacrShortStore(sacrSplitOrigin(r.origin_store).bare))}` +
+        (sacrSplitOrigin(r.origin_store).self
+          ? ' <span class="sacr-badge-soft" title="An earlier account at this same store — they re-registered rather than arriving from elsewhere">earlier account</span>'
+          : "") +
+        "</td>" +
+        `<td class="sacr-date">${sacrFmtDate(r.arrived)}</td>` +
+        `<td class="sacr-date">${r.origin_first_order ? sacrFmtDate(r.origin_first_order) : '<span class="sacr-muted">never</span>'}</td>` +
+        `<td class="sacr-date">${r.origin_last_order ? sacrFmtDate(r.origin_last_order) : '<span class="sacr-muted">never</span>'}</td>` +
+        `<td class="sacr-num">${(r.orders_count || 0).toLocaleString()}</td>` +
+        `<td class="sacr-num">${sacrFmtMoney(r.amount_spent, "")}</td>` +
+        `<td>${via}</td></tr>`
+      );
+    })
+    .join("");
+
+  if (tfoot) {
+    const spend = rows.reduce((a, r) => a + (Number(r.amount_spent) || 0), 0);
+    const orders = rows.reduce((a, r) => a + (Number(r.orders_count) || 0), 0);
+    const filtered = sacrArrivalsState.verdict || sacrArrivalsState.origin;
+    tfoot.innerHTML =
+      `<tr class="sacr-foot-row"><td></td><td>${filtered ? "Total (filtered)" : "Total"}</td>` +
+      "<td></td><td></td><td></td><td></td><td></td>" +
+      `<td class="sacr-num">${orders.toLocaleString()}</td>` +
+      `<td class="sacr-num">${sacrFmtMoney(spend, "")}</td><td></td></tr>`;
+  }
+
+  const count = document.getElementById("sacr-arrivals-count");
+  if (count) {
+    count.textContent =
+      sacrArrivalsState.verdict || sacrArrivalsState.origin
+        ? `${rows.length.toLocaleString()} of ${all.length.toLocaleString()} shown`
+        : `${all.length.toLocaleString()} customer(s) were not new`;
+  }
+
+  const note = document.getElementById("sacr-arrivals-note");
+  if (note) {
+    const bits = [
+      '"Spent here" is their lifetime spend at this store. Each date is that shop\'s own calendar day.',
+    ];
+    if (arr.prior_account) {
+      bits.push(
+        `${arr.prior_account.toLocaleString()} of the ${total.toLocaleString()} had already ` +
+          `registered here before the purchase that made them look new.`,
+      );
+    }
+    if (arr.no_email) {
+      bits.push(
+        `${arr.no_email.toLocaleString()} had no email address, so only the name + ZIP pass could see them.`,
+      );
+    }
+    if (arr.rows_truncated) {
+      bits.push(`${arr.rows_truncated.toLocaleString()} more are counted above but not listed.`);
+    }
+    (arr.errors || []).forEach((e) => bits.push(e));
+    note.textContent = bits.join(" ");
+  }
+  sacrApplyArrivalsSortHeaders();
 }
 
 const sacrStatesState = { sortColumn: "lost", sortOrder: "desc" };
