@@ -1,4 +1,4 @@
-***S2S DB TABLES
+***S2S DB TABLES***
 
 
 CREATE TABLE [Items_BinLocations] (
@@ -553,4 +553,64 @@ CREATE TABLE [Items_BinLocations] (
 	[amount] [int] NULL,
 	[barcode] [nvarchar](max) NULL
 
+[dbo].[users](
+	[id] [int] IDENTITY(1,1) NOT NULL,
+	[id_type] [int] NOT NULL,
+	[login] [varchar](32) NOT NULL,
+	[pass] [varchar](32) NOT NULL,
+	[name] [varchar](128) NULL,
+	[lastname] [varchar](64) NULL,
+	[email] [varchar](128) NULL,
+	[status] [nvarchar](32) NOT NULL
+
+ [dbo].[parcels](
+	[id] [int] IDENTITY(1,1) NOT NULL,
+	[order_number] [varchar](50) NOT NULL,
+	[service_ident] [nvarchar](255) NULL,
+	[name] [varchar](255) NOT NULL,
+	[phone] [varchar](50) NULL,
+	[address] [varchar](255) NOT NULL,
+	[city] [varchar](50) NOT NULL,
+	[country] [varchar](2) NOT NULL,
+	[zip_code] [varchar](10) NOT NULL,
+	[state] [varchar](2) NOT NULL,
+	[weight] [varchar](10) NOT NULL,
+	[length] [varchar](10) NULL,
+	[width] [varchar](10) NULL,
+	[height] [varchar](10) NULL,
+	[shipping_rate] [varchar](50) NULL,
+	[id_shipping_service] [int] NULL,
+	[tracking_number] [varchar](50) NULL,
+	[id_status] [int] NULL,
+	[cost] [money] NULL,
+	[uuid] [uniqueidentifier] NOT NULL,
+	[remote_label_id] [varchar](36) NULL,
+	[created_at] [datetime2](7) NOT NULL,
+	[id_manifest] [int] NULL,
+	[carrier_type] [varchar](50) NULL,
+	[address2] [varchar](255) NULL,
+	[ship_date] [date] NULL,
+	[notes] [text] NULL,
+	[delivery_confirmation_type] [varchar](50) NULL,
+	[id_user] [int] NULL,
+	[is_label_cleaned] [tinyint] NOT NULL,
+	[company] [varchar](100) NULL,
+	[error] [text] NULL,
+	[is_ignore_company_name] [bit] NOT NULL,
+	[check_completed_at] [datetime2](7) NULL,
+	[id_checker] [int] NULL,	
+
+[dbo].[parcel_items](
+	[id] [bigint] IDENTITY(1,1) NOT NULL,
+	[id_parcel] [int] NOT NULL,
+	[id_product] [bigint] NOT NULL,
+	[id_variant] [bigint] NULL,
+	[name] [varchar](max) NULL,
+	[total_quantity] [int] NULL,
+	[verified_quantity] [int] NULL,
+	[price] [money] NULL,
+	[sku] [varchar](max) NULL,
+	[barcode] [varchar](max) NULL,
+	[cdate] [datetime2](7) NULL,
+	[mdate] [datetime2](7) NULL
 ***ShihpperPlatform TABLES END

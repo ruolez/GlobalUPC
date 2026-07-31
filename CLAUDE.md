@@ -4,211 +4,129 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Global UPC** is a barcode management application for maintaining accurate UPC barcodes across multiple MSSQL databases and Shopify stores. Provides centralized interface for bulk UPC updates across all configured locations.
+**Global UPC** is an operations dashboard for businesses running multiple MSSQL backends (e.g. BackOffice / S2S systems) plus Shopify storefronts. It centralizes UPC management, price updates, in-progress shipment tracking, sales reporting, and orphan-UPC reconciliation across every configured store.
 
-## Architecture
+There is **no automated test suite** — verification is manual via the running app and ad-hoc curl smoke tests.
 
-Docker-based multi-container application:
-- **db** (PostgreSQL 15): Store configurations and settings
-- **backend** (FastAPI/Python): REST API with MSSQL and Shopify integration
-- **frontend** (Nginx/Vanilla JS): SPA with dark mode themes
+## Stack & runtime
 
-**Ports**: Frontend (80/8080), Backend API (8001), PostgreSQL (5433)
+Three Docker services:
 
-**Container Names**: `globalupc_frontend`, `globalupc_backend`, `globalupc_db`
+| Service | Container | Tech | Port |
+|---|---|---|---|
+| `db` | `globalupc_db` | PostgreSQL 15 | 5433 (host) |
+| `backend` | `globalupc_backend` | FastAPI + SQLAlchemy + pyodbc/FreeTDS | 8001 |
+| `frontend` | `globalupc_frontend` | Nginx serving static files | 80 (prod) / 8080 (dev) |
 
-**Development Mode** (`docker-compose.yml`): Live reload, volume mounts, single worker
-**Production Mode** (`docker-compose.prod.yml`): 4 workers, healthchecks, restart policy
+**Dev (`docker-compose.yml`)**: backend mounts `./backend` so Python edits hot-reload (single `uvicorn --reload` worker). Frontend mounts `./frontend/src` — JS/HTML/CSS edits are visible after a hard refresh (Cmd-Shift-R) since aggressive no-cache headers are set.
 
-## Database Schema
+**Prod (`docker-compose.prod.yml`)**: 4 uvicorn workers, healthchecks, restart policy. Resource limits applied to all three services. Deployed by `install.sh` to `/opt/globalupc/`.
 
-**stores**: `id`, `name`, `store_type` (mssql|shopify), `is_active`
-**mssql_connections**: `store_id`, `host`, `port`, `database_name`, `username`, `password`
-**shopify_connections**: `store_id`, `shop_domain`, `admin_api_key`, `api_version`, `update_sku_with_barcode`
-**settings**: `key`, `value`, `description`
-**upc_update_history**: `batch_id`, `store_id`, `old_upc`, `new_upc`, `success`, `items_updated_count` - Tracks all UPC updates
-**upc_exclusions**: `store_id`, `upc`, `excluded_at`, `notes` - UPCs excluded from orphaned UPC audits (unique per store+UPC)
-**price_update_history**: `batch_id`, `store_id`, `store_name`, `store_type`, `upc`, `product_description`, `variant_id`, `variant_title`, `old_price`, `old_cost`, `new_price`, `new_cost`, `success`, `rows_affected`, `error_message` - Tracks all price/cost updates
-
-All tables have auto-updating `created_at` and `updated_at` timestamps.
-
-## Backend Structure
-
-**Core Files**:
-- `main.py`: FastAPI app with all endpoints
-- `models.py`: SQLAlchemy ORM models
-- `schemas.py`: Pydantic request/response schemas
-- `mssql_helper.py`: FreeTDS connection utilities
-- `shopify_helper.py`: Shopify Admin API utilities
-- `init.sql`: Database schema initialization
-- `freetds.conf`: TDS protocol settings
-
-**Key API Endpoints**:
-- `GET /api/health` - Health check
-- `GET/POST/DELETE /api/stores/*` - Store management
-- `POST /api/test/{mssql|shopify}` - Connection testing
-- `POST /api/upc/search/stream` - UPC search (SSE)
-- `POST /api/upc/update/stream` - UPC update with per-store validation (SSE)
-- `GET /api/config/export` - Export configurations
-- `POST /api/config/import` - Import configurations
-- `POST /api/analysis/orphaned-upcs/stream` - Audit orphaned UPCs (SSE)
-- `POST /api/exclusions` - Add UPC exclusion
-- `GET /api/exclusions?store_id={id}` - List exclusions (optionally filtered by store)
-- `DELETE /api/exclusions/{id}` - Remove UPC exclusion
-- `GET /api/price-updates/history` - Price update history (batch-grouped, paginated)
-
-## Critical Implementation Notes
-
-### Server-Sent Events (SSE)
-MUST use actual newlines `\n\n`, NOT escaped `\\n\\n`:
-```python
-# ✅ Correct
-yield f"event: progress\ndata: {json.dumps(data)}\n\n"
-
-# ❌ Wrong
-yield f"event: progress\ndata: {json.dumps(data)}\\n\\n"
-```
-
-### Pydantic Models
-Use attribute syntax, NOT dictionary syntax:
-```python
-# ✅ Correct
-store_id = match.store_id
-
-# ❌ Wrong
-store_id = match["store_id"]
-```
-
-### UPC Updates
-Per-store validation during update process:
-1. Client checks old UPC ≠ new UPC
-2. Each store validates independently during update stream
-3. Stores with duplicate UPCs are skipped (not blocking)
-4. Results show success/skip status per store
-
-### MSSQL Table Discovery
-Searches all configured tables across all MSSQL connections. Tables gracefully skipped if missing:
-- `Items_tbl` (PK: ProductID)
-- `QuotationsDetails_tbl` (PK: LineID)
-- `PurchaseOrdersDetails_tbl` (PK: LineID)
-- `InvoicesDetails_tbl` (PK: LineID)
-- `CreditMemosDetails_tbl` (PK: LineID)
-- `PurchasesReturnsDetails_tbl` (PK: LineID)
-- `QuotationDetails` (PK: id)
-
-### FreeTDS Configuration
-- Default TDS version: 7.4 (SQL Server 2012+)
-- Auto-detects architecture (ARM64/x86_64) for ODBC driver path
-- Uses pyodbc with ThreadPoolExecutor for async operations
-
-### Shopify Integration
-- Admin API with access tokens (not OAuth)
-- API version: `2025-01`
-- SKU update feature uses REST API (`PUT /admin/api/{version}/variants/{id}.json`)
-- GraphQL used for barcode validation queries
-
-### Performance Optimizations
-
-**Parallel Store Processing**: All stores searched simultaneously using `asyncio.as_completed()`
-- Before: 10 stores × 3s = 30s
-- After: max(store times) = 3-5s
-- Result: ~6-10x faster
-
-**Chunked Processing**: Large datasets processed in 5,000 record chunks
-- SQL Server parameter limit: 2,100 max → batches use 2,000 params
-- SSE heartbeat every 15s to prevent timeout
-- Real-time progress updates
-
-## Development Commands
+## Common commands
 
 ```bash
-# Start/stop services
-docker-compose up -d
-docker-compose down
-docker-compose restart backend
+docker-compose up -d --build backend frontend   # rebuild + start
+docker-compose logs -f backend                  # tail backend
+docker-compose restart backend                  # restart after non-Python edits
 
-# View logs
-docker-compose logs -f backend
-docker-compose logs backend --tail 50
-
-# Database access
 docker exec -it globalupc_db psql -U globalupc -d globalupc
-
-# Backend shell
 docker exec -it globalupc_backend bash
+docker exec globalupc_backend python -c "import main; print('ok')"   # smoke imports
+
+curl -s http://localhost:8001/openapi.json | python3 -m json.tool | less
+curl -s http://localhost:8001/api/health
 ```
 
-**Volume Mounts**: Backend and frontend auto-reload on changes. Frontend requires browser hard refresh (Cmd+Shift+R).
+Production deploys via `sudo ./install.sh` (option 2 = update preserving data; option 4 = remove + reinstall). The installer runs every `backend/migrations/*.sql` against the live PostgreSQL volume — keep migrations idempotent.
 
-## Production Deployment
+## High-level architecture
 
-**Initial Install**:
-```bash
-wget https://raw.githubusercontent.com/ruolez/GlobalUPC/main/install.sh
-sudo chmod +x install.sh
-sudo ./install.sh
+### Two databases
+
+- **PostgreSQL** holds *configuration* only — Stores, MSSQLConnection, ShopifyConnection, Settings, ItemTrackerConfig, SalesConfig, StoreMirror — plus *audit history* (UPCUpdateHistory, PriceUpdateHistory, UPCExclusion).
+- **MSSQL stores** hold the *operational data*. Each `Store` of type `mssql` has an `MSSQLConnection` row. The app fans out to every active MSSQL store in parallel for searches/audits using `asyncio.as_completed()`.
+
+### Two MSSQL "store roles"
+
+Some features rely on a *specific* MSSQL store being designated as a centralized source. Both are referenced by store id via either a row in `settings` or a column on a config table.
+
+| Role | Where configured | Used by |
+|---|---|---|
+| **DB_ADMIN** | `settings` row keyed `admin_store_id` | In Progress (`QuotationsInProgress`, `QuotationsStatus`, `ManualInventoryUpdate`) |
+| **Item Tracker S2S / Primary** | `item_tracker_config.s2s_store_id` | Item Tracker (`Items_tbl` lookups, sales/inventory cross-checks), In Progress (price = `Items_tbl.UnitCost * 1.05`), Shopify Sales (cost lookup) |
+
+When adding a feature that needs one of these stores, **prefer a "soft" resolver** (returns `None` if unconfigured) over the existing strict resolvers (`get_item_tracker_stores`, `_resolve_admin_store`) that raise `HTTPException`. Examples: `_resolve_item_tracker_s2s_conn` (in `main.py`) — lets the calling page degrade gracefully instead of 400-ing the user.
+
+### Backend layout (`backend/`)
+
+| File | Responsibility |
+|---|---|
+| `main.py` | All FastAPI endpoints; ~5k lines, keep adding sections at the bottom. Endpoint helpers live next to the endpoints they serve. |
+| `models.py` | SQLAlchemy ORM. Core entity is `Store` (with `store_type` enum + `store_category`); other tables either belong to a store (FK) or to a feature config. |
+| `schemas.py` | Pydantic request/response models. **Use attribute access**, not `dict["key"]`. |
+| `database.py` | SQLAlchemy engine setup. Pool size 5 / overflow 10 / `pool_pre_ping` / `pool_recycle=300`. |
+| `init.sql` | Bootstrapped on first container start. Subsequent schema changes go in `migrations/*.sql`. |
+| `mssql_helper.py` | All MSSQL queries that fan out across stores. Owns `_mssql_executor` (4 threads), the `CHUNK_SIZE` constant for chunked operations, and `get_item_prices_batch_async` for UPC→cost lookups. |
+| `item_tracker_helper.py` | Single-store MSSQL queries used by Item Tracker (purchases, sales, customer/vendor returns, inventory recounts). Owns `_item_tracker_executor`. |
+| `quotations_in_progress_helper.py` | DB_ADMIN aggregations for the In Progress section. Owns `_qip_executor`. |
+| `shopify_helper.py` | Shopify Admin API (REST + GraphQL). Used for barcode search/update, price updates, fulfilled-orders sales reports. |
+| `freetds.conf` | FreeTDS settings. TDS version defaults to 7.4 (SQL Server 2012+). |
+
+The lifespan handler in `main.py` shuts down each thread-pool executor on app exit — when adding a new helper file with its own `ThreadPoolExecutor`, register a `shutdown_*_executor()` and call it from the lifespan.
+
+### Major feature areas
+
+Every large feature follows the same shape: a config table or settings entry, a helper file with sync MSSQL queries plus async wrappers, endpoints in `main.py`, a page section in the frontend SPA, and Pydantic schemas. Use this when adding the next one.
+
+- **UPC Search & Update** (`/api/upc/*`) — fans out to every active store; per-store duplicate validation skips conflicts non-blockingly.
+- **Orphan UPC Audit** (`/api/analysis/orphaned-upcs/*`) — MSSQL-only; chunked processing, reconciliation by ProductID or Description, per-store UPC exclusions persisted in `upc_exclusions`.
+- **Price Updates** — Cross-store price/cost reconciliation. History batched by `batch_id` in `price_update_history`.
+- **Item Tracker** — UPC-centric ledger across the configured S2S, sales, and inventory MSSQL stores. Excludes specific business names via `item_tracker_exclusions`.
+- **Sales / Shopify Sales** — Period reports built from `SalesConfig` (which MSSQL stores + Shopify stores to include). SKU-prefix exclusions stored in `settings`.
+- **In Progress** (`/api/quotations/in-progress*`) — DB_ADMIN-backed shipment tracker. Two-pane SPA section with scan-status filter, multiselect dropdowns, search-summary mode, sortable products table, prices from Item Tracker S2S `Items_tbl.UnitCost * 1.05`.
+- **Inventory Time** (`/api/inventory-time*`) — DB_ADMIN-backed recount-time estimator. Reads `ManualInventoryUpdate` (`Username`, `DateCreated`) for one user + date range, sessionizes the timestamp stream (gaps over the configured break timeout split sessions), and credits each session `span * N/(N-1)` plus an isolated-recount fallback for lone items. Pure math in `inventory_time_helper.compute_inventory_time`; two `settings` keys `inventory_recount_timeout_minutes` / `isolated_product_recount_minutes`. Uses the soft admin-store resolver so the page degrades gracefully when DB_ADMIN is unset.
+
+### Frontend (`frontend/src/`)
+
+Single-page app, no build step. Three files do everything:
+
+- `index.html` — every page section is a `<div class="page" data-page-id="..." style="display:none">` inside `.main-content`. Sidebar nav items have `data-page="..."`; clicking calls `navigateTo(page)` which toggles display.
+- `app.js` — ~11k lines, organized by feature area in roughly the order the features were added. State is held in feature-scoped objects (`historyState`, `qipState`, etc.). There is **no framework** — DOM is built via `innerHTML` strings. Reuse the global `escapeHtml(text)` (around line 4836) for any user-controlled string before injecting.
+- `styles.css` — Themes are CSS variables (`--bg-primary`, `--bg-secondary`, `--bg-tertiary`, `--bg-hover`, `--text-primary/secondary/tertiary`, `--accent-primary`, `--success/warning/danger`, `--border-color`, `--radius-*`, `--shadow-*`). Switching theme = swap one root-level rule. There are 8 themes today (Default, Monochrome, Charcoal, Steel, Minimal, Graphite, Nord, Author's Light) — any new feature should consume only existing variables (use `color-mix(in srgb, var(--accent-primary) X%, var(--bg-primary))` for accent-tinted derivations) so it adapts to all themes for free.
+
+Filter and table patterns to mirror when building new sections (see the In Progress section as the most current reference):
+
+- **Custom multiselect popover** (`.qip-multiselect` / `.qip-ms-trigger` / `.qip-ms-popover`) — replaces native `<select multiple>` with a chip-style dropdown showing a checked-count badge.
+- **Sortable column headers** — `<th class="qip-sortable" data-sort="key">`. A delegated click handler on the parent table cycles `asc → desc → none` and applies `qip-sort-asc` / `qip-sort-desc` classes; CSS chevrons handle the visual.
+- **All-checked = no filter** semantic on multiselects: when every option is checked, send `[]` to the backend so rows whose corresponding column is `NULL` aren't excluded by `WHERE IN (...)` (which evaluates to `UNKNOWN` for `NULL`). The In Progress fetch payload transform shows the pattern.
+
+## MSSQL patterns to know
+
+- **`pyodbc` + FreeTDS** with the connection string from `mssql_helper.get_mssql_connection_string`. ARM64/x86_64 driver paths are auto-detected.
+- **Parallel store fan-out**: every cross-store endpoint uses `asyncio.as_completed()` over per-store coroutines so total latency = max(store time), not sum.
+- **Chunking**: SQL Server's parameter limit is ~2100. `mssql_helper.py` uses `MAX_PARAMS = 2000` for `IN (...)` batches; `CHUNK_SIZE = 1000` is used for paged scans of large detail tables.
+- **`HAVING` for filters on aggregates**: when a query `GROUP BY` a parent (e.g. `QuotationNumber`) and you need to filter on `MAX(qs.SomeCol)`, put the predicate in `HAVING`, not `WHERE`. Putting it in `WHERE` filters joined rows pre-aggregation and gives wrong results when there are multiple matching rows per group. See `_build_scan_having` in `quotations_in_progress_helper.py`.
+- **Sorting `varchar` dates**: legacy fields like `QuotationsStatus.Dop2/Dop3` store datetimes as `"MM/DD/YYYY HH:MM AM/PM"` strings; lexicographic sort is wrong. Use `TRY_CONVERT(datetime, qs.DopX)` before aggregating/sorting.
+- **Empty-string vs NULL**: legacy varchar fields may contain whitespace strings instead of `NULL`. Treat both as "missing" with `(col IS NULL OR LTRIM(RTRIM(col)) = '')`.
+
+## Server-Sent Events
+
+Long-running cross-store operations stream progress to the client. Always use **literal newlines**, not escaped:
+
+```python
+yield f"event: progress\ndata: {json.dumps(payload)}\n\n"   # ✅
+yield f"event: progress\ndata: {json.dumps(payload)}\\n\\n" # ❌ breaks the stream
 ```
 
-**Location**: `/opt/globalupc/`
+Heartbeat every ~15s on long streams to keep the client connection alive. Listen for `GeneratorExit` to cancel pending `asyncio.create_task(...)` operations on client disconnect.
 
-**Update**: Run `sudo ./install.sh` → Option 2 (preserves data)
+## When rebuilding containers
 
-**Commands**: Use `docker compose -f docker-compose.prod.yml` for all operations
-
-**Environment**: Configure via `.env` file (SERVER_IP, POSTGRES_*, ports)
-
-## Key Features
-
-### UPC Search & Update
-1. Search UPC across all active stores (parallel)
-2. Enter new UPC value
-3. Per-store updates with duplicate validation (skips duplicates)
-4. Real-time progress with success/skip status
-
-### Orphan UPC Audit (MSSQL only)
-- Finds UPCs in detail tables not in Items_tbl
-- Chunked processing for large tables
-- Date-range filtering support
-- Table filtering and statistics
-- Reconciliation by ProductID or Description
-- **UPC Exclusions**: Permanently exclude specific UPCs from audit results
-  - Scoped per Store + UPC combination
-  - Managed via Settings page or inline exclude button (🚫) in audit results
-  - Server-side filtering ensures excluded UPCs never appear in results
-
-### Configuration Import/Export
-- JSON format with version tracking
-- Duplicate detection (host+port+db for MSSQL, domain for Shopify)
-- Filename: `globalupc-config-YYYY-MM-DD-HHMMSS.json`
-
-## Frontend Features
-
-**Themes**: 6 dark mode themes (current, monochrome, charcoal, steel, minimal, graphite)
-**Search Results**: Collapsible store rows with expand/collapse icons
-**Progress**: Real-time SSE streaming with chunk-level updates
-**Safeguards**: Prevents concurrent searches, disables buttons during operations
-**No-Cache**: Aggressive headers ensure immediate updates
-
-## Troubleshooting
-
-**Backend won't start**: Check logs `docker-compose logs backend --tail 100`
-
-**MSSQL "file not found"**: Verify ODBC driver path in `/etc/odbcinst.ini`
-
-**Shopify "Invalid API key"**: Check domain (must end `.myshopify.com`) and key validity
-
-**Frontend not updating**: Browser cache issue - hard refresh (Cmd+Shift+R)
-
-**Database connection refused**: Check PostgreSQL health and port 5433 availability
-
-**Timeout errors**: Reduce CHUNK_SIZE in `mssql_helper.py`, check network latency, verify indexes on ProductUPC
-
-**Empty audit results**: Verify Items_tbl exists, check ProductUPC field names match
-
-**Health checks timeout**: Verify ports available, check firewall, ensure curl installed in containers
-
-## When Rebuilding Containers
-
-- `backend/Dockerfile` or `requirements.txt` → Rebuild backend
-- `frontend/Dockerfile` or `nginx.conf` → Rebuild frontend
-- `backend/init.sql` → Drop database volume and recreate
+| Edit | Required action |
+|---|---|
+| `backend/Dockerfile` or `requirements.txt` | `docker-compose build backend` |
+| `frontend/Dockerfile` or `nginx.conf` | `docker-compose build frontend` |
+| `backend/init.sql` | Drop the `globalupc_postgres_data` volume + recreate (destructive) |
+| `backend/migrations/*.sql` | Lands automatically on prod via `install.sh` option 2; in dev apply manually |
+| Python source under `backend/` | Auto-reload (`uvicorn --reload`) |
+| `frontend/src/*` | Hard refresh in browser |
