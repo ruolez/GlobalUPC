@@ -6417,6 +6417,73 @@ tr:hover > td .sacr-copy { opacity: 0.8; }
   border-radius: 2px;
   display: inline-block;
 }
+/* Matches the pending zone's fill rather than a series colour, so the swatch
+   reads as the same thing as the shaded area on the chart. */
+.sa-page .sacr-legend-swatch-pending {
+  width: 0.625rem;
+  height: 0.625rem;
+  border-radius: 2px;
+  display: inline-block;
+  background: color-mix(in srgb, var(--text-tertiary) 22%, transparent);
+  border: 1px dashed var(--border-color);
+}
+
+/* ---- Chart: months too recent to judge, and the selected month ---- */
+
+/* SVG takes `fill`, not `color`. pointer-events off so the hit rects above it
+   still receive the hover and click. */
+.sa-page .sacr-pending-zone {
+  fill: color-mix(in srgb, var(--text-tertiary) 8%, transparent);
+  pointer-events: none;
+}
+.sa-page .sacr-pending-edge {
+  stroke: var(--border-color);
+  stroke-dasharray: 3 3;
+  shape-rendering: crispEdges;
+  pointer-events: none;
+}
+.sa-page .sacr-pending-label {
+  fill: var(--text-tertiary);
+  font-size: 10px;
+  pointer-events: none;
+}
+/* Independent of .is-active (hover), which is stripped on every pointerleave. */
+.sa-page .sancm-band-wash.is-selected {
+  fill: color-mix(in srgb, var(--accent-primary) 16%, transparent);
+}
+.sa-page #sacr-chart-wrap .sancm-hit { cursor: pointer; }
+.sa-page #sacr-chart-wrap .sancm-hit[data-pending="1"] { cursor: default; }
+
+/* ---- The selected month, as a clearable chip in the filter bar ---- */
+
+.sa-page .sacr-month-chip {
+  border: 1px solid color-mix(in srgb, var(--accent-primary) 45%, var(--border-color));
+  background: color-mix(in srgb, var(--accent-primary) 10%, var(--bg-primary));
+  color: var(--accent-primary);
+  font-size: 0.6875rem;
+  padding: 0.1875rem 0.5rem;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.sa-page .sacr-month-chip:hover {
+  background: color-mix(in srgb, var(--accent-primary) 18%, var(--bg-primary));
+}
+.sa-page .sacr-month-chip[hidden] { display: none; }
+
+/* Derived text under the setup controls: what a blank date and a rolling
+   cutoff actually resolve to. */
+.sa-page .sacr-hint {
+  font-size: 0.6875rem;
+  color: var(--text-tertiary);
+}
+.sa-page .sacr-warn {
+  font-size: 0.6875rem;
+  color: var(--warning);
+  align-self: center;
+  max-width: 22rem;
+}
+.sa-page .sacr-warn[hidden] { display: none; }
 
 /* ---- Lost Customers setup: one row of controls ---- */
 
@@ -6469,6 +6536,13 @@ tr:hover > td .sacr-copy { opacity: 0.8; }
 .sa-page .sacr-quick button:hover {
   border-color: color-mix(in srgb, var(--accent-primary) 45%, var(--border-color));
   color: var(--text-primary);
+}
+/* "All history" is a state, not just a shortcut — a blank date input otherwise
+   reads as an unfilled required field rather than as a deliberate choice. */
+.sa-page .sacr-quick button.is-on {
+  border-color: color-mix(in srgb, var(--accent-primary) 55%, var(--border-color));
+  background: color-mix(in srgb, var(--accent-primary) 14%, var(--bg-tertiary));
+  color: var(--accent-primary);
 }
 
 .sa-page .sacr-setup-secondary {

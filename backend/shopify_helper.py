@@ -3,7 +3,7 @@ import aiohttp
 import asyncio
 import random
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List, Tuple
 from zoneinfo import ZoneInfo
 
@@ -2278,6 +2278,18 @@ def local_date(iso_utc: Optional[str], tz: Optional[str]) -> Optional[str]:
         return iso_utc[:10]
 
 
+def shop_today(tz: Optional[str]) -> str:
+    """
+    The calendar date it is right now at this shop, "YYYY-MM-DD".
+
+    The rolling silence cutoff is measured from this rather than from the
+    server's clock: shops sit in different timezones, and a cutoff a day out
+    moves customers across the line at the edge of the window.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    return local_date(now, tz) or now[:10]
+
+
 # ============================================================================
 # Lost-customers report
 # ============================================================================
@@ -2291,6 +2303,18 @@ def local_date(iso_utc: Optional[str], tz: Optional[str]) -> Optional[str]:
 # PARTIALLY_REFUNDED is deliberately kept — the customer still bought and kept
 # part of the order.
 ORDER_STATUS_FILTER = "-status:cancelled -financial_status:refunded"
+
+
+def order_window_filter(lo: str, hi: str) -> str:
+    """
+    Completed orders in [lo, hi) — the status filter is never optional here.
+
+    Used by the cross-store moved check to ask "did they buy there in the window
+    following their departure" rather than "is their last-ever order recent",
+    which cannot tell a customer who moved from one who left the business later.
+    """
+    return f"{ORDER_STATUS_FILTER} created_at:>={lo} created_at:<{hi}"
+
 
 _LOST_CUSTOMERS_QUERY = """
 query LostCustomers($q: String!, $after: String) {
@@ -2338,6 +2362,10 @@ query LostCustomers($q: String!, $after: String) {
 # never be presented as a complete one.
 _PAGINATION_OBJECT_CAP = 25000
 
+# Stands in for "no order-date floor at all" — see the filter build below. Any
+# date older than Shopify itself would do; this one predates the platform.
+_LOST_ORDER_EPOCH = "2005-01-01"
+
 
 def _normalize_carrier(name: Optional[str]) -> Optional[str]:
     """Carriers arrive as 'usps'/'USPS'/'ups'/'UPS' — collapse the casing."""
@@ -2371,7 +2399,7 @@ def _normalize_shipping_method(title: Optional[str]) -> Optional[str]:
 async def fetch_customers_with_last_order(
     shop_domain: str,
     admin_api_key: str,
-    active_since: str,
+    order_floor: Optional[str] = None,
     api_version: str = "2025-01",
     created_start: Optional[str] = None,
     created_end: Optional[str] = None,
@@ -2380,8 +2408,11 @@ async def fetch_customers_with_last_order(
     on_retry=None,
 ) -> Dict[str, Any]:
     """
-    Page customers who ordered since `active_since`, carrying their last order's
+    Page customers who ordered since `order_floor`, carrying their last order's
     shipping and fulfillment timeline.
+
+    `order_floor` is optional: None means "as far back as this shop goes". It is
+    a cost bound, not a window edge — nothing is classified against it.
 
     The customer's most recent COMPLETED order is selected inline via a
     filtered orders connection, so the entire report's timing data comes from
@@ -2439,9 +2470,17 @@ async def fetch_customers_with_last_order(
         result["error"] = str(e)
         return result
 
-    # The order-date floor always applies; the creation-date bounds only carve
+    # The order-date term always applies; the creation-date bounds only carve
     # that same set into concurrent slices.
-    query_filter = f"order_date:>={active_since}"
+    #
+    # Even with no floor requested it stays, standing in as "has ever ordered".
+    # `order_date` has any-order semantics, so an epoch floor selects exactly the
+    # same customers as omitting the term — minus the ones omitting it would ADD:
+    # newsletter signups, abandoned-checkout ghosts and POS records that never
+    # bought. Those cost a node on every page and are then thrown away by the
+    # caller's never_purchased branch, so dropping the term would multiply the
+    # scan and walk it straight into the pagination object cap below.
+    query_filter = f"order_date:>={order_floor or _LOST_ORDER_EPOCH}"
     if created_start:
         query_filter += f" customer_date:>={created_start}"
     if created_end:
@@ -2491,10 +2530,19 @@ async def fetch_customers_with_last_order(
                     result["pages"] = pages
                     result["ok"] = True
                     result["complete"] = False
+                    # Names the slice, because the caller subdivides by customer
+                    # creation date and a bare "too many customers" gives no
+                    # clue which part of the store's history is missing. The old
+                    # advice — "narrow the dates" — no longer applies now that the
+                    # report's own date floor is optional.
+                    slice_desc = (
+                        f"customers created {created_start or 'from the very start'} "
+                        f"to {created_end or 'now'}")
                     result["incomplete_reason"] = (
                         f"Shopify stops returning results after {_PAGINATION_OBJECT_CAP:,} "
-                        f"customers, and {shop_domain} has more than that in this date "
-                        f"range. Narrow the dates to see the rest."
+                        f"customers per walk, and {shop_domain} has more than that in one "
+                        f"slice of its history ({slice_desc}) that could not be divided "
+                        f"further. Departures in that slice are incomplete."
                     )
                     return result
 
@@ -3178,21 +3226,54 @@ _EMAIL_BATCH = 200
 _EMAIL_CONCURRENCY = 4
 
 _CUSTOMERS_BY_EMAIL_QUERY = """
-query CustomersByEmail($q: String!, $after: String) {
+query CustomersByEmail($q: String!, $oq: String!, $after: String) {
   customers(first: 250, query: $q, sortKey: ID, after: $after) {
     pageInfo { hasNextPage endCursor }
     nodes {
       id
       email
       lastValidOrder: orders(
-        first: 1, sortKey: CREATED_AT, reverse: true, query: "%s"
+        first: 1, sortKey: CREATED_AT, reverse: true, query: $oq
       ) {
         nodes { id createdAt }
       }
     }
   }
 }
-""" % ORDER_STATUS_FILTER
+"""
+
+# How many in-window orders are fetched per candidate. One would be enough if
+# every customer in a batch shared a window, but a section spans several
+# departure months and therefore several windows, so `first: 1` ascending could
+# return an order that predates a given customer's own window and hide a later
+# one inside it. Five ascending dates settle it for anyone who did not place five
+# completed orders at the other shop between the section's floor and their own
+# departure — and hasNextPage says exactly when that happened, so the unresolved
+# case is reported rather than guessed.
+_MOVED_WINDOW_ORDERS = 5
+
+# Same as the plain moved documents plus the in-window orders. Kept separate so a
+# run with no window does not pay for a nested connection it will not read.
+_CUSTOMERS_BY_EMAIL_WINDOW_QUERY = """
+query CustomersByEmailWindow($q: String!, $oq: String!, $wq: String!, $after: String) {
+  customers(first: 250, query: $q, sortKey: ID, after: $after) {
+    pageInfo { hasNextPage endCursor }
+    nodes {
+      id
+      email
+      lastValidOrder: orders(
+        first: 1, sortKey: CREATED_AT, reverse: true, query: $oq
+      ) {
+        nodes { id createdAt }
+      }
+      windowOrders: orders(first: %d, sortKey: CREATED_AT, query: $wq) {
+        pageInfo { hasNextPage }
+        nodes { createdAt }
+      }
+    }
+  }
+}
+""" % _MOVED_WINDOW_ORDERS
 
 # The arrivals check asks a different question of the same connection: not "are
 # they still buying there" but "were they buying there BEFORE they turned up
@@ -3202,7 +3283,7 @@ query CustomersByEmail($q: String!, $after: String) {
 # check — which runs on every cross-store run — does not pay for fields it
 # never reads.
 _CUSTOMERS_BY_EMAIL_ORIGIN_QUERY = """
-query CustomersByEmailOrigin($q: String!, $after: String) {
+query CustomersByEmailOrigin($q: String!, $oq: String!, $after: String) {
   customers(first: 250, query: $q, sortKey: ID, after: $after) {
     pageInfo { hasNextPage endCursor }
     nodes {
@@ -3210,19 +3291,19 @@ query CustomersByEmailOrigin($q: String!, $after: String) {
       email
       createdAt
       firstValidOrder: orders(
-        first: 1, sortKey: CREATED_AT, query: "%s"
+        first: 1, sortKey: CREATED_AT, query: $oq
       ) {
         nodes { id createdAt }
       }
       lastValidOrder: orders(
-        first: 1, sortKey: CREATED_AT, reverse: true, query: "%s"
+        first: 1, sortKey: CREATED_AT, reverse: true, query: $oq
       ) {
         nodes { id createdAt }
       }
     }
   }
 }
-""" % (ORDER_STATUS_FILTER, ORDER_STATUS_FILTER)
+"""
 
 # A term without a local part matches every customer at that domain. One
 # malformed value in the customer data would otherwise turn a targeted lookup
@@ -3280,7 +3361,7 @@ _NAME_MAX_PAGES = 10
 # the two sides of the comparison symmetrical, so an account that ships without
 # ever saving a profile address cannot quietly become unmatchable.
 _CUSTOMERS_BY_NAME_QUERY = """
-query CustomersByName($q: String!, $after: String) {
+query CustomersByName($q: String!, $oq: String!, $after: String) {
   customers(first: 250, query: $q, sortKey: ID, after: $after) {
     pageInfo { hasNextPage endCursor }
     nodes {
@@ -3290,17 +3371,40 @@ query CustomersByName($q: String!, $after: String) {
       email
       defaultAddress { zip }
       lastValidOrder: orders(
-        first: 1, sortKey: CREATED_AT, reverse: true, query: "%s"
+        first: 1, sortKey: CREATED_AT, reverse: true, query: $oq
       ) { nodes { createdAt shippingAddress { zip } } }
     }
   }
 }
-""" % ORDER_STATUS_FILTER
+"""
+
+# Same document plus the in-window orders — see _CUSTOMERS_BY_EMAIL_WINDOW_QUERY.
+_CUSTOMERS_BY_NAME_WINDOW_QUERY = """
+query CustomersByNameWindow($q: String!, $oq: String!, $wq: String!, $after: String) {
+  customers(first: 250, query: $q, sortKey: ID, after: $after) {
+    pageInfo { hasNextPage endCursor }
+    nodes {
+      id
+      firstName
+      lastName
+      email
+      defaultAddress { zip }
+      lastValidOrder: orders(
+        first: 1, sortKey: CREATED_AT, reverse: true, query: $oq
+      ) { nodes { createdAt shippingAddress { zip } } }
+      windowOrders: orders(first: %d, sortKey: CREATED_AT, query: $wq) {
+        pageInfo { hasNextPage }
+        nodes { createdAt }
+      }
+    }
+  }
+}
+""" % _MOVED_WINDOW_ORDERS
 
 # Same document plus the oldest order, for the arrivals check — see the note on
 # _CUSTOMERS_BY_EMAIL_ORIGIN_QUERY.
 _CUSTOMERS_BY_NAME_ORIGIN_QUERY = """
-query CustomersByNameOrigin($q: String!, $after: String) {
+query CustomersByNameOrigin($q: String!, $oq: String!, $after: String) {
   customers(first: 250, query: $q, sortKey: ID, after: $after) {
     pageInfo { hasNextPage endCursor }
     nodes {
@@ -3311,15 +3415,15 @@ query CustomersByNameOrigin($q: String!, $after: String) {
       createdAt
       defaultAddress { zip }
       firstValidOrder: orders(
-        first: 1, sortKey: CREATED_AT, query: "%s"
+        first: 1, sortKey: CREATED_AT, query: $oq
       ) { nodes { createdAt } }
       lastValidOrder: orders(
-        first: 1, sortKey: CREATED_AT, reverse: true, query: "%s"
+        first: 1, sortKey: CREATED_AT, reverse: true, query: $oq
       ) { nodes { createdAt shippingAddress { zip } } }
     }
   }
 }
-""" % (ORDER_STATUS_FILTER, ORDER_STATUS_FILTER)
+"""
 
 
 async def fetch_customers_by_name(
@@ -3330,6 +3434,7 @@ async def fetch_customers_by_name(
     on_batch=None,
     on_retry=None,
     want_origin: bool = False,
+    window: Optional[Tuple[str, str]] = None,
 ) -> Dict[str, Any]:
     """
     Look up customer records by (first name, last name) at one shop.
@@ -3340,6 +3445,10 @@ async def fetch_customers_by_name(
 
     `want_origin` adds `first_order` and `account_created` to each candidate,
     which the arrivals check needs to tell a switch from a shop-both.
+
+    `window` is a (lo, hi) half-open day range; when given, each candidate also
+    carries `window_orders` (ascending completed-order timestamps inside it) and
+    `window_saturated`. Mutually exclusive with `want_origin`.
 
     `truncated` is True when a batch still had pages left at the page cap. The
     caller must report it: a missed candidate means failing to notice the
@@ -3379,11 +3488,18 @@ async def fetch_customers_by_name(
                     cursor = None
                     # A common surname can exceed one page of records.
                     for page in range(_NAME_MAX_PAGES):
+                        variables = {"q": terms, "oq": ORDER_STATUS_FILTER,
+                                     "after": cursor}
+                        if window:
+                            document = _CUSTOMERS_BY_NAME_WINDOW_QUERY
+                            variables["wq"] = order_window_filter(*window)
+                        elif want_origin:
+                            document = _CUSTOMERS_BY_NAME_ORIGIN_QUERY
+                        else:
+                            document = _CUSTOMERS_BY_NAME_QUERY
                         data, warnings = await _shopify_graphql(
                             session, shop_domain, admin_api_key, api_version,
-                            (_CUSTOMERS_BY_NAME_ORIGIN_QUERY if want_origin
-                             else _CUSTOMERS_BY_NAME_QUERY),
-                            {"q": terms, "after": cursor},
+                            document, variables,
                             op_name="customers by name", on_retry=on_retry,
                         )
                         if warnings:
@@ -3403,6 +3519,15 @@ async def fetch_customers_by_name(
                                 "first_order": (_f[0].get("createdAt") if _f else None),
                                 "account_created": node.get("createdAt"),
                             } if want_origin else {}
+                            if window:
+                                _w = node.get("windowOrders") or {}
+                                extra = {
+                                    "window_orders": sorted(
+                                        n.get("createdAt") for n in (_w.get("nodes") or [])
+                                        if n.get("createdAt")),
+                                    "window_saturated": bool(
+                                        (_w.get("pageInfo") or {}).get("hasNextPage")),
+                                }
                             out["candidates"].append({
                                 **extra,
                                 "id": node.get("id"),
@@ -3450,6 +3575,7 @@ async def fetch_customers_by_emails(
     on_batch=None,
     on_retry=None,
     want_origin: bool = False,
+    window: Optional[Tuple[str, str]] = None,
 ) -> Dict[str, Any]:
     """
     Look up a set of email addresses in one shop.
@@ -3465,12 +3591,19 @@ async def fetch_customers_by_emails(
     `accounts` with None in `first_orders` is an account that never bought.
     It costs an extra nested connection per node, so it is opt-in.
 
+    `window` is a (lo, hi) half-open day range. When given, `window_orders` maps
+    each email to the completed-order timestamps it has at this shop inside that
+    range, and `window_saturated` lists the emails with more of them than one
+    page holds. Mutually exclusive with `want_origin` — the two ask opposite
+    questions of the same connection and no caller needs both.
+
     `malformed` counts addresses too broken to search safely; the caller must
     report them rather than let the check silently narrow.
     """
     out: Dict[str, Any] = {
         "ok": False, "error": None, "last_orders": {}, "first_orders": {},
-        "accounts": {}, "malformed": 0, "warnings": [],
+        "accounts": {}, "window_orders": {}, "window_saturated": [],
+        "malformed": 0, "warnings": [],
     }
 
     try:
@@ -3503,11 +3636,18 @@ async def fetch_customers_by_emails(
                     )
                     cursor = None
                     while True:
+                        variables = {"q": terms, "oq": ORDER_STATUS_FILTER,
+                                     "after": cursor}
+                        if window:
+                            document = _CUSTOMERS_BY_EMAIL_WINDOW_QUERY
+                            variables["wq"] = order_window_filter(*window)
+                        elif want_origin:
+                            document = _CUSTOMERS_BY_EMAIL_ORIGIN_QUERY
+                        else:
+                            document = _CUSTOMERS_BY_EMAIL_QUERY
                         data, warnings = await _shopify_graphql(
                             session, shop_domain, admin_api_key, api_version,
-                            (_CUSTOMERS_BY_EMAIL_ORIGIN_QUERY if want_origin
-                             else _CUSTOMERS_BY_EMAIL_QUERY),
-                            {"q": terms, "after": cursor},
+                            document, variables,
                             op_name="cross-store email lookup", on_retry=on_retry,
                         )
                         if warnings:
@@ -3524,6 +3664,19 @@ async def fetch_customers_by_emails(
                                 out["last_orders"][em] = last
                             else:
                                 out["last_orders"].setdefault(em, prev)
+                            if window:
+                                # Merged across duplicate records at this shop:
+                                # the question is whether the PERSON bought here
+                                # in the window, not which record did.
+                                wo = (node.get("windowOrders") or {})
+                                dates = [n.get("createdAt")
+                                         for n in (wo.get("nodes") or [])
+                                         if n.get("createdAt")]
+                                if dates:
+                                    out["window_orders"].setdefault(em, []).extend(dates)
+                                if (wo.get("pageInfo") or {}).get("hasNextPage"):
+                                    out["window_saturated"].append(em)
+                                continue
                             if not want_origin:
                                 continue
                             # Mirrored, but earliest-wins: across duplicate
@@ -3561,5 +3714,10 @@ async def fetch_customers_by_emails(
         out["error"] = f"Unexpected error: {e}"
         return out
 
+    # Ascending, so the caller can scan for the first hit inside a customer's own
+    # window and stop. Merging duplicate records leaves them out of order.
+    for dates in out["window_orders"].values():
+        dates.sort()
+    out["window_saturated"] = sorted(set(out["window_saturated"]))
     out["ok"] = True
     return out

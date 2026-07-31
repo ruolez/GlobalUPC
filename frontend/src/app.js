@@ -13560,8 +13560,10 @@ const sacrState = {
   storeColors: null,   // store_id -> palette color, for the chart tooltip
   states: [],
   stateMinCustomers: 5,
-  activeSince: "",
-  silentSince: "",
+  // What the run resolved to, echoed by the backend. Every date this section
+  // prints comes from here rather than from the inputs, which the user can
+  // change while results from the previous run are still on screen.
+  runWindow: null,
   sortColumn: "amount_spent",
   sortOrder: "desc",
   filter: {
@@ -13571,12 +13573,19 @@ const sacrState = {
     slow: "",
     state: "",
     ordersMin: null,   // inclusive; null = no minimum
+    // "YYYY-MM"; "" = the whole run. A scope rather than a row predicate, but it
+    // lives here so the table, the KPIs, the footer totals and the Top Products
+    // order set all inherit it through sacrFilteredRows.
+    month: "",
   },
   currentPage: 0,
   pageSize: 100,
   abortController: null,
   resizeObserver: null,
   rafId: 0,
+  // Rows arrive in section-sized events now, in the hundreds per run, and a full
+  // re-render costs two sorts plus an SVG rebuild — so renders are throttled.
+  renderTimer: 0,
   // Liveness reporting. A store can spend minutes inside one cursor walk, so
   // the run has to keep visibly moving or it reads as hung.
   progress: null,
@@ -13695,7 +13704,7 @@ function loadLostCustomersPanel() {
   sacrState.initialized = true;
 
   renderSacrStoreSelect();
-  sacrSetDefaultDates();
+  sacrSetDefaults();
 
   try {
     const saved = parseInt(localStorage.getItem(SACR_PAGE_SIZE_KEY), 10);
@@ -13706,15 +13715,12 @@ function loadLostCustomersPanel() {
   const sizeSel = document.getElementById("sacr-page-size");
   if (sizeSel) sizeSel.value = String(sacrState.pageSize);
 
-  document.querySelectorAll("[data-sacr-active]").forEach((b) => {
-    b.addEventListener("click", () =>
-      sacrApplyMonthsAgo("sacr-active-since", parseInt(b.dataset.sacrActive, 10)),
-    );
-  });
-  document.querySelectorAll("[data-sacr-silent]").forEach((b) => {
-    b.addEventListener("click", () =>
-      sacrApplyMonthsAgo("sacr-silent-since", parseInt(b.dataset.sacrSilent, 10)),
-    );
+  document.querySelectorAll("[data-sacr-history]").forEach((b) => {
+    b.addEventListener("click", () => {
+      const v = b.dataset.sacrHistory;
+      if (v === "all") sacrClearHistoryFrom();
+      else sacrApplyMonthsAgo("sacr-history-from", parseInt(v, 10));
+    });
   });
 
   document.getElementById("sacr-store-select")?.addEventListener("change", () => {
@@ -13724,8 +13730,14 @@ function loadLostCustomersPanel() {
     updateSacrRunBtn();
   });
 
-  ["sacr-active-since", "sacr-silent-since", "sacr-min-orders"].forEach((id) => {
-    document.getElementById(id)?.addEventListener("change", updateSacrRunBtn);
+  [
+    "sacr-history-from",
+    "sacr-silence",
+    "sacr-min-orders",
+    "sacr-acquired-only",
+    "sacr-check-arrivals",
+  ].forEach((id) => {
+    document.getElementById(id)?.addEventListener("change", updateSacrSetupUi);
   });
 
   document
@@ -13767,6 +13779,10 @@ function loadLostCustomersPanel() {
       slow: "",
       state: "",
       ordersMin: null,
+      // Must be listed. Omitted, it becomes undefined — falsy, so filtering
+      // stops, but sacrIsFiltered also reads false and re-disables this button
+      // while the selected bar stays highlighted on the chart.
+      month: "",
     };
     const s = document.getElementById("sacr-search");
     if (s) s.value = "";
@@ -13776,6 +13792,10 @@ function loadLostCustomersPanel() {
     });
     const om = document.getElementById("sacr-filter-orders-min");
     if (om) om.value = "";
+    rerender();
+  });
+  document.getElementById("sacr-month-chip")?.addEventListener("click", () => {
+    sacrState.filter.month = "";
     rerender();
   });
 
@@ -13908,10 +13928,11 @@ function renderSacrStoreSelect() {
   sel.value = String((first || stores[0]).id);
 }
 
-// Results describe the store that produced them, so they cannot outlive a
-// change of store. Cleared rather than refetched: the scan is expensive enough
-// that starting it should stay a deliberate press of Run.
-function sacrClearResults() {
+// Everything one run owns. Both entry points — a change of store, and pressing
+// Run — go through this, so a field cannot be cleared on one path and left stale
+// on the other. The two used to be separate blocks and had already drifted apart
+// by three fields.
+function sacrResetRunState() {
   sacrState.rows = [];
   sacrState.moved = [];
   sacrState.arrivals = null;
@@ -13922,8 +13943,32 @@ function sacrClearResults() {
   sacrState.monthStats = null;
   sacrState.storeColors = null;
   sacrState.states = [];
+  sacrState.stateMinCustomers = 5;
+  sacrState.runWindow = null;
+  // Month keys belong to the run that produced them. A stale one makes the next
+  // run's table look empty with nothing on screen explaining why.
+  sacrState.filter.month = "";
   sacrState.currentPage = 0;
+  if (sacrState.renderTimer) {
+    clearTimeout(sacrState.renderTimer);
+    sacrState.renderTimer = 0;
+  }
+  // The error branch overwrites this, and it used to persist into the next run.
+  const emptyMsg = document.getElementById("sacr-empty-msg");
+  if (emptyMsg) emptyMsg.textContent = SACR_EMPTY_MSG;
   sacrHideTooltip();
+}
+
+const SACR_EMPTY_MSG = "No lost customers found for this window.";
+
+// Results describe the store that produced them, so they cannot outlive a
+// change of store. Cleared rather than refetched: the scan is expensive enough
+// that starting it should stay a deliberate press of Run.
+//
+// The other five filters deliberately survive: they are user intent, and
+// sacrPopulateFilterOptions re-applies them once the next run has rows.
+function sacrClearResults() {
+  sacrResetRunState();
   renderSacrBanner();
   renderSacrAll();
   const progress = document.getElementById("sacr-progress");
@@ -13932,28 +13977,109 @@ function sacrClearResults() {
   if (empty) empty.style.display = "none";
 }
 
+// Mirrors the backend's _shift_months: the day of month is CLAMPED to the target
+// month's length, not allowed to overflow. Date.setMonth rolls over instead — on
+// 31 July, three months back becomes 1 May rather than 30 April — which put the
+// cutoff hint a day away from the cutoff the server actually used.
+function sacrShiftMonths(date, months) {
+  const y = date.getFullYear();
+  const m = date.getMonth() + months;
+  const targetY = y + Math.floor(m / 12);
+  const targetM = ((m % 12) + 12) % 12;
+  const lastDay = new Date(targetY, targetM + 1, 0).getDate();
+  return new Date(targetY, targetM, Math.min(date.getDate(), lastDay));
+}
+
 function sacrApplyMonthsAgo(inputId, months) {
   const el = document.getElementById(inputId);
   if (!el || !months) return;
-  const d = new Date();
-  d.setMonth(d.getMonth() - months);
-  el.value = saLocalDateStr(d);
+  el.value = saLocalDateStr(sacrShiftMonths(new Date(), -months));
   el.dispatchEvent(new Event("change"));
 }
 
-function sacrSetDefaultDates() {
-  const a = document.getElementById("sacr-active-since");
-  const s = document.getElementById("sacr-silent-since");
-  if (a && !a.value) sacrApplyMonthsAgo("sacr-active-since", 24);
-  if (s && !s.value) sacrApplyMonthsAgo("sacr-silent-since", 6);
+// Blank means "all of this shop's history", which is a real choice rather than an
+// unfilled field — hence the hint text and the chip state in updateSacrSetupUi.
+function sacrClearHistoryFrom() {
+  const el = document.getElementById("sacr-history-from");
+  if (!el) return;
+  el.value = "";
+  el.dispatchEvent(new Event("change"));
+}
+
+function sacrSetDefaults() {
+  const from = document.getElementById("sacr-history-from");
+  if (from && !from.value) sacrApplyMonthsAgo("sacr-history-from", 24);
+  updateSacrSetupUi();
+}
+
+function sacrSilenceMonths() {
+  return parseInt(document.getElementById("sacr-silence")?.value, 10) || 0;
+}
+
+// The client's mirror of the backend's per-shop cutoff, used only for the hint
+// text and the Run guard. The authoritative one comes back in runWindow, and can
+// still differ by a day when a shop is in another timezone.
+function sacrCutoffDate(months) {
+  return saLocalDateStr(sacrShiftMonths(new Date(), -(months || 0)));
 }
 
 function updateSacrRunBtn() {
   const btn = document.getElementById("sacr-run-btn");
   if (!btn) return;
-  const a = document.getElementById("sacr-active-since")?.value || "";
-  const s = document.getElementById("sacr-silent-since")?.value || "";
-  btn.disabled = !(sacrSelectedStoreIds().length > 0 && a && s && a < s);
+  const from = document.getElementById("sacr-history-from")?.value || "";
+  const months = sacrSilenceMonths();
+  const today = saLocalDateStr(new Date());
+  const cutoff = sacrCutoffDate(months);
+  let why = "";
+  if (!sacrSelectedStoreIds().length) why = "Select at least one Shopify store";
+  else if (!months) why = "Choose how long counts as lost";
+  else if (from && from > today) why = "History cannot start in the future";
+  else if (from && from >= cutoff) {
+    // The old rule compared the two date inputs. The second one is gone, but the
+    // equivalent still holds: nobody inside this window can have been silent
+    // long enough, so the run is guaranteed to return nothing.
+    why =
+      `Nobody can be silent for ${months} months inside a window that starts ` +
+      `${from} — move it before ${cutoff}, or shorten the silence period`;
+  }
+  btn.disabled = Boolean(why);
+  // The old version disabled the button with no explanation at all.
+  btn.title = why;
+}
+
+// Keeps the derived text next to the controls honest: a blank date input reads as
+// an unfilled required field, and a rolling cutoff is invisible without saying
+// what it currently resolves to.
+function updateSacrSetupUi() {
+  updateSacrRunBtn();
+  const from = document.getElementById("sacr-history-from")?.value || "";
+  const months = sacrSilenceMonths();
+
+  const fromHint = document.getElementById("sacr-history-hint");
+  if (fromHint) {
+    fromHint.textContent = from
+      ? `departures from ${from} onwards`
+      : "all of each store's Shopify history";
+  }
+  const cutHint = document.getElementById("sacr-cutoff-hint");
+  if (cutHint) {
+    cutHint.textContent = months
+      ? `no completed order since ${sacrCutoffDate(months)}`
+      : "";
+  }
+  document
+    .querySelectorAll("[data-sacr-history]")
+    .forEach((b) =>
+      b.classList.toggle("is-on", b.dataset.sacrHistory === "all" && !from),
+    );
+  // Tracing every customer in a store's full history is the most expensive thing
+  // this report can do, so the warning appears exactly when that is what was
+  // asked for. Deliberately not disabled — see the help text.
+  const warn = document.getElementById("sacr-arrivals-warn");
+  if (warn) {
+    const on = document.getElementById("sacr-check-arrivals")?.checked === true;
+    warn.hidden = !(on && !from);
+  }
 }
 
 function sacrApplySortHeaders() {
@@ -13980,22 +14106,29 @@ function sacrMedian(values) {
   return v.length % 2 ? v[mid] : (v[mid - 1] + v[mid]) / 2;
 }
 
-function sacrDaysSilent(row) {
-  if (!row.last_order_created_at) return null;
-  const then = new Date(row.last_order_created_at);
-  if (isNaN(then)) return null;
-  return Math.floor((Date.now() - then.getTime()) / 86400000);
+// Days silent is no longer derived here. It needs the shop's own timezone and the
+// shop's own today, neither of which the browser has — it used to be computed
+// from a UTC timestamp against the viewer's clock — so the server stamps it and
+// the row carries it.
+
+// The month a departure belongs to. One definition, used by the filter, the
+// tooltip stats and the moved/state scoping — if these drift, a bar and the table
+// beneath it disagree and nothing errors.
+function sacrRowMonth(row) {
+  return String(row.last_order_local || "").slice(0, 7);
 }
 
 async function runLostCustomersReport() {
   if (sacrState.loading) return;
 
   const storeIds = sacrSelectedStoreIds();
-  const activeSince = document.getElementById("sacr-active-since")?.value || "";
-  const silentSince = document.getElementById("sacr-silent-since")?.value || "";
+  const historyFrom = document.getElementById("sacr-history-from")?.value || "";
+  const silenceMonths = sacrSilenceMonths();
+  const acquiredOnly =
+    document.getElementById("sacr-acquired-only")?.checked === true;
   const minOrders =
     parseInt(document.getElementById("sacr-min-orders")?.value, 10) || 1;
-  if (!storeIds.length || !activeSince || !silentSince) return;
+  if (!storeIds.length || !silenceMonths) return;
 
   const runBtn = document.getElementById("sacr-run-btn");
   const cancelBtn = document.getElementById("sacr-cancel-btn");
@@ -14006,20 +14139,7 @@ async function runLostCustomersReport() {
 
   sacrState.loading = true;
   sacrState.abortController = new AbortController();
-  sacrState.rows = [];
-  sacrState.moved = [];
-  sacrState.arrivals = null;
-  sacrState.stores = [];
-  sacrState.benchmark = null;
-  sacrState.totals = null;
-  sacrState.byMonth = [];
-  sacrState.monthStats = null;
-  sacrState.storeColors = null;
-  sacrState.states = [];
-  sacrState.currentPage = 0;
-  sacrHideTooltip();
-  sacrState.activeSince = activeSince;
-  sacrState.silentSince = silentSince;
+  sacrResetRunState();
 
   if (runBtn) runBtn.disabled = true;
   if (cancelBtn) cancelBtn.style.display = "";
@@ -14041,8 +14161,12 @@ async function runLostCustomersReport() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           store_ids: storeIds,
-          active_since: activeSince,
-          silent_since: silentSince,
+          // null, not "": blank means all history, and the endpoint rejects
+          // unknown fields, so a stale bundle fails loudly instead of quietly
+          // reporting against a window nobody chose.
+          history_from: historyFrom || null,
+          silent_months: silenceMonths,
+          require_acquired_in_window: acquiredOnly,
           min_orders: minOrders,
           exclude_cross_store:
             document.getElementById("sacr-cross-store")?.checked !== false,
@@ -14079,6 +14203,10 @@ async function runLostCustomersReport() {
         const eventType = match[1];
 
         if (eventType === "progress" && data.phase === "started") {
+          // Echoed early on purpose: the notes and scope lines render on every
+          // store event, long before `complete` arrives, and they interpolate
+          // dates from here.
+          if (data.window) sacrState.runWindow = data.window;
           sacrState.stores = (data.stores || []).map((s) => ({
             ...s,
             ok: null,
@@ -14145,23 +14273,37 @@ async function runLostCustomersReport() {
             status.textContent = `${data.store_name} — retrying (${data.attempt}/${data.max_attempts}) after ${data.reason}...`;
           }
           renderSacrProgress();
+        } else if (eventType === "progress" && data.phase === "section_start") {
+          if (status) {
+            const of = `${data.section + 1} of ${data.sections_total}`;
+            const span = data.months
+              ? (data.months[0] === data.months[1]
+                  ? sancmMonthTick(data.months[0], true)
+                  : `${sancmMonthTick(data.months[0], true)}–${sancmMonthTick(data.months[1], true)}`)
+              : "";
+            status.textContent =
+              `${data.store_name} — checking batch ${of}` +
+              (span ? ` (${span}, ${data.size.toLocaleString()} departures)` : "") +
+              "…";
+          }
+        } else if (eventType === "progress" && data.phase === "section_done") {
+          // Nothing to update beyond the message; the rows already arrived.
+        } else if (eventType === "rows") {
+          // Deliberately NOT Object.assign onto the store entry: data.rows would
+          // land there and be retained a second time.
+          const rows = data.rows || [];
+          for (const r of rows) {
+            r.store_id = data.store_id;
+            r.store_name = data.store_name;
+          }
+          // Looped rather than push(...rows): spreading a large section exceeds
+          // the argument limit.
+          const target = data.kind === "moved" ? sacrState.moved : sacrState.rows;
+          for (const r of rows) target.push(r);
+          sacrScheduleResultsRender();
         } else if (eventType === "store") {
           const s = sacrState.stores.find((x) => x.store_id === data.store_id);
           if (s) Object.assign(s, data);
-          if (data.ok && Array.isArray(data.rows)) {
-            for (const r of data.rows) {
-              r.store_id = data.store_id;
-              r.store_name = data.store_name;
-            }
-            sacrState.rows.push(...data.rows);
-          }
-          if (data.ok && Array.isArray(data.moved_rows)) {
-            for (const r of data.moved_rows) {
-              r.store_id = data.store_id;
-              r.store_name = data.store_name;
-            }
-            sacrState.moved.push(...data.moved_rows);
-          }
           const ps = sacrProgressStore(data.store_id);
           if (ps) {
             ps.state = data.ok ? "done" : "failed";
@@ -14180,7 +14322,7 @@ async function runLostCustomersReport() {
           }
           renderSacrProgress();
           renderSacrBanner();
-          renderSacrAll();
+          sacrScheduleResultsRender(true);
         } else if (eventType === "complete") {
           sacrState.benchmark = data.benchmark;
           sacrState.totals = data.totals;
@@ -14204,7 +14346,7 @@ async function runLostCustomersReport() {
           renderSacrProgress();
           sacrPopulateFilterOptions();
           renderSacrBanner();
-          renderSacrAll();
+          sacrScheduleResultsRender(true);
         } else if (eventType === "error") {
           if (status) status.textContent = data.message || "Report failed";
           if (bar) bar.style.background = "var(--danger)";
@@ -14230,7 +14372,7 @@ async function runLostCustomersReport() {
     updateSacrRunBtn();
     updateSacrProductsBtn();
     renderSacrProgress();
-    renderSacrAll();
+    sacrScheduleResultsRender(true);
     // Keep the panel up when something went wrong — the timings and per-store
     // detail are the evidence. Clear it on a clean run so it stops taking room.
     const clean =
@@ -14263,17 +14405,17 @@ function sacrPopulateFilterOptions() {
 function sacrIsFiltered() {
   const f = sacrState.filter;
   return Boolean(
-    f.search || f.method || f.carrier || f.slow || f.state ||
+    f.search || f.method || f.carrier || f.slow || f.state || f.month ||
       f.ordersMin !== null,
   );
 }
 
 function sacrFilteredRows() {
   const f = sacrState.filter;
-  // Recomputed per render: frozen at arrival it silently drifts a day stale
-  // on a tab left open overnight, including in the KPI.
-  for (const r of sacrState.rows) r.days_silent = sacrDaysSilent(r);
   let rows = sacrState.rows;
+  // First because it is the cheapest and most selective predicate — one month out
+  // of a possible hundred.
+  if (f.month) rows = rows.filter((r) => sacrRowMonth(r) === f.month);
   if (f.search) {
     rows = rows.filter(
       (r) =>
@@ -14420,6 +14562,7 @@ function renderSacrAll() {
   renderSacrBenchmark();
   renderSacrTable();
   renderSacrChart();
+  renderSacrMonthChip();
   renderSacrNote();
 }
 
@@ -14628,11 +14771,31 @@ function renderSacrBanner() {
       `<li><strong>${saEscape(s.store_name || "Store")}</strong> — could not be read: ${saEscape(s.error || "unknown error")}. Excluded from all figures.</li>`,
     ),
   );
-  partial.forEach((s) =>
+  partial.forEach((s) => {
+    // What this costs depends on WHICH kind of incomplete it is. `complete` is
+    // false for anything worth mentioning; `cohort_complete` is the narrower flag
+    // that actually decides whether the store's sample can be compared. Saying
+    // "excluded from the comparison" for every flagged store was wrong in the
+    // common case — an imprecise order count for two named customers does not
+    // bias a comparison of fulfilment timing.
+    const excluded = s.departures_excluded_from_benchmark || 0;
+    let effect;
+    if (s.cohort_complete === false) {
+      effect = "Rows shown, but this store is excluded from the comparison above.";
+    } else if (excluded) {
+      effect =
+        `Rows shown; ${excluded.toLocaleString()} of its departures are left out of ` +
+        `the comparison above, the rest still count.`;
+    } else {
+      effect = "Rows and the comparison above are unaffected.";
+    }
+    // The reason is a sentence of its own, so do not end up with "..".
+    const reason = String(s.incomplete_reason || "part of the scan did not finish")
+      .replace(/\.\s*$/, "");
     items.push(
-      `<li><strong>${saEscape(s.store_name || "Store")}</strong> — partial data: ${saEscape(s.incomplete_reason || "part of the scan did not finish")}. Rows shown, but excluded from the comparison above.</li>`,
-    ),
-  );
+      `<li><strong>${saEscape(s.store_name || "Store")}</strong> — partial data: ${saEscape(reason)}. ${saEscape(effect)}</li>`,
+    );
+  });
   el.innerHTML =
     '<div class="sacr-banner-title">Results are incomplete</div><ul>' +
     items.join("") +
@@ -14688,15 +14851,15 @@ function renderSacrTable() {
         // Shop-local dates, matching the ones the cohort was decided on. Using
         // the raw UTC timestamps here would let a row show a date that
         // contradicts why it was included.
-        `<td class="sacr-date">${sacrFmtDate(r.first_order_local || r.first_order_created_at)}</td>` +
+        `<td class="sacr-date">${sacrFmtDate(r.first_order_local)}</td>` +
         // The order number is narrower than its column and truncates with no
         // tooltip of its own, unlike the long names and carriers around it.
-        `<td class="sacr-date"${r.last_order_name ? ` title="${saEscape(r.last_order_name)}"` : ""}>${sacrFmtDate(r.last_order_local || r.last_order_created_at)}${
+        `<td class="sacr-date"${r.last_order_name ? ` title="${saEscape(r.last_order_name)}"` : ""}>${sacrFmtDate(r.last_order_local)}${
           r.last_order_name
             ? `<span class="sacr-sub"><span class="sacr-ordname">${saEscape(r.last_order_name)}</span>${sacrCopyBtn(r.last_order_name, "order number")}</span>`
             : ""
         }</td>` +
-        `<td class="sacr-num">${r.days_silent === null ? "—" : r.days_silent.toLocaleString()}</td>` +
+        `<td class="sacr-num">${typeof r.days_silent === "number" ? r.days_silent.toLocaleString() : "—"}</td>` +
         sacrDaysCell(r.days_to_fulfil) +
         sacrDaysCell(r.days_to_deliver) +
         `<td class="sacr-ellipsis" title="${saEscape(r.shipping_method_raw || r.shipping_method || "")}">${saEscape(r.shipping_method || "—")}</td>` +
@@ -14747,8 +14910,12 @@ function renderSacrTable() {
     const all = sacrState.rows.length;
     const currency = rows[0]?.currency || sacrState.totals?.currency || "";
     count.classList.toggle("sacr-count-filtered", filtered);
+    // Named rather than just "Filtered": a month scope is the one filter with no
+    // visible control of its own in this row, so the count has to say which.
+    const month = sacrState.filter.month;
+    const lead = month ? `${sancmMonthTick(month, true)}: ` : "Filtered: ";
     count.textContent = filtered
-      ? `Filtered: ${total.toLocaleString()} of ${all.toLocaleString()} lost customers` +
+      ? `${lead}${total.toLocaleString()} of ${all.toLocaleString()} lost customers` +
         (total ? ` · ${sacrFmtMoney(spend, currency)}` : "")
       : `${all.toLocaleString()} lost customers`;
   }
@@ -14770,17 +14937,40 @@ function renderSacrNote() {
       `${noTiming.toLocaleString()} last order(s) have no delivery timestamp (unfulfilled, or a carrier that never reported delivery). Shown as “—” and excluded from medians — never counted as zero.`,
     );
   }
-  const excluded = sacrState.stores.reduce((a, s) => a + (s.excluded_pre_existing || 0), 0);
-  if (excluded) {
+  // Both of the next two notes presume the acquisition filter, so with it off
+  // they are not merely stale — they are untrue. Gated on the resolved window
+  // rather than on the counter, which is null (not 0) when the filter is off.
+  const win = sacrState.runWindow || {};
+  if (win.require_acquired_in_window) {
+    const excluded = sacrState.stores.reduce(
+      (a, s) => a + (s.excluded_pre_existing || 0), 0);
+    if (excluded) {
+      notes.push(
+        `${excluded.toLocaleString()} customer(s) who were already ordering before ${win.history_from} were excluded entirely — from this table and from every total, KPI and comparison above.`,
+      );
+    }
+    // Counted rather than silently dropped, so the arithmetic reconciles.
+    const older = sacrState.stores.reduce((a, s) => a + (s.ordered_before_window || 0), 0);
+    if (older) {
+      notes.push(
+        `${older.toLocaleString()} customer(s) ordered in this window but every one of those orders was cancelled or refunded, leaving an earlier purchase as their last — so they did not start here and are excluded.`,
+      );
+    }
+  }
+  // Real arrivals, deliberately left off the chart: before the history date the
+  // scan only finds the ones who are still ordering, so plotting them would draw
+  // a survivors-only green series against a departures series that is
+  // structurally zero there.
+  const preArrivals = sacrState.totals?.arrivals_before_window || 0;
+  if (preArrivals) {
     notes.push(
-      `${excluded.toLocaleString()} customer(s) who were already ordering before ${sacrState.activeSince} were excluded entirely — from this table and from every total, KPI and comparison above.`,
+      `${preArrivals.toLocaleString()} of these customers first ordered before ${win.history_from} and so are not counted as arrivals on the chart — only the ones still ordering would be visible that far back, which would understate every earlier month.`,
     );
   }
-  // Counted rather than silently dropped, so the arithmetic reconciles.
-  const older = sacrState.stores.reduce((a, s) => a + (s.ordered_before_window || 0), 0);
-  if (older) {
+  const unresolved = sacrState.stores.reduce((a, s) => a + (s.moved_unresolved || 0), 0);
+  if (unresolved) {
     notes.push(
-      `${older.toLocaleString()} customer(s) ordered in this window but every one of those orders was cancelled or refunded, leaving an earlier purchase as their last — so they did not start here and are excluded.`,
+      `${unresolved.toLocaleString()} customer(s) still order at another store, but too often to tell whether that began within ${win.moved_within_months || win.silent_months} months of them going quiet here — counted as lost, which may overstate the total.`,
     );
   }
   const adjusted = sacrState.rows.filter(
@@ -14807,7 +14997,7 @@ function renderSacrNote() {
       .join(", ");
     const byName = sacrState.stores.reduce((a, s) => a + (s.matched_by_name || 0), 0);
     notes.push(
-      `${movedTotal.toLocaleString()} customer(s) did not leave — they are still ordering since ${sacrState.silentSince} under another account (${where})` +
+      `${movedTotal.toLocaleString()} customer(s) did not leave — they bought under another account within ${win.moved_within_months || win.silent_months} months of going quiet here (${where})` +
         (byName
           ? `, ${byName.toLocaleString()} of them found by name + ZIP rather than email`
           : "") +
@@ -14833,6 +15023,31 @@ function sacrScheduleChartRender() {
   });
 }
 
+// Rows arrive in section-sized events — hundreds of them on a long run — and one
+// renderSacrAll costs two full sorts of every row, five more full scans for the
+// notes, and a complete SVG rebuild. That was affordable at one event per store;
+// per section it locks the tab up. Trailing timer, so a burst of sections paints
+// once. `force` at the settle points, where the numbers must be final.
+const SACR_RENDER_THROTTLE_MS = 400;
+
+// Above this many months the x axis switches from month ticks to year rules.
+// Two years of month labels still read fine; eight do not.
+const SACR_MONTH_TICK_LIMIT = 24;
+
+function sacrScheduleResultsRender(force) {
+  if (force) {
+    if (sacrState.renderTimer) clearTimeout(sacrState.renderTimer);
+    sacrState.renderTimer = 0;
+    renderSacrAll();
+    return;
+  }
+  if (sacrState.renderTimer) return;
+  sacrState.renderTimer = setTimeout(() => {
+    sacrState.renderTimer = 0;
+    renderSacrAll();
+  }, SACR_RENDER_THROTTLE_MS);
+}
+
 function renderSacrChart() {
   const wrap = document.getElementById("sacr-chart-wrap");
   if (!wrap) return;
@@ -14847,25 +15062,34 @@ function renderSacrChart() {
 
   sacrBuildMonthStats();
 
-  // Months after the cutoff can only ever show arrivals: nobody is counted as
-  // lost until they have been silent since it. Without saying so, the run of
-  // green-only bars at the right reads as a data gap.
+  // Months too recent to have been measured can only ever show arrivals: nobody
+  // counts as lost until they have been silent for the full period. Without
+  // saying so, the run of green-only bars at the right reads as a data gap — or
+  // worse, as churn collapsing to nothing.
+  const win = sacrState.runWindow || {};
+  // Driven by the server's flag rather than by re-deriving a cutoff here, so the
+  // shading can never disagree with the classification that produced the bars.
+  const firstPending = months.findIndex((m) => m.judgeable === false);
   const sub = document.getElementById("sacr-chart-sub");
   if (sub) {
-    const base =
-      "New customers by month of first order, against lost customers by month of last order";
-    // Strictly after the cutoff's own month: that month can still hold
-    // departures, so including it would make the sentence untrue.
-    const cutoffMonth = (sacrState.silentSince || "").slice(0, 7);
-    const tail = months.some(
-      (m) => m.month > cutoffMonth && (m.new || 0) > 0 && !(m.count || 0),
-    );
-    sub.textContent =
-      base +
-      (tail && sacrState.silentSince
-        ? `. Nobody can count as lost after ${sacrState.silentSince}, so later months show arrivals only.`
-        : "");
+    const bits = [
+      "New customers by month of first order, against lost customers by month of last order.",
+    ];
+    if (firstPending >= 0) {
+      bits.push(
+        `From ${sancmMonthTick(months[firstPending].month, true)} nobody can be counted as lost yet` +
+          (win.silent_months
+            ? ` — that needs ${win.silent_months} months of silence.`
+            : "."),
+      );
+    }
+    if (sacrState.rows.length) {
+      bits.push("Click a month to narrow everything below to it.");
+    }
+    sub.textContent = bits.join(" ");
   }
+  const legendPending = document.getElementById("sacr-legend-pending");
+  if (legendPending) legendPending.hidden = firstPending < 0;
 
   const W = Math.max(320, wrap.clientWidth);
   const innerW = W - SANCM_PAD.left - SANCM_PAD.right;
@@ -14883,7 +15107,12 @@ function renderSacrChart() {
   const bandW = innerW / k;
   // Two bars per month, so each gets a little under half the band.
   const pairW = Math.min(SANCM_BAR_MAX, bandW * 0.72);
-  const barW = Math.max(2, (pairW - 2) / 2);
+  // Width-aware, because on a full-history run the band can be narrower than the
+  // 24px pair: at ~640px with 96 months the pair overflowed its band and adjacent
+  // months touched. A 1px bar is honest; two months bleeding together is not.
+  const innerGap = pairW > 8 ? 2 : 1;
+  const barW = Math.max(1, (pairW - innerGap) / 2);
+  const selected = sacrState.filter.month || "";
   const parts = [];
 
   for (const val of yTicks) {
@@ -14896,44 +15125,105 @@ function renderSacrChart() {
     );
   }
 
+  // One rect for the whole trailing run rather than one per band: abutting
+  // sub-pixel rects show seams down the shaded area.
+  if (firstPending >= 0) {
+    const zx = SANCM_PAD.left + firstPending * bandW;
+    const zw = innerW - firstPending * bandW;
+    parts.push(
+      `<rect class="sacr-pending-zone" x="${zx.toFixed(1)}" y="${SANCM_PAD.top}" width="${zw.toFixed(1)}" height="${innerH}" />`,
+    );
+    parts.push(
+      `<line class="sacr-pending-edge" x1="${zx.toFixed(1)}" y1="${SANCM_PAD.top}" x2="${zx.toFixed(1)}" y2="${SANCM_PAD.top + innerH}" />`,
+    );
+    if (zw > 110) {
+      parts.push(
+        `<text class="sacr-pending-label" x="${(zx + 6).toFixed(1)}" y="${SANCM_PAD.top + 13}">too recent to judge</text>`,
+      );
+    }
+  }
+
   months.forEach((m, j) => {
     const x = SANCM_PAD.left + j * bandW;
+    // Computed from state, never toggled imperatively: hover strips its own class
+    // on every pointerleave, and Reset clears the month without knowing the chart
+    // exists. Two independent classes, so neither can wipe the other.
+    const isSel = selected && m.month === selected;
     parts.push(
-      `<rect class="sancm-band-wash" data-band="${j}" x="${x}" y="${SANCM_PAD.top}" width="${bandW}" height="${innerH}" />`,
+      `<rect class="sancm-band-wash${isSel ? " is-selected" : ""}" data-band="${j}" x="${x}" y="${SANCM_PAD.top}" width="${bandW}" height="${innerH}" />`,
     );
   });
 
   // New on the left, lost on the right, in the same order as the legend.
   months.forEach((m, j) => {
     const left = SANCM_PAD.left + j * bandW + (bandW - pairW) / 2;
+    // A month too recent to judge is drawn faint rather than dropped: a missing
+    // bar reads as no data, a faint one as not yet measured. The cutoff's own
+    // month is only partly measured — its count is real but still rising — so it
+    // is dimmed less than a pending month and more than a settled one.
+    let opacity = 1;
+    if (m.judgeable === false) opacity = 0.4;
+    else if (m.partial) opacity = 0.72;
+    if (selected && m.month !== selected) opacity = Math.min(opacity, 0.3);
     [
       { v: m.new || 0, x: left, fill: "var(--sancm-c3)" },
-      { v: m.count || 0, x: left + barW + 2, fill: "var(--sancm-c2)" },
+      { v: m.count || 0, x: left + barW + innerGap, fill: "var(--sancm-c2)" },
     ].forEach(({ v, x, fill }) => {
       if (!v) return;
       const yTop = y(v);
       const h = SANCM_PAD.top + innerH - yTop;
       parts.push(
-        `<path d="${sancmBarPath(x, yTop, barW, h, SANCM_RADIUS)}" fill="${fill}" />`,
+        `<path d="${sancmBarPath(x, yTop, barW, h, SANCM_RADIUS)}" fill="${fill}"` +
+          (opacity < 1 ? ` opacity="${opacity}"` : "") +
+          ` />`,
       );
     });
   });
 
   const spansYears =
     months[0].month.slice(0, 4) !== months[k - 1].month.slice(0, 4);
-  const step = Math.max(1, Math.ceil(k / Math.max(1, Math.floor(innerW / 56))));
-  months.forEach((m, j) => {
-    if (j % step !== 0 && j !== k - 1) return;
-    const cx = SANCM_PAD.left + j * bandW + bandW / 2;
-    parts.push(
-      `<text x="${cx.toFixed(1)}" y="${SANCM_H - SANCM_PAD.bottom + 20}" text-anchor="middle" font-size="11" fill="var(--text-tertiary)">${saEscape(sancmMonthTick(m.month, spansYears))}</text>`,
-    );
-  });
+  if (k <= SACR_MONTH_TICK_LIMIT) {
+    const step = Math.max(1, Math.ceil(k / Math.max(1, Math.floor(innerW / 56))));
+    months.forEach((m, j) => {
+      if (j % step !== 0 && j !== k - 1) return;
+      const cx = SANCM_PAD.left + j * bandW + bandW / 2;
+      parts.push(
+        `<text x="${cx.toFixed(1)}" y="${SANCM_H - SANCM_PAD.bottom + 20}" text-anchor="middle" font-size="11" fill="var(--text-tertiary)">${saEscape(sancmMonthTick(m.month, spansYears))}</text>`,
+      );
+    });
+  } else {
+    // Over a couple of years, evenly-spaced month ticks read as noise — "Mar,
+    // Aug, Jan, Jun" with nothing to anchor them. Years do the anchoring: a rule
+    // at each January gives the eye a landmark, so any bar can be located by
+    // counting from one without every bar needing a label.
+    const yearStep = Math.max(1, Math.ceil(46 / Math.max(1, bandW * 12)));
+    months.forEach((m, j) => {
+      if (m.month.slice(5) !== "01") return;
+      const year = parseInt(m.month.slice(0, 4), 10);
+      const x = SANCM_PAD.left + j * bandW;
+      parts.push(
+        `<line x1="${x.toFixed(1)}" y1="${SANCM_PAD.top}" x2="${x.toFixed(1)}" y2="${SANCM_PAD.top + innerH}" stroke="var(--border-color)" stroke-width="1" opacity="0.55" shape-rendering="crispEdges" />`,
+      );
+      if (year % yearStep === 0) {
+        parts.push(
+          `<text x="${x.toFixed(1)}" y="${SANCM_H - SANCM_PAD.bottom + 20}" text-anchor="middle" font-size="11" fill="var(--text-tertiary)">${year}</text>`,
+        );
+      }
+    });
+  }
 
   months.forEach((m, j) => {
     const x = SANCM_PAD.left + j * bandW;
+    const pending = m.judgeable === false;
+    const label =
+      `${sancmMonthTick(m.month, true)}: ${m.new || 0} new, ` +
+      (pending ? "not yet judged" : `${m.count || 0} lost`);
     parts.push(
-      `<rect class="sancm-hit" data-month-index="${j}" tabindex="0" role="img" aria-label="${saEscape(sancmMonthTick(m.month, true))}: ${m.new || 0} new, ${m.count || 0} lost" x="${x}" y="${SANCM_PAD.top}" width="${bandW}" height="${innerH}" fill="transparent" />`,
+      `<rect class="sancm-hit" data-month-index="${j}"` +
+        (pending ? ` data-pending="1" aria-disabled="true"` : "") +
+        ` tabindex="0" role="button"` +
+        (pending ? "" : ` aria-pressed="${selected === m.month}"`) +
+        ` aria-label="${saEscape(label)}" x="${x}" y="${SANCM_PAD.top}" width="${bandW}" height="${innerH}" fill="transparent" />`,
     );
   });
 
@@ -14964,10 +15254,13 @@ function sacrBuildMonthStats() {
   });
 
   const stats = new Map();
+  // Deliberately over the unfiltered rows: this feeds every month's tooltip, so
+  // scoping it to a selected month would zero out all the others while their bars
+  // stayed on screen.
   sacrState.rows.forEach((r) => {
     if (!counted.has(r.store_id)) return;
     // Same shop-local month the server bucketed the bars by.
-    const key = String(r.last_order_local || r.last_order_created_at || "").slice(0, 7);
+    const key = sacrRowMonth(r);
     if (!key) return;
     let e = stats.get(key);
     if (!e) {
@@ -15000,6 +15293,50 @@ function sacrBindChartInteraction() {
   wrap.addEventListener("pointerleave", sacrHideTooltip);
   wrap.addEventListener("focusin", (e) => show(e.target));
   wrap.addEventListener("focusout", sacrHideTooltip);
+
+  const pick = (target) => {
+    const hit = target && target.closest("[data-month-index]");
+    // A month with nothing measured in it is not a scope worth selecting.
+    if (!hit || hit.dataset.pending === "1") return false;
+    sacrToggleMonthFilter(parseInt(hit.dataset.monthIndex, 10));
+    return true;
+  };
+  wrap.addEventListener("click", (e) => pick(e.target));
+  wrap.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    // Space would otherwise scroll the page out from under the chart.
+    if (pick(e.target)) e.preventDefault();
+  });
+}
+
+function sacrToggleMonthFilter(index) {
+  const m = (sacrState.byMonth || [])[index];
+  if (!m) return;
+  sacrState.filter.month = sacrState.filter.month === m.month ? "" : m.month;
+  sacrState.currentPage = 0;
+  const wasFocused = document.activeElement?.classList?.contains("sancm-hit");
+  renderSacrAll();
+  // The re-render replaces the whole SVG, destroying the element that had focus.
+  // Without this, selecting by keyboard drops focus to <body> and the next Tab
+  // restarts from the top of the page.
+  if (wasFocused) {
+    document
+      .querySelector(`#sacr-chart-wrap .sancm-hit[data-month-index="${index}"]`)
+      ?.focus();
+  }
+}
+
+// Rendered from state, so the Reset button and a fresh run clear it without
+// needing to know the chart exists.
+function renderSacrMonthChip() {
+  const chip = document.getElementById("sacr-month-chip");
+  if (!chip) return;
+  const m = sacrState.filter.month;
+  chip.hidden = !m;
+  if (m) {
+    chip.textContent = `${sancmMonthTick(m, true)} ×`;
+    chip.title = "Clear the month filter";
+  }
 }
 
 function sacrHideTooltip() {
@@ -15077,43 +15414,70 @@ function sacrShowTooltip(index, hitRect) {
   // The two series first, since that is what the bars show, then the net —
   // the number that says whether the month gained or shed customers.
   addRow((month.new || 0).toLocaleString(), "new", { color: "var(--sancm-c3)" });
-  addRow(month.count.toLocaleString(), "lost", { color: "var(--sancm-c2)" });
 
-  const net = (month.new || 0) - (month.count || 0);
-  const netRow = addRow(
-    `${net > 0 ? "+" : net < 0 ? "−" : ""}${Math.abs(net).toLocaleString()}`,
-    "net",
-    { rowClass: `sancm-tip-total sancm-tip-mom ${
-        net > 0 ? "sancm-mom-up" : net < 0 ? "sancm-mom-down" : "sancm-mom-flat"
-      }` },
-  );
-  if (netRow) netRow.title = "New minus lost in this month";
-
-  if (grand > 0) {
-    addRow(`${((month.count / grand) * 100).toFixed(1)}%`, "of all lost");
-  }
-
-  if (stats) {
-    const cur = sacrState.totals?.currency || "";
-    addRow(
-      `${Math.round(stats.revenue).toLocaleString()}${cur ? " " + cur : ""}`,
-      "revenue lost",
-    );
-    const medOrders = sacrMedian(stats.orders);
-    if (medOrders !== null) {
-      addRow(String(medOrders), "median orders each");
+  // A month too recent to have been measured has a structural zero, not a
+  // finding. Reporting "0 lost" and a net of "+N" for it would read as a month
+  // where nobody left — the single most misleading thing this chart could say.
+  if (month.judgeable === false) {
+    const months = sacrState.runWindow?.silent_months;
+    const row = addRow("—", "lost", { color: "var(--sancm-c2)" });
+    if (row) {
+      row.title = months
+        ? `Needs ${months} months of silence before anyone in this month can count as lost`
+        : "Too recent to judge";
     }
-  }
+    addRow("not yet", "judgeable", { rowClass: "sancm-tip-total" });
+  } else {
+    addRow(month.count.toLocaleString(), "lost", { color: "var(--sancm-c2)" });
 
-  const prev = sacrState.byMonth[index - 1];
-  if (prev && prev.month === sacrPrevMonthKey(month.month) && prev.count > 0) {
-    const pct = Math.round(((month.count - prev.count) / prev.count) * 1000) / 10;
-    // Inverted against the New Customers chart on purpose: more customers
-    // leaving is the bad direction.
-    const cls = pct > 0 ? "sancm-mom-down" : pct < 0 ? "sancm-mom-up" : "sancm-mom-flat";
-    addRow(sancmFormatMom(pct), `vs ${sancmMonthTick(prev.month, false)}`, {
-      rowClass: `sancm-tip-mom ${cls}`,
-    });
+    const net = (month.new || 0) - (month.count || 0);
+    const netRow = addRow(
+      `${net > 0 ? "+" : net < 0 ? "−" : ""}${Math.abs(net).toLocaleString()}`,
+      "net",
+      { rowClass: `sancm-tip-total sancm-tip-mom ${
+          net > 0 ? "sancm-mom-up" : net < 0 ? "sancm-mom-down" : "sancm-mom-flat"
+        }` },
+    );
+    if (netRow) netRow.title = "New minus lost in this month";
+
+    if (grand > 0) {
+      addRow(`${((month.count / grand) * 100).toFixed(1)}%`, "of all lost");
+    }
+
+    if (stats) {
+      const cur = sacrState.totals?.currency || "";
+      addRow(
+        `${Math.round(stats.revenue).toLocaleString()}${cur ? " " + cur : ""}`,
+        "revenue lost",
+      );
+      const medOrders = sacrMedian(stats.orders);
+      if (medOrders !== null) {
+        addRow(String(medOrders), "median orders each");
+      }
+    }
+
+    const prev = sacrState.byMonth[index - 1];
+    // Only against a fully-measured neighbour: the partial cutoff month is still
+    // filling up, so comparing to it would report a fall that is just a shorter
+    // measuring period.
+    if (prev && prev.month === sacrPrevMonthKey(month.month) && prev.count > 0 &&
+        prev.judgeable !== false && !prev.partial && !month.partial) {
+      const pct = Math.round(((month.count - prev.count) / prev.count) * 1000) / 10;
+      // Inverted against the New Customers chart on purpose: more customers
+      // leaving is the bad direction.
+      const cls = pct > 0 ? "sancm-mom-down" : pct < 0 ? "sancm-mom-up" : "sancm-mom-flat";
+      addRow(sancmFormatMom(pct), `vs ${sancmMonthTick(prev.month, false)}`, {
+        rowClass: `sancm-tip-mom ${cls}`,
+      });
+    }
+    if (month.partial) {
+      const row = addRow("partly", "measured");
+      if (row) {
+        row.title =
+          "This month straddles the cutoff — customers who went quiet late in it " +
+          "have not been silent long enough yet, so the count will still rise.";
+      }
+    }
   }
 
   tip.hidden = false;
@@ -15309,12 +15673,26 @@ function sacrApplyMovedSortHeaders() {
   });
 }
 
+// Movers carry the same last_order_local as a departure, so a month selection is
+// meaningful here — and every other figure in this modal must agree with it.
+function sacrMovedScoped() {
+  const rows = sacrState.moved || [];
+  const month = sacrState.filter.month;
+  return month ? rows.filter((r) => sacrRowMonth(r) === month) : rows;
+}
+
 function sacrPopulateMovedFilter() {
   const sel = document.getElementById("sacr-moved-filter");
   if (!sel) return;
-  const dests = [...new Set((sacrState.moved || []).map((r) => r.moved_to_store))]
+  const dests = [...new Set(sacrMovedScoped().map((r) => r.moved_to_store))]
     .filter(Boolean)
     .sort();
+  // A destination with no rows in the selected month is not offered — but then
+  // the held value would silently resolve to "All" on the select while still
+  // filtering the table to nothing. Clear it instead.
+  if (sacrMovedState.dest && !dests.includes(sacrMovedState.dest)) {
+    sacrMovedState.dest = "";
+  }
   sel.innerHTML =
     '<option value="">All</option>' +
     dests.map((d) => `<option value="${saEscape(d)}">${saEscape(d)}</option>`).join("");
@@ -15322,7 +15700,7 @@ function sacrPopulateMovedFilter() {
 }
 
 function sacrMovedRows() {
-  let rows = sacrState.moved || [];
+  let rows = sacrMovedScoped();
   if (sacrMovedState.dest) {
     rows = rows.filter((r) => r.moved_to_store === sacrMovedState.dest);
   }
@@ -15350,7 +15728,8 @@ function renderSacrMovedFlows() {
   const el = document.getElementById("sacr-moved-flows");
   if (!el) return;
   const flows = new Map();
-  (sacrState.moved || []).forEach((r) => {
+  // The same scoped base as the table below, or the chips would contradict it.
+  sacrMovedScoped().forEach((r) => {
     // Keyed on the bare shop name plus the same-store flag, so a chip reads
     // "TSW → TSW" rather than wrapping onto three lines.
     const to = r.moved_to_store_name || r.moved_to_store;
@@ -15386,16 +15765,26 @@ function renderSacrMoved() {
   if (!tbody) return;
 
   renderSacrMovedFlows();
-  const all = sacrState.moved || [];
+  const all = sacrMovedScoped();
+  const runTotal = (sacrState.moved || []).length;
   const rows = sacrMovedRows();
   const cur = sacrState.totals?.currency || "";
 
   const scope = document.getElementById("sacr-moved-scope");
   if (scope) {
+    const win = sacrState.runWindow || {};
+    const months = win.moved_within_months || win.silent_months;
+    const month = sacrState.filter.month;
     scope.textContent =
-      `${all.length.toLocaleString()} customer(s) stopped ordering at their store but are ` +
-      `still buying elsewhere since ${sacrState.silentSince}. They are excluded from the ` +
-      `lost table and from every total, KPI and comparison — they did not leave the business.`;
+      `${all.length.toLocaleString()} customer(s)` +
+      (month
+        ? ` whose last order here fell in ${sancmMonthTick(month, true)}` +
+          ` (of ${runTotal.toLocaleString()} across the whole run)`
+        : "") +
+      ` stopped ordering at their store but bought under another account` +
+      (months ? ` within ${months} months of going quiet` : "") +
+      `. They are excluded from the lost table and from every total, KPI and ` +
+      `comparison — they did not leave the business.`;
   }
 
   tbody.innerHTML = rows
@@ -15628,11 +16017,30 @@ function sacrArrivalsRows() {
   });
 }
 
+// The tallies for the selected month, or for the whole run. Server-side
+// aggregates, deliberately: the row table below is capped at the 3,000
+// highest-spending arrivals, so deriving month figures from it would produce
+// numbers that quietly disagree with that month's "New" bar.
+function sacrArrivalsScope() {
+  const arr = sacrState.arrivals;
+  if (!arr) return null;
+  const month = sacrState.filter.month;
+  const bucket = month ? (arr.by_month || {})[month] : null;
+  if (month && bucket) {
+    return { ...bucket, month, scoped: true };
+  }
+  // A month with no arrivals at all still scopes to zero rather than falling
+  // back to the whole run, which would silently widen the numbers.
+  if (month) return { total: 0, verdicts: {}, origins: {}, month, scoped: true };
+  return { total: arr.total || 0, verdicts: arr.verdicts || {},
+           origins: arr.origins || {}, month: "", scoped: false };
+}
+
 // The headline: of everyone the report counted as newly acquired, how many
 // were actually new to the business.
 function renderSacrArrivalsVerdicts() {
   const el = document.getElementById("sacr-arrivals-verdicts");
-  const arr = sacrState.arrivals;
+  const arr = sacrArrivalsScope();
   if (!el || !arr) return;
   const total = arr.total || 0;
   el.innerHTML = SACR_ARRIVAL_ORDER.filter((v) => (arr.verdicts || {})[v])
@@ -15657,7 +16065,7 @@ function renderSacrArrivalsVerdicts() {
 // Which store each non-new arrival was already known at.
 function renderSacrArrivalsOrigins() {
   const el = document.getElementById("sacr-arrivals-origins");
-  const arr = sacrState.arrivals;
+  const arr = sacrArrivalsScope();
   if (!el || !arr) return;
   const entries = Object.entries(arr.origins || {}).sort((a, b) => b[1] - a[1]);
   const here = sacrShortStore(sacrState.stores?.[0]?.store_name || "here");
@@ -15689,17 +16097,30 @@ function renderSacrArrivals() {
   renderSacrArrivalsOrigins();
   const all = arr.rows || [];
   const rows = sacrArrivalsRows();
-  const total = arr.total || 0;
-  const brandNew = (arr.verdicts || {})["new to the business"] || 0;
+  const scoped = sacrArrivalsScope() || { total: 0, verdicts: {} };
+  const total = scoped.total || 0;
+  const brandNew = (scoped.verdicts || {})["new to the business"] || 0;
 
   const scope = document.getElementById("sacr-arrivals-scope");
   if (scope) {
     const pct = total ? Math.round((brandNew / total) * 1000) / 10 : 0;
+    const win = sacrState.runWindow || {};
+    const when = scoped.month
+      ? `in ${sancmMonthTick(scoped.month, true)}`
+      : win.all_history
+        ? "at any point in this store's Shopify history"
+        : `on or after ${win.history_from}`;
     scope.textContent =
-      `${total.toLocaleString()} customer(s) placed their first completed order here on or ` +
-      `after ${sacrState.activeSince} — the "New" bars on the chart. ${brandNew.toLocaleString()} ` +
+      `${total.toLocaleString()} customer(s) placed their first completed order here ` +
+      `${when} — the "New" bars on the chart. ${brandNew.toLocaleString()} ` +
       `of them (${pct}%) were new to the business; the rest were already known at another ` +
-      `store, or under an earlier account here.`;
+      `store, or under an earlier account here.` +
+      // The table cannot follow the month: it holds only the highest-spending
+      // 3,000 arrivals of the whole run, so a month slice of it would not match
+      // the counts above.
+      (scoped.month
+        ? ` The table below covers the whole run rather than just ${sancmMonthTick(scoped.month, true)}.`
+        : "");
   }
 
   tbody.innerHTML = rows
@@ -15808,12 +16229,53 @@ function sacrBindStatesModal() {
   });
 }
 
+// Mirrors the backend's _state_key (main.py): province codes repeat across
+// countries, so the country has to stay in the key or two different places merge.
+// If that function changes, this must change with it.
+function sacrStateKey(row) {
+  const code = row.state;
+  if (!code) return "__unknown__";
+  const country = row.country || "";
+  return country && country !== "US" ? `${country}-${code}` : code;
+}
+
 function renderSacrStates() {
   const tbody = document.getElementById("sacr-states-tbody");
   const tfoot = document.getElementById("sacr-states-tfoot");
   if (!tbody) return;
-  const rows = [...(sacrState.states || [])];
-  const col = sacrStatesState.sortColumn;
+  const month = sacrState.filter.month;
+
+  // Scoped by month ALONE, not by the filter bar: this modal has always ignored
+  // the other filters, and mixing a fully-filtered new column with four
+  // unfiltered ones would be the confusing option.
+  const monthLost = new Map();
+  if (month) {
+    sacrState.rows.forEach((r) => {
+      if (sacrRowMonth(r) !== month) return;
+      const k = sacrStateKey(r);
+      monthLost.set(k, (monthLost.get(k) || 0) + 1);
+    });
+  }
+  const rows = (sacrState.states || []).map((s) => ({
+    ...s,
+    month_lost: month ? monthLost.get(s.code) || 0 : null,
+  }));
+  // Any month row whose key matched no server row would otherwise vanish, and the
+  // new column would not sum to the table's own Lost total.
+  if (month) {
+    const known = new Set(rows.map((s) => s.code));
+    const orphan = [...monthLost.entries()]
+      .filter(([k]) => !known.has(k))
+      .reduce((a, [, n]) => a + n, 0);
+    if (orphan) {
+      rows.push({ code: "__unmatched__", label: "Unmatched", lost: 0, active: 0,
+                  total: 0, loss_rate: null, month_lost: orphan });
+    }
+  }
+
+  // A computed column cannot be sorted on once the month is cleared.
+  let col = sacrStatesState.sortColumn;
+  if (col === "month_lost" && !month) col = sacrStatesState.sortColumn = "lost";
   const dir = sacrStatesState.sortOrder === "asc" ? 1 : -1;
   rows.sort((a, b) => {
     const av = a[col];
@@ -15824,6 +16286,14 @@ function renderSacrStates() {
     if (av === bv) return b.lost - a.lost;
     return av < bv ? -dir : dir;
   });
+
+  // The header cell is added and removed with the column, so the row widths and
+  // the tfoot cell count always agree.
+  const monthTh = document.getElementById("sacr-states-month-th");
+  if (monthTh) {
+    monthTh.hidden = !month;
+    if (month) monthTh.textContent = `Lost in ${sancmMonthTick(month, true)}`;
+  }
 
   tbody.innerHTML = rows
     .map((s) => {
@@ -15836,22 +16306,33 @@ function renderSacrStates() {
         `<td class="sacr-num">${s.lost.toLocaleString()}</td>` +
         `<td class="sacr-num">${s.active.toLocaleString()}</td>` +
         `<td class="sacr-num">${s.total.toLocaleString()}</td>` +
-        `<td class="sacr-num ${cls}">${rate}</td></tr>`;
+        `<td class="sacr-num ${cls}">${rate}</td>` +
+        (month ? `<td class="sacr-num">${(s.month_lost || 0).toLocaleString()}</td>` : "") +
+        `</tr>`;
     })
     .join("");
 
   const tl = rows.reduce((a, s) => a + s.lost, 0);
   const ta = rows.reduce((a, s) => a + s.active, 0);
+  const tm = rows.reduce((a, s) => a + (s.month_lost || 0), 0);
   if (tfoot) {
     tfoot.innerHTML = `<tr class="sacr-foot-row"><td>All states</td>` +
       `<td class="sacr-num">${tl.toLocaleString()}</td>` +
       `<td class="sacr-num">${ta.toLocaleString()}</td>` +
       `<td class="sacr-num">${(tl + ta).toLocaleString()}</td>` +
-      `<td class="sacr-num">${tl + ta ? ((tl / (tl + ta)) * 100).toFixed(1) + "%" : "—"}</td></tr>`;
+      `<td class="sacr-num">${tl + ta ? ((tl / (tl + ta)) * 100).toFixed(1) + "%" : "—"}</td>` +
+      (month ? `<td class="sacr-num">${tm.toLocaleString()}</td>` : "") +
+      `</tr>`;
   }
   const scope = document.getElementById("sacr-states-scope");
   if (scope) {
-    scope.textContent = `${rows.length} state(s) · ${tl.toLocaleString()} lost vs ${ta.toLocaleString()} still active, by the shipping address on their last order`;
+    scope.textContent =
+      (month
+        ? `Loss rate covers the whole run — it needs the still-active cohort, which ` +
+          `only exists across the full window. The last column is ` +
+          `${sancmMonthTick(month, true)} alone. `
+        : "") +
+      `${rows.length} state(s) · ${tl.toLocaleString()} lost vs ${ta.toLocaleString()} still active, by the shipping address on their last order`;
   }
   const note = document.getElementById("sacr-states-note");
   if (note) {
@@ -15916,6 +16397,42 @@ function sacrBindProductsModal() {
   });
 }
 
+// The window the "% usually" baseline is sampled from. It must match the period
+// the analysed last orders come from, or the lift column compares a month against
+// a multi-year average and still renders a plausible number — which is what makes
+// getting this wrong dangerous rather than merely inaccurate.
+function sacrProductsBaseline() {
+  const month = sacrState.filter.month;
+  if (month) {
+    return { from: `${month}-01`, to: sacrNextMonthFirst(month) };
+  }
+  const win = sacrState.runWindow || {};
+  const to = win.cutoff || "";
+  if (!to) return { from: "", to: "" };
+  // A blank history date can mean eight years, and the backend samples at most a
+  // hundred pages across the whole span — so "the same period" would quietly
+  // become an eight-year average. Two years is the widest that stays honest.
+  const floor = sacrMonthsBefore(to, 24);
+  const from = win.history_from && win.history_from > floor ? win.history_from : floor;
+  return { from, to };
+}
+
+function sacrNextMonthFirst(monthKey) {
+  const y = parseInt(monthKey.slice(0, 4), 10);
+  const m = parseInt(monthKey.slice(5, 7), 10);
+  if (!y || !m) return "";
+  const d = new Date(Date.UTC(y, m, 1));
+  return d.toISOString().slice(0, 10);
+}
+
+function sacrMonthsBefore(isoDay, months) {
+  const parts = String(isoDay).slice(0, 10).split("-").map(Number);
+  if (parts.length !== 3 || parts.some(isNaN)) return "";
+  return saLocalDateStr(
+    sacrShiftMonths(new Date(parts[0], parts[1] - 1, parts[2]), -months),
+  );
+}
+
 async function openSacrProductsModal() {
   if (sacrProductsState.loading) return;
 
@@ -15938,7 +16455,14 @@ async function openSacrProductsModal() {
   const liftInput = document.getElementById("sacr-products-minlift");
   if (liftInput) liftInput.value = "";
   sacrProductsState.startedAt = Date.now();
-  sacrProductsState.scope = `${rows.length.toLocaleString()} last order${rows.length === 1 ? "" : "s"} · ${storeCount} store${storeCount === 1 ? "" : "s"}`;
+  const baseline = sacrProductsBaseline();
+  sacrProductsState.baseline = baseline;
+  sacrProductsState.scope =
+    `${rows.length.toLocaleString()} last order${rows.length === 1 ? "" : "s"} · ` +
+    `${storeCount} store${storeCount === 1 ? "" : "s"}` +
+    (sacrState.filter.month
+      ? ` · ${sancmMonthTick(sacrState.filter.month, true)}`
+      : "");
 
   const scopeEl = document.getElementById("sacr-products-scope");
   const progress = document.getElementById("sacr-products-progress");
@@ -15960,11 +16484,15 @@ async function openSacrProductsModal() {
   if (note) note.textContent = "";
   openModal("sacr-products-modal");
 
-  if (rows.length === 0) {
+  if (rows.length === 0 || !baseline.from || !baseline.to || baseline.from >= baseline.to) {
     if (progress) progress.hidden = true;
     if (cancelBtn) cancelBtn.style.display = "none";
     if (errEl) {
-      errEl.textContent = "No lost customers in the current view to analyse.";
+      errEl.textContent = rows.length === 0
+        ? "No lost customers in the current view to analyse."
+        // Guarded rather than sent: an empty baseline makes the backend flag
+        // every product as "only in lost customers' orders".
+        : "Could not work out a comparison period for these customers.";
       errEl.hidden = false;
     }
     return;
@@ -15993,8 +16521,10 @@ async function openSacrProductsModal() {
           store_id,
           order_ids,
         })),
-        active_since: sacrState.activeSince,
-        silent_since: sacrState.silentSince,
+        // The baseline window, which is the period the analysed orders came from —
+        // the drilled month, or the report window capped to two years.
+        active_since: baseline.from,
+        silent_since: baseline.to,
       }),
       signal: sacrProductsState.abortController.signal,
     });
@@ -16194,8 +16724,13 @@ function renderSacrProducts() {
     // only says how they combine and when a number is withheld.
     // Two lines. The columns and their tooltips carry the detail; a wall of
     // text under the table just goes unread.
+    // The window is named rather than called "the same period": when a month is
+    // drilled it really is that month, and when it is not it is the report window
+    // capped to two years — a difference worth being able to see.
+    const b = sacrProductsState.baseline || {};
+    const period = b.from && b.to ? ` (${b.from} to ${b.to})` : "";
     const bits = [
-      `"vs usual" compares these last orders against ${t.baseline_orders_sampled.toLocaleString()} ordinary orders from the same period. 2.0x means twice as often.`,
+      `"vs usual" compares these last orders against ${t.baseline_orders_sampled.toLocaleString()} ordinary orders from the same period${period}. 2.0x means twice as often.`,
       `Each product counts once per order, so one big basket cannot inflate it.`,
       ...(t.excluded_addon_lines
         ? [`Shipping and other add-ons are not counted (${t.excluded_addon_lines.toLocaleString()} line(s)).`]

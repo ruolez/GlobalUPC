@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, date, timedelta
 import uvicorn
 import asyncio
+import calendar
 import json
 import math
 import statistics
@@ -81,9 +82,9 @@ from shopify_helper import (
     fetch_orders_line_items, fetch_baseline_order_items, count_orders,
     fetch_customer_first_orders, fetch_customers_by_emails, normalize_email,
     fetch_customers_by_name, name_key, normalize_zip,
-    fetch_shop_timezone, local_date,
+    fetch_shop_timezone, local_date, shop_today,
     fetch_earliest_customer_date, shopify_bucket_rate,
-    ORDER_STATUS_FILTER
+    ORDER_STATUS_FILTER, order_window_filter
 )
 from item_tracker_helper import (
     get_item_info_async, get_purchases_async, get_sales_async,
@@ -6071,6 +6072,62 @@ def _mom_pct(current: int, previous: Optional[int]) -> Optional[float]:
     return round(((current - previous) / previous) * 100, 1)
 
 
+def _shift_months(day: str, months: int) -> str:
+    """
+    `day` shifted by N calendar months — negative goes back.
+
+    The day of month is clamped rather than allowed to overflow: one month
+    before 2026-03-31 is 2026-02-28, not a ValueError. Output is always
+    zero-padded ISO, which is load-bearing — every window decision in the lost
+    customers report is a string comparison, so "2026-2-28" would sort after
+    "2026-12-31" and compare wrong instead of failing.
+    """
+    y, m, d = int(day[0:4]), int(day[5:7]), int(day[8:10])
+    # Month index from year 0, so the arithmetic works either direction without
+    # a separate negative case.
+    total = y * 12 + (m - 1) + months
+    y2, m2 = divmod(total, 12)
+    m2 += 1
+    return f"{y2:04d}-{m2:02d}-{min(d, calendar.monthrange(y2, m2)[1]):02d}"
+
+
+def _minus_months(day: str, months: int) -> str:
+    return _shift_months(day, -months)
+
+
+def _plus_months(day: str, months: int) -> str:
+    return _shift_months(day, months)
+
+
+def _month_end_exclusive(month_key: str) -> str:
+    """First day of the month after `month_key` — an exclusive upper bound."""
+    return _plus_months(f"{month_key}-01", 1)
+
+
+def _days_between(start_day: str, end_day: str) -> Optional[int]:
+    """Whole days from `start_day` to `end_day`, or None if either is unusable."""
+    try:
+        return (date.fromisoformat(end_day) - date.fromisoformat(start_day)).days
+    except (ValueError, TypeError):
+        return None
+
+
+def _by_month_spine(lost_by_month: Dict[str, int], new_by_month: Dict[str, int],
+                    through_month: str) -> List[str]:
+    """
+    Continuous month keys covering both series, extended to `through_month`.
+
+    The extension matters: departures stop at the silence cutoff by definition,
+    so without it a run whose arrivals series is empty or short would end the
+    chart at the cutoff and the "too recent to judge" zone — the thing that
+    explains why departures stop — would have no months to be drawn over.
+    """
+    keys = set(lost_by_month) | set(new_by_month)
+    if not keys:
+        return []
+    return _month_spine(f"{min(keys)}-01", f"{max(max(keys), through_month)}-01")
+
+
 @app.post("/api/shopify-analytics/new-customers-by-month/stream")
 async def shopify_analytics_new_customers_by_month_stream(
     request: NewCustomersByMonthRequest,
@@ -6318,19 +6375,34 @@ _LOST_MIN_CONCURRENCY = 2
 #
 # Simulated against the measured distribution (concurrency 16): 16 ranges took
 # 9.1s with a 15-page deepest range; 64 took 4.2s with 4 pages; 128 took 5.4s,
-# where the per-range request cost starts to outweigh the parallelism. Finer is
-# only better while there are cursors to use them — on the 200/s shop, which
-# sustains 3, going from 16 to 64 ranges made it worse (16.9s -> 20.5s) — so
-# the count follows concurrency rather than being fixed.
+# where the per-range request cost starts to outweigh the parallelism.
+#
+# The count used to follow concurrency — `min(_LOST_MAX_RANGES, conc)` — which
+# was one range per cursor, i.e. exactly the failure mode the paragraph above
+# says was measured and rejected, and it made this ceiling unreachable. It is
+# now driven by the store's history instead, because with the from-date optional
+# the binding constraint is Shopify's 25,000-object pagination ceiling, which is
+# a property of how many customers sit in a date slice rather than of how fast
+# the shop's bucket refills. On the 200/s shop that costs some wall clock
+# (measured 16.9s -> 20.5s going 16 -> 64 on a two-year window); truncating its
+# history instead is not a trade worth making.
 _RANGES_PER_CURSOR = 4
-_LOST_MAX_RANGES = 64
+_LOST_MAX_RANGES = 256
+# Target width of one range. Fine enough that a slice of a normal store's
+# history stays well under the object cap, wide enough not to fragment.
+_LOST_RANGE_TARGET_DAYS = 45
 # Pages one cursor walks before handing the rest of its range back to be split.
 # Low enough that a dense range is noticed early, high enough that a normal
 # range finishes in one go and costs nothing extra.
 _SCAN_PAGE_BUDGET = 4
 # Splitting is bounded so a pathological range cannot recurse forever; at the
 # limit the range is simply walked to the end.
-_SCAN_MAX_SPLIT_DEPTH = 3
+#
+# This — not the initial range count — is what actually defeats the object cap:
+# a resumed child issues a NEW query over a narrower creation-date range, so it
+# starts a fresh cursor chain with a fresh 25,000-object budget. At depth 4 with
+# _RANGES_PER_CURSOR=4 that is 256x subdivision before any walk runs unbounded.
+_SCAN_MAX_SPLIT_DEPTH = 4
 # Balancing the ranges by volume would be better still, but is not possible:
 # `customersCount` ignores its query filter and saturates at 10,000 AT_LEAST,
 # so every range reports the same number.
@@ -6342,6 +6414,149 @@ _LOST_RANGE_MIN_DAYS = 3
 # shop's refill rate can sustain: rate * seconds / cost.
 _SCAN_PAGE_COST = 90.0
 _SCAN_PAGE_SECONDS = 1.5
+
+# Departures per cross-store section. The email and name+ZIP passes used to run
+# once over the whole departure list, which made their cost and their failures
+# both unbounded: one failed probe disqualified the entire store's comparison,
+# and the name pass was skipped outright above _ARRIVAL_NAME_MAX_CANDIDATES.
+# Sectioning does not reduce the number of API calls — 25,000 emails is ~125
+# batches of 200 either way — it bounds memory, localizes failure to one
+# section, lets results stream as they are confirmed, and gives the
+# departure-relative moved window a date range to bound its query by.
+#
+# Deliberately equal to _ARRIVAL_NAME_MAX_CANDIDATES: a section larger than the
+# cap would still trip it, which is the thing being fixed.
+_CROSS_SECTION_SIZE = 1500
+# Sections in flight. Sections of the same store compete for the same shops'
+# rate buckets, so this stays small — the parallelism that matters is the
+# per-shop fan-out inside a section.
+_CROSS_SECTION_CONCURRENCY = 2
+# Rows per streamed `rows` event. Measured before this existed: a full-history
+# run on one store produced a single 64.6 MB SSE line, which the browser has to
+# buffer and JSON.parse in one go.
+_ROWS_EVENT_CHUNK = 500
+
+# Queue kinds that are their own SSE event rather than a `progress` phase.
+# Everything else the workers publish is reported as progress; only "done"
+# finishes a store. See the dispatcher for why this is a map and not a whitelist.
+_LOST_EVENT_NAMES = {"rows": "rows"}
+
+# Fields a departure row carries to the browser. The full record holds ~30 keys
+# including the name parts, ZIPs and tracking URL that nothing renders; on a
+# 65,000-departure run that padding was most of a 64 MB payload.
+#
+# Every field here is read by the UI, so removing one silently breaks a feature
+# rather than erroring: last_order_id feeds the Top Products drill,
+# orders_count_all/_exact the adjusted-count badge, state_name/country the
+# per-month state column, shipping_method_raw the method tooltip, and
+# days_to_fulfil/days_to_deliver both the table and the slow-order filter.
+_LOST_ROW_FIELDS = (
+    "customer_id", "name", "email", "state", "state_name", "country",
+    "orders_count", "orders_count_all", "orders_count_exact",
+    "amount_spent", "currency", "first_order_local", "last_order_local",
+    "last_order_name", "last_order_id", "days_silent",
+    "days_to_fulfil", "days_to_deliver", "shipping_method", "shipping_method_raw",
+    "carrier",
+)
+# Only on the ones that moved, and only what the moved modal shows.
+_MOVED_ROW_FIELDS = _LOST_ROW_FIELDS + (
+    "moved_to_store", "moved_to_store_name", "moved_same_store",
+    "moved_matched_by", "moved_last_order",
+)
+
+
+def _trim_row(c: Dict[str, Any], fields=_LOST_ROW_FIELDS) -> Dict[str, Any]:
+    """One departure, reduced to what the browser actually renders."""
+    return {k: c.get(k) for k in fields}
+
+
+#: A move was proven, a move was ruled out, or the evidence ran out.
+_MOVE_YES, _MOVE_NO, _MOVE_UNKNOWN = "yes", "no", "unknown"
+
+
+def _judge_move(quiet_day: str, months: int, other_last: Optional[str],
+                window_days: Optional[List[str]], saturated: bool) -> str:
+    """
+    Did this person buy at the other shop within `months` of going quiet here?
+
+    Layered so that the cheap, exact signals decide almost every case and the
+    only fallible one is consulted last:
+
+    1. Their last-ever order at the other shop predates their departure here, so
+       there can be nothing inside the window. Exact.
+    2. That last order is itself inside the window. Exact.
+    3. Otherwise they are still active there but later than the window, so the
+       question is whether they ALSO bought during it. That is what the bounded
+       in-window list answers — and if it saturated, the honest answer is
+       "unknown", which the caller keeps as lost and reports.
+
+    The lower bound is inclusive: an order elsewhere on the same day as their
+    last order here is precisely the switch this is looking for.
+    """
+    if not other_last:
+        return _MOVE_NO
+    horizon = _plus_months(quiet_day, months)
+    if other_last < quiet_day:
+        return _MOVE_NO
+    if other_last < horizon:
+        return _MOVE_YES
+    if any(quiet_day <= d < horizon for d in (window_days or ())):
+        return _MOVE_YES
+    return _MOVE_UNKNOWN if saturated else _MOVE_NO
+
+
+def _departure_sections(rows: List[Dict[str, Any]], size: int = _CROSS_SECTION_SIZE,
+                        newest_first: bool = True) -> List[Dict[str, Any]]:
+    """
+    Volume-sized, month-contiguous chunks of departures.
+
+    Volume is what bounds cost — the cross-store passes scale with the number of
+    departures, not with the calendar — while month contiguity is what lets one
+    `created_at` bound serve a whole section. Whole months are never split across
+    sections unless a single month is bigger than one section, in which case its
+    parts share that month's window and the window stays as tight as possible.
+
+    Newest first by default: the recent months are the actionable ones, so they
+    should reach the screen first. Order is otherwise fixed, so cross-store
+    attribution cannot vary between runs of the same report.
+
+    Returns [{"rows": [...], "months": (lo_key, hi_key)}].
+    """
+    by_month: Dict[str, List[Dict[str, Any]]] = {}
+    for c in rows:
+        by_month.setdefault((c.get("last_order_local") or "")[:7], []).append(c)
+
+    chunks: List[tuple] = []
+    current: List[Dict[str, Any]] = []
+    current_months: List[str] = []
+
+    def flush():
+        if current:
+            chunks.append((list(current), list(current_months)))
+            current.clear()
+            current_months.clear()
+
+    for m in sorted((k for k in by_month if k), reverse=newest_first):
+        rows_m = by_month[m]
+        if len(rows_m) >= size:
+            # Big enough to be its own section (or several).
+            flush()
+            for i in range(0, len(rows_m), size):
+                chunks.append((rows_m[i:i + size], [m]))
+            continue
+        if current and len(current) + len(rows_m) > size:
+            flush()
+        current.extend(rows_m)
+        current_months.append(m)
+    flush()
+
+    out = [{"rows": rws, "months": (min(ms), max(ms))} for rws, ms in chunks]
+    # Unreachable for a departure — classification needs last_order_local — but a
+    # row without one must not be silently dropped from the check.
+    undated = by_month.get("")
+    if undated:
+        out.append({"rows": undated, "months": None})
+    return out
 
 
 def _scan_concurrency_for_rate(restore_rate: Optional[float]) -> int:
@@ -6388,7 +6603,13 @@ def _lost_shards(earliest_customer: Optional[str], upper: str,
     if span < _LOST_RANGE_MIN_DAYS * 2:
         return [(None, None)]
 
-    n = max(2, min(max_ranges, span // _LOST_RANGE_MIN_DAYS))
+    # Driven by the store's own history, not by how many cursors the shop's rate
+    # can feed: the range count exists to keep each cursor walk under Shopify's
+    # object cap, and that depends on how many customers sit in a date slice.
+    # `max_ranges` is a ceiling, `_LOST_RANGE_MIN_DAYS` a floor on width.
+    n = max(2, min(max_ranges,
+                   span // _LOST_RANGE_MIN_DAYS,
+                   math.ceil(span / _LOST_RANGE_TARGET_DAYS)))
     step = span // n
     bounds = [start + timedelta(days=step * i) for i in range(n)] + [end]
     return [
@@ -6539,6 +6760,7 @@ def _merge_arrivals(parts) -> Dict[str, Any]:
         "total": sum(p.get("total", 0) for p in live),
         "verdicts": {},
         "origins": {},
+        "by_month": {},
         "prior_account": sum(p.get("prior_account", 0) for p in live),
         "no_email": sum(p.get("no_email", 0) for p in live),
         "rows": [],
@@ -6550,6 +6772,15 @@ def _merge_arrivals(parts) -> Dict[str, Any]:
             out["verdicts"][k] = out["verdicts"].get(k, 0) + v
         for k, v in (p.get("origins") or {}).items():
             out["origins"][k] = out["origins"].get(k, 0) + v
+        # Same merge, one level down. Stores share months, so a month's tallies
+        # accumulate across every store that reported it.
+        for month, e in (p.get("by_month") or {}).items():
+            tgt = out["by_month"].setdefault(month, {"total": 0, "verdicts": {}, "origins": {}})
+            tgt["total"] += e.get("total", 0)
+            for k, v in (e.get("verdicts") or {}).items():
+                tgt["verdicts"][k] = tgt["verdicts"].get(k, 0) + v
+            for k, v in (e.get("origins") or {}).items():
+                tgt["origins"][k] = tgt["origins"].get(k, 0) + v
         out["rows"].extend(p.get("rows") or [])
     out["rows"].sort(key=lambda r: r.get("amount_spent") or 0, reverse=True)
     if len(out["rows"]) > _ARRIVAL_MAX_ROWS:
@@ -6602,12 +6833,19 @@ async def shopify_analytics_lost_customers_stream(
     db: Session = Depends(get_db),
 ):
     async def generate() -> AsyncGenerator[str, None]:
-        active_since = request.active_since
-        silent_since = request.silent_since
+        history_from = request.history_from            # None = all history
+        silent_months = int(request.silent_months)
+        moved_months = int(request.moved_within_months or silent_months)
+        require_acquired = bool(request.require_acquired_in_window)
         min_orders = max(1, int(request.min_orders or 1))
 
-        if not active_since or not silent_since or active_since >= silent_since:
-            yield f"event: error\ndata: {json.dumps({'message': 'Active-since must be earlier than silent-since'})}\n\n"
+        # There is no second date to order this against any more; the cutoff is
+        # derived per shop below. What can still be contradictory is asking for
+        # an acquisition window without giving it a floor.
+        if require_acquired and not history_from:
+            msg = ("Set a history start date, or turn off \"only customers acquired "
+                   "in this window\" — the filter has no floor without one")
+            yield f"event: error\ndata: {json.dumps({'message': msg})}\n\n"
             return
         if not request.store_ids:
             yield f"event: error\ndata: {json.dumps({'message': 'Select at least one Shopify store'})}\n\n"
@@ -6679,12 +6917,26 @@ async def shopify_analytics_lost_customers_stream(
             for sh, tz in zip(tz_shops, tz_values)
         }
 
-        today = datetime.now().strftime("%Y-%m-%d")
+        # The silence cutoff, per shop, in that shop's own calendar. Shops in
+        # different timezones are not on the same day — measured live, a US shop
+        # and a Tokyo shop disagree for part of every day — and a cutoff one day
+        # out moves customers across the line.
+        cutoff_by_store: Dict[int, str] = {
+            s["id"]: _minus_months(shop_today(tz_by_shop.get(s["id"])), silent_months)
+            for s in store_list
+        }
+        # A month can only be called fully judged when it is judged at EVERY
+        # store, so the report-wide boundary is the latest of the cutoffs — one
+        # day's disagreement is enough to straddle a month boundary.
+        report_cutoff = max(cutoff_by_store.values())
+        cutoff_month = report_cutoff[:7]
+
+        # Server-local, and only ever used as the open upper end of the last
+        # creation-date range — the shop's own today is what classification uses.
         tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
 
-        # The partition is per shop: it spans that shop's own customer history,
-        # and its width is set by that shop's own refill rate. Both probes are
-        # one cheap query each, run together.
+        # The partition is per shop: it spans that shop's own customer history.
+        # Both probes are one cheap query each, run together.
         earliest_values = await asyncio.gather(*[
             fetch_earliest_customer_date(
                 shop_domain=s["shop_domain"],
@@ -6699,10 +6951,10 @@ async def shopify_analytics_lost_customers_stream(
             first = earliest if isinstance(earliest, str) else None
             conc = _scan_concurrency_for_rate(shopify_bucket_rate(s["shop_domain"]))
             concurrency_by_store[s["id"]] = conc
-            shards_by_store[s["id"]] = _lost_shards(
-                first, tomorrow,
-                max_ranges=min(_LOST_MAX_RANGES, conc),
-            )
+            # Not bounded by `conc`: that would be one range per cursor, which is
+            # the arrangement _RANGES_PER_CURSOR exists to avoid. `conc` still
+            # sizes the pool that walks these ranges, below.
+            shards_by_store[s["id"]] = _lost_shards(first, tomorrow)
             # A failed probe silently collapses the scan to a single cursor,
             # which is correct but many times slower. Say so rather than let the
             # run look mysteriously slow.
@@ -6710,7 +6962,23 @@ async def shopify_analytics_lost_customers_stream(
                 unpartitioned.append(s["name"])
         total_units = sum(len(v) for v in shards_by_store.values())
 
-        yield f"event: progress\ndata: {json.dumps({'phase': 'started', 'active_since': active_since, 'silent_since': silent_since, 'min_orders': min_orders, 'shards': max((len(v) for v in shards_by_store.values()), default=1), 'total_units': total_units, 'stores': [{'store_id': s['id'], 'store_name': s['name'], 'shards': len(shards_by_store[s['id']])} for s in store_list]})}\n\n"
+        # What the run actually resolved to, as opposed to what was asked for.
+        # Echoed here as well as in `complete` because the notes and scope lines
+        # render on every store event, long before the run finishes — without an
+        # early echo they would have nothing to interpolate.
+        window = {
+            "history_from": history_from,
+            "all_history": history_from is None,
+            "silent_months": silent_months,
+            "moved_within_months": moved_months,
+            "require_acquired_in_window": require_acquired,
+            "min_orders": min_orders,
+            "cutoff": report_cutoff,
+            "judgeable_through": cutoff_month,
+            "cutoffs_by_store": {str(k): v for k, v in cutoff_by_store.items()},
+        }
+
+        yield f"event: progress\ndata: {json.dumps({'phase': 'started', 'window': window, 'min_orders': min_orders, 'shards': max((len(v) for v in shards_by_store.values()), default=1), 'total_units': total_units, 'stores': [{'store_id': s['id'], 'store_name': s['name'], 'shards': len(shards_by_store[s['id']])} for s in store_list]})}\n\n"
 
         # Retries and page progress must reach the client while work is still in
         # flight, so workers publish to a queue rather than only returning.
@@ -6769,7 +7037,7 @@ async def shopify_analytics_lost_customers_stream(
                         res = await fetch_customers_with_last_order(
                             shop_domain=s["shop_domain"],
                             admin_api_key=s["admin_api_key"],
-                            active_since=active_since,
+                            order_floor=history_from,
                             api_version=s["api_version"],
                             created_start=lo,
                             created_end=hi,
@@ -6878,6 +7146,8 @@ async def shopify_analytics_lost_customers_stream(
                         "window edges are judged in UTC and may be off by a day.")
                     bias_reasons.append("timezone unavailable")
 
+                cutoff = cutoff_by_store[s["id"]]
+                store_today = shop_today(tz)
                 lost, active = [], []
                 never_purchased = 0
                 ordered_before_window = 0
@@ -6892,16 +7162,22 @@ async def shopify_analytics_lost_customers_stream(
                     # on. Carried on the row so the table shows the same date the
                     # classification used and can never appear to contradict it.
                     c["last_order_local"] = local_date(last, tz)
-                    if c["last_order_local"] >= silent_since:
+                    # Days quiet, in the shop's calendar. Computed here because
+                    # this is the only place that holds both the shop's timezone
+                    # and its today; the browser used to derive it from the raw
+                    # UTC stamp against the viewer's own clock.
+                    c["days_silent"] = _days_between(c["last_order_local"], store_today)
+                    if c["last_order_local"] >= cutoff:
                         active.append(c)
-                    elif c["last_order_local"] >= active_since:
-                        lost.append(c)
-                    else:
-                        # Their in-window orders were all cancelled or refunded,
-                        # leaving an older real purchase as their last. Correctly
-                        # excluded — they did not start here — but counted, so
-                        # the reconciliation adds up instead of losing people.
+                    elif history_from and c["last_order_local"] < history_from:
+                        # Only reachable when a floor was given: their in-window
+                        # orders were all cancelled or refunded, leaving an older
+                        # real purchase as their last. Correctly excluded, but
+                        # counted, so the reconciliation adds up instead of
+                        # losing people.
                         ordered_before_window += 1
+                    else:
+                        lost.append(c)
 
                 # "Was ordering since" means the customer STARTED here. Shopify's
                 # order_date filter only proves they ordered at some point in the
@@ -6973,35 +7249,55 @@ async def shopify_analytics_lost_customers_stream(
                     # and nothing the comparison reads — that is fulfilment and
                     # delivery timing — depends on it.
 
-                def acquired_in_window(c):
+                # Stamping is separate from filtering on purpose. The acquisition
+                # date is read by the chart's "new" series and by the arrivals
+                # classifier whether or not the cohort filter is on, so the two
+                # used to be one function only because the filter was mandatory.
+                def stamp_first_order(c) -> bool:
+                    """Stamp the acquisition date. False when it is unknown."""
                     first = first_map.get(c.get("customer_id"))
-                    if not first:
+                    c["first_order_created_at"] = first
+                    c["first_order_local"] = local_date(first, tz) if first else None
+                    return bool(first)
+
+                for c in lost_pre + active_pre:
+                    stamp_first_order(c)
+
+                if require_acquired:
+                    if first_err:
+                        # Without first-order data the acquisition filter cannot
+                        # be honoured, so report the store as partial instead of
+                        # silently falling back to the old, wider meaning.
+                        incomplete_reasons.append(
+                            f"Could not determine when customers started ordering: {first_err}")
+                        bias_reasons.append("acquisition window not applied")
+                        lost_in, active_in = lost_pre, active_pre
+                    else:
                         # No first order resolved: excluded rather than assumed
                         # in, so a lookup gap can never inflate the cohort.
-                        return False
-                    c["first_order_created_at"] = first
-                    c["first_order_local"] = local_date(first, tz)
-                    return c["first_order_local"] >= active_since
-
-                if first_err:
-                    # Without first-order data the acquisition filter cannot be
-                    # honoured, so report the store as partial instead of
-                    # silently falling back to the old, wider meaning.
-                    incomplete_reasons.append(
-                        f"Could not determine when customers started ordering: {first_err}")
-                    bias_reasons.append("acquisition window not applied")
-                    for c in lost_pre + active_pre:
-                        c["first_order_created_at"] = None
-                        c["first_order_local"] = None
-                    lost_in, active_in = lost_pre, active_pre
+                        def acquired(c):
+                            return bool(c["first_order_local"]) and \
+                                c["first_order_local"] >= history_from
+                        lost_in = [c for c in lost_pre if acquired(c)]
+                        active_in = [c for c in active_pre if acquired(c)]
                 else:
-                    lost_in = [c for c in lost_pre if acquired_in_window(c)]
-                    active_in = [c for c in active_pre if acquired_in_window(c)]
+                    if first_err:
+                        # Still worth saying — the "new" bars undercount without
+                        # it — but no longer a bias: no filter was applied, so
+                        # the cohort is not a skewed sample of anything.
+                        incomplete_reasons.append(
+                            f"Could not determine when customers started ordering, so the "
+                            f"'new customers' bars are incomplete: {first_err}")
+                    lost_in, active_in = lost_pre, active_pre
 
                 # Measured against the pre-filtered sets, so a customer dropped
                 # for too few orders is never miscounted as "already ordering".
-                excluded_pre_existing = ((len(lost_pre) - len(lost_in))
-                                         + (len(active_pre) - len(active_in)))
+                # None rather than 0 when the filter is off, so the client can
+                # tell "nobody was excluded" from "nothing was being excluded"
+                # and suppress the note instead of reporting zero exclusions.
+                excluded_pre_existing = (
+                    ((len(lost_pre) - len(lost_in)) + (len(active_pre) - len(active_in)))
+                    if require_acquired else None)
 
                 # Second application, now on the corrected count.
                 lost_kept = [c for c in lost_in if c["orders_count"] >= min_orders]
@@ -7012,191 +7308,353 @@ async def shopify_analytics_lost_customers_stream(
                 # from a different population.
                 active_kept = [c for c in active_in if c["orders_count"] >= min_orders]
 
-                # Cross-store check runs last, on the smallest possible list.
+                # Cross-store check runs last, on the smallest possible list, and
+                # in volume-sized sections. Sectioning does not reduce the number
+                # of requests — the same emails are looked up either way — but it
+                # bounds memory, keeps a failure inside one section instead of
+                # disqualifying the whole store, and gives each batch a date range
+                # to bound the in-window query by.
                 moved_breakdown: Dict[Any, Dict[str, Any]] = {}
                 moved_rows: List[Dict[str, Any]] = []
                 matched_by_name = 0
                 no_email = 0
+                moved_unresolved = 0
                 cross_errors: List[str] = []
-                if cross_store and lost_kept:
-                    # The customer's own shop is skipped here: Shopify enforces
-                    # one customer record per email, so an email lookup against
-                    # the shop they are already lost at can only ever return
-                    # their own pre-cutoff order. Pass 2 keeps the own shop —
-                    # matching on name and ZIP is what catches a re-registration,
-                    # which is forced onto a different address by that same rule.
-                    others = [o for o in all_shopify if o["id"] != s["id"]]
-                    emails = [normalize_email(c.get("email")) for c in lost_kept]
-                    no_email = sum(1 for c in lost_kept if not normalize_email(c.get("email")))
-                    lookup = [e for e in emails if e]
+                sections_total = 0
+                sections_biased = 0
 
-                    events.put_nowait(("phase", {
-                        "store_id": s["id"], "store_name": s["name"],
-                        "label": f"checking {len(others)} store(s) for the same email",
-                    }))
+                async def emit_rows(kind_name: str, source: List[Dict[str, Any]],
+                                    fields=_LOST_ROW_FIELDS):
+                    """
+                    Stream departures to the client in chunks.
 
-                    # Shops are independent lookups against different hosts, so
-                    # they run together — this phase was 35% of the run when
-                    # serialised. Each shop's own rate-limit bucket still paces
-                    # it, and results are merged below in a fixed shop order so
-                    # the attribution cannot vary between runs.
-                    async def email_probe(other):
-                        return other, await fetch_customers_by_emails(
-                            shop_domain=other["shop_domain"],
-                            admin_api_key=other["admin_api_key"],
-                            emails=lookup,
-                            api_version=other["api_version"],
-                            on_batch=lambda d, t, _s=s, _o=other: events.put_nowait(("cross_store", {
-                                "store_id": _s["id"], "store_name": _s["name"],
-                                "other": _o["name"], "done": d, "total": t,
-                            })),
-                            on_retry=on_retry,
-                        )
-
-                    email_results = []
-                    if lookup and others:
-                        email_results = await asyncio.gather(
-                            *[email_probe(o) for o in others], return_exceptions=True)
-
-                    # email -> name of the shop they are still buying from
-                    moved_to: Dict[str, str] = {}
-                    for item in email_results:
-                        if isinstance(item, BaseException):
-                            cross_errors.append(str(item)[:200])
-                            continue
-                        other, res = item
-                        if not res.get("ok"):
-                            # Never silently keep a customer we failed to check.
-                            cross_errors.append(f"{other['name']}: {res.get('error')}")
-                            continue
-                        if res.get("malformed"):
-                            cross_errors.append(
-                                f"{other['name']}: {res['malformed']} address(es) were too "
-                                f"malformed to search")
-                        other_tz = tz_by_shop.get(other["id"])
-                        for em, last in (res.get("last_orders") or {}).items():
-                            # That order happened at the other shop, so it is
-                            # that shop's day that decides whether it is recent.
-                            if last and local_date(last, other_tz) >= silent_since \
-                                    and em not in moved_to:
-                                # Keyed by id: two shops can share a display
-                                # name, and merging them would misattribute the
-                                # move. The name travels alongside for display.
-                                moved_to[em] = {
-                                    "id": other["id"],
-                                    "name": other["name"],
-                                    "last_order": local_date(last, other_tz),
-                                }
-
-                    if moved_to:
-                        kept = []
-                        for c in lost_kept:
-                            em = normalize_email(c.get("email"))
-                            dest = moved_to.get(em) if em else None
-                            if dest:
-                                _record_move(c, dest["id"], dest["name"], dest["name"],
-                                             dest["last_order"], "email")
-                                _bump_moved(moved_breakdown, dest["id"], dest["name"])
-                                moved_rows.append(c)
-                            else:
-                                kept.append(c)
-                        lost_kept = kept
-                    # --- second pass: name + ZIP ---
-                    # Shopify allows only one record per email, so anyone who
-                    # re-registered is invisible to pass 1 by construction.
-                    people = [
-                        c for c in lost_kept
-                        if name_key(c.get("first_name"), c.get("last_name")) and c.get("zips")
-                    ]
-                    if people:
-                        # The own shop is back in scope here — a re-registration
-                        # lives at the same shop under a different email.
-                        name_shops = list(all_shopify)
-                        events.put_nowait(("phase", {
+                    Chunked because a single event carrying a whole store's
+                    departures was measured at 64.6 MB on a full-history run,
+                    which the browser must buffer and parse in one go.
+                    """
+                    for i in range(0, len(source), _ROWS_EVENT_CHUNK):
+                        await events.put(("rows", {
                             "store_id": s["id"], "store_name": s["name"],
-                            "label": f"checking {len(name_shops)} store(s) by name and ZIP",
+                            "kind": kind_name,
+                            "rows": [_trim_row(c, fields)
+                                     for c in source[i:i + _ROWS_EVENT_CHUNK]],
                         }))
-                        wanted = sorted({(c["first_name"], c["last_name"]) for c in people})
-                        by_name: Dict[str, List[Dict[str, Any]]] = {}
 
-                        async def name_probe(other):
-                            return other, await fetch_customers_by_name(
-                                shop_domain=other["shop_domain"],
-                                admin_api_key=other["admin_api_key"],
-                                names=wanted,
-                                api_version=other["api_version"],
-                                on_batch=lambda d, t, _s=s, _o=other: events.put_nowait(("cross_store", {
-                                    "store_id": _s["id"], "store_name": _s["name"],
-                                    "other": _o["name"], "done": d, "total": t,
-                                })),
-                                on_retry=on_retry,
-                            )
+                async def flush_section(out: Dict[str, Any]):
+                    """
+                    Send a finished section's rows immediately.
 
-                        name_results = await asyncio.gather(
-                            *[name_probe(o) for o in name_shops], return_exceptions=True)
+                    Called from inside the section rather than from the merge loop
+                    below, because that loop runs after `gather` — a barrier — so
+                    emitting there would hold every row back until the slowest
+                    section finished, which is the delay sectioning exists to
+                    avoid. Arrival order does not matter: the client sorts rows
+                    itself, and the order-sensitive part (the moved breakdown) is
+                    still merged in section order.
+                    """
+                    await emit_rows("lost", out["kept"])
+                    await emit_rows("moved", out["moved"], _MOVED_ROW_FIELDS)
+                # Ids in sections whose check was incomplete. Those departures are
+                # real, so they stay in the table — but they cannot be trusted in
+                # the lost-vs-active comparison, which is what the user acts on.
+                biased_ids: set = set()
 
-                        for item in name_results:
-                            if isinstance(item, BaseException):
-                                cross_errors.append(str(item)[:200])
-                                continue
-                            other, res2 = item
-                            if not res2.get("ok"):
-                                cross_errors.append(f"{other['name']} (by name): {res2.get('error')}")
-                                continue
-                            if res2.get("truncated"):
-                                cross_errors.append(
-                                    f"{other['name']}: too many customers share these names "
-                                    f"to check them all")
-                            other_tz2 = tz_by_shop.get(other["id"])
-                            for cand in res2.get("candidates") or []:
-                                if not cand.get("last_order") or \
-                                        local_date(cand["last_order"], other_tz2) < silent_since:
-                                    continue  # that account has not ordered since either
-                                cand["store_id"] = other["id"]
-                                cand["store_name"] = other["name"]
-                                cand["same_store"] = other["id"] == s["id"]
-                                by_name.setdefault(cand["name_key"], []).append(cand)
+                if cross_store and lost_kept:
+                    # The customer's own shop is skipped in pass 1: Shopify
+                    # enforces one customer record per email, so an email lookup
+                    # against the shop they are already lost at can only ever
+                    # return their own pre-departure order. Pass 2 keeps the own
+                    # shop — matching on name and ZIP is what catches a
+                    # re-registration, which is forced onto a different address by
+                    # that same rule.
+                    others = [o for o in all_shopify if o["id"] != s["id"]]
+                    name_shops = list(all_shopify)
+                    sections = _departure_sections(lost_kept)
+                    sections_total = len(sections)
+                    section_pool = asyncio.Semaphore(_CROSS_SECTION_CONCURRENCY)
 
-                        kept2 = []
-                        for c in lost_kept:
-                            k = name_key(c.get("first_name"), c.get("last_name"))
-                            zips = set(c.get("zips") or ())
-                            hit = None
-                            for cand in by_name.get(k, ()) if k else ():
-                                # A different record, same household. The ZIP is
-                                # what separates a genuine duplicate from two
-                                # unrelated people who share a common name.
-                                if cand["id"] == c.get("customer_id"):
+                    async def run_section(index: int, section: Dict[str, Any]) -> Dict[str, Any]:
+                        rows_in = section["rows"]
+                        months = section["months"]
+                        # One bound for the whole section: from the start of its
+                        # earliest departure month to `moved_months` past the end
+                        # of its latest, which covers every member's own window.
+                        win = None
+                        if months:
+                            win = (f"{months[0]}-01",
+                                   _plus_months(_month_end_exclusive(months[1]), moved_months))
+                        out = {
+                            "kept": [], "moved": [], "errors": [], "matched_by_name": 0,
+                            "no_email": 0, "unresolved": 0,
+                            "breakdown": {},
+                        }
+                        async with section_pool:
+                            events.put_nowait(("section_start", {
+                                "store_id": s["id"], "store_name": s["name"],
+                                "section": index, "sections_total": sections_total,
+                                "months": list(months) if months else None,
+                                "size": len(rows_in),
+                            }))
+
+                            out["no_email"] = sum(
+                                1 for c in rows_in if not normalize_email(c.get("email")))
+                            lookup = sorted({e for e in (
+                                normalize_email(c.get("email")) for c in rows_in) if e})
+
+                            # Shops are independent lookups against different
+                            # hosts, so they run together — this phase was 35% of
+                            # the run when serialised. Each shop's own rate-limit
+                            # bucket still paces it, and results are merged in a
+                            # fixed shop order so attribution cannot vary.
+                            async def email_probe(other):
+                                return other, await fetch_customers_by_emails(
+                                    shop_domain=other["shop_domain"],
+                                    admin_api_key=other["admin_api_key"],
+                                    emails=lookup,
+                                    api_version=other["api_version"],
+                                    window=win,
+                                    on_batch=lambda d, t, _s=s, _o=other: events.put_nowait(
+                                        ("cross_store", {
+                                            "store_id": _s["id"], "store_name": _s["name"],
+                                            "other": _o["name"], "done": d, "total": t,
+                                        })),
+                                    on_retry=on_retry,
+                                )
+
+                            email_results = []
+                            if lookup and others:
+                                email_results = await asyncio.gather(
+                                    *[email_probe(o) for o in others], return_exceptions=True)
+
+                            # email -> the shop they moved to, plus the evidence
+                            moved_to: Dict[str, Dict[str, Any]] = {}
+                            unknown_at: Dict[str, bool] = {}
+                            quiet_of = {normalize_email(c.get("email")): c["last_order_local"]
+                                        for c in rows_in if normalize_email(c.get("email"))}
+                            for item in email_results:
+                                if isinstance(item, BaseException):
+                                    out["errors"].append(str(item)[:200])
                                     continue
-                                if zips.intersection(cand["zips"]):
-                                    hit = cand
-                                    break
-                            if hit:
-                                label = (f"{hit['store_name']} (another account)"
-                                         if hit["same_store"] else hit["store_name"])
-                                _record_move(
-                                    c, hit["store_id"], label, hit["store_name"],
-                                    local_date(hit["last_order"],
-                                               tz_by_shop.get(hit["store_id"])),
-                                    "name + ZIP", same_store=hit["same_store"])
-                                # Same-store matches are a distinct destination
-                                # from cross-store ones at that shop, so they
-                                # get their own key rather than merging.
-                                _bump_moved(
-                                    moved_breakdown,
-                                    f"{hit['store_id']}{':self' if hit['same_store'] else ''}",
-                                    label)
-                                matched_by_name += 1
-                                moved_rows.append(c)
-                            else:
+                                other, res = item
+                                if not res.get("ok"):
+                                    # Never silently keep a customer we failed to check.
+                                    out["errors"].append(f"{other['name']}: {res.get('error')}")
+                                    continue
+                                if res.get("malformed"):
+                                    out["errors"].append(
+                                        f"{other['name']}: {res['malformed']} address(es) were "
+                                        f"too malformed to search")
+                                other_tz = tz_by_shop.get(other["id"])
+                                wins = res.get("window_orders") or {}
+                                sat = set(res.get("window_saturated") or ())
+                                for em, last in (res.get("last_orders") or {}).items():
+                                    quiet = quiet_of.get(em)
+                                    if not quiet or em in moved_to:
+                                        continue
+                                    # Every date is judged in the calendar of the
+                                    # shop the order was placed at.
+                                    last_local = local_date(last, other_tz) if last else None
+                                    verdict = _judge_move(
+                                        quiet, moved_months, last_local,
+                                        [local_date(d, other_tz) for d in wins.get(em, ())],
+                                        em in sat)
+                                    if verdict == _MOVE_YES:
+                                        # Keyed by id: two shops can share a
+                                        # display name, and merging them would
+                                        # misattribute the move.
+                                        moved_to[em] = {
+                                            "id": other["id"], "name": other["name"],
+                                            "last_order": last_local,
+                                        }
+                                        unknown_at.pop(em, None)
+                                    elif verdict == _MOVE_UNKNOWN:
+                                        unknown_at[em] = True
+
+                            after_email = []
+                            for c in rows_in:
+                                em = normalize_email(c.get("email"))
+                                dest = moved_to.get(em) if em else None
+                                if dest:
+                                    _record_move(c, dest["id"], dest["name"], dest["name"],
+                                                 dest["last_order"], "email")
+                                    _bump_moved(out["breakdown"], dest["id"], dest["name"])
+                                    out["moved"].append(c)
+                                    continue
+                                if em and unknown_at.get(em):
+                                    # Active at another shop, but we could not see
+                                    # far enough back to say whether that started
+                                    # inside their window. Kept as lost — the
+                                    # conservative direction — and counted.
+                                    c["moved_unresolved"] = True
+                                    out["unresolved"] += 1
+                                after_email.append(c)
+
+                            # --- second pass: name + ZIP ---
+                            # Shopify allows only one record per email, so anyone
+                            # who re-registered is invisible to pass 1.
+                            people = [
+                                c for c in after_email
+                                if name_key(c.get("first_name"), c.get("last_name"))
+                                and c.get("zips")
+                            ]
+                            if not people:
+                                out["kept"] = after_email
+                                await flush_section(out)
+                                return out
+
+                            wanted = sorted({(c["first_name"], c["last_name"]) for c in people})
+                            by_name: Dict[str, List[Dict[str, Any]]] = {}
+
+                            async def name_probe(other):
+                                return other, await fetch_customers_by_name(
+                                    shop_domain=other["shop_domain"],
+                                    admin_api_key=other["admin_api_key"],
+                                    names=wanted,
+                                    api_version=other["api_version"],
+                                    window=win,
+                                    on_batch=lambda d, t, _s=s, _o=other: events.put_nowait(
+                                        ("cross_store", {
+                                            "store_id": _s["id"], "store_name": _s["name"],
+                                            "other": _o["name"], "done": d, "total": t,
+                                        })),
+                                    on_retry=on_retry,
+                                )
+
+                            name_results = await asyncio.gather(
+                                *[name_probe(o) for o in name_shops], return_exceptions=True)
+
+                            for item in name_results:
+                                if isinstance(item, BaseException):
+                                    out["errors"].append(str(item)[:200])
+                                    continue
+                                other, res2 = item
+                                if not res2.get("ok"):
+                                    out["errors"].append(
+                                        f"{other['name']} (by name): {res2.get('error')}")
+                                    continue
+                                if res2.get("truncated"):
+                                    out["errors"].append(
+                                        f"{other['name']}: too many customers share these "
+                                        f"names to check them all")
+                                other_tz2 = tz_by_shop.get(other["id"])
+                                for cand in res2.get("candidates") or []:
+                                    cand["store_id"] = other["id"]
+                                    cand["store_name"] = other["name"]
+                                    cand["same_store"] = other["id"] == s["id"]
+                                    cand["_tz"] = other_tz2
+                                    by_name.setdefault(cand["name_key"], []).append(cand)
+
+                            kept2 = []
+                            for c in after_email:
+                                k = name_key(c.get("first_name"), c.get("last_name"))
+                                zips = set(c.get("zips") or ())
+                                hit = None
+                                hit_unknown = False
+                                for cand in by_name.get(k, ()) if k else ():
+                                    # A different record, same household. The ZIP
+                                    # separates a genuine duplicate from two
+                                    # unrelated people sharing a common name.
+                                    if cand["id"] == c.get("customer_id"):
+                                        continue
+                                    if not zips.intersection(cand["zips"]):
+                                        continue
+                                    tz2 = cand["_tz"]
+                                    verdict = _judge_move(
+                                        c["last_order_local"], moved_months,
+                                        local_date(cand["last_order"], tz2)
+                                        if cand.get("last_order") else None,
+                                        [local_date(d, tz2)
+                                         for d in (cand.get("window_orders") or ())],
+                                        bool(cand.get("window_saturated")))
+                                    if verdict == _MOVE_YES:
+                                        hit = cand
+                                        break
+                                    if verdict == _MOVE_UNKNOWN:
+                                        hit_unknown = True
+                                if hit:
+                                    label = (f"{hit['store_name']} (another account)"
+                                             if hit["same_store"] else hit["store_name"])
+                                    _record_move(
+                                        c, hit["store_id"], label, hit["store_name"],
+                                        local_date(hit["last_order"], hit["_tz"]),
+                                        "name + ZIP", same_store=hit["same_store"])
+                                    # Same-store matches are a distinct destination
+                                    # from cross-store ones at that shop, so they
+                                    # get their own key rather than merging.
+                                    _bump_moved(
+                                        out["breakdown"],
+                                        f"{hit['store_id']}{':self' if hit['same_store'] else ''}",
+                                        label)
+                                    out["matched_by_name"] += 1
+                                    out["moved"].append(c)
+                                    continue
+                                if hit_unknown and not c.get("moved_unresolved"):
+                                    c["moved_unresolved"] = True
+                                    out["unresolved"] += 1
                                 kept2.append(c)
-                        lost_kept = kept2
+                            out["kept"] = kept2
+                            await flush_section(out)
+                            return out
+
+                    # Ordered, not completion-ordered: a section's contribution to
+                    # the breakdown must not depend on which finished first.
+                    section_results = await asyncio.gather(
+                        *[run_section(i, sec) for i, sec in enumerate(sections)],
+                        return_exceptions=True)
+
+                    survivors: List[Dict[str, Any]] = []
+                    for index, (sec, res) in enumerate(zip(sections, section_results)):
+                        if isinstance(res, BaseException):
+                            # The whole section went unchecked. Its departures are
+                            # still departures, so they stay — flagged.
+                            cross_errors.append(str(res)[:200])
+                            sections_biased += 1
+                            survivors.extend(sec["rows"])
+                            biased_ids.update(
+                                c["customer_id"] for c in sec["rows"] if c.get("customer_id"))
+                            await emit_rows("lost", sec["rows"])
+                            continue
+                        # Rows already went out from inside the section — see
+                        # flush_section. This loop only merges the tallies, in
+                        # section order so attribution cannot vary between runs.
+                        survivors.extend(res["kept"])
+                        moved_rows.extend(res["moved"])
+                        matched_by_name += res["matched_by_name"]
+                        # Summed, not assigned: each section counts only its own.
+                        no_email += res["no_email"]
+                        moved_unresolved += res["unresolved"]
+                        for key, entry in res["breakdown"].items():
+                            _bump_moved(moved_breakdown, key, entry["label"])
+                            # _bump_moved adds one; carry the rest of the count.
+                            moved_breakdown[key]["count"] += entry["count"] - 1
+                        if res["errors"]:
+                            cross_errors.extend(res["errors"])
+                            sections_biased += 1
+                            biased_ids.update(
+                                c["customer_id"] for c in res["kept"] if c.get("customer_id"))
+                        events.put_nowait(("section_done", {
+                            "store_id": s["id"], "store_name": s["name"],
+                            "section": index, "sections_total": sections_total,
+                            "kept": len(res["kept"]), "moved": len(res["moved"]),
+                            "biased": bool(res["errors"]),
+                        }))
+                    lost_kept = survivors
 
                     if cross_errors:
                         incomplete_reasons.append(
-                            "Could not check every store for duplicate accounts: "
+                            f"Could not check every store for duplicate accounts in "
+                            f"{sections_biased} of {sections_total} batch(es) of departures: "
                             + "; ".join(cross_errors[:2]))
-                        bias_reasons.append("cross-store check incomplete")
+                        # Deliberately NOT a whole-store bias reason any more. The
+                        # failure belongs to the sections that hit it, so only
+                        # their departures leave the comparison — see biased_ids.
+                        # Before sectioning this disqualified the entire store.
+                    if moved_unresolved:
+                        incomplete_reasons.append(
+                            f"{moved_unresolved} customer(s) are still ordering at another "
+                            f"store, but too often for us to tell whether that began within "
+                            f"{moved_months} months of them going quiet here. They are counted "
+                            f"as lost, which may overstate the total.")
 
                 # --- where the arrivals came from ---------------------------
                 # Deliberately placed after the moved check, so it runs on
@@ -7204,163 +7662,205 @@ async def shopify_analytics_lost_customers_stream(
                 # lost list plus the kept active one.
                 arrival: Dict[str, Any] = {}
                 if check_arrivals:
+                    # Exactly the population the chart's "new" bars count, which is
+                    # why it is also clamped to the history floor. Without the
+                    # clamp the cohort is everyone the scan touched — measured on
+                    # one store, 15,674 people reaching back to 2020 — and the
+                    # modal would report them as customers acquired in the window
+                    # while the bars above it counted a fraction of that.
                     cohort = [c for c in (lost_kept + active_kept)
-                              if c.get("first_order_local")]
+                              if c.get("first_order_local")
+                              and (not history_from
+                                   or c["first_order_local"] >= history_from)]
                     others = [o for o in all_shopify if o["id"] != s["id"]]
                     arr_errors: List[str] = []
                     # customer_id -> that person's records at other shops
                     matches: Dict[str, List[Dict[str, Any]]] = {}
 
-                    emails = sorted({normalize_email(c.get("email"))
-                                     for c in cohort if normalize_email(c.get("email"))})
-                    if emails and others:
-                        events.put_nowait(("phase", {
-                            "store_id": s["id"], "store_name": s["name"],
-                            "label": f"tracing {len(cohort)} new customer(s) "
-                                     f"across {len(others)} store(s)",
-                        }))
+                    # Sectioned by volume only. Unlike the moved check there is no
+                    # date bound to align to — these passes want each candidate's
+                    # first and last order over all time — so plain slices will do.
+                    #
+                    # The reason to section here is the candidate cap below: it
+                    # used to be measured against the WHOLE cohort, so on any large
+                    # run the name+ZIP pass was skipped outright and the check
+                    # silently degraded to email-only. Per section it applies to at
+                    # most one section's worth of unmatched customers.
+                    arr_sections = [cohort[i:i + _CROSS_SECTION_SIZE]
+                                    for i in range(0, len(cohort), _CROSS_SECTION_SIZE)]
+                    arr_pool = asyncio.Semaphore(_CROSS_SECTION_CONCURRENCY)
 
-                        async def origin_probe(other):
-                            return other, await fetch_customers_by_emails(
-                                shop_domain=other["shop_domain"],
-                                admin_api_key=other["admin_api_key"],
-                                emails=emails,
-                                api_version=other["api_version"],
-                                want_origin=True,
-                                on_batch=lambda d, t, _s=s, _o=other: events.put_nowait(
-                                    ("cross_store", {
-                                        "store_id": _s["id"], "store_name": _s["name"],
-                                        "other": _o["name"], "done": d, "total": t,
-                                    })),
-                                on_retry=on_retry,
-                            )
+                    async def trace_section(chunk: List[Dict[str, Any]]):
+                        async with arr_pool:
+                            emails = sorted({normalize_email(c.get("email"))
+                                             for c in chunk if normalize_email(c.get("email"))})
+                            if emails and others:
+                                events.put_nowait(("phase", {
+                                    "store_id": s["id"], "store_name": s["name"],
+                                    "label": f"tracing {len(chunk)} new customer(s) "
+                                             f"across {len(others)} store(s)",
+                                }))
 
-                        for item in await asyncio.gather(
-                                *[origin_probe(o) for o in others], return_exceptions=True):
-                            if isinstance(item, BaseException):
-                                arr_errors.append(str(item)[:200])
-                                continue
-                            other, res = item
-                            if not res.get("ok"):
-                                arr_errors.append(f"{other['name']}: {res.get('error')}")
-                                continue
-                            otz = tz_by_shop.get(other["id"])
-                            by_email = {}
-                            for em, acct in (res.get("accounts") or {}).items():
-                                f = (res.get("first_orders") or {}).get(em)
-                                l = (res.get("last_orders") or {}).get(em)
-                                by_email[em] = {
-                                    "store_id": other["id"],
-                                    "store_name": other["name"],
-                                    "same_store": False,
-                                    "matched_by": "email",
-                                    # Each shop's own calendar, as everywhere
-                                    # else here — these are events elsewhere.
-                                    "first": local_date(f, otz) if f else None,
-                                    "last": local_date(l, otz) if l else None,
-                                    "account": local_date(acct, otz) if acct else None,
-                                }
-                            for c in cohort:
-                                em = normalize_email(c.get("email"))
-                                hit = by_email.get(em) if em else None
-                                if hit:
-                                    matches.setdefault(c["customer_id"], []).append(hit)
+                                async def origin_probe(other):
+                                    return other, await fetch_customers_by_emails(
+                                        shop_domain=other["shop_domain"],
+                                        admin_api_key=other["admin_api_key"],
+                                        emails=emails,
+                                        api_version=other["api_version"],
+                                        want_origin=True,
+                                        on_batch=lambda d, t, _s=s, _o=other: events.put_nowait(
+                                            ("cross_store", {
+                                                "store_id": _s["id"], "store_name": _s["name"],
+                                                "other": _o["name"], "done": d, "total": t,
+                                            })),
+                                        on_retry=on_retry,
+                                    )
 
-                    # Second pass, same reasoning as the lost side: one record
-                    # per email means a re-registration is invisible above. The
-                    # own shop is in scope here — that is where a second account
-                    # for the same person most often sits.
-                    unresolved = [c for c in cohort if c["customer_id"] not in matches]
-                    people = [c for c in unresolved
-                              if name_key(c.get("first_name"), c.get("last_name"))
-                              and c.get("zips")]
-                    if len(people) > _ARRIVAL_NAME_MAX_CANDIDATES:
-                        arr_errors.append(
-                            f"{len(people):,} new customers had no match by email — too "
-                            f"many to also check for earlier accounts under a different "
-                            f"address, so that check was skipped")
-                        people = []
-                    if people:
-                        events.put_nowait(("phase", {
-                            "store_id": s["id"], "store_name": s["name"],
-                            "label": f"checking {len(people)} new customer(s) for "
-                                     f"earlier accounts by name and ZIP",
-                        }))
-                        wanted = sorted({(c["first_name"], c["last_name"]) for c in people})
+                                for item in await asyncio.gather(
+                                        *[origin_probe(o) for o in others],
+                                        return_exceptions=True):
+                                    if isinstance(item, BaseException):
+                                        arr_errors.append(str(item)[:200])
+                                        continue
+                                    other, res = item
+                                    if not res.get("ok"):
+                                        arr_errors.append(f"{other['name']}: {res.get('error')}")
+                                        continue
+                                    otz = tz_by_shop.get(other["id"])
+                                    by_email = {}
+                                    for em, acct in (res.get("accounts") or {}).items():
+                                        f = (res.get("first_orders") or {}).get(em)
+                                        l = (res.get("last_orders") or {}).get(em)
+                                        by_email[em] = {
+                                            "store_id": other["id"],
+                                            "store_name": other["name"],
+                                            "same_store": False,
+                                            "matched_by": "email",
+                                            # Each shop's own calendar, as
+                                            # everywhere else — events elsewhere.
+                                            "first": local_date(f, otz) if f else None,
+                                            "last": local_date(l, otz) if l else None,
+                                            "account": local_date(acct, otz) if acct else None,
+                                        }
+                                    for c in chunk:
+                                        em = normalize_email(c.get("email"))
+                                        hit = by_email.get(em) if em else None
+                                        if hit:
+                                            matches.setdefault(c["customer_id"], []).append(hit)
 
-                        async def origin_name_probe(other):
-                            return other, await fetch_customers_by_name(
-                                shop_domain=other["shop_domain"],
-                                admin_api_key=other["admin_api_key"],
-                                names=wanted,
-                                api_version=other["api_version"],
-                                want_origin=True,
-                                on_batch=lambda d, t, _s=s, _o=other: events.put_nowait(
-                                    ("cross_store", {
-                                        "store_id": _s["id"], "store_name": _s["name"],
-                                        "other": _o["name"], "done": d, "total": t,
-                                    })),
-                                on_retry=on_retry,
-                            )
-
-                        cands_by_name: Dict[str, List[Dict[str, Any]]] = {}
-                        for item in await asyncio.gather(
-                                *[origin_name_probe(o) for o in all_shopify],
-                                return_exceptions=True):
-                            if isinstance(item, BaseException):
-                                arr_errors.append(str(item)[:200])
-                                continue
-                            other, res2 = item
-                            if not res2.get("ok"):
+                            # Second pass, same reasoning as the lost side: one
+                            # record per email means a re-registration is invisible
+                            # above. The own shop is in scope here — that is where
+                            # a second account for the same person most often sits.
+                            unresolved = [c for c in chunk if c["customer_id"] not in matches]
+                            people = [c for c in unresolved
+                                      if name_key(c.get("first_name"), c.get("last_name"))
+                                      and c.get("zips")]
+                            if len(people) > _ARRIVAL_NAME_MAX_CANDIDATES:
                                 arr_errors.append(
-                                    f"{other['name']} (by name): {res2.get('error')}")
-                                continue
-                            if res2.get("truncated"):
-                                arr_errors.append(
-                                    f"{other['name']}: too many customers share these "
-                                    f"names to check them all")
-                            otz2 = tz_by_shop.get(other["id"])
-                            for cand in res2.get("candidates") or []:
-                                cand["store_id"] = other["id"]
-                                cand["store_name"] = other["name"]
-                                cand["same_store"] = other["id"] == s["id"]
-                                cand["_tz"] = otz2
-                                cands_by_name.setdefault(cand["name_key"], []).append(cand)
+                                    f"{len(people):,} new customers in one batch had no match "
+                                    f"by email — too many to also check for earlier accounts "
+                                    f"under a different address, so that check was skipped "
+                                    f"for them")
+                                people = []
+                            if not people:
+                                return
+                            events.put_nowait(("phase", {
+                                "store_id": s["id"], "store_name": s["name"],
+                                "label": f"checking {len(people)} new customer(s) for "
+                                         f"earlier accounts by name and ZIP",
+                            }))
+                            wanted = sorted({(c["first_name"], c["last_name"]) for c in people})
 
-                        for c in people:
-                            k = name_key(c.get("first_name"), c.get("last_name"))
-                            zips = set(c.get("zips") or ())
-                            for cand in cands_by_name.get(k, ()) if k else ():
-                                # The person's own record is not evidence of an
-                                # earlier relationship with them.
-                                if cand["id"] == c.get("customer_id"):
+                            async def origin_name_probe(other):
+                                return other, await fetch_customers_by_name(
+                                    shop_domain=other["shop_domain"],
+                                    admin_api_key=other["admin_api_key"],
+                                    names=wanted,
+                                    api_version=other["api_version"],
+                                    want_origin=True,
+                                    on_batch=lambda d, t, _s=s, _o=other: events.put_nowait(
+                                        ("cross_store", {
+                                            "store_id": _s["id"], "store_name": _s["name"],
+                                            "other": _o["name"], "done": d, "total": t,
+                                        })),
+                                    on_retry=on_retry,
+                                )
+
+                            cands_by_name: Dict[str, List[Dict[str, Any]]] = {}
+                            for item in await asyncio.gather(
+                                    *[origin_name_probe(o) for o in all_shopify],
+                                    return_exceptions=True):
+                                if isinstance(item, BaseException):
+                                    arr_errors.append(str(item)[:200])
                                     continue
-                                if not zips.intersection(cand["zips"]):
+                                other, res2 = item
+                                if not res2.get("ok"):
+                                    arr_errors.append(
+                                        f"{other['name']} (by name): {res2.get('error')}")
                                     continue
-                                f, l = cand.get("first_order"), cand.get("last_order")
-                                a = cand.get("account_created")
-                                matches.setdefault(c["customer_id"], []).append({
-                                    "store_id": cand["store_id"],
-                                    "store_name": (f"{cand['store_name']} (another account)"
-                                                   if cand["same_store"]
-                                                   else cand["store_name"]),
-                                    "same_store": cand["same_store"],
-                                    "matched_by": "name + ZIP",
-                                    "first": local_date(f, cand["_tz"]) if f else None,
-                                    "last": local_date(l, cand["_tz"]) if l else None,
-                                    "account": local_date(a, cand["_tz"]) if a else None,
-                                })
-                                break
+                                if res2.get("truncated"):
+                                    arr_errors.append(
+                                        f"{other['name']}: too many customers share these "
+                                        f"names to check them all")
+                                otz2 = tz_by_shop.get(other["id"])
+                                for cand in res2.get("candidates") or []:
+                                    cand["store_id"] = other["id"]
+                                    cand["store_name"] = other["name"]
+                                    cand["same_store"] = other["id"] == s["id"]
+                                    cand["_tz"] = otz2
+                                    cands_by_name.setdefault(cand["name_key"], []).append(cand)
+
+                            for c in people:
+                                k = name_key(c.get("first_name"), c.get("last_name"))
+                                zips = set(c.get("zips") or ())
+                                for cand in cands_by_name.get(k, ()) if k else ():
+                                    # The person's own record is not evidence of an
+                                    # earlier relationship with them.
+                                    if cand["id"] == c.get("customer_id"):
+                                        continue
+                                    if not zips.intersection(cand["zips"]):
+                                        continue
+                                    f, l = cand.get("first_order"), cand.get("last_order")
+                                    a = cand.get("account_created")
+                                    matches.setdefault(c["customer_id"], []).append({
+                                        "store_id": cand["store_id"],
+                                        "store_name": (
+                                            f"{cand['store_name']} (another account)"
+                                            if cand["same_store"] else cand["store_name"]),
+                                        "same_store": cand["same_store"],
+                                        "matched_by": "name + ZIP",
+                                        "first": local_date(f, cand["_tz"]) if f else None,
+                                        "last": local_date(l, cand["_tz"]) if l else None,
+                                        "account": local_date(a, cand["_tz"]) if a else None,
+                                    })
+                                    break
+
+                    for item in await asyncio.gather(
+                            *[trace_section(ch) for ch in arr_sections],
+                            return_exceptions=True):
+                        if isinstance(item, BaseException):
+                            arr_errors.append(str(item)[:200])
 
                     verdicts: Dict[str, int] = {}
                     origins: Dict[Any, Dict[str, Any]] = {}
                     rows: List[Dict[str, Any]] = []
                     prior_account = 0
+                    # The same tallies per arrival month, so the modal can follow a
+                    # month selection on the chart. Aggregates only: the row table
+                    # below is capped at the highest-spending _ARRIVAL_MAX_ROWS, so
+                    # deriving per-month figures from it would disagree with the
+                    # month's own "new" bar.
+                    by_month_arr: Dict[str, Dict[str, Any]] = {}
                     for c in cohort:
                         here = c["first_order_local"]
                         mine = matches.get(c["customer_id"]) or []
                         verdict, origin = _classify_arrival(here, mine)
                         verdicts[verdict] = verdicts.get(verdict, 0) + 1
+                        bucket = by_month_arr.setdefault(
+                            here[:7], {"total": 0, "verdicts": {}, "origins": {}})
+                        bucket["total"] += 1
+                        bucket["verdicts"][verdict] = bucket["verdicts"].get(verdict, 0) + 1
                         # Free signal, no extra request: the account was opened
                         # before the purchase that made them look new.
                         made = c.get("customer_since")
@@ -7369,10 +7869,10 @@ async def shopify_analytics_lost_customers_stream(
                         if verdict == _ARR_NEW:
                             continue
                         best = next((m for m in mine if m["store_name"] == origin), None)
-                        _bump_moved(origins,
-                                    f"{(best or {}).get('store_id')}"
-                                    f"{':self' if (best or {}).get('same_store') else ''}",
-                                    origin)
+                        origin_key = (f"{(best or {}).get('store_id')}"
+                                      f"{':self' if (best or {}).get('same_store') else ''}")
+                        _bump_moved(origins, origin_key, origin)
+                        _bump_moved(bucket["origins"], origin_key, origin)
                         rows.append({
                             "customer_id": c["customer_id"],
                             "name": c.get("name"),
@@ -7399,6 +7899,13 @@ async def shopify_analytics_lost_customers_stream(
                         "total": len(cohort),
                         "verdicts": verdicts,
                         "origins": _merge_moved([origins]),
+                        # Origin keys collapse to labels here, exactly as the
+                        # run-wide breakdown does at the boundary.
+                        "by_month": {
+                            m: {"total": e["total"], "verdicts": e["verdicts"],
+                                "origins": _merge_moved([e["origins"]])}
+                            for m, e in by_month_arr.items()
+                        },
                         "prior_account": prior_account,
                         "no_email": sum(1 for c in cohort
                                         if not normalize_email(c.get("email"))),
@@ -7412,6 +7919,10 @@ async def shopify_analytics_lost_customers_stream(
                 # Lost and still-active counted the same way, so the share of a
                 # state's customers that went quiet is comparable between
                 # states — a raw count would only rank population size.
+                #
+                # Aggregated BEFORE the rows are trimmed: _state_key reads
+                # state_name and country, and _timing_summary reads days_total,
+                # none of which survive the trim.
                 states: Dict[str, Dict[str, Any]] = {}
                 for c in lost_kept:
                     k, label = _state_key(c)
@@ -7421,6 +7932,15 @@ async def shopify_analytics_lost_customers_stream(
                     k, label = _state_key(c)
                     e = states.setdefault(k, {"code": k, "label": label, "lost": 0, "active": 0})
                     e["active"] += 1
+                lost_timing = _timing_summary(lost_kept)
+                active_timing = _timing_summary(active_kept)
+
+                # With the cross-store check off there are no sections to stream
+                # from, so the rows go out here instead. The queue is FIFO either
+                # way, so the client can treat this store's `done` as "all of its
+                # rows have arrived".
+                if not sections_total:
+                    await emit_rows("lost", lost_kept)
 
                 return {
                     "store": s,
@@ -7440,18 +7960,26 @@ async def shopify_analytics_lost_customers_stream(
                     "never_purchased": never_purchased,
                     "ordered_before_window": ordered_before_window,
                     "states": states,
+                    "lost_timing": lost_timing,
+                    "active_timing": active_timing,
                     # Collapsed to {label: count} at the boundary; the shop-id
                     # keying exists to keep the tally correct, not to be sent.
                     "moved_breakdown": _merge_moved([moved_breakdown]),
                     "moved_total": sum(e["count"] for e in moved_breakdown.values()),
-                    # The customers behind that count. Sorted by spend, like the
-                    # lost table — the expensive departures are the ones worth
-                    # reading first.
-                    "moved_rows": sorted(
-                        moved_rows, key=lambda c: c.get("amount_spent") or 0, reverse=True),
                     "matched_by_name": matched_by_name,
                     "no_email": no_email,
                     "arrival": arrival,
+                    "sections_total": sections_total,
+                    "sections_biased": sections_biased,
+                    "moved_unresolved": moved_unresolved,
+                    "cutoff": cutoff,
+                    "shop_timezone": tz,
+                    # The departures whose cross-store check was incomplete. They
+                    # belong in the table but not in the comparison, so the
+                    # benchmark filters on this rather than dropping the store.
+                    "biased_ids": biased_ids,
+                    "departures_excluded_from_benchmark": sum(
+                        1 for c in lost_kept if c.get("customer_id") in biased_ids),
                 }
 
         tasks = [asyncio.create_task(fetch_for_store(s)) for s in store_list]
@@ -7481,21 +8009,60 @@ async def shopify_analytics_lost_customers_stream(
                     last_heartbeat = asyncio.get_event_loop().time()
                     continue
 
-                # Everything except "done" is liveness reporting and must not
-                # advance the completed-store counter.
-                # Anything not listed here is taken to be a finished store, so a
-                # new progress event MUST be added: omitting one ends the run
-                # early and truncates the scan.
-                if kind in ("retry", "store_start", "page", "shard_done", "shard_split",
-                            "phase", "first_orders", "cross_store"):
-                    yield f"event: progress\ndata: {json.dumps({'phase': kind, **payload})}\n\n"
+                # Only "done" advances the completed-store counter; everything
+                # else is reporting.
+                #
+                # Inverted deliberately. This used to be a whitelist of progress
+                # kinds, with anything unlisted treated as a finished store — so
+                # adding a new progress event and forgetting to list it ended the
+                # run early and truncated the scan, silently. Now an unrecognised
+                # kind is merely reported as progress.
+                if kind != "done":
+                    name = _LOST_EVENT_NAMES.get(kind, "progress")
+                    body = payload if name != "progress" else {"phase": kind, **payload}
+                    yield f"event: {name}\ndata: {json.dumps(body)}\n\n"
                     continue
 
                 completed += 1
                 results.append(payload)
                 st = payload.get("store") or {}
                 lost = payload.get("lost") or []
-                yield f"event: store\ndata: {json.dumps({'store_id': st.get('id'), 'store_name': st.get('name'), 'ok': payload.get('ok'), 'complete': payload.get('complete'), 'cohort_complete': payload.get('cohort_complete'), 'incomplete_reason': payload.get('incomplete_reason'), 'error': payload.get('error'), 'warnings': payload.get('warnings') or [], 'excluded_pre_existing': payload.get('excluded_pre_existing', 0), 'unknown_first_order': payload.get('unknown_first_order', 0), 'never_purchased': payload.get('never_purchased', 0), 'ordered_before_window': payload.get('ordered_before_window', 0), 'moved_total': payload.get('moved_total', 0), 'moved_breakdown': payload.get('moved_breakdown', {}), 'moved_rows': payload.get('moved_rows', []), 'matched_by_name': payload.get('matched_by_name', 0), 'no_email': payload.get('no_email', 0), 'arrival': payload.get('arrival') or {}, 'lost_count': len(lost), 'active_count': len(payload.get('active') or []), 'lost_timing': _timing_summary(lost), 'active_timing': _timing_summary(payload.get('active') or []), 'rows': lost, 'completed': completed, 'total_stores': len(store_list)})}\n\n"
+                # Summary only. The rows themselves already went out as `rows`
+                # events, chunked — this used to carry the entire departure list
+                # inline, which on a full-history run was a single 64 MB SSE line.
+                store_event = {
+                    "store_id": st.get("id"), "store_name": st.get("name"),
+                    "ok": payload.get("ok"),
+                    "complete": payload.get("complete"),
+                    "cohort_complete": payload.get("cohort_complete"),
+                    "incomplete_reason": payload.get("incomplete_reason"),
+                    "error": payload.get("error"),
+                    "warnings": payload.get("warnings") or [],
+                    "excluded_pre_existing": payload.get("excluded_pre_existing"),
+                    "unknown_first_order": payload.get("unknown_first_order", 0),
+                    "never_purchased": payload.get("never_purchased", 0),
+                    "ordered_before_window": payload.get("ordered_before_window", 0),
+                    "moved_total": payload.get("moved_total", 0),
+                    "moved_breakdown": payload.get("moved_breakdown", {}),
+                    "matched_by_name": payload.get("matched_by_name", 0),
+                    "no_email": payload.get("no_email", 0),
+                    "arrival": payload.get("arrival") or {},
+                    "lost_count": len(lost),
+                    "active_count": len(payload.get("active") or []),
+                    "lost_timing": payload.get("lost_timing") or _timing_summary(lost),
+                    "active_timing": (payload.get("active_timing")
+                                      or _timing_summary(payload.get("active") or [])),
+                    "sections_total": payload.get("sections_total", 0),
+                    "sections_biased": payload.get("sections_biased", 0),
+                    "departures_excluded_from_benchmark": payload.get(
+                        "departures_excluded_from_benchmark", 0),
+                    "moved_unresolved": payload.get("moved_unresolved", 0),
+                    "cutoff": payload.get("cutoff"),
+                    "shop_timezone": payload.get("shop_timezone"),
+                    "completed": completed,
+                    "total_stores": len(store_list),
+                }
+                yield f"event: store\ndata: {json.dumps(store_event)}\n\n"
 
                 now = asyncio.get_event_loop().time()
                 if now - last_heartbeat > 15:
@@ -7525,20 +8092,38 @@ async def shopify_analytics_lost_customers_stream(
         # all this compares. Gating on `complete` discarded the entire store.
         complete = [r for r in shown if r.get("cohort_complete")]
         all_lost = [c for r in shown for c in (r.get("lost") or [])]
-        bench_lost = [c for r in complete for c in (r.get("lost") or [])]
+        # Departures whose own section failed its cross-store check drop out of
+        # the comparison; the rest of the store stays in. Previously one failed
+        # probe took the whole store's sample with it.
+        bench_lost = [c for r in complete for c in (r.get("lost") or [])
+                      if c.get("customer_id") not in (r.get("biased_ids") or ())]
         bench_active = [c for r in complete for c in (r.get("active") or [])]
 
         # Arrivals against departures, by month. Both dates are the shop's own
         # calendar day, so an order placed late on the last evening of a month
-        # is not bucketed into the next one.
+        # is not bucketed into the next one. Both come from status-filtered
+        # queries, so a cancelled or refunded order can neither make someone look
+        # newly acquired nor stand in as their last purchase.
         #
-        # Arrivals count the whole cohort — lost and still-active alike — since
-        # everyone in it was acquired inside the window by definition. Both
-        # sides therefore describe the same population, and both dates come from
-        # status-filtered queries, so a cancelled or refunded order can neither
-        # make someone look newly acquired nor stand in as their last purchase.
+        # Both series are complete for every month from the history floor
+        # onwards, and NEITHER is complete before it. The scan selects customers
+        # who ordered on or after the floor, so:
+        #   - a departure needs its last order on or after the floor to be seen
+        #     at all, which the classification already enforces; and
+        #   - an arrival in a month on or after the floor necessarily ordered in
+        #     the window, so it cannot be missed.
+        # Before the floor the arrivals side would still find people — anyone
+        # acquired years ago who is *still* ordering — but only the survivors.
+        # Measured on one store with a 2025-06 floor: 63 months of green-only
+        # bars back to 2020 built from 9,541 survivors, while everyone who
+        # arrived and left inside those years was invisible. Plotting that
+        # against a departures series that is structurally zero there invites
+        # exactly the wrong reading, so those arrivals are counted out loud
+        # instead of drawn.
+        floor_month = history_from[:7] if history_from else None
         lost_by_month: Dict[str, int] = {}
         new_by_month: Dict[str, int] = {}
+        arrivals_before_window = 0
         for c in all_lost:
             key = (c.get("last_order_local") or c.get("last_order_created_at") or "")[:7]
             if key:
@@ -7546,8 +8131,12 @@ async def shopify_analytics_lost_customers_stream(
         for r in shown:
             for c in (r.get("lost") or []) + (r.get("active") or []):
                 key = (c.get("first_order_local") or c.get("first_order_created_at") or "")[:7]
-                if key:
-                    new_by_month[key] = new_by_month.get(key, 0) + 1
+                if not key:
+                    continue
+                if floor_month and key < floor_month:
+                    arrivals_before_window += 1
+                    continue
+                new_by_month[key] = new_by_month.get(key, 0) + 1
 
         # Same scope as the rows: a state breakdown that omitted a partial
         # store's customers would not add up to the table beneath it.
@@ -7587,7 +8176,7 @@ async def shopify_analytics_lost_customers_stream(
                 "warnings": r.get("warnings") or [],
                 "lost_count": len(r.get("lost") or []),
                 "active_count": len(r.get("active") or []),
-                "excluded_pre_existing": r.get("excluded_pre_existing", 0),
+                "excluded_pre_existing": r.get("excluded_pre_existing"),
                 "unknown_first_order": r.get("unknown_first_order", 0),
                 "never_purchased": r.get("never_purchased", 0),
                 "ordered_before_window": r.get("ordered_before_window", 0),
@@ -7595,23 +8184,43 @@ async def shopify_analytics_lost_customers_stream(
                 "moved_breakdown": r.get("moved_breakdown", {}),
                 "matched_by_name": r.get("matched_by_name", 0),
                 "no_email": r.get("no_email", 0),
-                "lost_timing": _timing_summary(r.get("lost") or []),
-                "active_timing": _timing_summary(r.get("active") or []),
+                "lost_timing": r.get("lost_timing") or _timing_summary(r.get("lost") or []),
+                "active_timing": (r.get("active_timing")
+                                  or _timing_summary(r.get("active") or [])),
+                "sections_total": r.get("sections_total", 0),
+                "sections_biased": r.get("sections_biased", 0),
+                "departures_excluded_from_benchmark": r.get(
+                    "departures_excluded_from_benchmark", 0),
+                "moved_unresolved": r.get("moved_unresolved", 0),
+                "cutoff": r.get("cutoff"),
+                "shop_timezone": r.get("shop_timezone"),
             } for r in results],
             "benchmark": {
                 "lost": _timing_summary(bench_lost),
                 "active": _timing_summary(bench_active),
                 "stores_included": len(complete),
                 "stores_total": len(store_list),
+                # Departures dropped from the lost side because their own
+                # cross-store section failed. Named so the card can say what the
+                # comparison excludes instead of quietly narrowing.
+                "departures_excluded": sum(
+                    r.get("departures_excluded_from_benchmark", 0) for r in complete),
             },
             "totals": {
-                "excluded_pre_existing": sum(r.get("excluded_pre_existing", 0) for r in shown),
+                # None all the way through when the acquisition filter is off,
+                # so the client suppresses the note rather than claiming that
+                # zero customers were excluded by a filter that never ran.
+                "excluded_pre_existing": (
+                    sum(r.get("excluded_pre_existing") or 0 for r in shown)
+                    if require_acquired else None),
                 "moved_to_other_store": sum(r.get("moved_total", 0) for r in shown),
                 "matched_by_name": sum(r.get("matched_by_name", 0) for r in shown),
                 "never_purchased": sum(r.get("never_purchased", 0) for r in shown),
                 "ordered_before_window": sum(r.get("ordered_before_window", 0) for r in shown),
                 "no_email": sum(r.get("no_email", 0) for r in shown),
                 "unknown_first_order": sum(r.get("unknown_first_order", 0) for r in shown),
+                # Kept in the report but left off the chart — see by_month above.
+                "arrivals_before_window": arrivals_before_window,
                 "lost_customers": len(all_lost),
                 "revenue_lost": round(sum(c["amount_spent"] for c in all_lost), 2),
                 # The handful of customers whose count is an upper bound are
@@ -7624,14 +8233,36 @@ async def shopify_analytics_lost_customers_stream(
             # Same scope as the rows and the chart's "new" series, so the modal
             # and the bars above it can never disagree about the cohort.
             "arrivals": _merge_arrivals([r.get("arrival") for r in shown]),
-            # Every month either side has a bar, so a month of pure arrivals or
-            # pure departures is not silently dropped from the series.
+            # A continuous spine, not just the months that happen to have a
+            # figure: over a long history a month with neither arrivals nor
+            # departures would otherwise vanish from the series and the x-axis
+            # would silently compress, putting non-adjacent months side by side.
+            #
+            # `judgeable` says whether a month has been measured at all. Nobody
+            # counts as lost until they have been silent for the full period, so
+            # the months AFTER the cutoff month are structurally empty — not a
+            # collapse in churn — and are flagged false.
+            #
+            # The cutoff's own month is judgeable but `partial`: someone who went
+            # quiet early in it has already been silent long enough, someone late
+            # in it has not. So it holds real departures and its count will still
+            # rise. Marking it unjudgeable would hide those departures and make the
+            # chart claim nobody left that month, which is measurably false.
             "by_month": [
-                {"month": m, "count": lost_by_month.get(m, 0), "new": new_by_month.get(m, 0)}
-                for m in sorted(set(lost_by_month) | set(new_by_month))
+                {
+                    "month": m,
+                    "count": lost_by_month.get(m, 0),
+                    "new": new_by_month.get(m, 0),
+                    "judgeable": m <= cutoff_month,
+                    "partial": m == cutoff_month,
+                }
+                for m in _by_month_spine(
+                    lost_by_month, new_by_month,
+                    # The cutoff plus the silence period is, by construction,
+                    # the latest shop's current month.
+                    _plus_months(report_cutoff, silent_months)[:7])
             ],
-            "active_since": active_since,
-            "silent_since": silent_since,
+            "window": window,
             "min_orders": min_orders,
         }
         yield f"event: complete\ndata: {json.dumps(payload)}\n\n"
@@ -7734,6 +8365,13 @@ def _baseline_months(
     How many months fit depends on the store: a 5,000-order month costs ~20
     pages, a 30-order month costs one. The page budget decides how many months
     can be covered, and they are spread across the range rather than clustered.
+
+    A one-month range — which is what a month drill-down sends — returns that
+    single month, and the `max(1, ...)` floor below means the page budget cannot
+    drop it however busy the store is. The real ceiling then becomes
+    _BASELINE_MAX_PAGES_PER_WINDOW inside fetch_baseline_order_items, i.e. up to
+    15,000 orders of full within-month coverage, which is exactly the unbiased
+    comparison this function exists to produce.
     """
     from datetime import date
 
@@ -7781,7 +8419,11 @@ def _rate_probe_window(start_date: str, end_date: str) -> tuple:
     if total <= _RATE_PROBE_DAYS:
         return (start_date, end_date, max(1, total))
     mid = s + timedelta(days=total // 2)
-    return (mid.isoformat(), (mid + timedelta(days=_RATE_PROBE_DAYS)).isoformat(), _RATE_PROBE_DAYS)
+    # Clamped to the range. For any span of 15-27 days — a partial-month drill —
+    # mid + _RATE_PROBE_DAYS overshoots the end, so the rate would be measured
+    # partly outside the period it is meant to describe.
+    probe_end = min(mid + timedelta(days=_RATE_PROBE_DAYS), e)
+    return (mid.isoformat(), probe_end.isoformat(), max(1, (probe_end - mid).days))
 
 
 # Add-ons and service lines are not products a customer chose to buy, and they
@@ -7933,6 +8575,14 @@ async def shopify_analytics_lost_products_stream(
         selected = [s for s in (request.stores or []) if s.order_ids]
         if not selected:
             yield f"event: error\ndata: {json.dumps({'message': 'No last orders to analyse'})}\n\n"
+            return
+        # An inverted or empty baseline window is not a harmless no-op here: it
+        # makes _baseline_months return nothing, so no ordinary orders are
+        # sampled and EVERY product comes back flagged "only in lost customers'
+        # orders" — the strongest churn signal this report can emit, produced
+        # entirely by a bad date pair.
+        if request.active_since >= request.silent_since:
+            yield f"event: error\ndata: {json.dumps({'message': 'Baseline window start must be earlier than its end'})}\n\n"
             return
 
         stores = db.query(Store).filter(

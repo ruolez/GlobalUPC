@@ -4303,23 +4303,24 @@
                   </div>
 
                   <div class="sacr-setup-field">
-                    <label for="sacr-active-since">First ordered on or after</label>
-                    <input type="date" id="sacr-active-since" class="sacr-control" />
+                    <label for="sacr-history-from">History from</label>
+                    <input type="date" id="sacr-history-from" class="sacr-control" aria-describedby="sacr-history-hint" />
                     <div class="sacr-quick">
-                      <button type="button" data-sacr-active="12">1 yr</button>
-                      <button type="button" data-sacr-active="24">2 yr</button>
-                      <button type="button" data-sacr-active="36">3 yr</button>
+                      <button type="button" data-sacr-history="24">2 yr</button>
+                      <button type="button" data-sacr-history="60">5 yr</button>
+                      <button type="button" data-sacr-history="all">All history</button>
                     </div>
+                    <span class="sacr-hint" id="sacr-history-hint"></span>
                   </div>
 
                   <div class="sacr-setup-field">
-                    <label for="sacr-silent-since">Has not ordered since</label>
-                    <input type="date" id="sacr-silent-since" class="sacr-control" />
-                    <div class="sacr-quick">
-                      <button type="button" data-sacr-silent="3">3 mo</button>
-                      <button type="button" data-sacr-silent="6">6 mo</button>
-                      <button type="button" data-sacr-silent="12">12 mo</button>
-                    </div>
+                    <label for="sacr-silence">Counts as lost after</label>
+                    <select id="sacr-silence" class="sacr-control">
+                      <option value="3">3 months of silence</option>
+                      <option value="6" selected>6 months of silence</option>
+                      <option value="12">12 months of silence</option>
+                    </select>
+                    <span class="sacr-hint" id="sacr-cutoff-hint"></span>
                   </div>
 
                   <div class="sacr-setup-field">
@@ -4335,6 +4336,10 @@
 
                 <div class="sacr-setup-row sacr-setup-secondary">
                   <label class="sacr-check">
+                    <input type="checkbox" id="sacr-acquired-only" />
+                    <span>Only customers acquired in this window</span>
+                  </label>
+                  <label class="sacr-check">
                     <input type="checkbox" id="sacr-cross-store" checked />
                     <span>Exclude customers still ordering under another account</span>
                   </label>
@@ -4342,13 +4347,17 @@
                     <input type="checkbox" id="sacr-check-arrivals" />
                     <span>Trace where new customers came from</span>
                   </label>
+                  <span class="sacr-warn" id="sacr-arrivals-warn" hidden>All-history run: this traces every customer the store has ever had, and may take many minutes.</span>
                   <details class="sacr-help">
                     <summary>How this works</summary>
                     <div class="sacr-help-body">
-                      <p><strong>Dates.</strong> Cancelled and fully refunded orders are ignored everywhere in this report. Only customers whose <strong>very first completed order</strong> falls on or after the first date are included &mdash; anyone already buying before it is excluded from the table and from every total. Of those, a customer counts as lost if they have not ordered since the second date; the rest are the comparison group.</p>
-                      <p><strong>Another account.</strong> Two passes against <strong>every</strong> active Shopify store, including the customer&rsquo;s own: first by email, then by first name + last name + ZIP. The second catches a re-registration, which Shopify forces onto a different email. Anyone still ordering since the cutoff did not leave, and is excluded from every figure.</p>
+                      <p><strong>Window.</strong> Cancelled and fully refunded orders are ignored everywhere in this report. <em>History from</em> is optional &mdash; leave it blank and the report covers each store&rsquo;s entire Shopify history. It only decides how far back to look; it does not decide who counts as lost.</p>
+                      <p><strong>Counts as lost after.</strong> A customer is lost once they have gone this long without a completed order, measured from today in each store&rsquo;s own timezone. Because the rule is a duration rather than a fixed date, every month on the chart is judged by the same standard &mdash; which a single cutoff date cannot do, since it leaves recent months needing only weeks of silence while older ones needed years. The most recent months cannot be judged yet and are shown as a shaded zone.</p>
+                      <p><strong>Only customers acquired in this window.</strong> Off by default, so the departures cover everyone &mdash; including long-standing customers, who are the ones a churn report usually cares about most. Turn it on to narrow to customers whose <strong>very first completed order</strong> falls on or after the history date; anyone already buying before it is then excluded from the table and from every total.</p>
+                      <p><strong>Another account.</strong> Two passes against <strong>every</strong> active Shopify store, including the customer&rsquo;s own: first by email, then by first name + last name + ZIP. The second catches a re-registration, which Shopify forces onto a different email. Anyone who bought elsewhere within the silence period of going quiet here did not leave the business, and is excluded from every figure.</p>
                       <p><strong>Min. orders.</strong> 1 includes one-time buyers. Raise it to focus on repeat customers who stopped. Cancelled and refunded orders do not count towards it.</p>
-                      <p><strong>Where new customers came from.</strong> Optional, and slower, because it runs the same two passes over everyone acquired in the window rather than just the leavers. It answers whether a &ldquo;new&rdquo; customer was already yours somewhere else &mdash; measured on one store, only half of them were genuinely new to the business.</p>
+                      <p><strong>Where new customers came from.</strong> Optional, and slower, because it runs the same two passes over everyone acquired in the window rather than just the leavers. It answers whether a &ldquo;new&rdquo; customer was already yours somewhere else &mdash; measured on one store, only half of them were genuinely new to the business. On an all-history run this covers the whole customer base, so it is slow enough to warn about.</p>
+                      <p><strong>Reading the chart.</strong> Click any month to narrow the table, the totals and every analysis below to the customers who left in it.</p>
                     </div>
                   </details>
                 </div>
@@ -4414,6 +4423,7 @@
                 <div class="sacr-legend">
                   <span class="sacr-legend-item"><i style="background: var(--sancm-c3)"></i>New</span>
                   <span class="sacr-legend-item"><i style="background: var(--sancm-c2)"></i>Lost</span>
+                  <span class="sacr-legend-item" id="sacr-legend-pending" hidden><i class="sacr-legend-swatch-pending"></i>Too recent to judge</span>
                 </div>
               </div>
               <div class="sancm-chart-wrap" id="sacr-chart-wrap"></div>
@@ -4450,6 +4460,7 @@
                     <option value="unfulfilled">Never fulfilled</option>
                   </select>
                 </label>
+                <button type="button" class="sacr-month-chip" id="sacr-month-chip" hidden></button>
                 <button type="button" class="btn btn-secondary sacr-btn sacr-reset" id="sacr-reset-filters" disabled>Reset</button>
               </div>
               <div class="sacr-toolbar-row sacr-toolbar-actions" role="group" aria-label="Analyse these customers">
@@ -4465,8 +4476,8 @@
               <div class="sa-empty-icon" aria-hidden="true">
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><path d="M21 21l-4.3-4.3"></path></svg>
               </div>
-              <p id="sacr-empty-msg">No lost customers found for these dates.</p>
-              <p class="sa-empty-hint">Try widening the "was ordering since" window or moving the cutoff further back.</p>
+              <p id="sacr-empty-msg">No lost customers found for this window.</p>
+              <p class="sa-empty-hint">Try an earlier "History from" date (or clear it for all history), or a shorter silence period.</p>
             </div>
 
             <div id="sacr-results" style="display: none;">
@@ -4479,8 +4490,11 @@
                       <th class="qip-sortable" data-sort="state">State <span class="qip-sort-arrow"></span></th>
                       <th class="qip-sortable sacr-num" data-sort="orders_count">Orders <span class="qip-sort-arrow"></span></th>
                       <th class="qip-sortable sacr-num qip-sort-desc" data-sort="amount_spent">Spent <span class="qip-sort-arrow"></span></th>
-                      <th class="qip-sortable" data-sort="first_order_created_at">First order <span class="qip-sort-arrow"></span></th>
-                      <th class="qip-sortable" data-sort="last_order_created_at">Last order <span class="qip-sort-arrow"></span></th>
+                      <th class="qip-sortable" data-sort="first_order_local">First order <span class="qip-sort-arrow"></span></th>
+                      <!-- The shop-local day, which is also what the cell shows and
+                           what the classification used. Sorts correctly as a
+                           string because it is zero-padded ISO. -->
+                      <th class="qip-sortable" data-sort="last_order_local">Last order <span class="qip-sort-arrow"></span></th>
                       <th class="qip-sortable sacr-num" data-sort="days_silent">Days silent <span class="qip-sort-arrow"></span></th>
                       <th class="qip-sortable sacr-num" data-sort="days_to_fulfil">To ship <span class="qip-sort-arrow"></span></th>
                       <th class="qip-sortable sacr-num" data-sort="days_to_deliver">To deliver <span class="qip-sort-arrow"></span></th>
@@ -4542,6 +4556,11 @@
                   <th class="qip-sortable sacr-num" data-ssort="active">Still active <span class="qip-sort-arrow"></span></th>
                   <th class="qip-sortable sacr-num" data-ssort="total">Total <span class="qip-sort-arrow"></span></th>
                   <th class="qip-sortable sacr-num" data-ssort="loss_rate">Loss rate <span class="qip-sort-arrow"></span></th>
+                  <!-- Shown only while a month is selected on the chart: the four
+                       columns to the left stay whole-run, because a loss rate
+                       needs the still-active cohort and a month has no such
+                       denominator. -->
+                  <th class="qip-sortable sacr-num" data-ssort="month_lost" id="sacr-states-month-th" hidden>Lost in month <span class="qip-sort-arrow"></span></th>
                 </tr>
               </thead>
               <tbody id="sacr-states-tbody"></tbody>

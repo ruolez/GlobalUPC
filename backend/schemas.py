@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing import Optional, Literal, List, Dict
 from datetime import datetime, date
 
@@ -683,27 +683,48 @@ class NewCustomersByMonthRequest(BaseModel):
 
 
 class LostCustomersRequest(BaseModel):
+    # A browser holding a stale app.js would otherwise POST the old
+    # active_since/silent_since pair, have both silently ignored, and be handed a
+    # plausible report computed against a default cutoff it never asked for. A
+    # 422 is the only honest outcome.
+    model_config = ConfigDict(extra="forbid")
+
     store_ids: List[int]
-    active_since: str          # YYYY-MM-DD — first order on or after this date
-    silent_since: str          # YYYY-MM-DD — lost cutoff
+    # How far back to look. None/blank = this shop's entire Shopify history.
+    # A cost bound, not a window edge: nothing is classified against it unless
+    # require_acquired_in_window is set.
+    history_from: Optional[str] = None
+    # Rolling silence, resolved per shop against that shop's own today. Replaces
+    # an absolute cutoff date, under which every departure month carried a
+    # different silence requirement and the monthly bars were not comparable.
+    silent_months: Literal[3, 6, 12] = 6
     min_orders: int = 1
+    # Restrict to customers whose FIRST completed order falls inside the window.
+    # Was unconditional; off means the departure timeline covers every customer,
+    # including long-standing ones, which is what a churn-by-month report wants.
+    require_acquired_in_window: bool = False
     # Drop customers who kept buying at another shop; checked against every
     # active Shopify store, including ones not selected for the report.
     exclude_cross_store: bool = True
+    # How soon after going quiet here an order elsewhere counts as a move.
+    # None follows silent_months.
+    moved_within_months: Optional[Literal[3, 6, 12]] = None
     # Trace where the newly-acquired customers came from. Off by default: it is
     # a second cross-store sweep, over a cohort that is far larger than the lost
     # list, so it is worth paying for only when the answer is being read.
     check_arrivals: bool = False
 
-    # Every window decision in this report is a string comparison against these
-    # two values, so a non-ISO date does not fail — it quietly compares wrong
-    # ("2024-8-1" sorts after "2024-12-31"). The date inputs protect the UI
-    # path only; this protects the endpoint.
-    @field_validator("active_since", "silent_since")
+    # Every window decision in this report is a string comparison, so a non-ISO
+    # date does not fail — it quietly compares wrong ("2024-8-1" sorts after
+    # "2024-12-31"). The date input protects the UI path only; this protects the
+    # endpoint. Blank normalises to None, i.e. all history.
+    @field_validator("history_from")
     @classmethod
-    def _iso_date(cls, v: str) -> str:
+    def _iso_date_or_blank(cls, v: Optional[str]) -> Optional[str]:
+        if v is None or not str(v).strip():
+            return None
         try:
-            return date.fromisoformat((v or "").strip()).isoformat()
+            return date.fromisoformat(str(v).strip()).isoformat()
         except ValueError:
             raise ValueError("must be a calendar date in YYYY-MM-DD form")
 
@@ -721,8 +742,23 @@ class LostProductsStore(BaseModel):
 
 class LostProductsRequest(BaseModel):
     stores: List[LostProductsStore]
+    # The period being analysed, which is what the baseline is sampled from: one
+    # drilled month, or the whole report window. Not the lost-customer window —
+    # these only ever bound the comparison cohort.
     active_since: str          # baseline window start, YYYY-MM-DD
     silent_since: str          # baseline window end, YYYY-MM-DD
+
+    # Unvalidated until now, and the failure was silent in the worst direction:
+    # a bad pair makes the baseline come back empty, which flags EVERY product as
+    # "only in lost customers' orders" — the strongest churn signal the report
+    # can emit, manufactured out of a malformed date.
+    @field_validator("active_since", "silent_since")
+    @classmethod
+    def _iso_date(cls, v: str) -> str:
+        try:
+            return date.fromisoformat((v or "").strip()).isoformat()
+        except ValueError:
+            raise ValueError("must be a calendar date in YYYY-MM-DD form")
 
 
 # Quotations In Progress Schemas
