@@ -6942,9 +6942,14 @@ async def shopify_analytics_lost_customers_stream(
                     if completed is not None:
                         c["orders_count"] = completed
                 if undercounted:
+                    # The completed count is lifetime minus the cancelled and
+                    # refunded orders we could see, and that page caps out — so
+                    # too little is subtracted and the result is an over-count,
+                    # not an under-count. Said backwards until 2026-07-30.
                     incomplete_reasons.append(
                         f"{undercounted} customer(s) have more cancelled or refunded orders "
-                        f"than one page holds, so their order count is a lower bound.")
+                        f"than one page holds, so their order count is an upper bound and "
+                        f"may be overstated")
 
                 def acquired_in_window(c):
                     first = first_map.get(c.get("customer_id"))
