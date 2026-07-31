@@ -13136,14 +13136,26 @@ function sancmScheduleChartRender() {
   });
 }
 
-// Round up to a "nice" 1/2/5 × 10^n so gridline labels are readable numbers.
-function sancmNiceMax(value) {
-  if (!value || value <= 0) return 0;
-  const exp = Math.floor(Math.log10(value));
-  const pow = Math.pow(10, exp);
-  const frac = value / pow;
-  const nice = frac <= 1 ? 1 : frac <= 2 ? 2 : frac <= 5 ? 5 : 10;
-  return nice * pow;
+// Rounding the axis top to the next 1/2/5×10ⁿ bracket wasted most of the
+// plot: a 2,900 peak scaled against 5,000 and flattened every other bar.
+// Pick a round *step* sized for ~5 intervals instead, then stop the axis at
+// the first multiple of it that clears the data — the labels stay round and
+// the headroom drops to a few percent in the common case.
+const SANCM_TICK_STEPS = [1, 2, 2.5, 5, 10];
+
+function sancmYAxis(value) {
+  if (!value || value <= 0) return { max: 0, ticks: [] };
+  const target = value / 5;
+  const pow = Math.pow(10, Math.floor(Math.log10(target)));
+  const raw = (SANCM_TICK_STEPS.find((s) => s * pow >= target - 1e-9) || 10) * pow;
+  // Counts are whole numbers, so a fractional step would only repeat labels
+  // once they are rounded for display. Only steps under 10 can be fractional.
+  const step = raw < 10 ? Math.max(1, Math.ceil(raw)) : raw;
+  const count = Math.max(1, Math.ceil(value / step - 1e-9));
+  return {
+    max: count * step,
+    ticks: Array.from({ length: count + 1 }, (_, i) => i * step),
+  };
 }
 
 function sancmCompact(n) {
@@ -13232,7 +13244,7 @@ function renderSancmChart() {
     );
     rawMax = showTotalLine ? Math.max(barMax, ...stackTotals) : barMax;
   }
-  const yMax = sancmNiceMax(rawMax);
+  const { max: yMax, ticks: yTicks } = sancmYAxis(rawMax);
 
   if (yMax === 0) {
     wrap.innerHTML = `<svg width="100%" height="${SANCM_H}" viewBox="0 0 ${W} ${SANCM_H}" preserveAspectRatio="xMinYMid meet" role="img" aria-label="No new customers in range"><text x="${W / 2}" y="${SANCM_H / 2}" text-anchor="middle" font-size="13" fill="var(--text-tertiary)">No new customers in this range</text></svg>`;
@@ -13244,8 +13256,7 @@ function renderSancmChart() {
   const parts = [];
 
   // Gridlines + y ticks (solid, crisp, drawn behind everything).
-  for (const f of [0, 0.25, 0.5, 0.75, 1]) {
-    const val = yMax * f;
+  for (const val of yTicks) {
     const py = Math.round(y(val)) + 0.5;
     parts.push(
       `<line x1="${SANCM_PAD.left}" y1="${py}" x2="${W - SANCM_PAD.right}" y2="${py}" stroke="var(--border-color)" stroke-width="1" shape-rendering="crispEdges" />`,
@@ -14803,28 +14814,12 @@ function renderSacrNote() {
         ` — and are excluded from every figure.`,
     );
   }
-  const neverPurchased = sacrState.stores.reduce((a, s) => a + (s.never_purchased || 0), 0);
-  if (neverPurchased) {
-    notes.push(
-      `${neverPurchased.toLocaleString()} customer(s) were excluded because every order they placed was cancelled or refunded — there was no completed purchase to lose.`,
-    );
-  }
-  const noEmail = sacrState.stores.reduce((a, s) => a + (s.no_email || 0), 0);
-  if (noEmail) {
-    notes.push(
-      `${noEmail.toLocaleString()} customer(s) have no email address; they were still checked by name + ZIP.`,
-    );
-  }
   const unknownFirst = sacrState.stores.reduce((a, s) => a + (s.unknown_first_order || 0), 0);
   if (unknownFirst) {
     notes.push(
       `${unknownFirst.toLocaleString()} customer(s) had no retrievable first order and were excluded rather than assumed to qualify.`,
     );
   }
-  notes.push(
-    "Cancelled and fully refunded orders are ignored throughout, so \"last order\" means the last one actually completed. Partially refunded orders are kept — the customer still bought something.",
-    "Timings describe the customer's final order: order → first shipment, and first shipment → last delivery.",
-  );
   el.innerHTML = notes.map((n) => saEscape(n)).join("<br />");
 }
 
@@ -14876,7 +14871,7 @@ function renderSacrChart() {
   const innerW = W - SANCM_PAD.left - SANCM_PAD.right;
   const innerH = SANCM_H - SANCM_PAD.top - SANCM_PAD.bottom;
   const k = months.length;
-  const yMax = sancmNiceMax(
+  const { max: yMax, ticks: yTicks } = sancmYAxis(
     Math.max(0, ...months.map((m) => Math.max(m.count || 0, m.new || 0))),
   );
   if (yMax === 0) {
@@ -14891,8 +14886,7 @@ function renderSacrChart() {
   const barW = Math.max(2, (pairW - 2) / 2);
   const parts = [];
 
-  for (const f of [0, 0.25, 0.5, 0.75, 1]) {
-    const val = yMax * f;
+  for (const val of yTicks) {
     const py = Math.round(y(val)) + 0.5;
     parts.push(
       `<line x1="${SANCM_PAD.left}" y1="${py}" x2="${W - SANCM_PAD.right}" y2="${py}" stroke="var(--border-color)" stroke-width="1" shape-rendering="crispEdges" />`,
