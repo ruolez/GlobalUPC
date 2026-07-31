@@ -14820,11 +14820,33 @@ function renderSacrChart() {
 
   sacrBuildMonthStats();
 
+  // Months after the cutoff can only ever show arrivals: nobody is counted as
+  // lost until they have been silent since it. Without saying so, the run of
+  // green-only bars at the right reads as a data gap.
+  const sub = document.getElementById("sacr-chart-sub");
+  if (sub) {
+    const base =
+      "New customers by month of first order, against lost customers by month of last order";
+    // Strictly after the cutoff's own month: that month can still hold
+    // departures, so including it would make the sentence untrue.
+    const cutoffMonth = (sacrState.silentSince || "").slice(0, 7);
+    const tail = months.some(
+      (m) => m.month > cutoffMonth && (m.new || 0) > 0 && !(m.count || 0),
+    );
+    sub.textContent =
+      base +
+      (tail && sacrState.silentSince
+        ? `. Nobody can count as lost after ${sacrState.silentSince}, so later months show arrivals only.`
+        : "");
+  }
+
   const W = Math.max(320, wrap.clientWidth);
   const innerW = W - SANCM_PAD.left - SANCM_PAD.right;
   const innerH = SANCM_H - SANCM_PAD.top - SANCM_PAD.bottom;
   const k = months.length;
-  const yMax = sancmNiceMax(Math.max(0, ...months.map((m) => m.count)));
+  const yMax = sancmNiceMax(
+    Math.max(0, ...months.map((m) => Math.max(m.count || 0, m.new || 0))),
+  );
   if (yMax === 0) {
     wrap.innerHTML = "";
     return;
@@ -14832,7 +14854,9 @@ function renderSacrChart() {
 
   const y = (v) => SANCM_PAD.top + innerH - (v / yMax) * innerH;
   const bandW = innerW / k;
-  const barW = Math.min(SANCM_BAR_MAX, bandW * 0.66);
+  // Two bars per month, so each gets a little under half the band.
+  const pairW = Math.min(SANCM_BAR_MAX, bandW * 0.72);
+  const barW = Math.max(2, (pairW - 2) / 2);
   const parts = [];
 
   for (const f of [0, 0.25, 0.5, 0.75, 1]) {
@@ -14853,14 +14877,20 @@ function renderSacrChart() {
     );
   });
 
+  // New on the left, lost on the right, in the same order as the legend.
   months.forEach((m, j) => {
-    if (!m.count) return;
-    const x = SANCM_PAD.left + j * bandW + (bandW - barW) / 2;
-    const yTop = y(m.count);
-    const h = SANCM_PAD.top + innerH - yTop;
-    parts.push(
-      `<path d="${sancmBarPath(x, yTop, barW, h, SANCM_RADIUS)}" fill="var(--sancm-c2)" />`,
-    );
+    const left = SANCM_PAD.left + j * bandW + (bandW - pairW) / 2;
+    [
+      { v: m.new || 0, x: left, fill: "var(--sancm-c3)" },
+      { v: m.count || 0, x: left + barW + 2, fill: "var(--sancm-c2)" },
+    ].forEach(({ v, x, fill }) => {
+      if (!v) return;
+      const yTop = y(v);
+      const h = SANCM_PAD.top + innerH - yTop;
+      parts.push(
+        `<path d="${sancmBarPath(x, yTop, barW, h, SANCM_RADIUS)}" fill="${fill}" />`,
+      );
+    });
   });
 
   const spansYears =
@@ -14877,12 +14907,12 @@ function renderSacrChart() {
   months.forEach((m, j) => {
     const x = SANCM_PAD.left + j * bandW;
     parts.push(
-      `<rect class="sancm-hit" data-month-index="${j}" tabindex="0" role="img" aria-label="${saEscape(sancmMonthTick(m.month, true))}: ${m.count} customers last ordered" x="${x}" y="${SANCM_PAD.top}" width="${bandW}" height="${innerH}" fill="transparent" />`,
+      `<rect class="sancm-hit" data-month-index="${j}" tabindex="0" role="img" aria-label="${saEscape(sancmMonthTick(m.month, true))}: ${m.new || 0} new, ${m.count || 0} lost" x="${x}" y="${SANCM_PAD.top}" width="${bandW}" height="${innerH}" fill="transparent" />`,
     );
   });
 
   wrap.innerHTML =
-    `<svg width="100%" height="${SANCM_H}" viewBox="0 0 ${W} ${SANCM_H}" preserveAspectRatio="xMinYMid meet" role="group" aria-label="Lost customers by month of last order">` +
+    `<svg width="100%" height="${SANCM_H}" viewBox="0 0 ${W} ${SANCM_H}" preserveAspectRatio="xMinYMid meet" role="group" aria-label="New and lost customers by month">` +
     parts.join("") +
     "</svg>";
 }
@@ -15018,9 +15048,20 @@ function sacrShowTooltip(index, hitRect) {
       );
   }
 
-  addRow(month.count.toLocaleString(), "customers lost", {
-    rowClass: "sancm-tip-total",
-  });
+  // The two series first, since that is what the bars show, then the net —
+  // the number that says whether the month gained or shed customers.
+  addRow((month.new || 0).toLocaleString(), "new", { color: "var(--sancm-c3)" });
+  addRow(month.count.toLocaleString(), "lost", { color: "var(--sancm-c2)" });
+
+  const net = (month.new || 0) - (month.count || 0);
+  const netRow = addRow(
+    `${net > 0 ? "+" : net < 0 ? "−" : ""}${Math.abs(net).toLocaleString()}`,
+    "net",
+    { rowClass: `sancm-tip-total sancm-tip-mom ${
+        net > 0 ? "sancm-mom-up" : net < 0 ? "sancm-mom-down" : "sancm-mom-flat"
+      }` },
+  );
+  if (netRow) netRow.title = "New minus lost in this month";
 
   if (grand > 0) {
     addRow(`${((month.count / grand) * 100).toFixed(1)}%`, "of all lost");

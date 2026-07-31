@@ -7173,14 +7173,26 @@ async def shopify_analytics_lost_customers_stream(
         bench_lost = [c for r in complete for c in (r.get("lost") or [])]
         bench_active = [c for r in complete for c in (r.get("active") or [])]
 
-        # "When did they leave" — month of last order, in the shop's own
-        # calendar, so an order placed late on the last evening of a month is
-        # not bucketed into the next one.
-        by_month: Dict[str, int] = {}
+        # Arrivals against departures, by month. Both dates are the shop's own
+        # calendar day, so an order placed late on the last evening of a month
+        # is not bucketed into the next one.
+        #
+        # Arrivals count the whole cohort — lost and still-active alike — since
+        # everyone in it was acquired inside the window by definition. Both
+        # sides therefore describe the same population, and both dates come from
+        # status-filtered queries, so a cancelled or refunded order can neither
+        # make someone look newly acquired nor stand in as their last purchase.
+        lost_by_month: Dict[str, int] = {}
+        new_by_month: Dict[str, int] = {}
         for c in all_lost:
             key = (c.get("last_order_local") or c.get("last_order_created_at") or "")[:7]
             if key:
-                by_month[key] = by_month.get(key, 0) + 1
+                lost_by_month[key] = lost_by_month.get(key, 0) + 1
+        for r in shown:
+            for c in (r.get("lost") or []) + (r.get("active") or []):
+                key = (c.get("first_order_local") or c.get("first_order_created_at") or "")[:7]
+                if key:
+                    new_by_month[key] = new_by_month.get(key, 0) + 1
 
         # Same scope as the rows: a state breakdown that omitted a partial
         # store's customers would not add up to the table beneath it.
@@ -7249,7 +7261,12 @@ async def shopify_analytics_lost_customers_stream(
                 "median_orders": _median([float(c["orders_count"]) for c in all_lost]),
                 "currency": (all_lost[0]["currency"] if all_lost else "USD"),
             },
-            "by_month": [{"month": m, "count": by_month[m]} for m in sorted(by_month)],
+            # Every month either side has a bar, so a month of pure arrivals or
+            # pure departures is not silently dropped from the series.
+            "by_month": [
+                {"month": m, "count": lost_by_month.get(m, 0), "new": new_by_month.get(m, 0)}
+                for m in sorted(set(lost_by_month) | set(new_by_month))
+            ],
             "active_since": active_since,
             "silent_since": silent_since,
             "min_orders": min_orders,

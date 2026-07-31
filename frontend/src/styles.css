@@ -6309,6 +6309,23 @@ tr:hover > td .sacr-copy { opacity: 0.8; }
   border-radius: var(--radius-lg);
 }
 
+/* Chart legend: two series, so the colours have to be named somewhere. */
+.sa-page .sacr-legend {
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+  margin-left: auto;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+.sa-page .sacr-legend-item { display: inline-flex; align-items: center; gap: 0.375rem; }
+.sa-page .sacr-legend-item i {
+  width: 0.625rem;
+  height: 0.625rem;
+  border-radius: 2px;
+  display: inline-block;
+}
+
 /* ---- Lost Customers setup: one row of controls ---- */
 
 .sa-page .sacr-setup { padding: 0.875rem 1.25rem 1rem; }
