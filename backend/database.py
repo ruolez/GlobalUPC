@@ -7,8 +7,8 @@ DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://globalupc:globalupc_passw
 
 engine = create_engine(
     DATABASE_URL,
-    pool_size=20,
-    max_overflow=30,
+    pool_size=5,
+    max_overflow=10,
     pool_pre_ping=True,
     pool_recycle=300,
 )
