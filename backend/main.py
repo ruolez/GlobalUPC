@@ -6427,10 +6427,24 @@ _SCAN_PAGE_SECONDS = 1.5
 # Deliberately equal to _ARRIVAL_NAME_MAX_CANDIDATES: a section larger than the
 # cap would still trip it, which is the thing being fixed.
 _CROSS_SECTION_SIZE = 1500
+# And no wider than this many months, whatever the volume. The section's date
+# span becomes the bound on its in-window order query, and that query returns
+# only the first _MOVED_WINDOW_ORDERS matches — so a wide section asks about
+# orders from years before the departure it is judging.
+#
+# Measured: a store with 396 departures spread over three years fitted in ONE
+# section, giving a 42-month window. For anyone still buying at a sister shop the
+# five orders returned were all from the far end of that window, none inside the
+# customer's own six-month test period, so the verdict came back "unknown" — for
+# exactly the customers the check exists to find. A one-month span keeps the
+# window tight enough that only a genuinely heavy concurrent buyer can saturate
+# it, and that case is still reported rather than guessed.
+_CROSS_SECTION_MAX_MONTHS = 1
 # Sections in flight. Sections of the same store compete for the same shops'
-# rate buckets, so this stays small — the parallelism that matters is the
-# per-shop fan-out inside a section.
-_CROSS_SECTION_CONCURRENCY = 2
+# rate buckets, so this stays modest — the parallelism that matters is the
+# per-shop fan-out inside a section. Raised with the span cap, which makes
+# sections smaller and more numerous on a sparse store.
+_CROSS_SECTION_CONCURRENCY = 4
 # Rows per streamed `rows` event. Measured before this existed: a full-history
 # run on one store produced a single 64.6 MB SSE line, which the browser has to
 # buffer and JSON.parse in one go.
@@ -6506,7 +6520,8 @@ def _judge_move(quiet_day: str, months: int, other_last: Optional[str],
 
 
 def _departure_sections(rows: List[Dict[str, Any]], size: int = _CROSS_SECTION_SIZE,
-                        newest_first: bool = True) -> List[Dict[str, Any]]:
+                        newest_first: bool = True,
+                        max_months: int = _CROSS_SECTION_MAX_MONTHS) -> List[Dict[str, Any]]:
     """
     Volume-sized, month-contiguous chunks of departures.
 
@@ -6544,7 +6559,11 @@ def _departure_sections(rows: List[Dict[str, Any]], size: int = _CROSS_SECTION_S
             for i in range(0, len(rows_m), size):
                 chunks.append((rows_m[i:i + size], [m]))
             continue
-        if current and len(current) + len(rows_m) > size:
+        # Cut on volume OR on span — whichever comes first. The span cap is what
+        # keeps the in-window order query narrow enough to answer the question it
+        # is asked; see _CROSS_SECTION_MAX_MONTHS.
+        if current and (len(current) + len(rows_m) > size
+                        or len(current_months) >= max_months):
             flush()
         current.extend(rows_m)
         current_months.append(m)
@@ -6833,7 +6852,19 @@ async def shopify_analytics_lost_customers_stream(
     db: Session = Depends(get_db),
 ):
     async def generate() -> AsyncGenerator[str, None]:
+        # Snapped to the first of its month, because this report is monthly and a
+        # mid-month floor makes the first bar a fraction of a month drawn as a
+        # whole one. With a floor of 2024-07-31 the July departure bar counted a
+        # single day against its neighbours' 31 — measured, 29 against 711 — so
+        # the month-over-month figure beside it read +2,352%.
+        #
+        # It also removes a units mismatch: departures were filtered by DAY while
+        # the arrivals series bucketed by MONTH KEY, so the floor month's "new"
+        # bar included the thirty pre-floor days that the arrivals cohort itself
+        # excluded, and the two disagreed about the month they both described.
         history_from = request.history_from            # None = all history
+        if history_from:
+            history_from = f"{history_from[:7]}-01"
         silent_months = int(request.silent_months)
         moved_months = int(request.moved_within_months or silent_months)
         require_acquired = bool(request.require_acquired_in_window)
@@ -7572,6 +7603,15 @@ async def shopify_analytics_lost_customers_stream(
                                     if verdict == _MOVE_UNKNOWN:
                                         hit_unknown = True
                                 if hit:
+                                    # The email pass may already have counted this
+                                    # person as unresolved. Now that a move is
+                                    # proven, take that back — otherwise they are
+                                    # reported both as having moved and as a
+                                    # departure whose move could not be determined,
+                                    # and the store wears a partial-data flag for a
+                                    # customer it resolved.
+                                    if c.pop("moved_unresolved", None):
+                                        out["unresolved"] -= 1
                                     label = (f"{hit['store_name']} (another account)"
                                              if hit["same_store"] else hit["store_name"])
                                     _record_move(
@@ -7649,12 +7689,11 @@ async def shopify_analytics_lost_customers_stream(
                         # failure belongs to the sections that hit it, so only
                         # their departures leave the comparison — see biased_ids.
                         # Before sectioning this disqualified the entire store.
-                    if moved_unresolved:
-                        incomplete_reasons.append(
-                            f"{moved_unresolved} customer(s) are still ordering at another "
-                            f"store, but too often for us to tell whether that began within "
-                            f"{moved_months} months of them going quiet here. They are counted "
-                            f"as lost, which may overstate the total.")
+                    # Deliberately NOT an incomplete_reason: it is a precision
+                    # caveat about a handful of named customers, and putting it
+                    # there flagged the whole store as partial data — the same
+                    # mistake the order-count caveat above documents. The count is
+                    # reported on its own and the client renders it as a note.
 
                 # --- where the arrivals came from ---------------------------
                 # Deliberately placed after the moved check, so it runs on
@@ -7984,17 +8023,25 @@ async def shopify_analytics_lost_customers_stream(
 
         tasks = [asyncio.create_task(fetch_for_store(s)) for s in store_list]
 
-        async def collect(t):
+        async def collect(t, store):
             try:
                 res = await t
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                res = {"store": None, "ok": False, "complete": False,
+                # The store must travel with the failure. Without it the event
+                # carries store_id: null, the client's lookup by id finds nothing,
+                # and the store keeps its "still scanning" state — so the run
+                # reports "1 of 1 stores complete" with no error anywhere, while
+                # any rows already streamed sit on screen looking like a finished
+                # result. Harmless before rows streamed; not any more.
+                res = {"store": store, "ok": False, "complete": False,
+                       "cohort_complete": False,
                        "error": f"Unexpected error: {e}", "lost": [], "active": []}
             await events.put(("done", res))
 
-        collectors = [asyncio.create_task(collect(t)) for t in tasks]
+        collectors = [asyncio.create_task(collect(t, s))
+                      for t, s in zip(tasks, store_list)]
 
         results: List[Dict[str, Any]] = []
         completed = 0
@@ -8046,7 +8093,11 @@ async def shopify_analytics_lost_customers_stream(
                     "moved_breakdown": payload.get("moved_breakdown", {}),
                     "matched_by_name": payload.get("matched_by_name", 0),
                     "no_email": payload.get("no_email", 0),
-                    "arrival": payload.get("arrival") or {},
+                    # `arrival` deliberately omitted: it is the full per-store
+                    # arrivals blob including up to _ARRIVAL_MAX_ROWS rows, and it
+                    # is sent again merged in `complete`, which is the only copy
+                    # anything reads. Including it here doubled the largest
+                    # remaining payload on an arrivals run.
                     "lost_count": len(lost),
                     "active_count": len(payload.get("active") or []),
                     "lost_timing": payload.get("lost_timing") or _timing_summary(lost),

@@ -13949,6 +13949,12 @@ function sacrResetRunState() {
   // run's table look empty with nothing on screen explaining why.
   sacrState.filter.month = "";
   sacrState.currentPage = 0;
+  // The progress panel describes a specific run's scan. Left behind, it reports
+  // the PREVIOUS run's store lines and scanned counts — visibly so in the seconds
+  // before the next run's first event, and permanently if the next run fails
+  // before it starts, since the failure path repaints this panel.
+  sacrState.progress = null;
+  sacrStopElapsedTimer();
   if (sacrState.renderTimer) {
     clearTimeout(sacrState.renderTimer);
     sacrState.renderTimer = 0;
@@ -14388,18 +14394,25 @@ async function runLostCustomersReport() {
 function sacrPopulateFilterOptions() {
   const methods = [...new Set(sacrState.rows.map((r) => r.shipping_method).filter(Boolean))].sort();
   const carriers = [...new Set(sacrState.rows.map((r) => r.carrier).filter(Boolean))].sort();
-  const fill = (id, values, current) => {
+  // These filters deliberately survive a re-run, so the previous run's value can
+  // be one this run has no option for. Setting select.value to a missing option
+  // leaves selectedIndex at -1: the control renders BLANK — not "All" — while the
+  // filter is still applied, so the table shows nothing with no visible cause.
+  // Drop the value instead, the way the moved modal's destination filter does.
+  const fill = (key, id, values) => {
     const el = document.getElementById(id);
     if (!el) return;
+    const current = sacrState.filter[key];
+    if (current && !values.includes(current)) sacrState.filter[key] = "";
     el.innerHTML =
       '<option value="">All</option>' +
       values.map((v) => `<option value="${saEscape(v)}">${saEscape(v)}</option>`).join("");
-    el.value = current || "";
+    el.value = sacrState.filter[key] || "";
   };
   const states = [...new Set(sacrState.rows.map((r) => r.state).filter(Boolean))].sort();
-  fill("sacr-filter-state", states, sacrState.filter.state);
-  fill("sacr-filter-method", methods, sacrState.filter.method);
-  fill("sacr-filter-carrier", carriers, sacrState.filter.carrier);
+  fill("state", "sacr-filter-state", states);
+  fill("method", "sacr-filter-method", methods);
+  fill("carrier", "sacr-filter-carrier", carriers);
 }
 
 function sacrIsFiltered() {
@@ -14911,9 +14924,19 @@ function renderSacrTable() {
     const currency = rows[0]?.currency || sacrState.totals?.currency || "";
     count.classList.toggle("sacr-count-filtered", filtered);
     // Named rather than just "Filtered": a month scope is the one filter with no
-    // visible control of its own in this row, so the count has to say which.
-    const month = sacrState.filter.month;
-    const lead = month ? `${sancmMonthTick(month, true)}: ` : "Filtered: ";
+    // visible control of its own in this row, so the count has to say which. But
+    // `total` is the count after EVERY filter, so naming only the month would
+    // assert that e.g. 3 customers left in June 2024 when 3 is what survived the
+    // month plus a search term.
+    const ff = sacrState.filter;
+    const month = ff.month;
+    const alsoFiltered = Boolean(
+      ff.search || ff.method || ff.carrier || ff.slow || ff.state ||
+        ff.ordersMin !== null,
+    );
+    const lead = month
+      ? `${sancmMonthTick(month, true)}${alsoFiltered ? ", filtered" : ""}: `
+      : "Filtered: ";
     count.textContent = filtered
       ? `${lead}${total.toLocaleString()} of ${all.toLocaleString()} lost customers` +
         (total ? ` · ${sacrFmtMoney(spend, currency)}` : "")
@@ -14949,13 +14972,17 @@ function renderSacrNote() {
         `${excluded.toLocaleString()} customer(s) who were already ordering before ${win.history_from} were excluded entirely — from this table and from every total, KPI and comparison above.`,
       );
     }
-    // Counted rather than silently dropped, so the arithmetic reconciles.
-    const older = sacrState.stores.reduce((a, s) => a + (s.ordered_before_window || 0), 0);
-    if (older) {
-      notes.push(
-        `${older.toLocaleString()} customer(s) ordered in this window but every one of those orders was cancelled or refunded, leaving an earlier purchase as their last — so they did not start here and are excluded.`,
-      );
-    }
+  }
+  // Counted whenever a history date is set, not only under the acquisition
+  // filter — the server increments it either way, so gating this note on the
+  // filter hid a real exclusion on every default run. The cause is the departure
+  // date falling before the window, which is not the same thing as not having
+  // started here, so the wording no longer says that.
+  const older = sacrState.stores.reduce((a, s) => a + (s.ordered_before_window || 0), 0);
+  if (older) {
+    notes.push(
+      `${older.toLocaleString()} customer(s) ordered in this window but every one of those orders was cancelled or refunded, leaving an earlier purchase as their last — which falls before ${win.history_from}, so they are excluded.`,
+    );
   }
   // Real arrivals, deliberately left off the chart: before the history date the
   // scan only finds the ones who are still ordering, so plotting them would draw
@@ -15007,7 +15034,12 @@ function renderSacrNote() {
   const unknownFirst = sacrState.stores.reduce((a, s) => a + (s.unknown_first_order || 0), 0);
   if (unknownFirst) {
     notes.push(
-      `${unknownFirst.toLocaleString()} customer(s) had no retrievable first order and were excluded rather than assumed to qualify.`,
+      // Only the acquisition filter drops these. With it off they are in the
+      // table, so the note said the opposite of the truth on every default run —
+      // it just has no first-order date to show for them.
+      win.require_acquired_in_window
+        ? `${unknownFirst.toLocaleString()} customer(s) had no retrievable first order and were excluded rather than assumed to qualify.`
+        : `${unknownFirst.toLocaleString()} customer(s) had no retrievable first order, so they show no acquisition date and are not counted as arrivals on the chart.`,
     );
   }
   el.innerHTML = notes.map((n) => saEscape(n)).join("<br />");
@@ -15214,10 +15246,14 @@ function renderSacrChart() {
 
   months.forEach((m, j) => {
     const x = SANCM_PAD.left + j * bandW;
-    const pending = m.judgeable === false;
+    // Not selectable when there is nothing to select: a month too recent to judge,
+    // or one with no departures at all. The month spine is continuous, so a quiet
+    // month is present with a real zero — drilling into it produced an empty table
+    // with no empty-state text to explain it.
+    const pending = m.judgeable === false || !(m.count || 0);
     const label =
       `${sancmMonthTick(m.month, true)}: ${m.new || 0} new, ` +
-      (pending ? "not yet judged" : `${m.count || 0} lost`);
+      (m.judgeable === false ? "not yet judged" : `${m.count || 0} lost`);
     parts.push(
       `<rect class="sancm-hit" data-month-index="${j}"` +
         (pending ? ` data-pending="1" aria-disabled="true"` : "") +
@@ -16178,15 +16214,22 @@ function renderSacrArrivals() {
     const bits = [
       '"Spent here" is their lifetime spend at this store. Each date is that shop\'s own calendar day.',
     ];
+    // These three are whole-run figures with no per-month breakdown, so once a
+    // month is selected they must not be read against the scoped total — "412 of
+    // the 18 had already registered here" is arithmetically impossible and was
+    // exactly what this produced.
+    const runTotal = (sacrState.arrivals?.total || 0).toLocaleString();
+    const wholeRun = Boolean(scoped.month);
     if (arr.prior_account) {
       bits.push(
-        `${arr.prior_account.toLocaleString()} of the ${total.toLocaleString()} had already ` +
-          `registered here before the purchase that made them look new.`,
+        `${arr.prior_account.toLocaleString()} of the ${runTotal} ` +
+          (wholeRun ? "across the whole run " : "") +
+          `had already registered here before the purchase that made them look new.`,
       );
     }
     if (arr.no_email) {
       bits.push(
-        `${arr.no_email.toLocaleString()} had no email address, so only the name + ZIP pass could see them.`,
+        `${arr.no_email.toLocaleString()}${wholeRun ? " of them" : ""} had no email address, so only the name + ZIP pass could see them.`,
       );
     }
     if (arr.rows_truncated) {
