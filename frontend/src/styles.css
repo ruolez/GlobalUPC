@@ -4988,6 +4988,13 @@ body.no-scroll {
   overflow: hidden;
   box-shadow: var(--shadow-sm);
 }
+/* The shared rule above fixes four columns, which every other strip fills.
+   Lost Customers has three tiles since the revenue figure went, and would
+   otherwise leave an empty quarter on the right. Scoped by id so the other
+   strips are untouched. */
+.sa-page #sacr-kpi-strip {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
 .sa-page .sa-kpi-strip::before {
   content: "";
   position: absolute;

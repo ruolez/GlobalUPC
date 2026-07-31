@@ -8273,7 +8273,11 @@ async def shopify_analytics_lost_customers_stream(
                 # Kept in the report but left off the chart — see by_month above.
                 "arrivals_before_window": arrivals_before_window,
                 "lost_customers": len(all_lost),
-                "revenue_lost": round(sum(c["amount_spent"] for c in all_lost), 2),
+                # No revenue total. It summed Shopify's LIFETIME amountSpent, so it
+                # answered "what have these people ever spent with us", not "what
+                # did we lose" — every order they placed before the window was in
+                # it. There is no honest reading of the number, so it is gone
+                # rather than relabelled.
                 # The handful of customers whose count is an upper bound are
                 # dropped rather than allowed to drag the median up.
                 "median_orders": _median([

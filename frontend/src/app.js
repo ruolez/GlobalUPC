@@ -14642,8 +14642,6 @@ function renderSacrKpis() {
 
   const medSilent = sacrMedian(rows.map((r) => r.days_silent));
   const medOrders = sacrMedian(rows.map((r) => r.orders_count)) || 0;
-  const revenue = rows.reduce((s, r) => s + (r.amount_spent || 0), 0);
-  const currency = rows[0]?.currency || "USD";
 
   // The † ties any partial-data figure back to the banner.
   const incomplete = sacrState.stores.some((s) => s.ok && s.complete === false);
@@ -14657,13 +14655,6 @@ function renderSacrKpis() {
       : sacrShortStore(
           (sacrState.stores.find((s) => s.ok) || {}).store_name || "",
         ) || "this store",
-  );
-  set("sacr-kpi-revenue", sacrFmtMoney(revenue, currency) + mark);
-  // These are lifetime figures from Shopify, including orders placed before
-  // the window — not revenue lost during the period.
-  set(
-    "sacr-kpi-revenue-sub",
-    filtered ? "lifetime spend, filtered rows" : "lifetime spend of lost customers",
   );
   set("sacr-kpi-orders", String(medOrders));
   set("sacr-kpi-orders-sub", "lifetime orders before going quiet");
@@ -15300,11 +15291,10 @@ function sacrBuildMonthStats() {
     if (!key) return;
     let e = stats.get(key);
     if (!e) {
-      e = { count: 0, revenue: 0, orders: [], byStore: new Map() };
+      e = { count: 0, orders: [], byStore: new Map() };
       stats.set(key, e);
     }
     e.count += 1;
-    e.revenue += Number(r.amount_spent) || 0;
     e.orders.push(Number(r.orders_count) || 0);
     const cur = e.byStore.get(r.store_id) || { name: r.store_name, count: 0 };
     cur.count += 1;
@@ -15481,11 +15471,6 @@ function sacrShowTooltip(index, hitRect) {
     }
 
     if (stats) {
-      const cur = sacrState.totals?.currency || "";
-      addRow(
-        `${Math.round(stats.revenue).toLocaleString()}${cur ? " " + cur : ""}`,
-        "revenue lost",
-      );
       const medOrders = sacrMedian(stats.orders);
       if (medOrders !== null) {
         addRow(String(medOrders), "median orders each");
