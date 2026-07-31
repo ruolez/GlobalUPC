@@ -2304,6 +2304,22 @@ def shop_today(tz: Optional[str]) -> str:
 # part of the order.
 ORDER_STATUS_FILTER = "-status:cancelled -financial_status:refunded"
 
+# Customers and orders tagged as banned or fraudulent are not business the
+# lost-customers analysis should count — a fraudster who "went quiet" is not a
+# lost customer, and their orders must not stand in as anyone's purchases.
+# Matching is by EXACT tag (case-insensitive), the same rule Shopify's own
+# `tag:` search applies — so a tag like "potential fraud" does not match.
+# Scoped to the lost-customers pipeline; the sales and first-order-tag reports
+# keep the plain status filter.
+EXCLUDED_ANALYSIS_TAGS = ("banned", "fraud")
+ANALYSIS_TAG_FILTER = " ".join(f"-tag:{t}" for t in EXCLUDED_ANALYSIS_TAGS)
+ANALYSIS_ORDER_FILTER = f"{ORDER_STATUS_FILTER} {ANALYSIS_TAG_FILTER}"
+
+
+def has_excluded_tags(tags) -> bool:
+    """True when a customer/order tag list carries an excluded analysis tag."""
+    return any(str(t).strip().lower() in EXCLUDED_ANALYSIS_TAGS for t in (tags or ()))
+
 
 def order_window_filter(lo: str, hi: str) -> str:
     """
@@ -2313,7 +2329,7 @@ def order_window_filter(lo: str, hi: str) -> str:
     following their departure" rather than "is their last-ever order recent",
     which cannot tell a customer who moved from one who left the business later.
     """
-    return f"{ORDER_STATUS_FILTER} created_at:>={lo} created_at:<{hi}"
+    return f"{ANALYSIS_ORDER_FILTER} created_at:>={lo} created_at:<{hi}"
 
 
 _LOST_CUSTOMERS_QUERY = """
@@ -2328,6 +2344,7 @@ query LostCustomers($q: String!, $after: String) {
       email
       createdAt
       numberOfOrders
+      tags
       defaultAddress { zip }
       amountSpent { amount currencyCode }
       lastValidOrder: orders(
@@ -2355,7 +2372,7 @@ query LostCustomers($q: String!, $after: String) {
     }
   }
 }
-""" % ORDER_STATUS_FILTER
+""" % ANALYSIS_ORDER_FILTER
 
 # Shopify refuses to paginate past 25,000 objects. Sharding keeps each cursor
 # walk under that, but we still detect the ceiling so a truncated result can
@@ -2509,6 +2526,12 @@ async def fetch_customers_with_last_order(
                 conn = data.get("customers") or {}
                 nodes = conn.get("nodes") or []
                 for node in nodes:
+                    # Filtered in Python, not with a `-tag:` term in the
+                    # customers search — this codebase has already caught one
+                    # customers-search filter being silently ignored, and a
+                    # dropped negation here would quietly re-admit them.
+                    if has_excluded_tags(node.get("tags")):
+                        continue
                     customers.append(_normalize_lost_customer(node))
 
                 pages += 1
@@ -2753,7 +2776,7 @@ async def fetch_customer_recent_orders(
                 admin_api_key,
                 api_version,
                 _CUSTOMER_ORDERS_QUERY,
-                {"q": f"customer_id:{numeric_id} {ORDER_STATUS_FILTER}",
+                {"q": f"customer_id:{numeric_id} {ANALYSIS_ORDER_FILTER}",
                  "n": max(1, min(limit, 20))},
                 op_name="customer orders",
             )
@@ -3018,7 +3041,7 @@ async def fetch_baseline_order_items(
     try:
         async with aiohttp.ClientSession() as session:
             for start, end in windows:
-                q = f"created_at:>={start} created_at:<{end} {ORDER_STATUS_FILTER}"
+                q = f"created_at:>={start} created_at:<{end} {ANALYSIS_ORDER_FILTER}"
                 cursor = None
                 # Backstop so one unexpectedly huge month cannot run away.
                 for _ in range(_BASELINE_MAX_PAGES_PER_WINDOW):
@@ -3096,14 +3119,14 @@ query CustomerFirstOrders($ids: [ID!]!) {
       orders(first: 1, sortKey: CREATED_AT, query: "%s") {
         nodes { id createdAt }
       }
-      excluded: orders(first: %d, query: "status:cancelled OR financial_status:refunded") {
+      excluded: orders(first: %d, query: "status:cancelled OR financial_status:refunded OR tag:banned OR tag:fraud") {
         pageInfo { hasNextPage }
         nodes { id }
       }
     }
   }
 }
-""" % (ORDER_STATUS_FILTER, _EXCLUDED_ORDER_SAMPLE)
+""" % (ANALYSIS_ORDER_FILTER, _EXCLUDED_ORDER_SAMPLE)
 
 
 async def fetch_customer_first_orders(
@@ -3488,7 +3511,7 @@ async def fetch_customers_by_name(
                     cursor = None
                     # A common surname can exceed one page of records.
                     for page in range(_NAME_MAX_PAGES):
-                        variables = {"q": terms, "oq": ORDER_STATUS_FILTER,
+                        variables = {"q": terms, "oq": ANALYSIS_ORDER_FILTER,
                                      "after": cursor}
                         if window:
                             document = _CUSTOMERS_BY_NAME_WINDOW_QUERY
@@ -3636,7 +3659,7 @@ async def fetch_customers_by_emails(
                     )
                     cursor = None
                     while True:
-                        variables = {"q": terms, "oq": ORDER_STATUS_FILTER,
+                        variables = {"q": terms, "oq": ANALYSIS_ORDER_FILTER,
                                      "after": cursor}
                         if window:
                             document = _CUSTOMERS_BY_EMAIL_WINDOW_QUERY

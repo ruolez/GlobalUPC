@@ -85,7 +85,7 @@ from shopify_helper import (
     fetch_customers_by_name, name_key, normalize_zip,
     fetch_shop_timezone, local_date, shop_today,
     fetch_earliest_customer_date, shopify_bucket_rate,
-    ORDER_STATUS_FILTER, order_window_filter
+    ORDER_STATUS_FILTER, ANALYSIS_ORDER_FILTER, order_window_filter
 )
 from item_tracker_helper import (
     get_item_info_async, get_purchases_async, get_sales_async,
@@ -8805,7 +8805,7 @@ async def shopify_analytics_lost_products_stream(
                 else:
                     ok_c, _err_c, cnt = await count_orders(
                         shop_domain=w["shop_domain"], admin_api_key=w["admin_api_key"],
-                        query=f"created_at:>={pstart} created_at:<{pend} {ORDER_STATUS_FILTER}",
+                        query=f"created_at:>={pstart} created_at:<{pend} {ANALYSIS_ORDER_FILTER}",
                         api_version=w["api_version"],
                     )
                     if ok_c and cnt:

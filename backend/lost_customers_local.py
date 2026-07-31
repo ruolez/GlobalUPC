@@ -34,9 +34,22 @@ from shopify_helper import (
     normalize_zip,
 )
 
-# The SQL twin of ORDER_STATUS_FILTER. IS DISTINCT FROM, not <>: a NULL
-# financial status is not "refunded" and must stay in.
-_COMPLETED = "o.cancelled_at IS NULL AND o.financial_status IS DISTINCT FROM 'REFUNDED'"
+# The SQL twin of EXCLUDED_ANALYSIS_TAGS: exact tag match, case-insensitive —
+# "potential fraud" does not match "fraud", same as Shopify's tag: search.
+def _no_excluded_tags(col: str) -> str:
+    return (
+        f"NOT EXISTS (SELECT 1 FROM unnest(coalesce({col}, '{{}}')) bt "
+        f"WHERE lower(bt) IN ('banned', 'fraud'))"
+    )
+
+
+# The SQL twin of ANALYSIS_ORDER_FILTER. IS DISTINCT FROM, not <>: a NULL
+# financial status is not "refunded" and must stay in. Orders tagged banned or
+# fraudulent are not purchases either.
+_COMPLETED = (
+    "o.cancelled_at IS NULL AND o.financial_status IS DISTINCT FROM 'REFUNDED' "
+    f"AND {_no_excluded_tags('o.tags')}"
+)
 
 
 def _iso(dt: Optional[datetime]) -> Optional[str]:
@@ -87,6 +100,7 @@ LEFT JOIN LATERAL (
     LIMIT 1
 ) lo ON true
 WHERE c.store_id = :sid
+  AND {_no_excluded_tags('c.tags')}
   AND EXISTS (
       SELECT 1 FROM shopify_orders o
       WHERE o.store_id = c.store_id AND o.customer_shopify_id = c.shopify_id
