@@ -6133,6 +6133,9 @@ async def shopify_analytics_new_customers_by_month_stream(
                     end_date=end_date,
                     tag=s["tag"],
                     api_version=s["api_version"],
+                    # An order that was cancelled or fully refunded did not
+                    # acquire anyone, so it must not count as a new customer.
+                    exclude_cancelled=True,
                 )
 
                 if not ok:

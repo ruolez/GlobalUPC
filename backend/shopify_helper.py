@@ -1251,9 +1251,17 @@ async def fetch_orders_with_tag(
     end_date: str,
     tag: str,
     api_version: str = "2025-01",
+    exclude_cancelled: bool = False,
 ) -> tuple[bool, Optional[str], List[Dict[str, Any]]]:
     """
     Fetch orders matching a tag within a created_at date range.
+
+    `exclude_cancelled` drops cancelled and fully refunded orders, so a first
+    order that never completed does not count as an acquisition. Partial
+    refunds are kept — the customer did buy. Opt-in rather than default because
+    two reports share this call and they do not have to agree; measured over a
+    two-year window, this removes 40/210, 888/15622 and 2782/20817 tagged
+    orders on the three live stores.
 
     Returns a list of normalized order dicts with: id, name, processed_at,
     created_at, total_amount, currency, customer_id, customer_email,
@@ -1282,6 +1290,8 @@ async def fetch_orders_with_tag(
 
         safe_tag = (tag or "").replace('"', '\\"')
         query_filter = f'tag:"{safe_tag}" created_at:>={start_date} created_at:<={end_date}'
+        if exclude_cancelled:
+            query_filter += f" {ORDER_STATUS_FILTER}"
 
         url = f"https://{shop_domain}/admin/api/{api_version}/graphql.json"
         headers = {
