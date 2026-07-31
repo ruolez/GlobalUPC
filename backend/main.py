@@ -6832,18 +6832,31 @@ async def shopify_analytics_lost_customers_stream(
                         "as a single pass instead of in parallel — slower than usual.")
                 failed_shards = 0
                 incomplete_reasons: List[str] = []
+                # Two different kinds of "incomplete", and conflating them threw
+                # away a whole store's comparison over four customers' order
+                # counts. `incomplete_reasons` is everything worth telling the
+                # user. `bias_reasons` is the subset that makes the customers we
+                # DID get an unrepresentative sample — a missing date range, an
+                # unhonoured acquisition filter, an undetected mover. Only those
+                # may disqualify the store from the lost-vs-active comparison;
+                # a figure being imprecise for named customers is fixed by
+                # dropping those customers, not the store.
+                bias_reasons: List[str] = []
 
                 for res in shard_results:
                     if isinstance(res, BaseException):
                         failed_shards += 1
                         incomplete_reasons.append(str(res)[:200])
+                        bias_reasons.append(str(res)[:200])
                         continue
                     if not res.get("ok"):
                         failed_shards += 1
                         if res.get("error"):
                             incomplete_reasons.append(res["error"][:200])
+                            bias_reasons.append(res["error"][:200])
                     if res.get("incomplete_reason"):
                         incomplete_reasons.append(res["incomplete_reason"])
+                        bias_reasons.append(res["incomplete_reason"])
                     warnings.extend(res.get("warnings") or [])
                     # A customer with orders in several shards appears in each;
                     # the record is identical, so first write wins.
@@ -6863,6 +6876,7 @@ async def shopify_analytics_lost_customers_stream(
                     incomplete_reasons.append(
                         "Could not read this shop's timezone, so dates near the "
                         "window edges are judged in UTC and may be off by a day.")
+                    bias_reasons.append("timezone unavailable")
 
                 lost, active = [], []
                 never_purchased = 0
@@ -6908,6 +6922,7 @@ async def shopify_analytics_lost_customers_stream(
                 first_map: Dict[str, Any] = {}
                 count_map: Dict[str, Any] = {}
                 undercounted = 0
+                undercounted_ids: set = set()
                 first_err = None
                 unknown_first = 0
                 if candidates:
@@ -6931,6 +6946,7 @@ async def shopify_analytics_lost_customers_stream(
                         unknown_first = fo.get("missing", 0)
                         count_map = fo.get("order_counts") or {}
                         undercounted = fo.get("undercounted", 0)
+                        undercounted_ids = set(fo.get("undercounted_ids") or ())
                     else:
                         first_err = fo.get("error")
 
@@ -6941,6 +6957,9 @@ async def shopify_analytics_lost_customers_stream(
                     c["orders_count_all"] = lifetime if lifetime is not None else c["orders_count"]
                     if completed is not None:
                         c["orders_count"] = completed
+                    # Stamped per customer so the badge marks the four people it
+                    # actually applies to, rather than every row of their store.
+                    c["orders_count_exact"] = c.get("customer_id") not in undercounted_ids
                 if undercounted:
                     # The completed count is lifetime minus the cancelled and
                     # refunded orders we could see, and that page caps out — so
@@ -6950,6 +6969,9 @@ async def shopify_analytics_lost_customers_stream(
                         f"{undercounted} customer(s) have more cancelled or refunded orders "
                         f"than one page holds, so their order count is an upper bound and "
                         f"may be overstated")
+                    # Deliberately NOT a bias reason. It touches orders_count,
+                    # and nothing the comparison reads — that is fulfilment and
+                    # delivery timing — depends on it.
 
                 def acquired_in_window(c):
                     first = first_map.get(c.get("customer_id"))
@@ -6967,6 +6989,7 @@ async def shopify_analytics_lost_customers_stream(
                     # silently falling back to the old, wider meaning.
                     incomplete_reasons.append(
                         f"Could not determine when customers started ordering: {first_err}")
+                    bias_reasons.append("acquisition window not applied")
                     for c in lost_pre + active_pre:
                         c["first_order_created_at"] = None
                         c["first_order_local"] = None
@@ -7173,6 +7196,7 @@ async def shopify_analytics_lost_customers_stream(
                         incomplete_reasons.append(
                             "Could not check every store for duplicate accounts: "
                             + "; ".join(cross_errors[:2]))
+                        bias_reasons.append("cross-store check incomplete")
 
                 # --- where the arrivals came from ---------------------------
                 # Deliberately placed after the moved check, so it runs on
@@ -7370,6 +7394,7 @@ async def shopify_analytics_lost_customers_stream(
                         incomplete_reasons.append(
                             "Could not fully trace where new customers came from: "
                             + "; ".join(arr_errors[:2]))
+                        # Not a bias reason: this feeds only the arrivals modal.
                     arrival = {
                         "total": len(cohort),
                         "verdicts": verdicts,
@@ -7403,6 +7428,8 @@ async def shopify_analytics_lost_customers_stream(
                     # A failed shard removes a contiguous date range, so what
                     # survives is a biased sample — flag it rather than pretend.
                     "complete": failed_shards == 0 and not incomplete_reasons,
+                    # What the comparison gates on — see bias_reasons above.
+                    "cohort_complete": failed_shards == 0 and not bias_reasons,
                     "incomplete_reason": incomplete_reasons[0] if incomplete_reasons else None,
                     "error": None,
                     "warnings": warnings[:3],
@@ -7468,7 +7495,7 @@ async def shopify_analytics_lost_customers_stream(
                 results.append(payload)
                 st = payload.get("store") or {}
                 lost = payload.get("lost") or []
-                yield f"event: store\ndata: {json.dumps({'store_id': st.get('id'), 'store_name': st.get('name'), 'ok': payload.get('ok'), 'complete': payload.get('complete'), 'incomplete_reason': payload.get('incomplete_reason'), 'error': payload.get('error'), 'warnings': payload.get('warnings') or [], 'excluded_pre_existing': payload.get('excluded_pre_existing', 0), 'unknown_first_order': payload.get('unknown_first_order', 0), 'never_purchased': payload.get('never_purchased', 0), 'ordered_before_window': payload.get('ordered_before_window', 0), 'moved_total': payload.get('moved_total', 0), 'moved_breakdown': payload.get('moved_breakdown', {}), 'moved_rows': payload.get('moved_rows', []), 'matched_by_name': payload.get('matched_by_name', 0), 'no_email': payload.get('no_email', 0), 'arrival': payload.get('arrival') or {}, 'lost_count': len(lost), 'active_count': len(payload.get('active') or []), 'lost_timing': _timing_summary(lost), 'active_timing': _timing_summary(payload.get('active') or []), 'rows': lost, 'completed': completed, 'total_stores': len(store_list)})}\n\n"
+                yield f"event: store\ndata: {json.dumps({'store_id': st.get('id'), 'store_name': st.get('name'), 'ok': payload.get('ok'), 'complete': payload.get('complete'), 'cohort_complete': payload.get('cohort_complete'), 'incomplete_reason': payload.get('incomplete_reason'), 'error': payload.get('error'), 'warnings': payload.get('warnings') or [], 'excluded_pre_existing': payload.get('excluded_pre_existing', 0), 'unknown_first_order': payload.get('unknown_first_order', 0), 'never_purchased': payload.get('never_purchased', 0), 'ordered_before_window': payload.get('ordered_before_window', 0), 'moved_total': payload.get('moved_total', 0), 'moved_breakdown': payload.get('moved_breakdown', {}), 'moved_rows': payload.get('moved_rows', []), 'matched_by_name': payload.get('matched_by_name', 0), 'no_email': payload.get('no_email', 0), 'arrival': payload.get('arrival') or {}, 'lost_count': len(lost), 'active_count': len(payload.get('active') or []), 'lost_timing': _timing_summary(lost), 'active_timing': _timing_summary(payload.get('active') or []), 'rows': lost, 'completed': completed, 'total_stores': len(store_list)})}\n\n"
 
                 now = asyncio.get_event_loop().time()
                 if now - last_heartbeat > 15:
@@ -7492,7 +7519,11 @@ async def shopify_analytics_lost_customers_stream(
         # a biased sample to both sides — that is a different kind of wrong from
         # an undercount, and it is the number the user acts on.
         shown = [r for r in results if r.get("ok")]
-        complete = [r for r in shown if r.get("complete")]
+        # The comparison gates on cohort_complete, not on complete: a store
+        # whose only fault is an imprecise order count for four named customers
+        # still yields a representative sample of fulfilment timing, which is
+        # all this compares. Gating on `complete` discarded the entire store.
+        complete = [r for r in shown if r.get("cohort_complete")]
         all_lost = [c for r in shown for c in (r.get("lost") or [])]
         bench_lost = [c for r in complete for c in (r.get("lost") or [])]
         bench_active = [c for r in complete for c in (r.get("active") or [])]
@@ -7550,6 +7581,7 @@ async def shopify_analytics_lost_customers_stream(
                 "store_name": (r.get("store") or {}).get("name"),
                 "ok": r.get("ok"),
                 "complete": r.get("complete"),
+                "cohort_complete": r.get("cohort_complete"),
                 "incomplete_reason": r.get("incomplete_reason"),
                 "error": r.get("error"),
                 "warnings": r.get("warnings") or [],
@@ -7582,7 +7614,11 @@ async def shopify_analytics_lost_customers_stream(
                 "unknown_first_order": sum(r.get("unknown_first_order", 0) for r in shown),
                 "lost_customers": len(all_lost),
                 "revenue_lost": round(sum(c["amount_spent"] for c in all_lost), 2),
-                "median_orders": _median([float(c["orders_count"]) for c in all_lost]),
+                # The handful of customers whose count is an upper bound are
+                # dropped rather than allowed to drag the median up.
+                "median_orders": _median([
+                    float(c["orders_count"]) for c in all_lost
+                    if c.get("orders_count_exact", True)]),
                 "currency": (all_lost[0]["currency"] if all_lost else "USD"),
             },
             # Same scope as the rows and the chart's "new" series, so the modal

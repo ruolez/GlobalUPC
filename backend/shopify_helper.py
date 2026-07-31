@@ -3076,12 +3076,14 @@ async def fetch_customer_first_orders(
 
     `missing` counts customers Shopify returned no order for; the caller must
     decide what to do with them rather than silently assuming a date.
-    `undercounted` counts customers with more exclusions than one page holds, so
-    their completed count is a lower bound rather than exact.
+    `undercounted` counts customers with more exclusions than one page holds.
+    Too FEW exclusions get subtracted for them, so their completed count is an
+    upper bound rather than exact. `undercounted_ids` names them, so the caller
+    can drop those customers from a figure instead of distrusting the store.
     """
     out: Dict[str, Any] = {
         "ok": False, "error": None, "first_orders": {}, "order_counts": {},
-        "undercounted": 0, "missing": 0, "warnings": [],
+        "undercounted": 0, "undercounted_ids": [], "missing": 0, "warnings": [],
     }
 
     try:
@@ -3123,6 +3125,7 @@ async def fetch_customer_first_orders(
                         n_excluded = len(excluded.get("nodes") or [])
                         if (excluded.get("pageInfo") or {}).get("hasNextPage"):
                             out["undercounted"] += 1
+                            out["undercounted_ids"].append(node["id"])
                         lifetime = int(node.get("numberOfOrders") or 0)
                         # Clamped: the two figures come from different Shopify
                         # subsystems and a negative count would be nonsense.

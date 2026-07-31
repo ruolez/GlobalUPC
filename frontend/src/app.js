@@ -14642,15 +14642,23 @@ function renderSacrTable() {
   const start = sacrState.currentPage * pageSize;
   const page = rows.slice(start, start + pageSize);
 
+  // Stores whose scan actually lost a date range. A store flagged only because
+  // a few named customers have an imprecise order count is NOT one of these —
+  // badging its every row put "partial" on hundreds of customers to describe
+  // four of them.
   const partialIds = new Set(
-    sacrState.stores.filter((s) => s.ok && s.complete === false).map((s) => s.store_id),
+    sacrState.stores
+      .filter((s) => s.ok && s.cohort_complete === false)
+      .map((s) => s.store_id),
   );
 
   tbody.innerHTML = page
     .map((r, i) => {
       const badge = partialIds.has(r.store_id)
         ? ' <span class="sacr-badge" title="This store returned partial data">partial</span>'
-        : "";
+        : r.orders_count_exact === false
+          ? ' <span class="sacr-badge" title="This customer has more cancelled or refunded orders than one page holds, so their order count is an upper bound">approx. orders</span>'
+          : "";
       return (
         `<tr data-customer-id="${saEscape(r.customer_id)}" data-store-id="${r.store_id}" data-customer-name="${saEscape(r.name)}" class="sacr-row">` +
         // Numbered across the whole filtered set, not per page: page 2 opening
