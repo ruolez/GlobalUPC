@@ -6939,6 +6939,81 @@ async def shopify_analytics_lost_customers_stream(
         # Resolved once here (and cached in the helper) rather than per store.
         # Concurrent: these are independent one-shot queries against different
         # shops, and serialising them added a second to every cold run.
+        # Optional pre-run catch-up: every synced store pulls its Shopify
+        # delta first, so the classification below runs on current data. Runs
+        # BEFORE coverage is loaded — the refreshed mirror is what routes.
+        # A store that fails or is mid-sync is noted and the report continues
+        # on its last-synced data; freshness must not cost availability.
+        if request.refresh_local_data:
+            refresh_candidates = await asyncio.to_thread(shopify_sync.get_synced_stores)
+            by_id_all = {s["id"]: s for s in (store_list + all_shopify)}
+            refresh_ids = [sid for sid in by_id_all if sid in refresh_candidates]
+            anchors: Dict[int, Any] = {}
+            if refresh_ids:
+                for r in db.execute(sa_text(
+                    "SELECT store_id, last_sync_started_at FROM shopify_sync_state "
+                    "WHERE store_id = ANY(:ids)"), {"ids": refresh_ids},
+                ).mappings():
+                    anchors[r["store_id"]] = r["last_sync_started_at"]
+            refresh_targets = [by_id_all[sid] for sid in refresh_ids
+                               if anchors.get(sid) is not None]
+
+            async def refresh_one(sh: Dict[str, Any]) -> str:
+                token = await asyncio.to_thread(
+                    shopify_sync.claim_sync, sh["id"], "incremental")
+                if token is None:
+                    return f"{sh['name']}: skipped — a sync is already running"
+
+                async def _quiet_emit(kind, payload):
+                    return None
+
+                try:
+                    summary = await shopify_sync.run_store_sync(
+                        dict(sh), "incremental", anchors[sh["id"]], _quiet_emit,
+                        claim_token=token)
+                    await asyncio.to_thread(
+                        shopify_sync.release_sync, sh["id"],
+                        counts=summary["totals"],
+                        run_started=summary["run_started"], claim_token=token)
+                    d = summary["synced"]
+                    return (f"{sh['name']}: {d['orders']:,} order(s), "
+                            f"{d['customers']:,} customer(s) updated")
+                except asyncio.CancelledError:
+                    asyncio.create_task(asyncio.to_thread(
+                        shopify_sync.release_sync, sh["id"],
+                        error="cancelled", claim_token=token))
+                    raise
+                except Exception as e:
+                    await asyncio.to_thread(
+                        shopify_sync.release_sync, sh["id"],
+                        error=str(e)[:500], claim_token=token)
+                    return (f"{sh['name']}: refresh failed "
+                            f"({str(e)[:120]}) — using last synced data")
+
+            if refresh_targets:
+                yield f"event: progress\ndata: {json.dumps({'phase': 'refresh', 'detail': f'Syncing latest Shopify data for {len(refresh_targets)} store(s)…', 'done': 0, 'total': len(refresh_targets)})}\n\n"
+                refresh_pending = {asyncio.create_task(refresh_one(sh))
+                                   for sh in refresh_targets}
+                refresh_done = 0
+                try:
+                    while refresh_pending:
+                        done_set, refresh_pending = await asyncio.wait(
+                            refresh_pending, timeout=10)
+                        if not done_set:
+                            yield ": heartbeat\n\n"
+                            continue
+                        for t in done_set:
+                            refresh_done += 1
+                            try:
+                                note = t.result()
+                            except Exception as e:
+                                note = f"refresh failed: {str(e)[:120]}"
+                            yield f"event: progress\ndata: {json.dumps({'phase': 'refresh', 'detail': note, 'done': refresh_done, 'total': len(refresh_targets)})}\n\n"
+                except (GeneratorExit, asyncio.CancelledError):
+                    for t in refresh_pending:
+                        t.cancel()
+                    raise
+
         # Which stores have a completed local sync. Those are served from
         # PostgreSQL (scan, first orders, cross-store probes); the rest use the
         # live API exactly as before, so partial coverage degrades per store

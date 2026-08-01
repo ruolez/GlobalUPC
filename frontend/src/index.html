@@ -4356,6 +4356,10 @@
                     <input type="checkbox" id="sacr-check-arrivals" />
                     <span>Trace where new customers came from</span>
                   </label>
+                  <label class="sacr-check">
+                    <input type="checkbox" id="sacr-refresh-sync" checked />
+                    <span>Sync latest Shopify data first</span>
+                  </label>
                   <span class="sacr-warn" id="sacr-arrivals-warn" hidden>All-history run: this traces every customer the store has ever had, and may take many minutes.</span>
                   <details class="sacr-help">
                     <summary>How this works</summary>
@@ -4366,6 +4370,7 @@
                       <p><strong>Another account.</strong> Two passes against <strong>every</strong> active Shopify store, including the customer&rsquo;s own: first by email, then by first name + last name + ZIP. The second catches a re-registration, which Shopify forces onto a different email. Anyone who bought elsewhere within the silence period of going quiet here did not leave the business, and is excluded from every figure.</p>
                       <p><strong>Min. orders.</strong> 1 includes one-time buyers. Raise it to focus on repeat customers who stopped. Cancelled and refunded orders do not count towards it.</p>
                       <p><strong>Where new customers came from.</strong> Optional, and slower, because it runs the same two passes over everyone acquired in the window rather than just the leavers. It answers whether a &ldquo;new&rdquo; customer was already yours somewhere else &mdash; measured on one store, only half of them were genuinely new to the business. On an all-history run this covers the whole customer base, so it is slow enough to warn about.</p>
+                      <p><strong>Sync latest Shopify data first.</strong> Before the report runs, every store with a local sync pulls whatever changed in Shopify since its last sync &mdash; usually a few seconds per store. Turn it off to run instantly on the data as of each store&rsquo;s last sync. Stores that have never been synced are unaffected either way; they always use the live Shopify API.</p>
                       <p><strong>Reading the chart.</strong> Click any month to narrow the table, the totals and every analysis below to the customers who left in it.</p>
                     </div>
                   </details>

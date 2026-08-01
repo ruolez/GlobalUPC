@@ -713,6 +713,10 @@ class LostCustomersRequest(BaseModel):
     # a second cross-store sweep, over a cohort that is far larger than the lost
     # list, so it is worth paying for only when the answer is being read.
     check_arrivals: bool = False
+    # Pull each synced store's Shopify delta before running, so the local
+    # mirror is current. Costs a few seconds per synced store; stores without
+    # a sync are untouched (they use the live API regardless).
+    refresh_local_data: bool = False
 
     # Every window decision in this report is a string comparison, so a non-ISO
     # date does not fail — it quietly compares wrong ("2024-8-1" sorts after

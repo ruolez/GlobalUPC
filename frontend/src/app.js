@@ -14184,6 +14184,8 @@ async function runLostCustomersReport() {
             document.getElementById("sacr-cross-store")?.checked !== false,
           check_arrivals:
             document.getElementById("sacr-check-arrivals")?.checked === true,
+          refresh_local_data:
+            document.getElementById("sacr-refresh-sync")?.checked === true,
         }),
         signal: sacrState.abortController.signal,
       },
@@ -14267,6 +14269,12 @@ async function runLostCustomersReport() {
           }
           sacrState.progress.doneUnits += 1;
           renderSacrProgress();
+        } else if (eventType === "progress" && data.phase === "refresh") {
+          // Pre-run catch-up sync of the local mirrors, before any scanning.
+          if (status) {
+            const of = data.total ? ` (${data.done} of ${data.total})` : "";
+            status.textContent = `${data.detail}${of}`;
+          }
         } else if (eventType === "progress" && data.phase === "phase") {
           if (status) status.textContent = `${data.store_name} — ${data.label}…`;
         } else if (eventType === "progress" && data.phase === "first_orders") {
