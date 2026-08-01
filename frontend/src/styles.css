@@ -6773,6 +6773,9 @@ tr:hover > td .sacr-copy { opacity: 0.8; }
   border-radius: var(--radius-md);
   background: var(--bg-secondary);
   padding: 0.875rem 1.125rem;
+  /* Backend error strings can carry long unbroken tokens (URLs, gids). */
+  overflow-wrap: anywhere;
+  min-width: 0;
 }
 
 .sync-store-inactive {

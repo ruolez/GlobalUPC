@@ -265,7 +265,10 @@ CREATE TABLE shopify_customers (
 
 CREATE INDEX idx_shopcust_store_created ON shopify_customers(store_id, created_at);
 CREATE INDEX idx_shopcust_email ON shopify_customers(email_normalized);
-CREATE INDEX idx_shopcust_namezip ON shopify_customers(lower(last_name), lower(first_name), default_address_zip);
+CREATE INDEX idx_shopcust_namekey ON shopify_customers (
+    ((btrim(regexp_replace(lower(coalesce(first_name, '')), '\s+', ' ', 'g')) || '|' ||
+      btrim(regexp_replace(lower(coalesce(last_name, '')), '\s+', ' ', 'g'))))
+);
 CREATE INDEX idx_shopcust_synced ON shopify_customers(store_id, synced_at);
 
 CREATE TABLE shopify_orders (
@@ -314,6 +317,7 @@ CREATE INDEX idx_shoporder_completed
     WHERE cancelled_at IS NULL AND financial_status IS DISTINCT FROM 'REFUNDED';
 CREATE INDEX idx_shoporder_store_created ON shopify_orders(store_id, created_at);
 CREATE INDEX idx_shoporder_synced ON shopify_orders(store_id, synced_at);
+CREATE INDEX idx_shoporder_customer ON shopify_orders(store_id, customer_shopify_id);
 
 CREATE TABLE shopify_order_line_items (
     id BIGSERIAL PRIMARY KEY,

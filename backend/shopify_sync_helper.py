@@ -172,7 +172,28 @@ query OrdersDelta($q: String, $after: String) {{
   orders(first: 100, query: $q, after: $after, sortKey: UPDATED_AT) {{
     pageInfo {{ hasNextPage endCursor }}
     nodes {{ {_ORDER_NODE_FIELDS}
-      lineItems(first: 100) {{ nodes {{ {_LINE_ITEM_NODE_FIELDS} }} }}
+      lineItems(first: 100) {{
+        pageInfo {{ hasNextPage endCursor }}
+        nodes {{ {_LINE_ITEM_NODE_FIELDS} }}
+      }}
+    }}
+  }}
+}}
+"""
+
+# Follow-up for the rare order whose line items overflow the inline page.
+# Without it the delta path would silently truncate at 100 and the
+# delete-then-insert upsert would DESTROY the overflow rows the full sync had
+# stored — the bulk path has no cap, so truncating here is data loss, not just
+# a stale read.
+_ORDER_LINE_ITEMS_PAGE_QUERY = f"""
+query OrderLineItemsPage($id: ID!, $after: String) {{
+  node(id: $id) {{
+    ... on Order {{
+      lineItems(first: 250, after: $after) {{
+        pageInfo {{ hasNextPage endCursor }}
+        nodes {{ {_LINE_ITEM_NODE_FIELDS} }}
+      }}
     }}
   }}
 }}
@@ -406,7 +427,7 @@ def _upsert_customers_batch(store_id: int, rows: List[Dict[str, Any]], synced_at
         conn.commit()
     finally:
         conn.close()
-    return len(rows)
+    return len(values)
 
 
 def _upsert_orders_batch(
@@ -530,7 +551,15 @@ def release_sync(
     error: Optional[str] = None,
     counts: Optional[Dict[str, int]] = None,
     run_started: Optional[datetime] = None,
+    claim_token: Optional[datetime] = None,
 ) -> None:
+    """
+    claim_token is the run_started_at the caller's claim_sync returned. When
+    given, the release only lands if that claim is still the live one — after
+    a staleness takeover the superseded run's release must not flip the new
+    claim to idle (which would let a THIRD sync claim mid-run).
+    """
+    fence = "AND (CAST(:ct AS timestamptz) IS NULL OR run_started_at = :ct)"
     db = SessionLocal()
     try:
         if error is None and counts is not None:
@@ -540,11 +569,12 @@ def release_sync(
                     "    last_completed_at = now(), last_sync_started_at = :started, "
                     "    customers_count = :c, orders_count = :o, line_items_count = :li, "
                     "    error = NULL "
-                    "WHERE store_id = :sid"
+                    f"WHERE store_id = :sid {fence}"
                 ),
                 {
                     "sid": store_id,
                     "started": run_started,
+                    "ct": claim_token,
                     "c": counts.get("customers", 0),
                     "o": counts.get("orders", 0),
                     "li": counts.get("line_items", 0),
@@ -556,16 +586,21 @@ def release_sync(
                     "UPDATE shopify_sync_state SET "
                     "    status = CASE WHEN :err = 'cancelled' THEN 'idle' ELSE 'error' END, "
                     "    phase = NULL, error = :err "
-                    "WHERE store_id = :sid"
+                    f"WHERE store_id = :sid {fence}"
                 ),
-                {"sid": store_id, "err": error or "unknown error"},
+                {"sid": store_id, "err": error or "unknown error", "ct": claim_token},
             )
         db.commit()
     finally:
         db.close()
 
 
-def _touch_state(store_id: int, phase: Optional[str] = None, tz: Optional[str] = None) -> None:
+def _touch_state(
+    store_id: int,
+    phase: Optional[str] = None,
+    tz: Optional[str] = None,
+    claim_token: Optional[datetime] = None,
+) -> None:
     db = SessionLocal()
     try:
         db.execute(
@@ -573,9 +608,10 @@ def _touch_state(store_id: int, phase: Optional[str] = None, tz: Optional[str] =
                 "UPDATE shopify_sync_state SET heartbeat_at = now(), "
                 "    phase = COALESCE(:phase, phase), "
                 "    shop_timezone = COALESCE(:tz, shop_timezone) "
-                "WHERE store_id = :sid"
+                "WHERE store_id = :sid "
+                "  AND (CAST(:ct AS timestamptz) IS NULL OR run_started_at = :ct)"
             ),
-            {"sid": store_id, "phase": phase, "tz": tz},
+            {"sid": store_id, "phase": phase, "tz": tz, "ct": claim_token},
         )
         db.commit()
     finally:
@@ -625,8 +661,12 @@ def get_sync_states() -> List[Dict[str, Any]]:
 
 def get_synced_stores() -> Dict[int, Dict[str, Any]]:
     """
-    Stores whose local data is usable for reports:
-    a successful sync exists and no run is currently rewriting it.
+    Stores whose local data is usable for reports: a successful sync exists
+    and no live FULL resync is rewriting the mirror right now. A full resync
+    ends with a prune that deletes rows between a report's queries, so reading
+    through one can hand a single run an inconsistent old/new mix — those
+    stores fall back to the live API until it finishes. Incremental runs are
+    only idempotent upserts and stay readable.
     """
     db = SessionLocal()
     try:
@@ -634,7 +674,9 @@ def get_synced_stores() -> Dict[int, Dict[str, Any]]:
             text(
                 "SELECT store_id, last_completed_at, shop_timezone "
                 "FROM shopify_sync_state "
-                "WHERE last_completed_at IS NOT NULL"
+                "WHERE last_completed_at IS NOT NULL "
+                "  AND NOT (status = 'running' AND mode = 'full' "
+                "           AND heartbeat_at > now() - interval '3 minutes')"
             )
         ).mappings().all()
         return {r["store_id"]: dict(r) for r in rows}
@@ -798,6 +840,11 @@ async def _sync_orders_bulk(session, store, emit, run_started, search=None) -> T
     loop = asyncio.get_running_loop()
     pending_orders: List[Dict[str, Any]] = []
     pending_items: List[Dict[str, Any]] = []
+    # Bulk exports have been observed to emit the same record twice. A repeat
+    # of an order line arriving WITHOUT its children in a later batch would
+    # pass through the delete-then-insert upsert and wipe the line items the
+    # first occurrence stored — so repeats are dropped here, not deduped later.
+    seen_order_ids: set = set()
 
     async def flush():
         nonlocal orders_total, items_total, pending_orders, pending_items
@@ -824,7 +871,8 @@ async def _sync_orders_bulk(session, store, emit, run_started, search=None) -> T
             if len(pending_orders) >= _FLUSH_ORDERS:
                 await flush()
             row = _shape_order(obj)
-            if row is not None:
+            if row is not None and row["shopify_id"] not in seen_order_ids:
+                seen_order_ids.add(row["shopify_id"])
                 pending_orders.append(row)
         else:
             parent_id = _gid_num(parent_gid)
@@ -871,6 +919,27 @@ async def _sync_customers_delta(session, store, emit, run_started, anchor) -> in
     return await _sync_customers_bulk(session, store, emit, run_started, search=q)
 
 
+async def _fetch_remaining_line_items(
+    session, store, order_gid: str, order_id: int, after: Optional[str]
+) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    cursor = after
+    while cursor:
+        data, _ = await _shopify_graphql(
+            session, store["shop_domain"], store["admin_api_key"], store["api_version"],
+            _ORDER_LINE_ITEMS_PAGE_QUERY, {"id": order_gid, "after": cursor},
+            op_name="order line items page",
+        )
+        conn = ((data.get("node") or {}).get("lineItems")) or {}
+        for li in conn.get("nodes") or []:
+            item = _shape_line_item(li, order_id)
+            if item is not None:
+                items.append(item)
+        info = conn.get("pageInfo") or {}
+        cursor = info.get("endCursor") if info.get("hasNextPage") else None
+    return items
+
+
 async def _sync_orders_delta(session, store, emit, run_started, anchor) -> Tuple[int, int]:
     q = _delta_filter(anchor)
     orders_total = 0
@@ -890,10 +959,17 @@ async def _sync_orders_delta(session, store, emit, run_started, anchor) -> Tuple
             if row is None:
                 continue
             orders.append(row)
-            for li in ((node.get("lineItems") or {}).get("nodes") or []):
+            li_conn = node.get("lineItems") or {}
+            for li in li_conn.get("nodes") or []:
                 item = _shape_line_item(li, row["shopify_id"])
                 if item is not None:
                     items.append(item)
+            li_info = li_conn.get("pageInfo") or {}
+            if li_info.get("hasNextPage"):
+                items.extend(await _fetch_remaining_line_items(
+                    session, store, row["shopify_gid"], row["shopify_id"],
+                    li_info.get("endCursor"),
+                ))
         if orders:
             o, li = await loop.run_in_executor(
                 _sync_executor, _upsert_orders_batch, store["id"], orders, items, run_started
@@ -918,6 +994,7 @@ async def run_store_sync(
     anchor: Optional[datetime],
     emit,
     tracker: Optional[_BulkTracker] = None,
+    claim_token: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     """
     Execute one claimed sync run. The caller has already claimed the state row
@@ -928,6 +1005,8 @@ async def run_store_sync(
           run's start time)
     emit: async callback(event_type, payload) feeding the SSE stream.
     tracker: pass one in to reach the in-flight bulk op id on cancellation.
+    claim_token: the run_started_at claim_sync returned; fences every state
+          write so a superseded run cannot touch a newer claim.
     """
     store = dict(store)
     store["shop_domain"] = validate_shop_domain(store["shop_domain"])
@@ -939,11 +1018,22 @@ async def run_store_sync(
     heartbeat_task: Optional[asyncio.Task] = None
 
     async def heartbeat_loop():
+        # Runs on the default executor, NOT _sync_executor: with two stores
+        # syncing in one worker, two long upserts can occupy both sync threads
+        # for minutes and a queued heartbeat would go stale enough to trigger
+        # a takeover of a perfectly live run. And one transient DB error must
+        # not kill the loop — a dead heartbeat IS a takeover, three minutes
+        # later, no matter how healthy the sync is.
         while True:
             await asyncio.sleep(_HEARTBEAT_SECONDS)
-            await asyncio.get_running_loop().run_in_executor(
-                _sync_executor, _touch_state, store["id"], None, None
-            )
+            try:
+                await asyncio.to_thread(
+                    _touch_state, store["id"], None, None, claim_token
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                print(f"[SHOPIFY-SYNC] heartbeat write failed for store {store['id']}: {e}")
 
     try:
         heartbeat_task = asyncio.create_task(heartbeat_loop())
@@ -951,8 +1041,9 @@ async def run_store_sync(
             tz = await fetch_shop_timezone(
                 store["shop_domain"], store["admin_api_key"], store["api_version"]
             )
-            await asyncio.get_running_loop().run_in_executor(
-                _sync_executor, _touch_state, store["id"], "customers_bulk", tz
+            first_phase = "customers_bulk" if mode == "full" else "customers_delta"
+            await asyncio.to_thread(
+                _touch_state, store["id"], first_phase, tz, claim_token
             )
 
             if mode == "incremental" and anchor is not None:

@@ -17520,7 +17520,12 @@ const syncState = {
 };
 
 async function fetchSyncStatus() {
-  const data = await apiRequest("/shopify-sync/status");
+  // Raw fetch, not apiRequest: apiRequest alert()s on failure, and this is
+  // polled on every Lost Customers visit / store change where callers degrade
+  // silently by design — a backend blip must not produce a modal.
+  const response = await fetch(`${API_BASE}/shopify-sync/status`);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const data = await response.json();
   syncState.stores = data.stores || [];
   syncState.loaded = true;
   return syncState.stores;
@@ -17624,7 +17629,7 @@ function renderSyncStores() {
         ].join(" · ");
         statusHtml = `
           <div class="sync-status-line">
-            <span class="sync-badge sync-badge-ok">Synced ${escapeHtml(syncTimeAgo(s.last_completed_at))}</span>
+            <span class="sync-badge sync-badge-ok">Synced ${escapeHtml(syncTimeAgo(s.last_completed_at) || "recently")}</span>
             <span style="color: var(--text-secondary);">${counts}</span>
           </div>`;
       } else {
@@ -17638,7 +17643,9 @@ function renderSyncStores() {
         !mine && s.status === "error" && s.error && s.error !== "cancelled"
           ? `<div class="sync-error-line">Last sync failed: ${escapeHtml(s.error)}</div>`
           : "";
-      const busy = Boolean(mine || runningElsewhere);
+      // Inactive stores are excluded from every report (including cross-store
+      // checks), so syncing one is wasted API work — activate it first.
+      const busy = Boolean(mine || runningElsewhere) || !s.is_active;
       const buttons = mine
         ? `<button type="button" class="btn btn-secondary sync-btn" data-sync-action="cancel" data-store-id="${s.store_id}">Cancel</button>`
         : `
@@ -17677,7 +17684,14 @@ async function startSync(storeId, mode) {
       let msg = `HTTP ${response.status}`;
       try {
         const j = await response.json();
-        msg = j.detail || j.error?.message || msg;
+        if (typeof j.detail === "string") {
+          msg = j.detail;
+        } else if (Array.isArray(j.detail)) {
+          // FastAPI 422 validation shape: [{loc, msg, type}, ...]
+          msg = j.detail.map((d) => d.msg || "").filter(Boolean).join("; ") || msg;
+        } else {
+          msg = j.error?.message || msg;
+        }
       } catch (e) {
         /* not json */
       }
@@ -17711,8 +17725,23 @@ async function startSync(storeId, mode) {
       showToast(`✗ Sync failed: ${err.message}`, "error");
     }
   } finally {
+    const wasAborted = abort.signal.aborted;
     delete syncState.running[storeId];
-    loadDataSyncPanel();
+    renderSyncStores();
+    if (wasAborted) {
+      // The backend releases the claim asynchronously after the disconnect
+      // lands; an immediate refetch can still see "running" and briefly show
+      // the just-cancelled card as a sync from another session.
+      setTimeout(() => {
+        loadDataSyncPanel();
+        sacrUpdateDataSourceNote();
+      }, 800);
+    } else {
+      loadDataSyncPanel();
+      // A sync finishing changes what the Lost Customers panel should say the
+      // next run will use — refresh the note even if the user is sitting there.
+      sacrUpdateDataSourceNote();
+    }
   }
 }
 

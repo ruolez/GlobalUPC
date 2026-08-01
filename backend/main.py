@@ -7223,6 +7223,7 @@ async def shopify_analytics_lost_customers_stream(
                         "store": s, "ok": False, "complete": False,
                         "error": incomplete_reasons[0] if incomplete_reasons else "Fetch failed",
                         "lost": [], "active": [],
+                        "data_source": data_source,
                     }
 
                 tz = tz_by_shop.get(s["id"])
@@ -8112,7 +8113,8 @@ async def shopify_analytics_lost_customers_stream(
                 # result. Harmless before rows streamed; not any more.
                 res = {"store": store, "ok": False, "complete": False,
                        "cohort_complete": False,
-                       "error": f"Unexpected error: {e}", "lost": [], "active": []}
+                       "error": f"Unexpected error: {e}", "lost": [], "active": [],
+                       "data_source": "local" if store["id"] in local_ids else "live"}
             await events.put(("done", res))
 
         collectors = [asyncio.create_task(collect(t, s))
@@ -8430,10 +8432,16 @@ async def shopify_analytics_customer_detail(
     result = None
     synced_map = await asyncio.to_thread(shopify_sync.get_synced_stores)
     if store.id in synced_map:
-        result = await lost_customers_local.recent_orders(
-            store.id, request.customer_id, request.limit or 5)
-        # A local read failing is a code/data problem; the live API still works.
-        if not result.get("ok"):
+        # A local read failing is a code/data problem; the live API still
+        # works — which is only true if an EXCEPTION also falls through, not
+        # just an ok:False result.
+        try:
+            result = await lost_customers_local.recent_orders(
+                store.id, request.customer_id, request.limit or 5)
+        except Exception as e:
+            print(f"[SHOPIFY-ANALYTICS] local customer-detail failed, using live: {e}")
+            result = None
+        if result is not None and not result.get("ok"):
             result = None
     if result is None:
         result = await fetch_customer_recent_orders(
@@ -9104,7 +9112,7 @@ async def shopify_sync_stream(
     # No successful run yet -> the store has never fully synced -> force full.
     state_row = db.execute(
         sa_text(
-            "SELECT last_completed_at, last_sync_started_at "
+            "SELECT last_completed_at, last_sync_started_at, status, heartbeat_at "
             "FROM shopify_sync_state WHERE store_id = :sid"
         ),
         {"sid": store_id},
@@ -9114,8 +9122,16 @@ async def shopify_sync_stream(
     if not state_row or state_row["last_completed_at"] is None or anchor is None:
         mode = "full"
 
-    claimed = await asyncio.to_thread(shopify_sync.claim_sync, store_id, mode)
-    if claimed is None:
+    # Read-only pre-check so the common already-running case still gets a clean
+    # 409. The authoritative claim happens INSIDE the stream: a claim taken
+    # here would leak until the staleness takeover if the client vanished
+    # before the response ever started, because a generator that is never
+    # iterated never runs its finally.
+    if (
+        state_row and state_row["status"] == "running"
+        and state_row["heartbeat_at"] is not None
+        and (datetime.now(state_row["heartbeat_at"].tzinfo) - state_row["heartbeat_at"]).total_seconds() < 180
+    ):
         raise HTTPException(status_code=409, detail="A sync is already running for this store")
 
     events: asyncio.Queue = asyncio.Queue()
@@ -9124,14 +9140,15 @@ async def shopify_sync_stream(
     async def emit(kind: str, payload: Dict[str, Any]):
         events.put_nowait((kind, payload))
 
-    async def worker():
+    async def worker(claim_token):
         try:
             summary = await shopify_sync.run_store_sync(
-                store, mode, anchor, emit, tracker=tracker
+                store, mode, anchor, emit, tracker=tracker, claim_token=claim_token
             )
             await asyncio.to_thread(
                 shopify_sync.release_sync, store_id,
                 counts=summary["totals"], run_started=summary["run_started"],
+                claim_token=claim_token,
             )
             events.put_nowait(("complete", {
                 "mode": summary["mode"],
@@ -9145,14 +9162,25 @@ async def shopify_sync_stream(
             message = str(e)
             print(f"[SHOPIFY-SYNC] store {store_id} failed: {message}")
             try:
-                await asyncio.to_thread(shopify_sync.release_sync, store_id, error=message[:500])
+                await asyncio.to_thread(
+                    shopify_sync.release_sync, store_id,
+                    error=message[:500], claim_token=claim_token,
+                )
             finally:
                 events.put_nowait(("error", {"message": message}))
 
     async def generate() -> AsyncGenerator[str, None]:
-        task = asyncio.create_task(worker())
         finished = False
+        task = None
+        claim_token = None
         try:
+            claim_token = await asyncio.to_thread(shopify_sync.claim_sync, store_id, mode)
+            if claim_token is None:
+                # Lost the race between the pre-check and here.
+                finished = True
+                yield f"event: error\ndata: {json.dumps({'message': 'A sync is already running for this store'})}\n\n"
+                return
+            task = asyncio.create_task(worker(claim_token))
             yield f"event: progress\ndata: {json.dumps({'phase': 'starting', 'mode': mode, 'store_id': store_id, 'store_name': store['name']})}\n\n"
             while True:
                 try:
@@ -9170,14 +9198,18 @@ async def shopify_sync_stream(
             # so the cleanup lives in finally, keyed on whether the run ended
             # normally. Without this the claim stays "running" until the stale
             # heartbeat takeover, and the bulk op keeps exporting shop-side.
-            if not finished:
-                task.cancel()
+            if not finished and claim_token is not None:
+                if task is not None:
+                    task.cancel()
                 if tracker.current_id:
                     asyncio.create_task(
                         shopify_sync.cancel_bulk_operation(store, tracker.current_id)
                     )
                 asyncio.create_task(
-                    asyncio.to_thread(shopify_sync.release_sync, store_id, error="cancelled")
+                    asyncio.to_thread(
+                        shopify_sync.release_sync, store_id,
+                        error="cancelled", claim_token=claim_token,
+                    )
                 )
                 print(f"[SHOPIFY-SYNC] store {store_id} sync cancelled by client")
 

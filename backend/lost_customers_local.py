@@ -96,7 +96,7 @@ LEFT JOIN LATERAL (
     SELECT o.* FROM shopify_orders o
     WHERE o.store_id = c.store_id AND o.customer_shopify_id = c.shopify_id
       AND {_COMPLETED}
-    ORDER BY o.created_at DESC
+    ORDER BY o.created_at DESC, o.shopify_id DESC
     LIMIT 1
 ) lo ON true
 WHERE c.store_id = :sid
@@ -206,6 +206,11 @@ GROUP BY o.customer_shopify_id
 
 
 def _first_orders_sync(store_id: int, customer_gids: List[str]) -> Dict[str, Any]:
+    # Shape note vs the live twin: a candidate with NO attributed synced orders
+    # gets no order_counts entry (live would return (lifetime, lifetime)).
+    # Deliberate: emitting (0, 0) would let the caller overwrite the scan's
+    # order count with zero when the gap is attribution, not reality — the
+    # caller's .get(..., (None, None)) keeps the scan's figure instead.
     out: Dict[str, Any] = {
         "ok": True, "error": None, "first_orders": {}, "order_counts": {},
         "undercounted": 0, "undercounted_ids": [], "missing": 0, "warnings": [],
@@ -358,12 +363,16 @@ async def emails_probe(
 # Cross-store name+ZIP probe — local twin of fetch_customers_by_name
 # ============================================================================
 
-# The key must collapse whitespace exactly as normalize_name does, or a name
-# stored with a double space would silently stop matching its own record.
+# The key must normalize exactly as normalize_name does: lower, collapse every
+# whitespace RUN (tabs and newlines included) to one space, then trim. btrim
+# strips only spaces, so it must run AFTER the collapse — trimming first left
+# a trailing tab to become a trailing space and the record silently stopped
+# matching. Must also stay textually equivalent to idx_shopcust_namekey
+# (migration 017) or the probe degrades to a sequential scan.
 _NAME_KEY_SQL = (
-    "lower(regexp_replace(btrim(coalesce(c.first_name, '')), '\\s+', ' ', 'g')) "
+    "btrim(regexp_replace(lower(coalesce(c.first_name, '')), '\\s+', ' ', 'g')) "
     "|| '|' || "
-    "lower(regexp_replace(btrim(coalesce(c.last_name, '')), '\\s+', ' ', 'g'))"
+    "btrim(regexp_replace(lower(coalesce(c.last_name, '')), '\\s+', ' ', 'g'))"
 )
 
 _NAMES_SQL = f"""
@@ -474,7 +483,7 @@ SELECT o.shopify_gid, o.name, o.created_at, o.cancelled_at,
        o.shipping_line_title, o.fulfillments
 FROM shopify_orders o
 WHERE o.store_id = :sid AND o.customer_shopify_id = :cid AND {_COMPLETED}
-ORDER BY o.created_at DESC
+ORDER BY o.created_at DESC, o.shopify_id DESC
 LIMIT :n
 """
 
@@ -632,13 +641,16 @@ async def orders_line_items(store_id: int, order_ids: List[str]) -> Dict[str, An
 def _count_completed_orders_sync(
     store_id: int, tz: Optional[str], start: str, end: str
 ) -> int:
+    # <= on the end day, not <: Shopify's `created_at:<date` bound INCLUDES
+    # that whole day (measured, documented at shopify_helper's filter builder),
+    # and this count exists to mirror the live count_orders rate probe.
     with engine.connect() as conn:
         return conn.execute(
             text(
                 f"SELECT count(*) FROM shopify_orders o "
                 f"WHERE o.store_id = :sid AND {_COMPLETED} "
                 f"  AND (o.created_at AT TIME ZONE :tz)::date >= CAST(:lo AS date) "
-                f"  AND (o.created_at AT TIME ZONE :tz)::date <  CAST(:hi AS date)"
+                f"  AND (o.created_at AT TIME ZONE :tz)::date <= CAST(:hi AS date)"
             ),
             {"sid": store_id, "tz": _tz_or_utc(tz), "lo": start, "hi": end},
         ).scalar() or 0
@@ -659,12 +671,14 @@ def _baseline_order_items_sync(
     }
     with engine.connect() as conn:
         for start, end in windows:
+            # <= end day for parity with Shopify's inclusive `created_at:<` —
+            # see _count_completed_orders_sync.
             orders = conn.execute(
                 text(
                     f"SELECT shopify_id, shopify_gid FROM shopify_orders o "
                     f"WHERE o.store_id = :sid AND {_COMPLETED} "
                     f"  AND (o.created_at AT TIME ZONE :tz)::date >= CAST(:lo AS date) "
-                    f"  AND (o.created_at AT TIME ZONE :tz)::date <  CAST(:hi AS date)"
+                    f"  AND (o.created_at AT TIME ZONE :tz)::date <= CAST(:hi AS date)"
                 ),
                 {"sid": store_id, "tz": _tz_or_utc(tz), "lo": start, "hi": end},
             ).mappings().all()
