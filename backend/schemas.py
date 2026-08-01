@@ -697,7 +697,7 @@ class LostCustomersRequest(BaseModel):
     # Rolling silence, resolved per shop against that shop's own today. Replaces
     # an absolute cutoff date, under which every departure month carried a
     # different silence requirement and the monthly bars were not comparable.
-    silent_months: Literal[3, 6, 12] = 6
+    silent_months: Literal[3, 4, 5, 6, 12] = 6
     min_orders: int = 1
     # Restrict to customers whose FIRST completed order falls inside the window.
     # Was unconditional; off means the departure timeline covers every customer,
@@ -708,7 +708,7 @@ class LostCustomersRequest(BaseModel):
     exclude_cross_store: bool = True
     # How soon after going quiet here an order elsewhere counts as a move.
     # None follows silent_months.
-    moved_within_months: Optional[Literal[3, 6, 12]] = None
+    moved_within_months: Optional[Literal[3, 4, 5, 6, 12]] = None
     # Trace where the newly-acquired customers came from. Off by default: it is
     # a second cross-store sweep, over a cohort that is far larger than the lost
     # list, so it is worth paying for only when the answer is being read.
