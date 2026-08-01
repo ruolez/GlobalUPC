@@ -6870,12 +6870,31 @@ tr:hover > td .sacr-copy { opacity: 0.8; }
   }
 }
 
-/* Tooltip sub-rows for the new-customer origin breakdown (arrivals trace). */
+/* Tooltip sub-rows for the new-customer origin breakdown (arrivals trace).
+   The two shares of "new" are indented one step; the per-verdict detail hangs
+   off its purple total in a bracketed block, so the total reads as a group
+   header rather than one more line of the same list. */
 .sancm-tip-row.sancm-tip-sub {
   padding-left: 12px;
 }
 
-.sancm-tip-row.sancm-tip-subsub {
-  padding-left: 24px;
-  opacity: 0.8;
+.sa-page .sancm-tip-group {
+  margin: 0.125rem 0 0.25rem 1.5rem;
+  padding-left: 0.625rem;
+  border-left: 2px solid color-mix(in srgb, var(--sancm-c7) 45%, transparent);
+}
+
+.sa-page .sancm-tip-group .sancm-tip-row {
+  padding-left: 0;
+  font-size: 0.9em;
+}
+
+.sa-page .sancm-tip-group .sancm-tip-val {
+  font-weight: 500;
+  color: var(--text-secondary);
+  min-width: 1.75rem;
+}
+
+.sa-page .sancm-tip-group .sancm-tip-name {
+  color: var(--text-tertiary);
 }

@@ -15485,7 +15485,7 @@ function sacrShowTooltip(index, hitRect) {
     name.textContent = label;
     row.appendChild(val);
     row.appendChild(name);
-    tip.appendChild(row);
+    (opts.parent || tip).appendChild(row);
     return row;
   };
 
@@ -15520,12 +15520,15 @@ function sacrShowTooltip(index, hitRect) {
         color: "var(--sancm-c7)",
         rowClass: "sancm-tip-sub",
       });
+      // The verdict detail sits in a bracketed block hanging off its total,
+      // so the total cannot be misread as one more line of the same list.
+      const group = document.createElement("div");
+      group.className = "sancm-tip-group";
       Object.entries(arrEntry.verdicts || {})
         .filter(([k, v]) => k !== SACR_ARR_NEW_VERDICT && v > 0)
         .sort((a, b) => b[1] - a[1])
-        .forEach(([k, v]) =>
-          addRow(v.toLocaleString(), k, { rowClass: "sancm-tip-sub sancm-tip-subsub" }),
-        );
+        .forEach(([k, v]) => addRow(v.toLocaleString(), k, { parent: group }));
+      tip.appendChild(group);
     }
   }
 
