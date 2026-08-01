@@ -6869,3 +6869,13 @@ tr:hover > td .sacr-copy { opacity: 0.8; }
     transform: rotate(360deg);
   }
 }
+
+/* Tooltip sub-rows for the new-customer origin breakdown (arrivals trace). */
+.sancm-tip-row.sancm-tip-sub {
+  padding-left: 12px;
+}
+
+.sancm-tip-row.sancm-tip-subsub {
+  padding-left: 24px;
+  opacity: 0.8;
+}

@@ -15085,6 +15085,11 @@ function sacrScheduleResultsRender(force) {
   }, SACR_RENDER_THROTTLE_MS);
 }
 
+// The arrivals verdict meaning "no prior relationship anywhere" — must match
+// _ARR_NEW in the backend; every other verdict means the customer was already
+// the business's customer in some form.
+const SACR_ARR_NEW_VERDICT = "new to the business";
+
 function renderSacrChart() {
   const wrap = document.getElementById("sacr-chart-wrap");
   if (!wrap) return;
@@ -15127,6 +15132,26 @@ function renderSacrChart() {
   }
   const legendPending = document.getElementById("sacr-legend-pending");
   if (legendPending) legendPending.hidden = firstPending < 0;
+
+  // When the arrivals trace ran, it knows which "new" customers were already
+  // the business's customers somewhere else. Those get drawn as a purple
+  // segment at the top of the month's new bar.
+  const arrByMonth = sacrState.arrivals?.by_month || null;
+  const sacrMonthNotUnique = (m) => {
+    if (!arrByMonth || !(m.new || 0)) return 0;
+    const arr = arrByMonth[m.month];
+    if (!arr) return 0;
+    // Clamped to the bar: both figures come from the same cohort, but a
+    // clamp keeps a partial-store mismatch from overflowing the bar.
+    return Math.min(
+      m.new || 0,
+      Math.max(0, (arr.total || 0) - (arr.verdicts?.[SACR_ARR_NEW_VERDICT] || 0)),
+    );
+  };
+  const legendNotUnique = document.getElementById("sacr-legend-notunique");
+  if (legendNotUnique) {
+    legendNotUnique.hidden = !months.some((m) => sacrMonthNotUnique(m) > 0);
+  }
 
   const W = Math.max(320, wrap.clientWidth);
   const innerW = W - SANCM_PAD.left - SANCM_PAD.right;
@@ -15202,19 +15227,44 @@ function renderSacrChart() {
     if (m.judgeable === false) opacity = 0.4;
     else if (m.partial) opacity = 0.72;
     if (selected && m.month !== selected) opacity = Math.min(opacity, 0.3);
-    [
-      { v: m.new || 0, x: left, fill: "var(--sancm-c3)" },
-      { v: m.count || 0, x: left + barW + innerGap, fill: "var(--sancm-c2)" },
-    ].forEach(({ v, x, fill }) => {
-      if (!v) return;
-      const yTop = y(v);
+    const opAttr = opacity < 1 ? ` opacity="${opacity}"` : "";
+
+    const newV = m.new || 0;
+    if (newV) {
+      const yTop = y(newV);
+      const h = SANCM_PAD.top + innerH - yTop;
+      const notUnique = sacrMonthNotUnique(m);
+      const splitH = notUnique > 0 ? h * (notUnique / newV) : 0;
+      if (splitH >= 1 && h - splitH >= 1) {
+        // Purple share on top (rounded cap), genuinely-new below. The 2px
+        // surface gap between the fills is paid by the lower segment so the
+        // purple share stays proportionally exact.
+        const gap = h - splitH >= 5 ? 2 : 0;
+        parts.push(
+          `<path d="${sancmBarPath(left, yTop, barW, splitH, SANCM_RADIUS)}" fill="var(--sancm-c7)"${opAttr} />`,
+        );
+        parts.push(
+          `<rect x="${left}" y="${(yTop + splitH + gap).toFixed(1)}" width="${barW}" height="${Math.max(0.5, h - splitH - gap).toFixed(1)}" fill="var(--sancm-c3)"${opAttr} />`,
+        );
+      } else {
+        // One segment rounds to invisible — draw the bar in whichever color
+        // actually describes (nearly) all of it.
+        const fill = splitH >= 1 ? "var(--sancm-c7)" : "var(--sancm-c3)";
+        parts.push(
+          `<path d="${sancmBarPath(left, yTop, barW, h, SANCM_RADIUS)}" fill="${fill}"${opAttr} />`,
+        );
+      }
+    }
+
+    const lostV = m.count || 0;
+    if (lostV) {
+      const x = left + barW + innerGap;
+      const yTop = y(lostV);
       const h = SANCM_PAD.top + innerH - yTop;
       parts.push(
-        `<path d="${sancmBarPath(x, yTop, barW, h, SANCM_RADIUS)}" fill="${fill}"` +
-          (opacity < 1 ? ` opacity="${opacity}"` : "") +
-          ` />`,
+        `<path d="${sancmBarPath(x, yTop, barW, h, SANCM_RADIUS)}" fill="var(--sancm-c2)"${opAttr} />`,
       );
-    });
+    }
   });
 
   const spansYears =
@@ -15454,6 +15504,30 @@ function sacrShowTooltip(index, hitRect) {
   // The two series first, since that is what the bars show, then the net —
   // the number that says whether the month gained or shed customers.
   addRow((month.new || 0).toLocaleString(), "new", { color: "var(--sancm-c3)" });
+
+  // With the arrivals trace on, split the new figure the same way the bar is
+  // drawn — genuinely new vs already a customer — then say where the rest
+  // came from, verdict by verdict.
+  const arrEntry = sacrState.arrivals?.by_month?.[month.month];
+  if (arrEntry && (month.new || 0) > 0) {
+    const uniqueNew = arrEntry.verdicts?.[SACR_ARR_NEW_VERDICT] || 0;
+    const notUnique = Math.max(0, (arrEntry.total || 0) - uniqueNew);
+    if (notUnique > 0) {
+      addRow(uniqueNew.toLocaleString(), "genuinely new", {
+        rowClass: "sancm-tip-sub",
+      });
+      addRow(notUnique.toLocaleString(), "already a customer", {
+        color: "var(--sancm-c7)",
+        rowClass: "sancm-tip-sub",
+      });
+      Object.entries(arrEntry.verdicts || {})
+        .filter(([k, v]) => k !== SACR_ARR_NEW_VERDICT && v > 0)
+        .sort((a, b) => b[1] - a[1])
+        .forEach(([k, v]) =>
+          addRow(v.toLocaleString(), k, { rowClass: "sancm-tip-sub sancm-tip-subsub" }),
+        );
+    }
+  }
 
   // A month too recent to have been measured has a structural zero, not a
   // finding. Reporting "0 lost" and a net of "+N" for it would read as a month
