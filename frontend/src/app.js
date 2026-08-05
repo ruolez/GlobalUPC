@@ -7747,27 +7747,8 @@ document.getElementById("price-updates-tbody")?.addEventListener("input", (e) =>
   tr.dataset.filled = "";
   tr.classList.remove("filled-row");
 
-  if (e.target.matches(".new-cost")) {
-    if (e.target.value) {
-      autoCalculateFromCost(tr, e.target.value);
-    } else {
-      const priceInput = tr.querySelector(".new-price");
-      if (priceInput && priceInput.dataset.autoCalculated === "true") {
-        priceInput.value = "";
-        priceInput.dataset.autoCalculated = "";
-        priceInput.classList.remove("auto-calculated");
-      }
-      const deliveryBInput = tr.querySelector(".new-delivery-b");
-      if (deliveryBInput && deliveryBInput.dataset.autoCalculated === "true") {
-        deliveryBInput.value = "";
-        deliveryBInput.dataset.autoCalculated = "";
-        deliveryBInput.classList.remove("auto-calculated");
-      }
-    }
-  } else if (e.target.matches(".new-price") || e.target.matches(".new-delivery-b")) {
-    e.target.dataset.autoCalculated = "";
-    e.target.classList.remove("auto-calculated");
-  }
+  e.target.dataset.autoCalculated = "";
+  e.target.classList.remove("auto-calculated");
 
   recalculateRowMarkup(tr);
 });
@@ -8290,6 +8271,7 @@ function displayPriceHistory(batches, total, targetConfig = null) {
       changeCell.style.whiteSpace = "nowrap";
       changeCell.style.maxWidth = "0";
       const changeParts = [];
+      const changeTitleParts = [];
       if (entry.new_price != null) {
         const oldP = entry.old_price != null ? `$${parseFloat(entry.old_price).toFixed(2)}` : "-";
         const newP = `$${parseFloat(entry.new_price).toFixed(2)}`;
@@ -8299,6 +8281,7 @@ function displayPriceHistory(batches, total, targetConfig = null) {
           `<span class="ph-change-arrow">\u2192</span>` +
           `<span class="ph-change-new">${newP}</span>`
         );
+        changeTitleParts.push(`Price: ${oldP} \u2192 ${newP}`);
       }
       if (entry.new_cost != null) {
         const oldC = entry.old_cost != null ? `$${parseFloat(entry.old_cost).toFixed(2)}` : "-";
@@ -8309,6 +8292,7 @@ function displayPriceHistory(batches, total, targetConfig = null) {
           `<span class="ph-change-arrow">\u2192</span>` +
           `<span class="ph-change-new">${newC}</span>`
         );
+        changeTitleParts.push(`Cost: ${oldC} \u2192 ${newC}`);
       }
       if (entry.new_delivery_b != null) {
         const oldD = entry.old_delivery_b != null ? `$${parseFloat(entry.old_delivery_b).toFixed(2)}` : "-";
@@ -8319,6 +8303,7 @@ function displayPriceHistory(batches, total, targetConfig = null) {
           `<span class="ph-change-arrow">\u2192</span>` +
           `<span class="ph-change-new">${newD}</span>`
         );
+        changeTitleParts.push(`Delivery B: ${oldD} \u2192 ${newD}`);
       }
       if (entry.new_list_price != null) {
         const oldL = entry.old_list_price != null ? `$${parseFloat(entry.old_list_price).toFixed(2)}` : "-";
@@ -8329,10 +8314,14 @@ function displayPriceHistory(batches, total, targetConfig = null) {
           `<span class="ph-change-arrow">\u2192</span>` +
           `<span class="ph-change-new">${newL}</span>`
         );
+        changeTitleParts.push(`List Price: ${oldL} \u2192 ${newL}`);
       }
       changeCell.innerHTML = changeParts.length > 0
         ? changeParts.join('<span style="margin: 0 0.5rem; color: var(--text-tertiary)">|</span>')
         : "-";
+      if (changeTitleParts.length > 0) {
+        changeCell.title = changeTitleParts.join("  |  ");
+      }
       detailRow.appendChild(changeCell);
 
       // Barcode (under UPC column)
