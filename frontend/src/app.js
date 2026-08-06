@@ -9233,7 +9233,7 @@ const SHOPIFY_SALES_COLUMNS = [
   { key: "today_price",    label: "Today's Price", baseWidth: 7,  align: "right" },
   { key: "avg_margin",     label: "Avg Margin %",  baseWidth: 7,  align: "right" },
   { key: "profit_margin",  label: "Margin %",      baseWidth: 6,  align: "right" },
-  { key: "total_quantity", label: "Qty Sold",      baseWidth: 6,  align: "right" },
+  { key: "total_quantity", label: "Qty",           baseWidth: 6,  align: "right" },
   { key: "total_revenue",  label: "Revenue",       baseWidth: 9,  align: "right" },
 ];
 
