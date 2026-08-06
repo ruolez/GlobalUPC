@@ -8980,6 +8980,7 @@ async function loadShopifySalesPage() {
   const fetchBtn = document.getElementById("shopify-sales-fetch-btn");
   container.innerHTML = "";
   fetchBtn.disabled = true;
+  buildShopifySalesColumnPills();
   document.getElementById("shopify-sales-progress").style.display = "none";
   document.getElementById("shopify-sales-results").style.display = "none";
   document.getElementById("shopify-sales-empty").style.display = "none";
@@ -9211,7 +9212,93 @@ async function fetchShopifySales() {
 let shopifySalesSortColumn = "total_revenue";
 let shopifySalesSortDirection = "desc";
 
-const shopifySalesNumericColumns = new Set(["cost", "avg_price", "total_quantity", "total_revenue"]);
+const shopifySalesNumericColumns = new Set([
+  "cost",
+  "real_cost",
+  "avg_price",
+  "today_price",
+  "avg_margin",
+  "profit_margin",
+  "total_quantity",
+  "total_revenue",
+]);
+
+const SHOPIFY_SALES_COLUMNS = [
+  { key: "product_title",  label: "Product",       baseWidth: 30, align: "left" },
+  { key: "barcode",        label: "UPC",           baseWidth: 10, align: "left" },
+  { key: "sku",            label: "SKU",           baseWidth: 10, align: "left" },
+  { key: "cost",           label: "Cost",          baseWidth: 6,  align: "right" },
+  { key: "real_cost",      label: "Real Cost",     baseWidth: 6,  align: "right" },
+  { key: "avg_price",      label: "Avg Price",     baseWidth: 7,  align: "right" },
+  { key: "today_price",    label: "Today's Price", baseWidth: 7,  align: "right" },
+  { key: "avg_margin",     label: "Avg Margin %",  baseWidth: 7,  align: "right" },
+  { key: "profit_margin",  label: "Margin %",      baseWidth: 6,  align: "right" },
+  { key: "total_quantity", label: "Qty Sold",      baseWidth: 6,  align: "right" },
+  { key: "total_revenue",  label: "Revenue",       baseWidth: 9,  align: "right" },
+];
+
+const SHOPIFY_SALES_HIDDEN_COLUMNS_KEY = "shopify_sales_hidden_columns";
+
+let shopifySalesHiddenColumns = (() => {
+  try {
+    const arr = JSON.parse(localStorage.getItem(SHOPIFY_SALES_HIDDEN_COLUMNS_KEY) || "[]");
+    return Array.isArray(arr) ? arr : [];
+  } catch {
+    return [];
+  }
+})();
+
+function getShopifySalesVisibleColumns() {
+  return SHOPIFY_SALES_COLUMNS.filter((c) => !shopifySalesHiddenColumns.includes(c.key));
+}
+
+function buildShopifySalesColumnPills() {
+  const container = document.getElementById("shopify-sales-column-pills");
+  if (!container) return;
+  container.innerHTML = "";
+  SHOPIFY_SALES_COLUMNS.forEach((col) => {
+    const isVisible = !shopifySalesHiddenColumns.includes(col.key);
+    const label = document.createElement("label");
+    label.style.cssText = `display: inline-flex; align-items: center; gap: 0.25rem; font-size: 0.75rem; cursor: pointer; padding: 0.2rem 0.5rem; border-radius: 1rem; border: 1px solid var(--border-color); background: ${isVisible ? "var(--bg-tertiary, rgba(255,255,255,0.08))" : "transparent"}; white-space: nowrap; opacity: ${isVisible ? "1" : "0.5"}; transition: opacity 0.15s, background 0.15s;`;
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = isVisible;
+    cb.style.cssText = "margin: 0; cursor: pointer;";
+    cb.onchange = () => toggleShopifySalesColumn(col.key);
+    label.appendChild(cb);
+    label.appendChild(document.createTextNode(col.label));
+    container.appendChild(label);
+  });
+}
+
+function toggleShopifySalesColumn(key) {
+  const idx = shopifySalesHiddenColumns.indexOf(key);
+  if (idx >= 0) {
+    shopifySalesHiddenColumns.splice(idx, 1);
+  } else {
+    if (getShopifySalesVisibleColumns().length <= 1) {
+      showToast("At least one column must remain visible", "warning");
+      buildShopifySalesColumnPills();
+      return;
+    }
+    shopifySalesHiddenColumns.push(key);
+  }
+  localStorage.setItem(SHOPIFY_SALES_HIDDEN_COLUMNS_KEY, JSON.stringify(shopifySalesHiddenColumns));
+  buildShopifySalesColumnPills();
+  if (shopifySalesResults) displayShopifySalesResults(shopifySalesResults);
+}
+
+function resetShopifySalesColumns() {
+  shopifySalesHiddenColumns = [];
+  localStorage.removeItem(SHOPIFY_SALES_HIDDEN_COLUMNS_KEY);
+  buildShopifySalesColumnPills();
+  if (shopifySalesResults) displayShopifySalesResults(shopifySalesResults);
+}
+
+document.getElementById("shopify-sales-columns-reset")?.addEventListener("click", (e) => {
+  e.preventDefault();
+  resetShopifySalesColumns();
+});
 
 function sortShopifySalesResults(results) {
   const col = shopifySalesSortColumn;
@@ -9306,30 +9393,75 @@ function displayShopifySalesResults(data) {
     });
   }
 
+  const visibleCols = getShopifySalesVisibleColumns();
+  const totalBase = visibleCols.reduce((s, c) => s + c.baseWidth, 0);
+
+  const thead = document.getElementById("shopify-sales-thead");
+  thead.innerHTML =
+    "<tr>" +
+    visibleCols
+      .map((col) => {
+        const width = ((col.baseWidth / totalBase) * 100).toFixed(1);
+        const alignStyle = col.align === "right" ? " text-align: right;" : "";
+        return `<th style="width: ${width}%;${alignStyle} cursor: pointer; user-select: none;" data-sort="${col.key}">${col.label} <span class="sort-indicator"></span></th>`;
+      })
+      .join("") +
+    "</tr>";
+
+  const money = (v) => (v != null ? "$" + parseFloat(v).toFixed(2) : "\u2014");
+  const percent = (v) => (v != null ? parseFloat(v).toFixed(1) + "%" : "\u2014");
+
+  const cellHtml = (col, r) => {
+    switch (col.key) {
+      case "product_title": {
+        const productDisplay = r.variant_title ? `${r.product_title} - ${r.variant_title}` : r.product_title;
+        return `<td>${escapeHtml(productDisplay)}</td>`;
+      }
+      case "barcode":
+        return `<td style="font-family: monospace; font-size: 0.8125rem;">${escapeHtml(r.barcode || "")}</td>`;
+      case "sku":
+        return `<td style="font-size: 0.8125rem;">${escapeHtml(r.sku || "")}</td>`;
+      case "cost":
+      case "real_cost":
+      case "avg_price":
+      case "today_price":
+        return `<td style="text-align: right;">${money(r[col.key])}</td>`;
+      case "avg_margin":
+      case "profit_margin":
+        return `<td style="text-align: right;">${percent(r[col.key])}</td>`;
+      case "total_quantity":
+        return `<td style="text-align: right;">${r.total_quantity.toLocaleString()}</td>`;
+      case "total_revenue":
+        return `<td style="text-align: right;">$${parseFloat(r.total_revenue).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>`;
+      default:
+        return "<td></td>";
+    }
+  };
+
   const sorted = sortShopifySalesResults(results);
 
-  tbody.innerHTML = "";
-  sorted.forEach((r) => {
-    const tr = document.createElement("tr");
-    const productDisplay = r.variant_title ? `${r.product_title} - ${r.variant_title}` : r.product_title;
-    tr.innerHTML = `
-      <td>${escapeHtml(productDisplay)}</td>
-      <td style="font-family: monospace; font-size: 0.8125rem;">${escapeHtml(r.barcode || "")}</td>
-      <td style="font-size: 0.8125rem;">${escapeHtml(r.sku || "")}</td>
-      <td style="text-align: right;">${r.cost != null ? "$" + parseFloat(r.cost).toFixed(2) : "\u2014"}</td>
-      <td style="text-align: right;">$${parseFloat(r.avg_price).toFixed(2)}</td>
-      <td style="text-align: right;">${r.total_quantity.toLocaleString()}</td>
-      <td style="text-align: right;">$${parseFloat(r.total_revenue).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-    `;
-    tbody.appendChild(tr);
-  });
+  tbody.innerHTML = sorted
+    .map((r) => `<tr>${visibleCols.map((col) => cellHtml(col, r)).join("")}</tr>`)
+    .join("");
 
   const totalQty = results.reduce((s, r) => s + r.total_quantity, 0);
   const totalRev = results.reduce((s, r) => s + parseFloat(r.total_revenue), 0);
   const avgAll = totalQty > 0 ? (totalRev / totalQty).toFixed(2) : "0.00";
-  document.getElementById("shopify-sales-total-avg").textContent = `$${avgAll}`;
-  document.getElementById("shopify-sales-total-qty").textContent = totalQty.toLocaleString();
-  document.getElementById("shopify-sales-total-rev").textContent = `$${totalRev.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const footerValues = {
+    avg_price: `$${avgAll}`,
+    total_quantity: totalQty.toLocaleString(),
+    total_revenue: `$${totalRev.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+  };
+  tfoot.innerHTML =
+    "<tr>" +
+    visibleCols
+      .map((col, i) => {
+        const val = footerValues[col.key] ?? (i === 0 ? "Totals" : "");
+        const alignStyle = col.align === "right" ? "text-align: right; " : "";
+        return `<td style="${alignStyle}font-weight: 600;">${val}</td>`;
+      })
+      .join("") +
+    "</tr>";
   tfoot.style.display = "";
 
   updateShopifySalesSortIndicators();
@@ -9341,42 +9473,82 @@ document.getElementById("shopify-sales-export-btn")?.addEventListener("click", e
 function exportShopifySalesToExcel() {
   if (!shopifySalesResults || !shopifySalesResults.results || shopifySalesResults.results.length === 0) return;
 
-  const headers = ["Product", "UPC", "SKU", "Cost", "Avg Price", "Qty", "Revenue"];
-  const dataRows = shopifySalesResults.results.map((r) => [
-    r.variant_title ? `${r.product_title} - ${r.variant_title}` : (r.product_title || ""),
-    r.barcode || "",
-    r.sku || "",
-    r.cost != null ? parseFloat(r.cost) : null,
-    parseFloat(r.avg_price),
-    r.total_quantity,
-    parseFloat(r.total_revenue),
-  ]);
+  const visibleCols = getShopifySalesVisibleColumns();
+
+  const exportValue = (col, r) => {
+    switch (col.key) {
+      case "product_title":
+        return r.variant_title ? `${r.product_title} - ${r.variant_title}` : (r.product_title || "");
+      case "barcode":
+        return r.barcode || "";
+      case "sku":
+        return r.sku || "";
+      case "cost":
+      case "real_cost":
+      case "avg_price":
+      case "today_price":
+      case "avg_margin":
+      case "profit_margin":
+        return r[col.key] != null ? parseFloat(r[col.key]) : null;
+      case "total_quantity":
+        return r.total_quantity;
+      case "total_revenue":
+        return parseFloat(r.total_revenue);
+      default:
+        return "";
+    }
+  };
+
+  // A row whose cells align to the visible columns: values placed by column
+  // key, an optional label in the first visible column, blanks elsewhere.
+  const alignedRow = (valuesByKey, firstColLabel) =>
+    visibleCols.map((col, i) => {
+      if (valuesByKey[col.key] !== undefined) return valuesByKey[col.key];
+      return i === 0 && firstColLabel ? firstColLabel : "";
+    });
+
+  const headers = visibleCols.map((col) => col.label);
+  const dataRows = sortShopifySalesResults(shopifySalesResults.results).map((r) =>
+    visibleCols.map((col) => exportValue(col, r)),
+  );
 
   const totalQty = shopifySalesResults.results.reduce((s, r) => s + r.total_quantity, 0);
   const totalRev = shopifySalesResults.results.reduce((s, r) => s + parseFloat(r.total_revenue), 0);
-  const totalsRow = ["", "", "", "Totals", "", totalQty, totalRev];
+  const totalsRow = alignedRow({ total_quantity: totalQty, total_revenue: totalRev }, "Totals");
 
   const extraRows = [];
   const summary = shopifySalesResults.summary || {};
   const shippingTotal = parseFloat(summary.total_shipping || 0);
   if (shippingTotal > 0) {
-    extraRows.push(["", "", "", "Shipping Collected", "", "", shippingTotal]);
+    extraRows.push(alignedRow({ total_revenue: shippingTotal }, "Shipping Collected"));
   }
   const excludedProducts = summary.excluded_products || [];
   if (excludedProducts.length > 0) {
     const exclRev = parseFloat(summary.excluded_total_revenue || 0);
     const exclQty = summary.excluded_total_quantity || 0;
-    extraRows.push(["", "", "", "Excluded Products", "", exclQty, exclRev]);
+    extraRows.push(alignedRow({ total_quantity: exclQty, total_revenue: exclRev }, "Excluded Products"));
     excludedProducts.forEach((p) => {
-      extraRows.push([p.product_title, "", "", "", "", p.quantity, parseFloat(p.revenue)]);
+      extraRows.push(alignedRow({ total_quantity: p.quantity, total_revenue: parseFloat(p.revenue) }, p.product_title));
     });
   }
 
   const wsData = [headers, ...dataRows, totalsRow, ...extraRows];
   const ws = XLSX.utils.aoa_to_sheet(wsData);
 
-  const colWidths = [55, 16, 16, 10, 12, 10, 14];
-  ws["!cols"] = colWidths.map((w) => ({ wch: w }));
+  const exportColWidths = {
+    product_title: 55,
+    barcode: 16,
+    sku: 16,
+    cost: 10,
+    real_cost: 10,
+    avg_price: 12,
+    today_price: 12,
+    avg_margin: 12,
+    profit_margin: 10,
+    total_quantity: 10,
+    total_revenue: 14,
+  };
+  ws["!cols"] = visibleCols.map((col) => ({ wch: exportColWidths[col.key] || 12 }));
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Shopify Sales");

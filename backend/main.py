@@ -4713,6 +4713,7 @@ async def shopify_sales_stream(request: ShopifySalesRequest, db: Session = Depen
                     "sku": item.get("sku", ""),
                     "total_quantity": 0,
                     "total_revenue": 0.0,
+                    "today_price": None,
                     "currency": currency
                 }
 
@@ -4722,6 +4723,8 @@ async def shopify_sales_stream(request: ShopifySalesRequest, db: Session = Depen
                 aggregated[key]["sku"] = item["sku"]
             if not aggregated[key]["product_title"] and product_title:
                 aggregated[key]["product_title"] = product_title
+            if item.get("today_price") is not None:
+                aggregated[key]["today_price"] = item["today_price"]
 
         results = []
         for entry in aggregated.values():
@@ -4729,6 +4732,11 @@ async def shopify_sales_stream(request: ShopifySalesRequest, db: Session = Depen
             revenue = entry["total_revenue"]
             avg_price = f"{(revenue / qty):.2f}" if qty > 0 else "0.00"
             variant_display = "" if entry["variant_title"] == "Default Title" else entry["variant_title"]
+            today_price = entry["today_price"]
+            try:
+                today_price = f"{float(today_price):.2f}" if today_price is not None else None
+            except (TypeError, ValueError):
+                today_price = None
             results.append({
                 "store_name": entry["store_name"],
                 "product_title": entry["product_title"],
@@ -4736,6 +4744,7 @@ async def shopify_sales_stream(request: ShopifySalesRequest, db: Session = Depen
                 "barcode": entry["barcode"],
                 "sku": entry["sku"],
                 "avg_price": avg_price,
+                "today_price": today_price,
                 "total_quantity": qty,
                 "total_revenue": f"{revenue:.2f}",
                 "currency": entry["currency"]
@@ -4767,23 +4776,47 @@ async def shopify_sales_stream(request: ShopifySalesRequest, db: Session = Depen
                                 if bc and bc in prices_map:
                                     cost_val = prices_map[bc].get("unit_delivery_b")
                                     r["cost"] = f"{cost_val:.2f}" if cost_val is not None else None
+                                    real_cost_val = prices_map[bc].get("unit_cost")
+                                    r["real_cost"] = f"{real_cost_val:.2f}" if real_cost_val is not None else None
                                 else:
                                     r["cost"] = None
+                                    r["real_cost"] = None
                         else:
                             for r in results:
                                 r["cost"] = None
+                                r["real_cost"] = None
                     else:
                         for r in results:
                             r["cost"] = None
+                            r["real_cost"] = None
                 else:
                     for r in results:
                         r["cost"] = None
+                        r["real_cost"] = None
             except Exception:
                 for r in results:
                     r["cost"] = None
+                    r["real_cost"] = None
         else:
             for r in results:
                 r["cost"] = None
+                r["real_cost"] = None
+
+        def markup_pct(price_str, cost_str):
+            if price_str is None or cost_str is None:
+                return None
+            try:
+                price_val = float(price_str)
+                cost_val = float(cost_str)
+            except (TypeError, ValueError):
+                return None
+            if cost_val <= 0:
+                return None
+            return f"{((price_val - cost_val) / cost_val * 100):.1f}"
+
+        for r in results:
+            r["profit_margin"] = markup_pct(r.get("today_price"), r.get("real_cost"))
+            r["avg_margin"] = markup_pct(r.get("avg_price"), r.get("cost"))
 
         total_quantity = sum(r["total_quantity"] for r in results)
         total_revenue = sum(float(r["total_revenue"]) for r in results)

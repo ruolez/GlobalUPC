@@ -3963,28 +3963,18 @@
               <div id="shopify-sales-summary" style="font-size: 0.8125rem; color: var(--text-secondary);"></div>
               <button type="button" class="btn btn-secondary" id="shopify-sales-export-btn" style="font-size: 0.75rem; padding: 0.375rem 0.75rem;">Export to Excel</button>
             </div>
+            <div style="margin-bottom: 1rem;">
+              <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.375rem;">
+                <span style="font-size: 0.75rem; color: var(--text-tertiary); font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em;">Table Columns</span>
+                <a href="#" id="shopify-sales-columns-reset" style="font-size: 0.6875rem; color: var(--text-tertiary);">Reset</a>
+              </div>
+              <div id="shopify-sales-column-pills" style="display: flex; flex-wrap: wrap; gap: 0.375rem;"></div>
+            </div>
             <div class="table-container">
               <table class="data-table" id="shopify-sales-table">
-                <thead>
-                  <tr>
-                    <th style="width: 40%; cursor: pointer; user-select: none;" data-sort="product_title">Product <span class="sort-indicator"></span></th>
-                    <th style="width: 12%; cursor: pointer; user-select: none;" data-sort="barcode">UPC <span class="sort-indicator"></span></th>
-                    <th style="width: 12%; cursor: pointer; user-select: none;" data-sort="sku">SKU <span class="sort-indicator"></span></th>
-                    <th style="width: 7%; text-align: right; cursor: pointer; user-select: none;" data-sort="cost">Cost <span class="sort-indicator"></span></th>
-                    <th style="width: 9%; text-align: right; cursor: pointer; user-select: none;" data-sort="avg_price">Avg Price <span class="sort-indicator"></span></th>
-                    <th style="width: 8%; text-align: right; cursor: pointer; user-select: none;" data-sort="total_quantity">Qty Sold <span class="sort-indicator"></span></th>
-                    <th style="width: 12%; text-align: right; cursor: pointer; user-select: none;" data-sort="total_revenue">Revenue <span class="sort-indicator">▼</span></th>
-                  </tr>
-                </thead>
+                <thead id="shopify-sales-thead"></thead>
                 <tbody id="shopify-sales-tbody"></tbody>
-                <tfoot id="shopify-sales-tfoot" style="display: none">
-                  <tr>
-                    <td colspan="4" style="text-align: right; font-weight: 600;">Totals</td>
-                    <td style="text-align: right; font-weight: 600;" id="shopify-sales-total-avg"></td>
-                    <td style="text-align: right; font-weight: 600;" id="shopify-sales-total-qty"></td>
-                    <td style="text-align: right; font-weight: 600;" id="shopify-sales-total-rev"></td>
-                  </tr>
-                </tfoot>
+                <tfoot id="shopify-sales-tfoot" style="display: none"></tfoot>
               </table>
             </div>
           </div>

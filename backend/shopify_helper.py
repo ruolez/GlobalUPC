@@ -1048,6 +1048,7 @@ async def fetch_fulfilled_orders(
                       variant {
                         barcode
                         title
+                        price
                         product {
                           title
                         }
@@ -1171,6 +1172,7 @@ async def fetch_fulfilled_orders(
                             "sku": li.get("sku") or "",
                             "quantity": quantity,
                             "unit_price": unit_price,
+                            "today_price": variant.get("price"),
                             "currency": currency,
                             "shipping_amount": shipping_amount
                         })
