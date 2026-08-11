@@ -3139,6 +3139,64 @@
               </small>
             </div>
 
+            <div class="form-group">
+              <label for="price-updates-rand-store">Rand Store (optional)</label>
+              <select id="price-updates-rand-store" style="max-width: 400px">
+                <option value="">None</option>
+              </select>
+              <small
+                style="
+                  color: var(--text-tertiary);
+                  font-size: 0.75rem;
+                  margin-top: 0.5rem;
+                  display: block;
+                "
+              >
+                Store whose rows get the exact "Rand Sale Price" in the Delivery
+                Flow fill line.
+              </small>
+            </div>
+
+            <div class="form-group">
+              <label for="price-updates-fivestars-bo-store"
+                >5 Stars BackOffice Store (optional)</label
+              >
+              <select id="price-updates-fivestars-bo-store" style="max-width: 400px">
+                <option value="">None</option>
+              </select>
+              <small
+                style="
+                  color: var(--text-tertiary);
+                  font-size: 0.75rem;
+                  margin-top: 0.5rem;
+                  display: block;
+                "
+              >
+                Source of sale prices copied to the 5 Stars Shopify store when
+                its variants have no cost.
+              </small>
+            </div>
+
+            <div class="form-group">
+              <label for="price-updates-fivestars-shopify-store"
+                >5 Stars Shopify Store (optional)</label
+              >
+              <select id="price-updates-fivestars-shopify-store" style="max-width: 400px">
+                <option value="">None</option>
+              </select>
+              <small
+                style="
+                  color: var(--text-tertiary);
+                  font-size: 0.75rem;
+                  margin-top: 0.5rem;
+                  display: block;
+                "
+              >
+                Shopify store that receives the copied 5 Stars BackOffice price
+                when its own cost is missing.
+              </small>
+            </div>
+
             <div style="margin-top: 1.5rem">
               <button
                 type="button"
@@ -3611,6 +3669,82 @@
                   style="font-size: 0.75rem; padding: 0.375rem 0.75rem"
                 >
                   Clear All
+                </button>
+                <button
+                  type="button"
+                  class="btn btn-secondary"
+                  id="price-fill-b-toggle"
+                  style="font-size: 0.75rem; padding: 0.375rem 0.75rem; margin-left: auto"
+                >
+                  Delivery Flow
+                </button>
+              </div>
+
+              <!-- Delivery Flow Row (Zone 3b: Delivery B route fill) -->
+              <div class="fill-all-row" id="price-fill-b-row" style="margin-top: 0.5rem; display: none">
+                <span style="font-size: 0.875rem; font-weight: 500; color: var(--text-secondary)">Delivery Flow:</span>
+                <div class="fill-all-input-group">
+                  <span class="fill-all-last-label" id="price-fill-b-last-price"></span>
+                  <input
+                    type="number"
+                    id="price-fill-b-price"
+                    placeholder="New Price"
+                    class="dark-input price-input"
+                    step="0.01"
+                    min="0"
+                  />
+                </div>
+                <div class="fill-all-input-group">
+                  <span class="fill-all-last-label" id="price-fill-b-last-cost"></span>
+                  <input
+                    type="number"
+                    id="price-fill-b-cost"
+                    placeholder="New Cost"
+                    class="dark-input price-input"
+                    step="0.01"
+                    min="0"
+                  />
+                </div>
+                <div class="fill-all-input-group" id="price-fill-b-delivery-b-group">
+                  <span class="fill-all-last-label" id="price-fill-b-last-delivery-b"></span>
+                  <input
+                    type="number"
+                    id="price-fill-b-delivery-b"
+                    placeholder="Delivery B"
+                    class="dark-input price-input"
+                    step="0.01"
+                    min="0"
+                  />
+                </div>
+                <div class="fill-all-input-group" id="price-fill-b-list-price-group">
+                  <span class="fill-all-last-label" id="price-fill-b-last-list-price"></span>
+                  <input
+                    type="number"
+                    id="price-fill-b-list-price"
+                    placeholder="List Price"
+                    class="dark-input price-input"
+                    step="0.01"
+                    min="0"
+                  />
+                </div>
+                <div class="fill-all-input-group">
+                  <span class="fill-all-last-label" id="price-fill-b-last-rand-price"></span>
+                  <input
+                    type="number"
+                    id="price-fill-b-rand-price"
+                    placeholder="Rand Sale Price"
+                    class="dark-input price-input"
+                    step="0.01"
+                    min="0"
+                  />
+                </div>
+                <button
+                  type="button"
+                  class="btn btn-secondary"
+                  id="price-fill-b-btn"
+                  style="font-size: 0.75rem; padding: 0.375rem 0.75rem"
+                >
+                  Fill Flow
                 </button>
               </div>
 

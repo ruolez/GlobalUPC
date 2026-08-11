@@ -5633,6 +5633,24 @@ async function loadPriceUpdatesPage() {
       primaryDropdown.appendChild(option);
     });
 
+    // Populate Delivery Flow store dropdowns (Rand: any, 5 Stars BO: MSSQL, 5 Stars Shopify: Shopify)
+    const shopifyStores = allStores.filter((s) => s.store_type === "shopify");
+    [
+      { id: "price-updates-rand-store", stores: allStores },
+      { id: "price-updates-fivestars-bo-store", stores: mssqlStores },
+      { id: "price-updates-fivestars-shopify-store", stores: shopifyStores },
+    ].forEach(({ id, stores: storeList }) => {
+      const select = document.getElementById(id);
+      if (!select) return;
+      select.innerHTML = '<option value="">None</option>';
+      storeList.forEach((store) => {
+        const option = document.createElement("option");
+        option.value = store.id;
+        option.textContent = store.name;
+        select.appendChild(option);
+      });
+    });
+
     // Populate store checkboxes (all stores)
     const checkboxContainer = document.getElementById(
       "price-updates-store-checkboxes",
@@ -5692,6 +5710,16 @@ async function loadPriceUpdatesPage() {
     if (savedConfig) {
       const config = JSON.parse(savedConfig);
       priceUpdatesState.config = config;
+
+      // Restore Delivery Flow store selections
+      [
+        ["price-updates-rand-store", config.randStoreId],
+        ["price-updates-fivestars-bo-store", config.fiveStarsBoStoreId],
+        ["price-updates-fivestars-shopify-store", config.fiveStarsShopifyStoreId],
+      ].forEach(([id, value]) => {
+        const select = document.getElementById(id);
+        if (select) select.value = value || "";
+      });
 
       // Verify primary store still exists
       const primaryExists = mssqlStores.some(
@@ -5783,6 +5811,9 @@ function savePriceUpdatesConfig() {
   const primaryOption = document.querySelector(
     `#price-updates-primary-store option[value="${primaryStoreId}"]`,
   );
+  const randSelect = document.getElementById("price-updates-rand-store");
+  const fiveStarsBoSelect = document.getElementById("price-updates-fivestars-bo-store");
+  const fiveStarsShopifySelect = document.getElementById("price-updates-fivestars-shopify-store");
   const config = {
     primaryStoreId: parseInt(primaryStoreId),
     primaryStoreName: primaryOption ? primaryOption.textContent : "-",
@@ -5790,11 +5821,16 @@ function savePriceUpdatesConfig() {
     storeNames,
     mirrorStoreIds,
     mirrorStoreNames,
+    randStoreId: randSelect?.value ? parseInt(randSelect.value) : null,
+    randStoreName: randSelect?.value ? randSelect.selectedOptions[0].textContent : null,
+    fiveStarsBoStoreId: fiveStarsBoSelect?.value ? parseInt(fiveStarsBoSelect.value) : null,
+    fiveStarsShopifyStoreId: fiveStarsShopifySelect?.value ? parseInt(fiveStarsShopifySelect.value) : null,
   };
 
   localStorage.setItem("priceUpdatesConfig", JSON.stringify(config));
   priceUpdatesState.config = config;
   updatePriceUpdatesConfigSummary(config);
+  updateFillBRandState();
 
   document.getElementById("price-updates-config-section").style.display = "none";
   document.getElementById("price-updates-search-section").style.display = "block";
@@ -6269,6 +6305,19 @@ function displayPriceResults(upc, prices, siblingPrices) {
   const savedFillListPrice = localStorage.getItem("priceFillAllListPrice");
   const lastListPriceEl = document.getElementById("price-fill-last-list-price");
   if (lastListPriceEl) lastListPriceEl.textContent = savedFillListPrice ? `Last: $${savedFillListPrice}` : "";
+  [
+    ["priceFillBPrice", "price-fill-b-last-price"],
+    ["priceFillBCost", "price-fill-b-last-cost"],
+    ["priceFillBDeliveryB", "price-fill-b-last-delivery-b"],
+    ["priceFillBListPrice", "price-fill-b-last-list-price"],
+    ["priceFillBRandPrice", "price-fill-b-last-rand-price"],
+  ].forEach(([key, labelId]) => {
+    const saved = localStorage.getItem(key);
+    const lbl = document.getElementById(labelId);
+    if (lbl) lbl.textContent = saved ? `Last: $${saved}` : "";
+  });
+  updateFillBRandState();
+  toggleFillBRow(localStorage.getItem("priceFillBVisible") === "true");
   updateFillAllCount();
 
   // Auto-focus: after update re-search, focus description for next item; otherwise first price input
@@ -6337,6 +6386,10 @@ function updateDeliveryBColumnVisibility() {
   if (fillGroup) fillGroup.style.display = display;
   const listPriceFillGroup = document.getElementById("price-list-price-fill-group");
   if (listPriceFillGroup) listPriceFillGroup.style.display = display;
+  const bDeliveryBGroup = document.getElementById("price-fill-b-delivery-b-group");
+  if (bDeliveryBGroup) bDeliveryBGroup.style.display = display;
+  const bListPriceGroup = document.getElementById("price-fill-b-list-price-group");
+  if (bListPriceGroup) bListPriceGroup.style.display = display;
 
   document.querySelectorAll("#price-updates-tbody tr").forEach((tr) => {
     const cells = tr.children;
@@ -6376,6 +6429,11 @@ function resetPriceUpdates() {
   document.getElementById("price-fill-all-cost").value = "";
   document.getElementById("price-fill-all-delivery-b").value = "";
   document.getElementById("price-fill-all-list-price").value = "";
+  document.getElementById("price-fill-b-price").value = "";
+  document.getElementById("price-fill-b-cost").value = "";
+  document.getElementById("price-fill-b-delivery-b").value = "";
+  document.getElementById("price-fill-b-list-price").value = "";
+  document.getElementById("price-fill-b-rand-price").value = "";
   closeModal("price-update-modal");
   hidePriceDescriptionDropdown();
   hideFsDescriptionDropdown();
@@ -6447,6 +6505,34 @@ function confirmExitPriceFullscreen() {
   document.getElementById("price-exit-stay-btn").focus();
 }
 
+function computeEffectiveDeliveryB(newDeliveryB, newCost, rowSelector) {
+  const primaryStoreId = priceUpdatesState.config?.primaryStoreId;
+  if (newDeliveryB !== "") {
+    return parseFloat(newDeliveryB);
+  } else if (newCost !== "" && primaryStoreId) {
+    const primaryRow = document.querySelector(
+      `${rowSelector}[data-store-id="${primaryStoreId}"]`
+    );
+    if (primaryRow) {
+      const curCost = parseFloat(primaryRow.dataset.currentCost);
+      const curDeliveryB = parseFloat(primaryRow.dataset.currentDeliveryB);
+      if (curCost > 0 && curDeliveryB > 0) {
+        return roundUpTo5Cents(parseFloat(newCost) * (curDeliveryB / curCost));
+      }
+    }
+    return null;
+  }
+  return priceUpdatesState.primaryDeliveryB;
+}
+
+function deliveryBRouteCost(tr, effectiveDeliveryB) {
+  if (!effectiveDeliveryB || effectiveDeliveryB <= 0) return null;
+  if (tr.dataset.storeCategory === "wholesale") {
+    return effectiveDeliveryB.toFixed(2);
+  }
+  return roundUpTo5Cents(effectiveDeliveryB * 1.02).toFixed(2);
+}
+
 function fillAllPrices() {
   const newPrice = document.getElementById("price-fill-all-price").value;
   const newCost = document.getElementById("price-fill-all-cost").value;
@@ -6478,24 +6564,7 @@ function fillAllPrices() {
 
   const primaryStoreId = priceUpdatesState.config?.primaryStoreId;
 
-  // Determine effective Delivery B for non-primary cost calculation
-  let effectiveDeliveryB = null;
-  if (newDeliveryB !== "") {
-    effectiveDeliveryB = parseFloat(newDeliveryB);
-  } else if (newCost !== "" && primaryStoreId) {
-    const primaryRow = document.querySelector(
-      `${rowSelector}[data-store-id="${primaryStoreId}"]`
-    );
-    if (primaryRow) {
-      const curCost = parseFloat(primaryRow.dataset.currentCost);
-      const curDeliveryB = parseFloat(primaryRow.dataset.currentDeliveryB);
-      if (curCost > 0 && curDeliveryB > 0) {
-        effectiveDeliveryB = roundUpTo5Cents(parseFloat(newCost) * (curDeliveryB / curCost));
-      }
-    }
-  } else {
-    effectiveDeliveryB = priceUpdatesState.primaryDeliveryB;
-  }
+  const effectiveDeliveryB = computeEffectiveDeliveryB(newDeliveryB, newCost, rowSelector);
 
   let filledCount = 0;
   document
@@ -6510,14 +6579,8 @@ function fillAllPrices() {
           rowCost = newCost;
         }
       } else {
-        if (effectiveDeliveryB && effectiveDeliveryB > 0) {
-          const category = tr.dataset.storeCategory;
-          if (category === "wholesale") {
-            rowCost = effectiveDeliveryB.toFixed(2);
-          } else {
-            rowCost = roundUpTo5Cents(effectiveDeliveryB * 1.02).toFixed(2);
-          }
-        } else if (newCost !== "") {
+        rowCost = deliveryBRouteCost(tr, effectiveDeliveryB);
+        if (rowCost === null && newCost !== "") {
           rowCost = newCost;
         }
       }
@@ -6579,11 +6642,194 @@ function fillAllPrices() {
   }
 }
 
+function toggleFillBRow(force) {
+  const row = document.getElementById("price-fill-b-row");
+  const toggle = document.getElementById("price-fill-b-toggle");
+  if (!row) return;
+  const show = force !== undefined ? force : row.style.display === "none";
+  row.style.display = show ? "" : "none";
+  if (toggle) toggle.classList.toggle("active", show);
+  localStorage.setItem("priceFillBVisible", show ? "true" : "false");
+}
+
+function updateFillBRandState() {
+  const input = document.getElementById("price-fill-b-rand-price");
+  if (!input) return;
+  const randStoreId = priceUpdatesState.config?.randStoreId;
+  input.disabled = !randStoreId;
+  if (!randStoreId) {
+    input.value = "";
+    input.placeholder = "Rand (not set)";
+    input.title = "Configure a Rand store in the Price Updates configuration to use this";
+  } else {
+    input.placeholder = "Rand Sale Price";
+    input.title = `Sale price applied to all ${priceUpdatesState.config?.randStoreName || "Rand"} rows`;
+  }
+}
+
+function fillDeliveryBPrices() {
+  const newPrice = document.getElementById("price-fill-b-price").value;
+  const newCost = document.getElementById("price-fill-b-cost").value;
+  const newDeliveryB = document.getElementById("price-fill-b-delivery-b").value;
+  const newListPrice = document.getElementById("price-fill-b-list-price").value;
+  const randInput = document.getElementById("price-fill-b-rand-price");
+  const randPrice = randInput && !randInput.disabled ? randInput.value : "";
+
+  [
+    { value: newPrice, key: "priceFillBPrice", labelId: "price-fill-b-last-price" },
+    { value: newCost, key: "priceFillBCost", labelId: "price-fill-b-last-cost" },
+    { value: newDeliveryB, key: "priceFillBDeliveryB", labelId: "price-fill-b-last-delivery-b" },
+    { value: newListPrice, key: "priceFillBListPrice", labelId: "price-fill-b-last-list-price" },
+    { value: randPrice, key: "priceFillBRandPrice", labelId: "price-fill-b-last-rand-price" },
+  ].forEach(({ value, key, labelId }) => {
+    if (!value) return;
+    localStorage.setItem(key, value);
+    const lbl = document.getElementById(labelId);
+    if (lbl) lbl.textContent = `Last: $${value}`;
+  });
+
+  const rowSelector = '#price-updates-tbody tr:not(.store-header-row):not([style*="display: none"]):not(.price-excluded)';
+  const config = priceUpdatesState.config || {};
+  const primaryStoreId = config.primaryStoreId;
+  const randStoreId = config.randStoreId;
+  const fiveStarsBoStoreId = config.fiveStarsBoStoreId;
+  const fiveStarsShopifyStoreId = config.fiveStarsShopifyStoreId;
+  const pairConfigured = !!(fiveStarsBoStoreId && fiveStarsShopifyStoreId);
+
+  const effectiveDeliveryB = computeEffectiveDeliveryB(newDeliveryB, newCost, rowSelector);
+
+  const boPriceByBarcode = new Map();
+  let filledCount = 0;
+
+  const fillRow = (tr) => {
+    let filled = false;
+    let rowCost = null;
+    const rowStoreId = String(tr.dataset.storeId);
+    const isPrimary = rowStoreId === String(primaryStoreId);
+    const isRand = randStoreId != null && rowStoreId === String(randStoreId);
+
+    if (isPrimary) {
+      if (newCost !== "") {
+        rowCost = newCost;
+      }
+    } else {
+      rowCost = deliveryBRouteCost(tr, effectiveDeliveryB);
+      if (rowCost === null && newCost !== "") {
+        rowCost = newCost;
+      }
+    }
+
+    if (rowCost !== null) {
+      const costInput = tr.querySelector(".new-cost");
+      if (costInput) { costInput.value = rowCost; filled = true; }
+    }
+
+    // Price precedence: Rand exact price > typed price (primary only) > markup derivation
+    const priceInput = tr.querySelector(".new-price");
+    if (isRand && randPrice !== "") {
+      if (priceInput) {
+        priceInput.value = randPrice;
+        priceInput.dataset.autoCalculated = "";
+        priceInput.classList.remove("auto-calculated");
+        filled = true;
+      }
+    } else if (isPrimary && newPrice !== "") {
+      if (priceInput) {
+        priceInput.value = newPrice;
+        priceInput.dataset.autoCalculated = "";
+        priceInput.classList.remove("auto-calculated");
+        filled = true;
+      }
+    } else if (rowCost !== null) {
+      autoCalculateFromCost(tr, rowCost);
+      if (priceInput && priceInput.value) filled = true;
+    }
+
+    if (newDeliveryB !== "") {
+      const deliveryBInput = tr.querySelector(".new-delivery-b");
+      if (deliveryBInput) {
+        deliveryBInput.value = newDeliveryB;
+        deliveryBInput.dataset.autoCalculated = "";
+        deliveryBInput.classList.remove("auto-calculated");
+        filled = true;
+      }
+    }
+
+    if (newListPrice !== "") {
+      const listPriceInput = tr.querySelector(".new-list-price");
+      if (listPriceInput) {
+        listPriceInput.value = newListPrice;
+        filled = true;
+      }
+    }
+
+    if (filled) {
+      tr.dataset.filled = "true";
+      tr.classList.add("filled-row");
+      recalculateRowMarkup(tr);
+      filledCount++;
+    }
+
+    if (pairConfigured && rowStoreId === String(fiveStarsBoStoreId) && tr.dataset.barcode) {
+      boPriceByBarcode.set(tr.dataset.barcode, priceInput?.value || "");
+    }
+
+    return filled;
+  };
+
+  // Pass 1: all rows except 5 Stars Shopify (deferred so BO prices exist first)
+  const deferredRows = [];
+  document.querySelectorAll(rowSelector).forEach((tr) => {
+    if (pairConfigured && String(tr.dataset.storeId) === String(fiveStarsShopifyStoreId)) {
+      deferredRows.push(tr);
+      return;
+    }
+    fillRow(tr);
+  });
+
+  // Pass 2: 5 Stars Shopify — copy BO price by barcode when markup derivation failed
+  deferredRows.forEach((tr) => {
+    const wasFilled = fillRow(tr);
+    const priceInput = tr.querySelector(".new-price");
+    if (priceInput && !priceInput.value) {
+      const boPrice = boPriceByBarcode.get(tr.dataset.barcode || "");
+      if (boPrice) {
+        priceInput.value = boPrice;
+        priceInput.dataset.autoCalculated = "true";
+        priceInput.classList.add("auto-calculated");
+        if (!wasFilled) {
+          tr.dataset.filled = "true";
+          tr.classList.add("filled-row");
+          filledCount++;
+        }
+        recalculateRowMarkup(tr);
+      }
+    }
+  });
+
+  const fillBtn = document.getElementById("price-fill-b-btn");
+  if (fillBtn && filledCount > 0) {
+    fillBtn.classList.remove("fill-all-flash");
+    void fillBtn.offsetWidth;
+    fillBtn.textContent = `Filled ${filledCount}`;
+    fillBtn.classList.add("fill-all-flash");
+    setTimeout(() => {
+      fillBtn.classList.remove("fill-all-flash");
+      fillBtn.textContent = "Fill Flow";
+    }, 1500);
+  }
+}
+
 function clearAllPrices() {
   document.getElementById("price-fill-all-price").value = "";
   document.getElementById("price-fill-all-cost").value = "";
   document.getElementById("price-fill-all-delivery-b").value = "";
   document.getElementById("price-fill-all-list-price").value = "";
+  document.getElementById("price-fill-b-price").value = "";
+  document.getElementById("price-fill-b-cost").value = "";
+  document.getElementById("price-fill-b-delivery-b").value = "";
+  document.getElementById("price-fill-b-list-price").value = "";
+  document.getElementById("price-fill-b-rand-price").value = "";
 
   document
     .querySelectorAll("#price-updates-tbody tr:not(.store-header-row)")
@@ -7457,6 +7703,12 @@ document
 document
   .getElementById("price-clear-all-btn")
   ?.addEventListener("click", clearAllPrices);
+document
+  .getElementById("price-fill-b-toggle")
+  ?.addEventListener("click", () => toggleFillBRow());
+document
+  .getElementById("price-fill-b-btn")
+  ?.addEventListener("click", fillDeliveryBPrices);
 document
   .getElementById("price-updates-update-btn")
   ?.addEventListener("click", showUpdateConfirmation);
