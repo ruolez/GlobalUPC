@@ -18475,6 +18475,8 @@ const bovState = {
   storeFilter: [],      // store ids; [] = all configured sources
   chartsOpen: false,    // revenue/margin charts collapsed by default
   collapsedCards: {},   // cardId -> true when the user collapsed it
+  section: "overview",  // active section tab
+  popover: null,        // id of the open topbar popover
   listModal: null,      // {kind, widgetKey, search} while #bov-list-modal is open
   seriesHidden: { cost: true },
   tabs: { invoices: "all", purchases: "incoming", top: "customer" },
@@ -18681,6 +18683,7 @@ function bovLoadPrefs() {
     if (p && typeof p.charts === "boolean") bovState.chartsOpen = p.charts;
     if (p && typeof p.openInRange === "boolean") bovState.openInRange = p.openInRange;
     if (p && p.collapsed && typeof p.collapsed === "object") bovState.collapsedCards = { ...p.collapsed };
+    if (p && BOV_SECTIONS.includes(p.section)) bovState.section = p.section;
   } catch (e) {
     /* ignore */
   }
@@ -18700,6 +18703,7 @@ function bovSavePrefs() {
         charts: bovState.chartsOpen,
         openInRange: bovState.openInRange,
         collapsed: bovState.collapsedCards,
+        section: bovState.section,
       }),
     );
   } catch (e) {
@@ -18711,10 +18715,119 @@ function bovSavePrefs() {
 // Lifecycle
 // ---------------------------------------------------------------------------
 
+const BOV_SECTIONS = ["overview", "quotations", "invoices", "purchasing", "shopify"];
+const BOV_CARD_SECTION = {
+  "bov-trend-card": "overview", "bov-margin-card": "overview", "bov-top-card": "overview", "bov-kpi-strip": "overview",
+  "bov-quotations-card": "quotations", "bov-invoices-card": "invoices",
+  "bov-purchases-card": "purchasing", "bov-shopify-card": "shopify",
+};
+
+function bovSetSection(id, opts = {}) {
+  if (!BOV_SECTIONS.includes(id)) id = "overview";
+  const changed = bovState.section !== id;
+  bovState.section = id;
+  document.querySelectorAll("#bov-subnav [data-bov-section]").forEach((b) => {
+    const on = b.dataset.bovSection === id;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-selected", on ? "true" : "false");
+  });
+  document.querySelectorAll("#bov-content .bov-panel").forEach((pnl) => {
+    pnl.hidden = pnl.dataset.bovPanel !== id;
+  });
+  if (!opts.silent) bovSavePrefs();
+  // SVG charts measure clientWidth, which is 0 while a panel is hidden.
+  if (id === "overview") bovScheduleChartRender();
+  if (changed && !opts.silent && !opts.keepScroll) {
+    const sticky = document.querySelector("#business-overview-page .bov-sticky");
+    const top = sticky ? sticky.getBoundingClientRect().bottom : 0;
+    const content = document.getElementById("bov-content");
+    if (content && content.getBoundingClientRect().top < top) content.scrollIntoView({ block: "start" });
+  }
+}
+
+function bovJumpTo(section, targetId) {
+  bovSetSection(section, { keepScroll: true });
+  const target = targetId && document.getElementById(targetId);
+  if (!target) return;
+  if ((targetId === "bov-trend-card" || targetId === "bov-margin-card") && !bovState.chartsOpen) bovSetChartsOpen(true);
+  requestAnimationFrame(() => target.scrollIntoView({ behavior: "smooth", block: "start" }));
+}
+
+function bovRenderNavBadges() {
+  const set = (section, val) => {
+    const el = document.getElementById(`bov-nav-count-${section}`);
+    if (!el) return;
+    if (val == null) { el.hidden = true; el.textContent = ""; return; }
+    el.hidden = false;
+    el.textContent = bovInt(val);
+  };
+  const okData = (w) => (w && w.data && w.data.configured && !w.data.error && !w.data.filtered_out) ? w.data : null;
+  const q = okData(bovState.widgets.quotations);
+  set("quotations", q ? (q.count || 0) : null);
+  const inv = okData(bovState.widgets.invoicesPeriod);
+  set("invoices", inv ? (inv.count || 0) : null);
+  const po = okData(bovState.widgets.purchasesIncoming);
+  set("purchasing", po ? (po.count || 0) : null);
+  const sh = okData(bovState.widgets.shopifyOrders);
+  set("shopify", sh && sh.totals ? (sh.totals.orders || 0) : null);
+}
+
+// ----- Topbar popovers (Period / Stores) -----
+function bovOpenPopover(id) {
+  bovClosePopovers(id);
+  const pop = document.getElementById(id);
+  const trig = pop && document.querySelector(`[aria-controls="${id}"]`);
+  if (!pop) return;
+  pop.hidden = false;
+  trig?.setAttribute("aria-expanded", "true");
+  bovState.popover = id;
+}
+
+function bovClosePopovers(exceptId) {
+  document.querySelectorAll("#business-overview-page .bov-popover").forEach((pop) => {
+    if (exceptId && pop.id === exceptId) return;
+    if (pop.hidden) return;
+    pop.hidden = true;
+    document.querySelector(`[aria-controls="${pop.id}"]`)?.setAttribute("aria-expanded", "false");
+  });
+  if (!exceptId || bovState.popover !== exceptId) bovState.popover = null;
+}
+
+function bovTogglePopover(id) {
+  const pop = document.getElementById(id);
+  if (!pop) return;
+  if (pop.hidden) bovOpenPopover(id);
+  else {
+    bovClosePopovers();
+    document.querySelector(`[aria-controls="${id}"]`)?.focus();
+  }
+}
+
+function bovRenderDateTrigger() {
+  const val = document.getElementById("bov-date-trigger-value");
+  const sub = document.getElementById("bov-date-trigger-sub");
+  if (!val) return;
+  const preset = BOV_PRESETS.find((p) => p.key === bovState.preset);
+  val.textContent = preset ? preset.label : "Period";
+  if (sub) {
+    const r = bovState.range;
+    sub.textContent = r ? bovFmtRangeLabel(r.from, r.to) : "";
+    sub.hidden = !r;
+  }
+  const hint = document.getElementById("bov-date-popover-hint");
+  if (hint) {
+    const p = bovState.period;
+    hint.textContent = p && p.prev_start && p.prev_end
+      ? `Compared with ${bovFmtRangeLabel(p.prev_start, p.prev_end)} (previous period of equal length).`
+      : "Every figure is compared with the previous period of equal length.";
+  }
+}
+
 async function loadBusinessOverviewPage() {
   bovBindOnce();
   bovLoadPrefs();
   BOV_COLLAPSIBLE_CARDS.forEach(bovApplyCollapsed);
+  bovSetSection(bovState.section, { silent: true });
   bovRenderPresetChips();
   bovRenderBucketButtons();
   const splitEl = document.getElementById("bov-split-toggle");
@@ -18796,13 +18909,28 @@ function bovRenderStoreChips() {
   if (bar) bar.hidden = stores.length < 2;
   const sel = new Set(bovState.storeFilter);
   const all = sel.size === 0;
-  const chips = [
-    `<button type="button" class="sa-chip${all ? " active" : ""}" data-bov-store="all" aria-pressed="${all}">All</button>`,
+  const rows = [
+    `<button type="button" class="bov-ms-item${all ? " active" : ""}" role="checkbox" aria-checked="${all}" data-bov-store="all"><span class="bov-ms-check" aria-hidden="true"></span><span class="bov-ms-label">All stores</span><span class="bov-store-chip-tag">${bovInt(stores.length)}</span></button>`,
   ].concat(stores.map((s) => {
     const on = sel.has(s.id);
-    return `<button type="button" class="sa-chip bov-store-chip${on ? " active" : ""}" data-bov-store="${s.id}" aria-pressed="${on}" title="${escapeHtml(s.name)}">${escapeHtml(bovStoreShort(s.name))}<span class="bov-store-chip-tag">${escapeHtml(s.type)}</span></button>`;
+    return `<button type="button" class="bov-ms-item${on ? " active" : ""}" role="checkbox" aria-checked="${on}" data-bov-store="${s.id}" title="${escapeHtml(s.name)}"><span class="bov-ms-check" aria-hidden="true"></span><span class="bov-ms-label">${escapeHtml(s.name)}</span><span class="bov-store-chip-tag">${escapeHtml(s.type)}</span></button>`;
   }));
-  wrap.innerHTML = chips.join("");
+  wrap.innerHTML = rows.join("");
+  // Trigger text + count
+  const val = document.getElementById("bov-store-trigger-value");
+  const cnt = document.getElementById("bov-store-trigger-count");
+  const trig = document.getElementById("bov-store-trigger");
+  const names = bovFilteredStoreNames();
+  if (val) {
+    if (!names.length) val.textContent = "All stores";
+    else if (names.length <= 2) val.textContent = names.map((n) => bovStoreShort(n)).join(", ");
+    else val.textContent = `${names.length} of ${stores.length} stores`;
+  }
+  if (cnt) {
+    cnt.hidden = !names.length;
+    cnt.textContent = String(names.length);
+  }
+  trig?.classList.toggle("has-selection", names.length > 0);
 }
 
 function bovToggleStoreChip(value) {
@@ -18875,16 +19003,51 @@ function bovBindOnce() {
     bovToggleCardCollapsed(t.dataset.bovCollapse);
   });
 
-  // Presets (delegated)
+  // Section switcher (subnav + KPI tiles)
+  page.addEventListener("click", (e) => {
+    const sec = e.target.closest("[data-bov-section]");
+    if (!sec || e.target.closest("a, [data-bov-action]")) return;
+    e.preventDefault();
+    if (sec.dataset.bovTarget) bovJumpTo(sec.dataset.bovSection, sec.dataset.bovTarget);
+    else bovSetSection(sec.dataset.bovSection);
+  });
+
+  // Topbar popovers
+  document.getElementById("bov-date-trigger")?.addEventListener("click", (e) => { e.stopPropagation(); bovTogglePopover("bov-date-popover"); });
+  document.getElementById("bov-store-trigger")?.addEventListener("click", (e) => { e.stopPropagation(); bovTogglePopover("bov-store-popover"); });
+  document.addEventListener("click", (e) => {
+    if (!bovState.popover) return;
+    // composedPath survives the row re-render that a store toggle triggers
+    // (the clicked row is detached by the time this bubbles to document).
+    const path = typeof e.composedPath === "function" ? e.composedPath() : [];
+    const inside = path.some((el) => el && el.classList && (el.classList.contains("bov-popover") || el.classList.contains("bov-filter-trigger")))
+      || !!e.target.closest?.(".bov-popover, .bov-filter-trigger");
+    if (inside) return;
+    bovClosePopovers();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape" || !bovState.popover) return;
+    const id = bovState.popover;
+    bovClosePopovers();
+    document.querySelector(`[aria-controls="${id}"]`)?.focus();
+    e.stopPropagation();
+  }, true);
+
+  // Presets (delegated) — a preset applies and closes the popover
   document.getElementById("bov-presets")?.addEventListener("click", (e) => {
     const btn = e.target.closest("[data-bov-preset]");
     if (!btn) return;
     bovApplyPreset(btn.dataset.bovPreset);
+    bovClosePopovers();
+    document.getElementById("bov-date-trigger")?.focus();
   });
   document.getElementById("bov-custom-apply")?.addEventListener("click", () => {
     bovState.customFrom = document.getElementById("bov-custom-from")?.value || null;
     bovState.customTo = document.getElementById("bov-custom-to")?.value || null;
+    const before = bovState.range ? `${bovState.range.from}|${bovState.range.to}` : "";
     bovApplyPreset("custom");
+    const after = bovState.range ? `${bovState.range.from}|${bovState.range.to}` : "";
+    if (bovState.preset === "custom" && bovState.customFrom && bovState.customTo && after && after !== before) bovClosePopovers();
   });
   ["bov-custom-from", "bov-custom-to"].forEach((id) => {
     document.getElementById(id)?.addEventListener("keydown", (e) => {
@@ -18926,20 +19089,13 @@ function bovBindOnce() {
     bovRefreshShopify({ maxAgeMinutes: 0 });
   });
 
-  // Config
-  document.getElementById("bov-config-gear")?.addEventListener("click", () => bovOpenConfigEdit());
+  // Config (Sources pill → modal; Edit → form inside the modal)
   document.getElementById("bov-config-edit-btn")?.addEventListener("click", (e) => {
     e.stopPropagation();
     bovOpenConfigEdit();
   });
-  const head = document.getElementById("bov-config-head");
-  head?.addEventListener("click", () => bovToggleConfigDetails());
-  head?.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      bovToggleConfigDetails();
-    }
-  });
+  document.getElementById("bov-config-head")?.addEventListener("click", () => bovToggleConfigDetails());
+  document.querySelector('[data-bov-close="bov-config-modal"]')?.addEventListener("click", () => bovCancelConfigEdit({ close: true }));
   document.getElementById("bov-config-save")?.addEventListener("click", () => bovSaveConfig());
   document.getElementById("bov-config-cancel")?.addEventListener("click", () => bovCancelConfigEdit());
   document.getElementById("bov-cfg-status-add-btn")?.addEventListener("click", () => bovAddStatusPill());
@@ -19026,9 +19182,9 @@ function bovBindOnce() {
       return;
     }
     const kpi = e.target.closest("[data-bov-scroll]");
-    if (kpi && !e.target.closest("a, button")) {
-      const target = document.getElementById(kpi.dataset.bovScroll);
-      if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (kpi && !e.target.closest("a, button, [data-bov-section]")) {
+      const targetId = kpi.dataset.bovScroll;
+      bovJumpTo(BOV_CARD_SECTION[targetId] || bovState.section, targetId);
       return;
     }
   });
@@ -19086,9 +19242,13 @@ function bovBindOnce() {
   });
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
+    if (bovState.popover) return; // the popover handler already consumed it
     // Close only the topmost open overview modal (detail modals stack on the list modal).
     const open = document.querySelectorAll(".bov-modal.active");
-    if (open.length) closeModal(open[open.length - 1].id);
+    if (!open.length) return;
+    const top = open[open.length - 1];
+    if (top.id === "bov-config-modal") bovCancelConfigEdit({ close: true });
+    else closeModal(top.id);
   });
 
   // Visibility → auto-refresh
@@ -19121,7 +19281,8 @@ function isBovVisible() {
 function startBovAutoRefresh() {
   stopBovAutoRefresh();
   bovState.refreshTimer = setInterval(() => {
-    if (document.hidden || !isBovVisible() || bovState.configEditing) return;
+    if (document.hidden || !isBovVisible()) return;
+    if (bovState.configEditing && document.getElementById("bov-config-modal")?.classList.contains("active")) return;
     bovFetchAll({ only: BOV_LIVE_WIDGETS, silent: true });
     if (Date.now() - bovState.lastShopifyRefreshAt >= BOV_SHOPIFY_AUTO_REFRESH_MS) {
       bovRefreshShopify({ maxAgeMinutes: 15, silent: true });
@@ -19244,13 +19405,38 @@ function bovShowSetup(show) {
   const setup = document.getElementById("bov-config-setup");
   const content = document.getElementById("bov-content");
   const bar = document.getElementById("bov-config-bar");
-  if (setup) setup.hidden = !show;
+  const empty = document.getElementById("bov-setup-empty");
+  const nav = document.getElementById("bov-subnav");
   if (content) content.hidden = show;
   if (bar) bar.hidden = show;
+  if (empty) empty.hidden = !show;
+  if (nav) nav.hidden = show;
   if (show) {
     bovState.configEditing = true;
+    if (setup) setup.hidden = false;
     bovPopulateConfigForm(bovState.config, { firstRun: true });
+    bovOpenConfigModal({ editing: true, firstRun: true });
+  } else if (setup && !bovState.configEditing) {
+    setup.hidden = true;
   }
+}
+
+function bovOpenConfigModal(opts = {}) {
+  const modal = document.getElementById("bov-config-modal");
+  const setup = document.getElementById("bov-config-setup");
+  const details = document.getElementById("bov-config-details");
+  const editBtn = document.getElementById("bov-config-edit-btn");
+  const title = document.getElementById("bov-config-modal-title");
+  const meta = document.getElementById("bov-config-modal-meta");
+  if (!modal) return;
+  const editing = !!opts.editing;
+  if (setup) setup.hidden = !editing;
+  if (details) details.hidden = editing;
+  if (editBtn) editBtn.hidden = editing;
+  if (title) title.textContent = opts.firstRun ? "Set up Business Overview" : "Data sources";
+  if (meta) meta.textContent = editing ? "Pick where each part of the overview reads from" : "Where the overview reads from";
+  document.getElementById("bov-config-head")?.setAttribute("aria-expanded", "true");
+  if (!modal.classList.contains("active")) openModal("bov-config-modal");
 }
 
 // ---------------------------------------------------------------------------
@@ -19260,16 +19446,18 @@ function bovShowSetup(show) {
 function bovRenderPresetChips() {
   const el = document.getElementById("bov-presets");
   if (!el) return;
-  el.innerHTML = BOV_PRESETS.map(
-    (p) =>
-      `<button type="button" class="sa-chip${p.key === bovState.preset ? " active" : ""}" role="radio" aria-checked="${p.key === bovState.preset}" data-bov-preset="${p.key}">${p.label}</button>`,
-  ).join("");
+  // Preset rows inside the Period popover (custom lives in the popover footer).
+  el.innerHTML = BOV_PRESETS.filter((p) => p.key !== "custom").map((p) => {
+    const on = p.key === bovState.preset;
+    return `<button type="button" class="bov-ms-item${on ? " active" : ""}" role="radio" aria-checked="${on}" data-bov-preset="${p.key}"><span class="bov-ms-check" aria-hidden="true"></span><span class="bov-ms-label">${p.label}</span></button>`;
+  }).join("");
   const custom = document.getElementById("bov-custom-range");
-  if (custom) custom.hidden = bovState.preset !== "custom";
+  if (custom) custom.classList.toggle("is-active", bovState.preset === "custom");
   const cf = document.getElementById("bov-custom-from");
   const ct = document.getElementById("bov-custom-to");
   if (cf && bovState.customFrom) cf.value = bovState.customFrom;
   if (ct && bovState.customTo) ct.value = bovState.customTo;
+  bovRenderDateTrigger();
 }
 
 function bovRenderBucketButtons() {
@@ -19342,6 +19530,7 @@ function bovRenderRangeLabel() {
   const names = bovFilteredStoreNames();
   if (names.length) bits.push(names.join(", "));
   el.textContent = bits.join(" · ");
+  bovRenderDateTrigger();
 }
 
 // ---------------------------------------------------------------------------
@@ -19524,6 +19713,7 @@ async function bovFetchWidget(key, seq, signal) {
   if (seq !== w.seq) return;
   try {
     def.render();
+    bovRenderNavBadges();
     if (bovState.listModal && bovState.listModal.widgetKey === key) bovRenderListModal();
   } catch (e) {
     console.error(`[bov] render ${key} failed`, e);
@@ -19677,7 +19867,7 @@ function bovKpiTile(t) {
   if (t.state === "error") cls.push("is-error");
   if (t.state === "unconfigured") cls.push("is-muted");
   const valueCls = t.money ? "sa-kpi-value sa-kpi-value-money" : "sa-kpi-value";
-  const scroll = t.scrollTo ? ` data-bov-scroll="${escapeHtml(t.scrollTo)}" role="link" tabindex="0"` : "";
+  const scroll = t.scrollTo ? ` data-bov-section="${escapeHtml(BOV_CARD_SECTION[t.scrollTo] || "overview")}" data-bov-target="${escapeHtml(t.scrollTo)}" role="link" tabindex="0" title="Open ${escapeHtml((BOV_CARD_SECTION[t.scrollTo] || "overview"))}"` : "";
   return (
     `<div class="${cls.join(" ")}"${scroll}>` +
     `<span class="sa-kpi-label">${escapeHtml(t.label)}</span>` +
@@ -19700,7 +19890,7 @@ function bovKpiUnconfigured(label, detail, action, actionLabel) {
 
 function bovKpiError(label, message) {
   // Short text on the tile; the full backend error is in the title and in the card below.
-  return { label, value: "—", state: "error", subText: "Unavailable — see the card below", subTitle: message || "Unavailable" };
+  return { label, value: "—", state: "error", subText: "Unavailable — open the section for details", subTitle: message || "Unavailable" };
 }
 
 function bovKpiFilteredOut(label) {
@@ -21469,7 +21659,11 @@ function bovRenderConfigBar() {
     bit(!!cfg.admin_store_id, "Admin DB", cfg.admin_store_name || "not set"),
     bit(true, "Exclusions", `${bovInt(cfg.sales_exclusions_count || 0)} account${cfg.sales_exclusions_count === 1 ? "" : "s"}`),
   ];
-  summary.innerHTML = `<span class="bov-config-summary-label">Sources</span>${bits.join("")}`;
+  const issues = [salesN > 0, !!cfg.purchases_store_id, shopN > 0, !!cfg.admin_store_id].filter((ok) => !ok).length;
+  summary.innerHTML = `${bovConfigDot(issues === 0, issues > 0)}<span class="bov-config-pill-text">Sources</span>${issues ? `<span class="bov-config-pill-issues">${issues} not set</span>` : ""}`;
+  document.getElementById("bov-config-head")?.classList.toggle("is-warn", issues > 0);
+  const modalMeta = document.getElementById("bov-config-modal-meta");
+  if (modalMeta && details && !details.hidden) modalMeta.textContent = bits.length ? "Where the overview reads from" : "";
 
   // Per-store sync state comes from /config/options (loaded with the config).
   const optShop = ((bovState.options && bovState.options.shopify_stores) || []);
@@ -21494,36 +21688,39 @@ function bovRenderConfigBar() {
     `<div class="bov-config-links"><a href="#" data-bov-action="config">Edit sources</a><a href="#" data-bov-action="exclusions">Manage exclusions</a><a href="#" data-bov-action="settings-roles">Admin DB</a></div>`;
 }
 
-function bovToggleConfigDetails(force) {
-  const details = document.getElementById("bov-config-details");
-  const head = document.getElementById("bov-config-head");
-  const caret = document.getElementById("bov-config-caret");
-  if (!details) return;
-  const open = typeof force === "boolean" ? force : details.hidden;
-  details.hidden = !open;
-  if (head) head.setAttribute("aria-expanded", open ? "true" : "false");
-  if (caret) caret.textContent = open ? "▼" : "▶";
+function bovToggleConfigDetails() {
+  // The Sources pill opens the modal in read mode (status rows + Edit).
+  bovRenderConfigBar();
+  bovOpenConfigModal({ editing: false });
 }
 
 function bovOpenConfigEdit() {
   bovState.configEditing = true;
-  const setup = document.getElementById("bov-config-setup");
   const title = document.getElementById("bov-config-title");
   const cancel = document.getElementById("bov-config-cancel");
-  if (setup) setup.hidden = false;
   if (title) title.textContent = "Data sources";
   if (cancel) cancel.hidden = false;
   bovPopulateConfigForm(bovState.config, { firstRun: false });
-  setup?.scrollIntoView({ behavior: "smooth", block: "start" });
+  bovOpenConfigModal({ editing: true });
+  const body = document.getElementById("bov-config-modal-body");
+  if (body) body.scrollTop = 0;
 }
 
-function bovCancelConfigEdit() {
+function bovCancelConfigEdit(opts = {}) {
   const cfg = bovState.config || {};
   const hasAnything = !!(bovSalesStoreIds(cfg).length || cfg.purchases_store_id || (cfg.shopify_store_ids || []).length);
-  if (!hasAnything) return; // first run: nothing to go back to
   bovState.configEditing = false;
+  document.getElementById("bov-config-head")?.setAttribute("aria-expanded", "false");
+  if (!hasAnything) {
+    // First run: nothing to go back to — leave the empty state + button behind.
+    closeModal("bov-config-modal");
+    bovState.configEditing = true;
+    return;
+  }
   const setup = document.getElementById("bov-config-setup");
   if (setup) setup.hidden = true;
+  if (opts.close) closeModal("bov-config-modal");
+  else bovOpenConfigModal({ editing: false });
 }
 
 function bovPillCheck(cls, value, label, checked, extraHtml) {
@@ -21661,7 +21858,9 @@ async function bovSaveConfig() {
     showToast("✓ Overview sources saved", "success");
     bovState.configEditing = false;
     document.getElementById("bov-config-setup").hidden = true;
-    document.getElementById("bov-content").hidden = false;
+    closeModal("bov-config-modal");
+    document.getElementById("bov-config-head")?.setAttribute("aria-expanded", "false");
+    bovShowSetup(false);
     bovRenderConfigBar();
     // Reset widget state so unconfigured→configured transitions repaint from a skeleton.
     Object.keys(bovState.widgets).forEach((k) => { bovState.widgets[k] = bovEmptyWidget(); });

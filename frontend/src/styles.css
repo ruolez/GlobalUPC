@@ -7611,3 +7611,263 @@ tr.bov-line-void td { opacity: 0.55; text-decoration: line-through; }
 .bov-sync-status.is-warn { color: var(--warning); }
 .bov-updated-wrap { display: inline-flex; flex-direction: column; align-items: flex-end; gap: 0.125rem; }
 .bov-page .bov-mini-table.bov-shopify-table th { white-space: normal; line-height: 1.2; }
+
+/* ===========================================================================
+   Business Overview v3 — sticky topbar, popover filters, section tabs
+   (appended last so it overrides the earlier toolbar/config-bar rules)
+   =========================================================================== */
+.bov-page .bov-sticky {
+  position: sticky;
+  top: 0;
+  z-index: 8;
+  background: var(--bg-primary);
+  margin: 0 0 1rem;
+  border-bottom: 1px solid var(--border-color);
+}
+.bov-topbar {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 0.75rem 1rem;
+  flex-wrap: wrap;
+  padding-bottom: 0.625rem;
+}
+.bov-topbar-title { min-width: 0; flex: 1 1 14rem; }
+.bov-topbar-controls { flex: 0 1 auto; }
+.bov-topbar-title h2 { margin: 0; font-size: 1.5rem; line-height: 1.2; }
+.bov-page .bov-range-label {
+  margin: 0.2rem 0 0;
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+.bov-topbar-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+.bov-topbar-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+.bov-topbar-status .bov-updated { font-size: 0.75rem; color: var(--text-tertiary); max-width: 22rem; }
+.bov-topbar-status .bov-updated-wrap { display: flex; flex-direction: column; align-items: flex-start; gap: 0.1rem; line-height: 1.2; }
+
+/* --- Filter triggers (Period / Stores) --- */
+.bov-filter { position: relative; }
+.bov-filter-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  height: 38px;
+  padding: 0 0.625rem 0 0.75rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font: inherit;
+  cursor: pointer;
+  transition: var(--transition);
+  max-width: 22rem;
+}
+.bov-filter-trigger:hover { background: var(--bg-hover); }
+.bov-filter-trigger:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 1px; }
+.bov-filter-trigger[aria-expanded="true"] { border-color: var(--accent-primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-primary) 18%, transparent); }
+.bov-filter-trigger.has-selection { border-color: color-mix(in srgb, var(--accent-primary) 45%, var(--border-color)); background: color-mix(in srgb, var(--accent-primary) 8%, var(--bg-secondary)); }
+.bov-filter-trigger > svg:first-child { color: var(--text-tertiary); flex: 0 0 auto; }
+.bov-filter-text { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; line-height: 1.15; }
+.bov-filter-key { font-size: 0.625rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-tertiary); }
+.bov-filter-value { font-size: 0.8125rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 16rem; }
+.bov-filter-sub { font-size: 0.6875rem; color: var(--text-secondary); white-space: nowrap; }
+.bov-filter-sub[hidden] { display: none; }
+.bov-filter-chevron { color: var(--text-tertiary); transition: transform 0.15s ease; flex: 0 0 auto; }
+.bov-filter-trigger[aria-expanded="true"] .bov-filter-chevron { transform: rotate(180deg); }
+.bov-filter-trigger .qip-ms-count { margin-left: 0.125rem; }
+
+/* --- Popovers --- */
+.bov-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 60;
+  min-width: 300px;
+  max-width: min(420px, 92vw);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  padding: 0.375rem;
+  animation: qip-pop 0.12s ease-out;
+}
+.bov-popover[hidden] { display: none; }
+.bov-popover-list { display: flex; flex-direction: column; gap: 0.0625rem; max-height: 320px; overflow-y: auto; }
+.bov-ms-item {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  width: 100%;
+  min-height: 36px;
+  padding: 0.375rem 0.625rem;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 0.8125rem;
+  text-align: left;
+  cursor: pointer;
+}
+.bov-ms-item:hover { background: var(--bg-hover); }
+.bov-ms-item:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: -2px; }
+.bov-ms-item.active { color: var(--accent-primary); font-weight: 600; }
+.bov-ms-check {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  border-radius: 4px;
+  border: 1.5px solid var(--border-color);
+  position: relative;
+  background: var(--bg-primary);
+}
+.bov-ms-item.active .bov-ms-check { border-color: var(--accent-primary); background: var(--accent-primary); }
+.bov-ms-item.active .bov-ms-check::after {
+  content: "";
+  position: absolute;
+  left: 4.5px;
+  top: 1.5px;
+  width: 4px;
+  height: 8px;
+  border: solid var(--bg-primary);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+.bov-ms-item[role="radio"] .bov-ms-check { border-radius: 50%; }
+.bov-ms-item[role="radio"].active .bov-ms-check::after { left: 4px; top: 4px; width: 6px; height: 6px; border: 0; border-radius: 50%; background: var(--bg-primary); transform: none; }
+.bov-ms-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bov-popover .bov-store-chip-tag { margin-left: auto; }
+.bov-popover-foot { border-top: 1px solid var(--border-color); margin-top: 0.375rem; padding: 0.625rem 0.5rem 0.375rem; }
+.bov-popover-foot-label { font-size: 0.6875rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-tertiary); margin-bottom: 0.375rem; }
+.bov-popover .bov-custom-range { display: flex; align-items: center; gap: 0.375rem; flex-wrap: wrap; }
+.bov-popover .bov-custom-range .dark-input { flex: 1 1 7rem; min-width: 7rem; }
+.bov-popover .bov-custom-range.is-active .dark-input { border-color: color-mix(in srgb, var(--accent-primary) 55%, var(--border-color)); }
+.bov-popover-hint { font-size: 0.6875rem; color: var(--text-tertiary); padding: 0.5rem 0.5rem 0.25rem; line-height: 1.35; }
+
+/* --- Sources pill --- */
+.bov-page .bov-config-bar { background: transparent; border: 0; margin: 0; overflow: visible; }
+.bov-config-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  height: 38px;
+  padding: 0 0.75rem;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 0.8125rem;
+  cursor: pointer;
+  transition: var(--transition);
+  white-space: nowrap;
+}
+.bov-config-pill:hover { background: var(--bg-hover); color: var(--text-primary); }
+.bov-config-pill:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 1px; }
+.bov-config-pill.is-warn { border-color: color-mix(in srgb, var(--warning) 55%, var(--border-color)); }
+.bov-config-pill-text { font-weight: 600; color: var(--text-primary); }
+.bov-config-pill-issues { font-size: 0.6875rem; color: var(--warning); }
+
+/* --- Section switcher --- */
+.bov-subnav {
+  display: flex;
+  align-items: stretch;
+  gap: 0.25rem;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.bov-subnav::-webkit-scrollbar { display: none; }
+.bov-subnav[hidden] { display: none; }
+.bov-subnav-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.625rem 0.875rem;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+.bov-subnav-item svg { color: var(--text-tertiary); }
+.bov-subnav-item:hover { color: var(--text-primary); }
+.bov-subnav-item:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: -2px; border-radius: var(--radius-sm); }
+.bov-subnav-item.active { color: var(--accent-primary); border-bottom-color: var(--accent-primary); font-weight: 600; }
+.bov-subnav-item.active svg { color: var(--accent-primary); }
+.bov-subnav-badge {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.bov-subnav-badge[hidden] { display: none; }
+.bov-subnav-item.active .bov-subnav-badge { background: color-mix(in srgb, var(--accent-primary) 14%, var(--bg-tertiary)); color: var(--accent-primary); }
+
+/* --- Panels --- */
+.bov-panel[hidden] { display: none; }
+.bov-panel > .bov-card, .bov-panel > .bov-grid-trend, .bov-panel > .bov-grid-second { margin-bottom: 1.25rem; }
+.bov-panel > .sa-kpi-strip { margin-bottom: 0.5rem; }
+.bov-page #bov-kpi-strip .sa-kpi[data-bov-section] { cursor: pointer; }
+.bov-page #bov-kpi-strip .sa-kpi[data-bov-section]:hover .sa-kpi-label { color: var(--accent-primary); }
+
+/* --- First-run empty state --- */
+.bov-setup-empty { padding: 2rem 0; }
+.bov-setup-empty-box { max-width: 36rem; margin: 0 auto; text-align: center; padding: 2rem 1.5rem; }
+.bov-setup-empty-box h3 { margin: 0 0 0.5rem; }
+.bov-setup-empty-box p { color: var(--text-secondary); font-size: 0.875rem; margin: 0 0 1rem; }
+
+/* --- Config modal --- */
+.bov-modal-head-actions { display: inline-flex; align-items: center; gap: 0.5rem; }
+#bov-config-modal .bov-config-details { padding: 0; }
+#bov-config-modal .bov-config-details[hidden] { display: none; }
+#bov-config-modal .bov-config-setup { margin: 0; }
+#bov-config-modal .bov-config-setup[hidden] { display: none; }
+#bov-config-modal .bov-config-setup > .dashboard-card { border: 0; padding: 0; background: transparent; box-shadow: none; }
+#bov-config-modal .bov-config-setup .dashboard-card-header { padding-top: 0; }
+#bov-config-modal .bov-config-links { margin-top: 0.75rem; }
+
+/* --- Responsive --- */
+@media (max-width: 1100px) {
+  .bov-filter-value { max-width: 12rem; }
+}
+@media (max-width: 900px) {
+  .bov-page .bov-sticky { position: static; margin-top: 0; }
+  .bov-topbar { align-items: flex-start; }
+  .bov-topbar-controls { margin-left: 0; width: 100%; }
+  .bov-filter { flex: 1 1 12rem; }
+  .bov-filter-trigger { width: 100%; max-width: none; }
+  .bov-popover { left: 0; right: auto; }
+  .bov-topbar-status .bov-updated { max-width: 14rem; }
+}
+@media (max-width: 600px) {
+  .bov-popover { min-width: 260px; }
+  .bov-filter-value { max-width: 9rem; }
+}
+@media print {
+  .bov-page .bov-sticky, .bov-topbar-controls, .bov-subnav { display: none !important; }
+  .bov-panel[hidden] { display: block !important; }
+}
