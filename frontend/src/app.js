@@ -18474,6 +18474,7 @@ const bovState = {
   splitSources: false,
   storeFilter: [],      // store ids; [] = all configured sources
   chartsOpen: false,    // revenue/margin charts collapsed by default
+  collapsedCards: {},   // cardId -> true when the user collapsed it
   listModal: null,      // {kind, widgetKey, search} while #bov-list-modal is open
   seriesHidden: { cost: true },
   tabs: { invoices: "open", purchases: "incoming", top: "customer" },
@@ -18679,6 +18680,7 @@ function bovLoadPrefs() {
     if (p && Array.isArray(p.storeIds)) bovState.storeFilter = p.storeIds.map(Number).filter((n) => !isNaN(n));
     if (p && typeof p.charts === "boolean") bovState.chartsOpen = p.charts;
     if (p && typeof p.openInRange === "boolean") bovState.openInRange = p.openInRange;
+    if (p && p.collapsed && typeof p.collapsed === "object") bovState.collapsedCards = { ...p.collapsed };
   } catch (e) {
     /* ignore */
   }
@@ -18697,6 +18699,7 @@ function bovSavePrefs() {
         storeIds: bovState.storeFilter,
         charts: bovState.chartsOpen,
         openInRange: bovState.openInRange,
+        collapsed: bovState.collapsedCards,
       }),
     );
   } catch (e) {
@@ -18711,6 +18714,7 @@ function bovSavePrefs() {
 async function loadBusinessOverviewPage() {
   bovBindOnce();
   bovLoadPrefs();
+  BOV_COLLAPSIBLE_CARDS.forEach(bovApplyCollapsed);
   bovRenderPresetChips();
   bovRenderBucketButtons();
   const splitEl = document.getElementById("bov-split-toggle");
@@ -18818,11 +18822,58 @@ function bovToggleStoreChip(value) {
   bovFetchAll();
 }
 
+const BOV_COLLAPSIBLE_CARDS = ["bov-top-card", "bov-quotations-card", "bov-invoices-card", "bov-purchases-card", "bov-shopify-card"];
+
+function bovInstallCollapsers() {
+  BOV_COLLAPSIBLE_CARDS.forEach((cardId) => {
+    const card = document.getElementById(cardId);
+    const wrap = card && card.querySelector(".bov-card-head .bov-card-title-wrap");
+    const h3 = wrap && wrap.querySelector("h3");
+    if (!card || !wrap || !h3 || wrap.querySelector(".bov-collapse-btn")) return;
+    const row = document.createElement("div");
+    row.className = "bov-card-title-row";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "bov-collapse-btn";
+    btn.dataset.bovCollapse = cardId;
+    btn.setAttribute("aria-label", `Collapse ${h3.textContent.trim()}`);
+    btn.innerHTML = `<svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M2.5 4.5 6 8l3.5-3.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+    wrap.insertBefore(row, h3);
+    row.appendChild(btn);
+    row.appendChild(h3);
+    h3.dataset.bovCollapse = cardId;
+    bovApplyCollapsed(cardId);
+  });
+}
+
+function bovApplyCollapsed(cardId) {
+  const card = document.getElementById(cardId);
+  if (!card) return;
+  const collapsed = !!bovState.collapsedCards[cardId];
+  card.classList.toggle("is-collapsed", collapsed);
+  const btn = card.querySelector(".bov-collapse-btn");
+  if (btn) btn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+}
+
+function bovToggleCardCollapsed(cardId) {
+  bovState.collapsedCards[cardId] = !bovState.collapsedCards[cardId];
+  if (!bovState.collapsedCards[cardId]) delete bovState.collapsedCards[cardId];
+  bovSavePrefs();
+  bovApplyCollapsed(cardId);
+}
+
 function bovBindOnce() {
   if (bovState.bound) return;
   bovState.bound = true;
   const page = document.getElementById("business-overview-page");
   if (!page) return;
+  bovInstallCollapsers();
+  page.addEventListener("click", (e) => {
+    const t = e.target.closest("[data-bov-collapse]");
+    if (!t) return;
+    e.preventDefault();
+    bovToggleCardCollapsed(t.dataset.bovCollapse);
+  });
 
   // Presets (delegated)
   document.getElementById("bov-presets")?.addEventListener("click", (e) => {
