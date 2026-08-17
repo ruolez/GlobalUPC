@@ -10144,15 +10144,24 @@ async def get_business_overview_summary(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     store_ids: Optional[str] = None,
+    open_scope: str = "range",
     db: Session = Depends(get_db),
 ):
     cfg = _bov_config(db)
     period = _bov_period(cfg, preset, date_from, date_to)
     only = _bov_parse_store_ids(store_ids)
+    # Open (unshipped) invoices: "range" = invoiced within the selected period
+    # (default — the whole historical backlog is rarely what the owner wants);
+    # "all" = every unshipped invoice regardless of date.
+    scope = (open_scope or "range").strip().lower()
+    if scope not in ("range", "all"):
+        raise HTTPException(status_code=400, detail="open_scope must be range or all")
+    open_kwargs = ({"date_from": period.start.isoformat(), "date_to": period.end.isoformat()}
+                   if scope == "range" else {})
     (quotations, invoices_open, invoices_shipped, incoming, purchased, received,
      sales, shopify_open) = await asyncio.gather(
         _bov_quotations_block(db, cfg, include_list=False, only_ids=only),
-        _bov_open_invoices_block(db, cfg, include_list=False, only_ids=only),
+        _bov_open_invoices_block(db, cfg, include_list=False, only_ids=only, **open_kwargs),
         _bov_shipped_block(db, cfg, period, "day", include_list=False, only_ids=only),
         _bov_incoming_block(db, cfg, include_list=False, only_ids=only),
         _bov_purchased_block(db, cfg, period, "day", include_list=False, only_ids=only),

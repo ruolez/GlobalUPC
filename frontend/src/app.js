@@ -18476,7 +18476,7 @@ const bovState = {
   seriesHidden: { cost: true },
   tabs: { invoices: "open", purchases: "incoming", top: "customer" },
   agingFilter: null,
-  openInRange: false,
+  openInRange: true,    // open invoices limited to those invoiced in the selected period
   expanded: { quotations: false, invoices: false, purchases: false },
   sort: {
     quotations: { key: "quotation_total", dir: "desc" },
@@ -18672,6 +18672,7 @@ function bovLoadPrefs() {
     if (p && typeof p.split === "boolean") bovState.splitSources = p.split;
     if (p && Array.isArray(p.storeIds)) bovState.storeFilter = p.storeIds.map(Number).filter((n) => !isNaN(n));
     if (p && typeof p.charts === "boolean") bovState.chartsOpen = p.charts;
+    if (p && typeof p.openInRange === "boolean") bovState.openInRange = p.openInRange;
   } catch (e) {
     /* ignore */
   }
@@ -18689,6 +18690,7 @@ function bovSavePrefs() {
         split: bovState.splitSources,
         storeIds: bovState.storeFilter,
         charts: bovState.chartsOpen,
+        openInRange: bovState.openInRange,
       }),
     );
   } catch (e) {
@@ -19012,7 +19014,8 @@ function bovBindOnce() {
   page.addEventListener("change", (e) => {
     if (e.target && e.target.id === "bov-inv-open-range") {
       bovState.openInRange = !!e.target.checked;
-      bovFetchAll({ only: ["invoicesOpen"] });
+      bovSavePrefs();
+      bovFetchAll({ only: ["invoicesOpen", "summary"] });
     }
   });
 
@@ -19235,7 +19238,7 @@ function bovRangeParams() {
 const BOV_WIDGET_DEFS = {
   summary: {
     card: "bov-kpi-strip",
-    request: () => ["/summary", { ...bovRangeParams(), ...bovStoreParams() }],
+    request: () => ["/summary", { ...bovRangeParams(), open_scope: bovState.openInRange ? "range" : "all", ...bovStoreParams() }],
     render: () => bovRenderKpis(),
   },
   trend: {
@@ -19675,7 +19678,7 @@ function bovRenderKpis() {
       deltaHtml: op.count
         ? `<span class="bov-kpi-delta ${warn ? "is-bad" : "is-flat"}">${warn ? "⚠" : "•"} oldest ${oldest != null ? `${oldest}d` : "—"}</span>`
         : `<span class="bov-kpi-delta is-good">✓ nothing waiting</span>`,
-      subText: (op.count ? `≤1d ${bovInt(aging["0-1"] || 0)} · 2–3d ${bovInt(aging["2-3"] || 0)} · 4d+ ${bovInt(aging["4+"] || 0)}` : "all invoices shipped") + bovPartialSuffix(op),
+      subText: (op.count ? `≤1d ${bovInt(aging["0-1"] || 0)} · 2–3d ${bovInt(aging["2-3"] || 0)} · 4d+ ${bovInt(aging["4+"] || 0)}` : (bovState.openInRange ? "nothing unshipped from this period" : "all invoices shipped")) + (bovState.openInRange ? " · invoiced in period" : " · all dates") + bovPartialSuffix(op),
       state: warn || bovPartialSuffix(op) ? "warn" : "ok",
       scrollTo: "bov-invoices-card",
     });
@@ -20482,11 +20485,11 @@ function bovRenderInvoices() {
   const partialNote = failedStores.length
     ? `<span class="bov-foot-warn" title="${escapeHtml(failedStores.map((st) => `${st.store_name}: ${st.error}`).join("\n"))}">⚠ ${escapeHtml(failedStores.map((st) => st.store_name).join(", "))} unavailable — figures exclude ${failedStores.length === 1 ? "that store" : "those stores"}</span>`
     : "";
-  const rangeToggle = `<label class="sancm-toggle bov-foot-toggle"><input type="checkbox" id="bov-inv-open-range"${bovState.openInRange ? " checked" : ""}> Invoiced in selected period only</label>`;
+  const rangeToggle = `<label class="sancm-toggle bov-foot-toggle" title="Unchecked = every unshipped invoice regardless of date"><input type="checkbox" id="bov-inv-open-range"${bovState.openInRange ? " checked" : ""}> Invoiced in selected period only</label>`;
 
   if (tab === "open") {
     const aging = d.aging || {};
-    if (meta) meta.textContent = `${bovInt(d.count || 0)} open · ${bovCompactMoney(d.total_amount || 0)}${d.oldest_age_days != null ? ` · oldest ${d.oldest_age_days}d` : ""}`;
+    if (meta) meta.textContent = `${bovInt(d.count || 0)} open · ${bovCompactMoney(d.total_amount || 0)}${d.oldest_age_days != null ? ` · oldest ${d.oldest_age_days}d` : ""} · ${bovState.openInRange ? "invoiced in period" : "all dates"}`;
     let filtered = rows;
     if (bovState.agingFilter) filtered = rows.filter((r) => bovAgingBucket(r.age_days).key === bovState.agingFilter);
     const chips = ["0-1", "2-3", "4+"].map((k) => {
@@ -20713,7 +20716,7 @@ function bovListDef(kind) {
     if (key === "invoicesOpen") {
       return { widgetKey: key, title: "Open invoices", rowsOf: (d) => d.invoices || [], cols: (d) => bovOpenInvoiceCols((d.stores || []).length > 1), rowAttrs: bovInvoiceRowAttrs,
         searchFields: ["invoice_number", "business_name", "account_no", "sales_rep", "shipper", "store_name", "po_number"],
-        meta: (d) => `${bovInt(d.count || 0)} open · ${bovCompactMoney(d.total_amount || 0)}${d.store_name ? ` · ${d.store_name}` : ""}` };
+        meta: (d) => `${bovInt(d.count || 0)} open · ${bovCompactMoney(d.total_amount || 0)} · ${bovState.openInRange ? "invoiced in period" : "all dates"}${d.store_name ? ` · ${d.store_name}` : ""}` };
     }
     return { widgetKey: key, title: "Invoices shipped", rowsOf: (d) => d.invoices || [], cols: (d) => bovShippedInvoiceCols((d.stores || []).length > 1), rowAttrs: bovInvoiceRowAttrs,
       searchFields: ["invoice_number", "business_name", "account_no", "sales_rep", "shipper", "tracking_no", "store_name", "po_number"],
