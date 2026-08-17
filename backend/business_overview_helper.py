@@ -660,8 +660,17 @@ _INVOICE_SELECT = """
     h.InvoiceSubtotal, h.TotalTaxes, h.ShippingCost, h.InvoiceTotal, h.Notes
 """
 
-_UNSHIPPED_WHERE = "ISNULL(h.Void, 0) = 0 AND (h.TrackingNo IS NULL OR LTRIM(RTRIM(h.TrackingNo)) = '')"
-_SHIPPED_WHERE = "ISNULL(h.Void, 0) = 0 AND h.TrackingNo IS NOT NULL AND LTRIM(RTRIM(h.TrackingNo)) <> ''"
+# "Shipped" = a real tracking number. BackOffice writes "0" (and blanks) for
+# invoices that have not shipped, so those count as open.
+_TRACKING_BLANK = "(h.TrackingNo IS NULL OR LTRIM(RTRIM(h.TrackingNo)) IN ('', '0'))"
+_UNSHIPPED_WHERE = f"ISNULL(h.Void, 0) = 0 AND {_TRACKING_BLANK}"
+_SHIPPED_WHERE = f"ISNULL(h.Void, 0) = 0 AND NOT {_TRACKING_BLANK}"
+
+
+def has_tracking(value: Any) -> bool:
+    """Python twin of _TRACKING_BLANK: NULL / blank / '0' mean not shipped."""
+    v = _s(value)
+    return bool(v) and v != "0"
 
 
 def _invoice_row(d: Dict[str, Any], today: Optional[date] = None) -> Dict[str, Any]:
@@ -862,7 +871,7 @@ def _invoices_in_period_sync(
     each flagged is_shipped = TrackingNo present. Aggregates split the same way.
     """
     limit = _clamp_limit(limit)
-    tracking_blank = "(h.TrackingNo IS NULL OR LTRIM(RTRIM(h.TrackingNo)) = '')"
+    tracking_blank = _TRACKING_BLANK
     where = "ISNULL(h.Void, 0) = 0 AND h.InvoiceDate >= ? AND h.InvoiceDate < ?"
     params: List[Any] = [date_from, date_to_excl]
     try:
@@ -897,7 +906,7 @@ def _invoices_in_period_sync(
                 """, [limit] + params)
                 for d in _rows(cur):
                     row = _invoice_row(d, today)
-                    row["is_shipped"] = bool(_s(d.get("TrackingNo")))
+                    row["is_shipped"] = has_tracking(d.get("TrackingNo"))
                     invoices.append(row)
         count = int(agg.get("invoices") or 0)
         return True, None, {
@@ -963,7 +972,7 @@ def _invoice_detail_sync(host, port, database, username, password, invoice_id: i
                 "total_credits": _fo(d.get("TotalCredits")),
                 "total_payments": _fo(d.get("TotalPayments")),
                 "void": _bool(d.get("Void")),
-                "is_shipped": bool(_s(d.get("TrackingNo"))),
+                "is_shipped": has_tracking(d.get("TrackingNo")),
             })
             lines: List[Dict[str, Any]] = []
             if present.get("InvoicesDetails_tbl"):
