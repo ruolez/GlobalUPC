@@ -492,6 +492,7 @@ def _quotations_in_progress_sync(
     sort_by: str = "start_date",
     sort_order: str = "desc",
     include_list: bool = True,
+    source_dbs: Optional[List[str]] = None,
 ) -> Tuple[bool, Optional[str], Dict[str, Any]]:
     limit = _clamp_limit(limit)
     clean_statuses = [s.strip() for s in (statuses or []) if s and s.strip()]
@@ -501,6 +502,18 @@ def _quotations_in_progress_sync(
         ph = ",".join(["?"] * len(clean_statuses))
         having_sql = f"HAVING (MAX(qs.Status) IN ({ph}) OR MAX(qip.Status) IN ({ph}))"
         having_params = clean_statuses + clean_statuses
+    # Store filter: SourceDB holds the originating BackOffice database name.
+    # A row predicate, so it belongs in WHERE (before the GROUP BY).
+    where_sql = ""
+    where_params: List[Any] = []
+    clean_dbs = [d.strip().lower() for d in (source_dbs or []) if d and d.strip()]
+    if source_dbs is not None:
+        if not clean_dbs:
+            where_sql = "WHERE 1 = 0"
+        else:
+            ph = ",".join(["?"] * len(clean_dbs))
+            where_sql = f"WHERE LOWER(LTRIM(RTRIM(qip.SourceDB))) IN ({ph})"
+            where_params = clean_dbs
 
     inner = f"""
         SELECT
@@ -524,6 +537,7 @@ def _quotations_in_progress_sync(
             MAX(qs.InvoiceNumber)                           AS invoice_number
         FROM QuotationsInProgress qip
         LEFT JOIN QuotationsStatus qs ON qs.QuotationNumber = qip.QuotationNumber
+        {where_sql}
         GROUP BY qip.QuotationNumber
         {having_sql}
     """
@@ -555,6 +569,7 @@ def _quotations_in_progress_sync(
             MAX(qs.InvoiceNumber)                           AS invoice_number
         FROM QuotationsInProgress qip
         LEFT JOIN QuotationsStatus qs ON qs.QuotationNumber = qip.QuotationNumber
+        {where_sql}
         GROUP BY qip.QuotationNumber
         {having_sql}
         ORDER BY {sort_expr}
@@ -566,7 +581,7 @@ def _quotations_in_progress_sync(
             missing = [t for t, ok in present.items() if not ok]
             if missing:
                 return False, f"Table {', '.join(missing)} not found on this store", {}
-            cur.execute(summary_sql, having_params)
+            cur.execute(summary_sql, where_params + having_params)
             by_status: List[Dict[str, Any]] = []
             count = 0
             total_amount = 0.0
@@ -583,7 +598,7 @@ def _quotations_in_progress_sync(
             by_status.sort(key=lambda x: -x["count"])
             quotations: List[Dict[str, Any]] = []
             if include_list:
-                cur.execute(list_sql, [limit] + having_params)
+                cur.execute(list_sql, [limit] + where_params + having_params)
                 for d in _rows(cur):
                     quotations.append({
                         "quotation_number": str(d.get("quotation_number")),
@@ -612,6 +627,7 @@ def _quotations_in_progress_sync(
             "total_qty": total_qty,
             "by_status": by_status,
             "statuses": clean_statuses,
+            "source_dbs": (clean_dbs if source_dbs is not None else None),
             "limit": limit,
             "truncated": include_list and count > len(quotations),
         }

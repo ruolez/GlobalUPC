@@ -1106,6 +1106,7 @@ class BOVBlockStatus(BaseModel):
     store_name: Optional[str] = None
     error: Optional[str] = None
     stores: List[BOVStoreStatus] = []        # per-store status when a block fans out
+    filtered_out: bool = False               # source exists but is outside the active store filter
 
 
 class BOVSeriesPoint(BaseModel):
@@ -1413,6 +1414,7 @@ class BOVSalesTrendResponse(BaseModel):
     previous_totals: Dict[str, BOVSalesSourceTotals] = {}
     change_pct: Dict[str, Dict[str, Optional[float]]] = {} # per source: revenue/cost/profit/margin_pct/orders/units
     warnings: List[str] = []
+    store_ids: List[int] = []                              # store filter applied (empty = all)
     generated_at: datetime
 
 
@@ -1476,4 +1478,5 @@ class BusinessOverviewSummaryResponse(BaseModel):
     purchases_received: BOVPurchasesRangeBlock
     sales: BOVSalesSummaryBlock
     shopify_open_orders: BOVShopifyOpenOrdersBlock
+    store_ids: List[int] = []                              # store filter applied (empty = all)
     generated_at: datetime

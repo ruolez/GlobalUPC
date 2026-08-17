@@ -248,6 +248,11 @@
                   <small class="bov-field-help">MSSQL BackOffice holding the purchase orders.</small>
                 </div>
                 <div class="bov-field">
+                  <label class="bov-field-label" for="bov-cfg-admin">Admin DB for quotations in progress</label>
+                  <select id="bov-cfg-admin" class="dark-input"></select>
+                  <small class="bov-field-help">DB_ADMIN store (QuotationsInProgress / QuotationsStatus). Shared with the In Progress page.</small>
+                </div>
+                <div class="bov-field">
                   <span class="bov-field-label">Shopify stores</span>
                   <div id="bov-cfg-shopify" class="bov-pill-row"></div>
                   <small class="bov-field-help">Only stores with a completed Data Sync contribute to sales; unsynced stores are skipped.</small>
@@ -319,12 +324,16 @@
                   <button type="button" class="sancm-mode-btn" data-bov-bucket="month">Month</button>
                 </div>
               </div>
+              <div class="bov-store-filter" id="bov-store-filter">
+                <span class="bov-toolbar-label">Stores</span>
+                <div class="sa-chip-group bov-store-chips" id="bov-store-chips" role="group" aria-label="Store filter"></div>
+              </div>
             </div>
 
             <!-- KPI strip -->
             <section class="sa-kpi-strip bov-kpi-strip" id="bov-kpi-strip" aria-label="Key figures"></section>
 
-            <!-- Trend row -->
+            <!-- Trend row (full width) -->
             <div class="bov-grid-trend">
               <div class="sancm-chart-card bov-card bov-chart-card" id="bov-trend-card">
                 <div class="sancm-chart-head">
@@ -340,7 +349,10 @@
                 <div class="sancm-chart-wrap bov-chart-wrap" id="bov-trend-wrap"></div>
                 <div class="sancm-tooltip" id="bov-trend-tip" hidden></div>
               </div>
-              <div class="bov-grid-side">
+            </div>
+
+            <!-- Margin + top customers row -->
+            <div class="bov-grid-second">
                 <div class="sancm-chart-card bov-card bov-chart-card" id="bov-margin-card">
                   <div class="sancm-chart-head">
                     <div>
@@ -366,7 +378,6 @@
                   </div>
                   <div class="bov-card-body" id="bov-top-body"></div>
                 </div>
-              </div>
             </div>
 
             <!-- Operations row -->
@@ -377,7 +388,7 @@
                     <h3>Quotations in progress</h3>
                     <span class="dashboard-card-meta" id="bov-quotations-meta"></span>
                   </div>
-                  <a href="#" class="bov-card-link" data-page="quotations-in-progress">Open In Progress ›</a>
+                  <button type="button" class="btn btn-secondary bov-btn-xs bov-card-link-btn" data-bov-action="list" data-bov-list="quotations">Full list ↗</button>
                 </div>
                 <div class="bov-card-body" id="bov-quotations-body"></div>
                 <div class="bov-card-foot" id="bov-quotations-foot"></div>
@@ -389,9 +400,12 @@
                     <h3>Invoices</h3>
                     <span class="dashboard-card-meta" id="bov-invoices-meta"></span>
                   </div>
-                  <div class="sancm-mode-group" data-bov-tabgroup="invoices">
-                    <button type="button" class="sancm-mode-btn active" data-bov-tab="invoices" data-value="open">Open <span class="bov-tab-count" id="bov-tab-count-open"></span></button>
-                    <button type="button" class="sancm-mode-btn" data-bov-tab="invoices" data-value="shipped">Shipped <span class="bov-tab-count" id="bov-tab-count-shipped"></span></button>
+                  <div class="bov-card-controls">
+                    <div class="sancm-mode-group" data-bov-tabgroup="invoices">
+                      <button type="button" class="sancm-mode-btn active" data-bov-tab="invoices" data-value="open">Open <span class="bov-tab-count" id="bov-tab-count-open"></span></button>
+                      <button type="button" class="sancm-mode-btn" data-bov-tab="invoices" data-value="shipped">Shipped <span class="bov-tab-count" id="bov-tab-count-shipped"></span></button>
+                    </div>
+                    <button type="button" class="btn btn-secondary bov-btn-xs bov-card-link-btn" data-bov-action="list" data-bov-list="invoices">Full list ↗</button>
                   </div>
                 </div>
                 <div class="bov-card-body" id="bov-invoices-body"></div>
@@ -404,10 +418,13 @@
                     <h3>Purchase orders</h3>
                     <span class="dashboard-card-meta" id="bov-purchases-meta"></span>
                   </div>
-                  <div class="sancm-mode-group" data-bov-tabgroup="purchases">
-                    <button type="button" class="sancm-mode-btn active" data-bov-tab="purchases" data-value="incoming">Incoming <span class="bov-tab-count" id="bov-tab-count-incoming"></span></button>
-                    <button type="button" class="sancm-mode-btn" data-bov-tab="purchases" data-value="purchased">Purchased <span class="bov-tab-count" id="bov-tab-count-purchased"></span></button>
-                    <button type="button" class="sancm-mode-btn" data-bov-tab="purchases" data-value="received">Received <span class="bov-tab-count" id="bov-tab-count-received"></span></button>
+                  <div class="bov-card-controls">
+                    <div class="sancm-mode-group" data-bov-tabgroup="purchases">
+                      <button type="button" class="sancm-mode-btn active" data-bov-tab="purchases" data-value="incoming">Incoming <span class="bov-tab-count" id="bov-tab-count-incoming"></span></button>
+                      <button type="button" class="sancm-mode-btn" data-bov-tab="purchases" data-value="purchased">Purchased <span class="bov-tab-count" id="bov-tab-count-purchased"></span></button>
+                      <button type="button" class="sancm-mode-btn" data-bov-tab="purchases" data-value="received">Received <span class="bov-tab-count" id="bov-tab-count-received"></span></button>
+                    </div>
+                    <button type="button" class="btn btn-secondary bov-btn-xs bov-card-link-btn" data-bov-action="list" data-bov-list="purchases">Full list ↗</button>
                   </div>
                 </div>
                 <div class="bov-card-body" id="bov-purchases-body"></div>
@@ -4928,6 +4945,25 @@
     </div>
 
     <!-- Business Overview drill-ins -->
+    <div id="bov-list-modal" class="modal bov-modal">
+      <div class="modal-content bov-modal-content bov-list-modal-content" style="max-width: 1180px; width: 96%">
+        <div class="modal-header">
+          <div class="bov-list-modal-title-wrap">
+            <h3 id="bov-list-title">List</h3>
+            <span class="dashboard-card-meta" id="bov-list-meta"></span>
+          </div>
+          <button type="button" class="modal-close" data-bov-close="bov-list-modal" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body bov-modal-body" id="bov-list-body-wrap">
+          <div class="bov-list-toolbar">
+            <input type="search" id="bov-list-search" class="dark-input" placeholder="Search…" autocomplete="off" aria-label="Search list">
+            <span class="bov-list-count" id="bov-list-count"></span>
+          </div>
+          <div id="bov-list-body" class="bov-list-body"></div>
+        </div>
+      </div>
+    </div>
+
     <div id="bov-quotation-modal" class="modal bov-modal">
       <div class="modal-content" style="max-width: 940px; width: 95%">
         <div class="modal-header">

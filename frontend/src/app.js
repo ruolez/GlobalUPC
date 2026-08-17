@@ -18427,7 +18427,7 @@ async function sacrUpdateDataSourceNote() {
 const BOV_AUTOREFRESH_MS = 60000;
 const BOV_LIVE_WIDGETS = ["summary", "quotations", "invoicesOpen", "purchasesIncoming"];
 const BOV_PREFS_KEY = "bov_prefs";
-const BOV_ROWS_COLLAPSED = 8;
+const BOV_ROWS_COLLAPSED = 12;
 const BOV_LIST_LIMIT = 500;
 const BOV_PRESETS = [
   { key: "today", label: "Today" },
@@ -18470,6 +18470,8 @@ const bovState = {
   period: null,         // BOVPeriod echoed by the backend (authoritative)
   bucket: "auto",
   splitSources: false,
+  storeFilter: [],      // store ids; [] = all configured sources
+  listModal: null,      // {kind, widgetKey, search} while #bov-list-modal is open
   seriesHidden: { cost: true },
   tabs: { invoices: "open", purchases: "incoming", top: "customer" },
   agingFilter: null,
@@ -18667,6 +18669,7 @@ function bovLoadPrefs() {
     if (p && typeof p.customTo === "string") bovState.customTo = p.customTo;
     if (p && ["auto", "day", "week", "month"].includes(p.bucket)) bovState.bucket = p.bucket;
     if (p && typeof p.split === "boolean") bovState.splitSources = p.split;
+    if (p && Array.isArray(p.storeIds)) bovState.storeFilter = p.storeIds.map(Number).filter((n) => !isNaN(n));
   } catch (e) {
     /* ignore */
   }
@@ -18682,6 +18685,7 @@ function bovSavePrefs() {
         customTo: bovState.customTo,
         bucket: bovState.bucket,
         split: bovState.splitSources,
+        storeIds: bovState.storeFilter,
       }),
     );
   } catch (e) {
@@ -18711,10 +18715,85 @@ async function loadBusinessOverviewPage() {
   }
   bovShowSetup(false);
   bovRenderConfigBar();
+  bovValidateStoreFilter();
+  bovRenderStoreChips();
   bovApplyPreset(bovState.preset, { fetch: false });
   bovFetchAll();
   startBovAutoRefresh();
   bovScheduleChartRender();
+}
+
+// ---------------------------------------------------------------------------
+// Store filter
+// ---------------------------------------------------------------------------
+
+function bovFilterableStores(cfg) {
+  cfg = cfg || bovState.config || {};
+  const out = [];
+  const seen = new Set();
+  const push = (id, name, type) => {
+    id = Number(id);
+    if (!id || isNaN(id) || seen.has(id)) return;
+    seen.add(id);
+    out.push({ id, name: name || `Store ${id}`, type });
+  };
+  const sIds = bovSalesStoreIds(cfg);
+  const sNames = (cfg.sales_store_names && cfg.sales_store_names.length) ? cfg.sales_store_names : (cfg.sales_store_name ? [cfg.sales_store_name] : []);
+  sIds.forEach((id, i) => push(id, sNames[i], "BackOffice"));
+  if (cfg.purchases_store_id) push(cfg.purchases_store_id, cfg.purchases_store_name, "Purchases");
+  (cfg.shopify_store_ids || []).forEach((id, i) => push(id, (cfg.shopify_store_names || [])[i], "Shopify"));
+  return out;
+}
+
+function bovValidateStoreFilter() {
+  const valid = new Set(bovFilterableStores().map((s) => s.id));
+  const next = (bovState.storeFilter || []).filter((id) => valid.has(Number(id))).map(Number);
+  // Selecting every source is the same as no filter.
+  bovState.storeFilter = next.length && next.length < valid.size ? next : [];
+}
+
+function bovStoreParams() {
+  return bovState.storeFilter.length ? { store_ids: bovState.storeFilter.join(",") } : {};
+}
+
+function bovFilteredStoreNames() {
+  if (!bovState.storeFilter.length) return [];
+  const sel = new Set(bovState.storeFilter);
+  return bovFilterableStores().filter((s) => sel.has(s.id)).map((s) => s.name);
+}
+
+function bovRenderStoreChips() {
+  const wrap = document.getElementById("bov-store-chips");
+  const bar = document.getElementById("bov-store-filter");
+  if (!wrap) return;
+  const stores = bovFilterableStores();
+  if (bar) bar.hidden = stores.length < 2;
+  const sel = new Set(bovState.storeFilter);
+  const all = sel.size === 0;
+  const chips = [
+    `<button type="button" class="sa-chip${all ? " active" : ""}" data-bov-store="all" aria-pressed="${all}">All</button>`,
+  ].concat(stores.map((s) => {
+    const on = sel.has(s.id);
+    return `<button type="button" class="sa-chip bov-store-chip${on ? " active" : ""}" data-bov-store="${s.id}" aria-pressed="${on}" title="${escapeHtml(s.name)}">${escapeHtml(bovStoreShort(s.name))}<span class="bov-store-chip-tag">${escapeHtml(s.type)}</span></button>`;
+  }));
+  wrap.innerHTML = chips.join("");
+}
+
+function bovToggleStoreChip(value) {
+  if (value === "all") {
+    bovState.storeFilter = [];
+  } else {
+    const id = Number(value);
+    if (isNaN(id)) return;
+    const cur = new Set(bovState.storeFilter);
+    if (cur.has(id)) cur.delete(id); else cur.add(id);
+    bovState.storeFilter = Array.from(cur);
+    bovValidateStoreFilter();
+  }
+  bovSavePrefs();
+  bovRenderStoreChips();
+  bovRenderRangeLabel();
+  bovFetchAll();
 }
 
 function bovBindOnce() {
@@ -18748,6 +18827,13 @@ function bovBindOnce() {
     bovSavePrefs();
     bovRenderBucketButtons();
     bovFetchAll({ only: ["trend"] });
+  });
+
+  // Store filter chips
+  document.getElementById("bov-store-chips")?.addEventListener("click", (e) => {
+    const chip = e.target.closest("[data-bov-store]");
+    if (!chip) return;
+    bovToggleStoreChip(chip.dataset.bovStore);
   });
 
   // Split toggle
@@ -18871,17 +18957,35 @@ function bovBindOnce() {
       if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
       return;
     }
-    const row = e.target.closest("[data-bov-open]");
-    if (row) {
-      bovOpenRow(row);
-    }
   });
-  page.addEventListener("keydown", (e) => {
+  // Row drill-ins live both in the page cards and inside the list modal
+  // (declared outside the page div), so delegate on the document.
+  document.addEventListener("click", (e) => {
+    const scope = e.target.closest && e.target.closest("#business-overview-page, .bov-modal");
+    if (!scope) return;
+    if (e.target.closest("[data-bov-action], [data-bov-tab], [data-bov-show-all], [data-bov-aging], [data-bov-retry], [data-bov-series], [data-bov-close]")) return;
+    const sortTh = e.target.closest("th[data-bov-sort]");
+    if (sortTh && scope.classList.contains("bov-modal")) {
+      bovToggleSort(sortTh.dataset.bovWidget, sortTh.dataset.bovSort);
+      return;
+    }
+    const row = e.target.closest("[data-bov-open]");
+    if (row) bovOpenRow(row);
+  });
+  document.addEventListener("keydown", (e) => {
     if (e.key !== "Enter") return;
-    const row = e.target.closest && e.target.closest("[data-bov-open]");
+    const scope = e.target.closest && e.target.closest("#business-overview-page, .bov-modal");
+    if (!scope) return;
+    const row = e.target.closest("[data-bov-open]");
     if (row) {
       e.preventDefault();
       bovOpenRow(row);
+    }
+  });
+  document.getElementById("bov-list-search")?.addEventListener("input", (e) => {
+    if (bovState.listModal) {
+      bovState.listModal.search = e.target.value || "";
+      bovRenderListModal();
     }
   });
   page.addEventListener("change", (e) => {
@@ -18897,7 +19001,9 @@ function bovBindOnce() {
   });
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
-    document.querySelectorAll(".bov-modal.active").forEach((m) => closeModal(m.id));
+    // Close only the topmost open overview modal (detail modals stack on the list modal).
+    const open = document.querySelectorAll(".bov-modal.active");
+    if (open.length) closeModal(open[open.length - 1].id);
   });
 
   // Visibility → auto-refresh
@@ -19063,6 +19169,8 @@ function bovRenderRangeLabel() {
     bits.push("vs previous period");
   }
   bits.push(`${days} day${days === 1 ? "" : "s"}`);
+  const names = bovFilteredStoreNames();
+  if (names.length) bits.push(names.join(", "));
   el.textContent = bits.join(" · ");
 }
 
@@ -19106,12 +19214,12 @@ function bovRangeParams() {
 const BOV_WIDGET_DEFS = {
   summary: {
     card: "bov-kpi-strip",
-    request: () => ["/summary", bovRangeParams()],
+    request: () => ["/summary", { ...bovRangeParams(), ...bovStoreParams() }],
     render: () => bovRenderKpis(),
   },
   trend: {
     card: "bov-trend-card",
-    request: () => ["/sales/trend", { ...bovRangeParams(), bucket: bovResolvedBucket() }],
+    request: () => ["/sales/trend", { ...bovRangeParams(), bucket: bovResolvedBucket(), ...bovStoreParams() }],
     render: () => {
       bovRenderTrendChart();
       bovRenderMarginChart();
@@ -19120,37 +19228,37 @@ const BOV_WIDGET_DEFS = {
   },
   top: {
     card: "bov-top-card",
-    request: () => ["/sales/breakdown", { ...bovRangeParams(), by: bovState.tabs.top, source: "backoffice", limit: 8 }],
+    request: () => ["/sales/breakdown", { ...bovRangeParams(), by: bovState.tabs.top, source: "backoffice", limit: 8, ...bovStoreParams() }],
     render: () => bovRenderTopBars(),
   },
   quotations: {
     card: "bov-quotations-card",
-    request: () => ["/quotations", { limit: BOV_LIST_LIMIT }],
+    request: () => ["/quotations", { limit: BOV_LIST_LIMIT, ...bovStoreParams() }],
     render: () => bovRenderQuotationsTable(),
   },
   invoicesOpen: {
     card: "bov-invoices-card",
-    request: () => ["/invoices/open", { limit: BOV_LIST_LIMIT, ...(bovState.openInRange ? bovRangeParams() : {}) }],
+    request: () => ["/invoices/open", { limit: BOV_LIST_LIMIT, ...(bovState.openInRange ? bovRangeParams() : {}), ...bovStoreParams() }],
     render: () => bovRenderInvoices(),
   },
   invoicesShipped: {
     card: "bov-invoices-card",
-    request: () => ["/invoices/shipped", { ...bovRangeParams(), bucket: "day", limit: BOV_LIST_LIMIT }],
+    request: () => ["/invoices/shipped", { ...bovRangeParams(), bucket: "day", limit: BOV_LIST_LIMIT, ...bovStoreParams() }],
     render: () => bovRenderInvoices(),
   },
   purchasesIncoming: {
     card: "bov-purchases-card",
-    request: () => ["/purchases/incoming", { limit: BOV_LIST_LIMIT }],
+    request: () => ["/purchases/incoming", { limit: BOV_LIST_LIMIT, ...bovStoreParams() }],
     render: () => bovRenderPurchases(),
   },
   purchasesPurchased: {
     card: "bov-purchases-card",
-    request: () => ["/purchases/purchased", { ...bovRangeParams(), bucket: "day", limit: BOV_LIST_LIMIT }],
+    request: () => ["/purchases/purchased", { ...bovRangeParams(), bucket: "day", limit: BOV_LIST_LIMIT, ...bovStoreParams() }],
     render: () => bovRenderPurchases(),
   },
   purchasesReceived: {
     card: "bov-purchases-card",
-    request: () => ["/purchases/received", { ...bovRangeParams(), bucket: "day", limit: BOV_LIST_LIMIT }],
+    request: () => ["/purchases/received", { ...bovRangeParams(), bucket: "day", limit: BOV_LIST_LIMIT, ...bovStoreParams() }],
     render: () => bovRenderPurchases(),
   },
 };
@@ -19226,6 +19334,7 @@ async function bovFetchWidget(key, seq, signal) {
   if (seq !== bovState.seq) return;
   try {
     def.render();
+    if (bovState.listModal && bovState.listModal.widgetKey === key) bovRenderListModal();
   } catch (e) {
     console.error(`[bov] render ${key} failed`, e);
   }
@@ -19273,18 +19382,23 @@ function bovUnconfiguredHtml(title, detail, action, actionLabel) {
   return `<div class="dashboard-health-row warn bov-unconfigured"><span class="dashboard-health-icon" aria-hidden="true">!</span><div class="dashboard-health-body"><div class="dashboard-health-title">${escapeHtml(title)}</div><div class="dashboard-health-detail">${escapeHtml(detail || "")}</div>${action ? `<a href="#" class="dashboard-health-link" data-bov-action="${escapeHtml(action)}">${escapeHtml(actionLabel || "Configure")}</a>` : ""}</div></div>`;
 }
 
-function bovEmptyHtml(text) {
-  return `<div class="dashboard-empty-state bov-empty">${escapeHtml(text)}</div>`;
+function bovEmptyHtml(text, muted) {
+  return `<div class="dashboard-empty-state bov-empty${muted ? " is-muted" : ""}">${escapeHtml(text)}</div>`;
+}
+
+function bovFilteredOutHtml() {
+  return bovEmptyHtml("Not in the current store filter", true);
 }
 
 function bovHandleAction(action, el) {
   if (action === "config") {
     bovOpenConfigEdit();
   } else if (action === "settings-roles") {
-    navigateTo("settings");
-    setTimeout(() => {
-      if (typeof activateSettingsTab === "function") activateSettingsTab("roles");
-    }, 50);
+    // Admin DB is edited in-page now (config form select).
+    bovOpenConfigEdit();
+    setTimeout(() => document.getElementById("bov-cfg-admin")?.focus(), 60);
+  } else if (action === "list") {
+    bovOpenListModal(el?.dataset.bovList || "quotations");
   } else if (action === "exclusions") {
     bovOpenConfigEdit();
     setTimeout(() => {
@@ -19294,8 +19408,6 @@ function bovHandleAction(action, el) {
         m.scrollIntoView({ behavior: "smooth", block: "center" });
       }
     }, 30);
-  } else if (action === "data-sync") {
-    navigateTo("shopify-analytics");
   } else if (action === "scroll") {
     const target = document.getElementById(el?.dataset.bovTarget || "");
     if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -19394,7 +19506,12 @@ function bovKpiUnconfigured(label, detail, action, actionLabel) {
 }
 
 function bovKpiError(label, message) {
-  return { label, value: "—", state: "error", subText: message || "Unavailable", subTitle: message };
+  // Short text on the tile; the full backend error is in the title and in the card below.
+  return { label, value: "—", state: "error", subText: "Unavailable — see the card below", subTitle: message || "Unavailable" };
+}
+
+function bovKpiFilteredOut(label) {
+  return { label, value: "—", state: "unconfigured", subText: "not in store filter" };
 }
 
 function bovPartialSuffix(block) {
@@ -19436,12 +19553,15 @@ function bovRenderKpis() {
     if (sales.sources && sales.sources.backoffice && sales.sources.backoffice.configured) {
       const bs = sales.sources.backoffice;
       const failed = (bs.failed_stores || []).map((f) => String(f).split(":")[0]);
-      srcBits.push(bs.error
+      if (!(bs.store_names || []).length && bovState.storeFilter.length) srcBits.push("BackOffice —");
+      else srcBits.push(bs.error
         ? "BackOffice unavailable"
         : `BackOffice ${bovCompactMoney(bo ? bo.revenue : 0)}${failed.length ? ` (${failed.join(", ")} unavailable)` : ""}`);
     }
     if (sales.sources && sales.sources.shopify && sales.sources.shopify.configured) {
-      srcBits.push(sales.sources.shopify.error ? "Shopify unavailable" : `Shopify ${bovCompactMoney(sh ? sh.revenue : 0)}`);
+      const ss = sales.sources.shopify;
+      if (!(ss.store_names || []).length && bovState.storeFilter.length) srcBits.push("Shopify —");
+      else srcBits.push(ss.error ? "Shopify unavailable" : `Shopify ${bovCompactMoney(sh ? sh.revenue : 0)}`);
     }
     const anyErr = (sales.sources && Object.values(sales.sources).some((x) => x && x.configured && (x.error || (x.failed_stores || []).length))) || false;
     tiles.push({
@@ -19492,6 +19612,8 @@ function bovRenderKpis() {
   const shp = s.invoices_shipped || {};
   if (!shp.configured) {
     tiles.push(bovKpiUnconfigured("Invoices shipped", "Sales source not set", "config"));
+  } else if (shp.filtered_out) {
+    tiles.push(bovKpiFilteredOut("Invoices shipped"));
   } else if (shp.error) {
     tiles.push(bovKpiError("Invoices shipped", shp.error));
   } else {
@@ -19511,6 +19633,8 @@ function bovRenderKpis() {
   const op = s.invoices_open || {};
   if (!op.configured) {
     tiles.push(bovKpiUnconfigured("Open invoices", "Sales source not set", "config"));
+  } else if (op.filtered_out) {
+    tiles.push(bovKpiFilteredOut("Open invoices"));
   } else if (op.error) {
     tiles.push(bovKpiError("Open invoices", op.error));
   } else {
@@ -19532,7 +19656,9 @@ function bovRenderKpis() {
   // --- Quotations in progress ---
   const q = s.quotations || {};
   if (!q.configured) {
-    tiles.push(bovKpiUnconfigured("Quotes in progress", "Admin DB not set", "settings-roles", "Settings"));
+    tiles.push(bovKpiUnconfigured("Quotes in progress", "Admin DB not set", "config", "Configure"));
+  } else if (q.filtered_out) {
+    tiles.push(bovKpiFilteredOut("Quotes in progress"));
   } else if (q.error) {
     tiles.push(bovKpiError("Quotes in progress", q.error));
   } else {
@@ -19552,6 +19678,8 @@ function bovRenderKpis() {
   const prc = s.purchases_received || {};
   if (!pin.configured) {
     tiles.push(bovKpiUnconfigured("PO incoming", "Purchases source not set", "config"));
+  } else if (pin.filtered_out) {
+    tiles.push(bovKpiFilteredOut("PO incoming"));
   } else if (pin.error) {
     tiles.push(bovKpiError("PO incoming", pin.error));
   } else {
@@ -19571,7 +19699,7 @@ function bovRenderKpis() {
   // Shopify open orders as a footnote strip under the KPI tiles.
   const so = s.shopify_open_orders || {};
   let foot = "";
-  if (so.configured) {
+  if (so.configured && !so.filtered_out) {
     if (so.error) {
       foot = `Shopify open orders: unavailable (${escapeHtml(so.error)})`;
     } else {
@@ -19874,6 +20002,14 @@ function bovRenderTrendChart() {
     if (subEl) subEl.textContent = "";
     return;
   }
+  const boActive = boOk && (src.backoffice.store_names || []).length > 0;
+  const shActive = shOk && (src.shopify.store_names || []).length > 0;
+  if (!boActive && !shActive && bovState.storeFilter.length) {
+    wrap.innerHTML = bovFilteredOutHtml();
+    if (legendEl) legendEl.style.display = "none";
+    if (subEl) subEl.textContent = "";
+    return;
+  }
   const buckets = d.buckets || [];
   const prev = d.previous_buckets || [];
   const labels = buckets.map((b) => bovBucketLabelFor(d.bucket, b));
@@ -19908,7 +20044,7 @@ function bovRenderTrendChart() {
   const model = {
     labels,
     series,
-    height: 280,
+    height: 320,
     yFormat: (v) => bovCompactMoney(v),
     ariaLabel: "Revenue and profit over time",
     emptyText: "No sales in this range",
@@ -19995,7 +20131,7 @@ function bovRenderMarginChart() {
   bovLineChart(wrap, {
     labels,
     series,
-    height: 150,
+    height: 200,
     pad: { top: 10, right: 12, bottom: 24, left: 40 },
     yFormat: (v) => `${Math.round(v)}%`,
     integerSteps: true,
@@ -20068,7 +20204,8 @@ function bovRenderTopBars() {
   const rows = d.rows || [];
   if (meta) meta.textContent = rows.length ? `by revenue · ${bovCompactMoney(d.total_revenue || 0)} total` : "";
   if (!rows.length) {
-    body.innerHTML = bovEmptyHtml("No sales in this range");
+    const boInFilter = !bovState.storeFilter.length || bovFilterableStores().some((st) => st.type === "BackOffice" && bovState.storeFilter.includes(st.id));
+    body.innerHTML = boInFilter ? bovEmptyHtml("No sales in this range") : bovFilteredOutHtml();
     return;
   }
   body.innerHTML = bovBarList(
@@ -20122,9 +20259,10 @@ function bovToggleSort(widgetKey, colKey) {
     s.dir = s.dir === "asc" ? "desc" : "asc";
   } else {
     s.key = colKey;
-    s.dir = ["business_name", "quotation_number", "invoice_number", "po_number", "sales_rep", "status", "packer"].includes(colKey) ? "asc" : "desc";
+    s.dir = ["business_name", "quotation_number", "invoice_number", "po_number", "sales_rep", "status", "packer", "store_name"].includes(colKey) ? "asc" : "desc";
   }
   bovRenderCard(widgetKey);
+  if (bovState.listModal && bovState.listModal.widgetKey === widgetKey) bovRenderListModal();
 }
 
 function bovRenderCard(key) {
@@ -20221,7 +20359,12 @@ function bovRenderQuotationsTable() {
   }
   const d = w.data;
   if (!d.configured) {
-    body.innerHTML = bovUnconfiguredHtml("Admin DB not set", "Quotations in progress read the DB_ADMIN store chosen under Settings → Roles.", "settings-roles", "Open Settings");
+    body.innerHTML = bovUnconfiguredHtml("Admin DB not set", "Quotations in progress read the DB_ADMIN store — pick it under Data sources.", "settings-roles", "Set Admin DB");
+    if (meta) meta.textContent = "";
+    return;
+  }
+  if (d.filtered_out) {
+    body.innerHTML = bovFilteredOutHtml();
     if (meta) meta.textContent = "";
     return;
   }
@@ -20238,7 +20381,16 @@ function bovRenderQuotationsTable() {
   }
   const sorted = bovSortRows(rows, bovState.sort.quotations);
   const shown = bovState.expanded.quotations ? sorted : sorted.slice(0, BOV_ROWS_COLLAPSED);
-  const cols = [
+  body.innerHTML = bovTableHtml("quotations", bovQuotationCols(), shown, { rowAttrs: bovQuotationRowAttrs });
+  if (foot) foot.innerHTML = bovFootHtml("quotations", rows.length, shown.length, d.store_name ? `Source: ${escapeHtml(d.store_name)}` : "");
+}
+
+function bovQuotationRowAttrs(r) {
+  return `data-bov-open="quotation" data-bov-id="${escapeHtml(r.quotation_number)}"`;
+}
+
+function bovQuotationCols() {
+  return [
     { key: "quotation_number", label: "Quote #", width: "17%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.quotation_number)}</span>${r.source_db ? `<span class="bov-cell-sub">${escapeHtml(r.source_db)}</span>` : ""}` },
     { key: "business_name", label: "Customer", width: "27%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
     { key: "sales_rep", label: "Rep", width: "13%", render: (r) => escapeHtml(r.sales_rep || "—") },
@@ -20247,10 +20399,6 @@ function bovRenderQuotationsTable() {
     { key: "total_qty", label: "Qty", num: true, width: "8%", render: (r) => bovInt(r.total_qty) },
     { key: "quotation_total", label: "Total", num: true, width: "12%", render: (r) => bovMoney(r.quotation_total) },
   ];
-  body.innerHTML = bovTableHtml("quotations", cols, shown, {
-    rowAttrs: (r) => `data-bov-open="quotation" data-bov-id="${escapeHtml(r.quotation_number)}"`,
-  });
-  if (foot) foot.innerHTML = bovFootHtml("quotations", rows.length, shown.length, d.store_name ? `Source: ${escapeHtml(d.store_name)}` : "");
 }
 
 // ---------------------------------------------------------------------------
@@ -20289,6 +20437,11 @@ function bovRenderInvoices() {
     if (meta) meta.textContent = "";
     return;
   }
+  if (d.filtered_out) {
+    body.innerHTML = bovFilteredOutHtml();
+    if (meta) meta.textContent = "";
+    return;
+  }
   if (d.error) {
     body.innerHTML = bovInlineErrorHtml(key, d.error, "Invoices unavailable");
     if (meta) meta.textContent = d.store_name ? `Source: ${d.store_name}` : "";
@@ -20296,7 +20449,7 @@ function bovRenderInvoices() {
   }
   const rows = d.invoices || [];
   const multi = (d.stores || []).length > 1;
-  const rowAttrs = (r) => `data-bov-open="invoice" data-bov-id="${r.invoice_id}"${r.store_id != null ? ` data-bov-store="${r.store_id}"` : ""}`;
+  const rowAttrs = bovInvoiceRowAttrs;
   const failedStores = (d.stores || []).filter((st) => st.error);
   const partialNote = failedStores.length
     ? `<span class="bov-foot-warn" title="${escapeHtml(failedStores.map((st) => `${st.store_name}: ${st.error}`).join("\n"))}">⚠ ${escapeHtml(failedStores.map((st) => st.store_name).join(", "))} unavailable — figures exclude ${failedStores.length === 1 ? "that store" : "those stores"}</span>`
@@ -20320,22 +20473,7 @@ function bovRenderInvoices() {
     }
     const sorted = bovSortRows(filtered, bovState.sort.invoicesOpen);
     const shown = bovState.expanded.invoices ? sorted : sorted.slice(0, BOV_ROWS_COLLAPSED);
-    const cols = multi ? [
-      { key: "invoice_number", label: "Invoice #", width: "15%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.invoice_number || String(r.invoice_id))}</span><span class="bov-cell-sub">${escapeHtml(bovDateShort(r.invoice_date))}</span>` },
-      { key: "store_name", label: "Store", width: "13%", render: (r) => `<span class="bov-cell-store">${escapeHtml(bovStoreShort(r.store_name))}</span>` },
-      { key: "business_name", label: "Customer", width: "26%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
-      { key: "sales_rep", label: "Rep", width: "12%", render: (r) => escapeHtml(r.sales_rep || "—") },
-      { key: "age_days", label: "Age", width: "11%", render: (r) => bovAgeChip(r.age_days) },
-      { key: "no_lines", label: "Lines", num: true, width: "9%", render: (r) => r.no_lines == null ? "—" : bovInt(r.no_lines) },
-      { key: "invoice_total", label: "Total", num: true, width: "14%", render: (r) => bovMoney(r.invoice_total) },
-    ] : [
-      { key: "invoice_number", label: "Invoice #", width: "16%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.invoice_number || String(r.invoice_id))}</span><span class="bov-cell-sub">${escapeHtml(bovDateShort(r.invoice_date))}</span>` },
-      { key: "business_name", label: "Customer", width: "30%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
-      { key: "sales_rep", label: "Rep", width: "14%", render: (r) => escapeHtml(r.sales_rep || "—") },
-      { key: "age_days", label: "Age", width: "12%", render: (r) => bovAgeChip(r.age_days) },
-      { key: "no_lines", label: "Lines", num: true, width: "10%", render: (r) => r.no_lines == null ? "—" : bovInt(r.no_lines) },
-      { key: "invoice_total", label: "Total", num: true, width: "14%", render: (r) => bovMoney(r.invoice_total) },
-    ];
+    const cols = bovOpenInvoiceCols(multi);
     body.innerHTML = (filtered.length ? bovTableHtml("invoicesOpen", cols, shown, { rowAttrs: rowAttrs }) : bovEmptyHtml("No open invoices in this age band."));
     if (foot) foot.innerHTML = bovFootHtml("invoices", filtered.length, shown.length, `<span class="bov-aging-chips">${chips}</span>${rangeToggle}${partialNote}`);
     return;
@@ -20351,7 +20489,36 @@ function bovRenderInvoices() {
   }
   const sorted = bovSortRows(rows, bovState.sort.invoicesShipped);
   const shown = bovState.expanded.invoices ? sorted : sorted.slice(0, BOV_ROWS_COLLAPSED);
-  const cols = multi ? [
+  const cols = bovShippedInvoiceCols(multi);
+  body.innerHTML = bovTableHtml("invoicesShipped", cols, shown, { rowAttrs: rowAttrs });
+  if (foot) foot.innerHTML = bovFootHtml("invoices", rows.length, shown.length, (d.truncated ? `Showing the first ${bovInt(rows.length)}` : (d.store_name ? `Source: ${escapeHtml(d.store_name)}` : "")) + partialNote);
+}
+
+function bovInvoiceRowAttrs(r) {
+  return `data-bov-open="invoice" data-bov-id="${r.invoice_id}"${r.store_id != null ? ` data-bov-store="${r.store_id}"` : ""}`;
+}
+
+function bovOpenInvoiceCols(multi) {
+  return multi ? [
+    { key: "invoice_number", label: "Invoice #", width: "15%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.invoice_number || String(r.invoice_id))}</span><span class="bov-cell-sub">${escapeHtml(bovDateShort(r.invoice_date))}</span>` },
+    { key: "store_name", label: "Store", width: "13%", render: (r) => `<span class="bov-cell-store">${escapeHtml(bovStoreShort(r.store_name))}</span>` },
+    { key: "business_name", label: "Customer", width: "26%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
+    { key: "sales_rep", label: "Rep", width: "12%", render: (r) => escapeHtml(r.sales_rep || "—") },
+    { key: "age_days", label: "Age", width: "11%", render: (r) => bovAgeChip(r.age_days) },
+    { key: "no_lines", label: "Lines", num: true, width: "9%", render: (r) => r.no_lines == null ? "—" : bovInt(r.no_lines) },
+    { key: "invoice_total", label: "Total", num: true, width: "14%", render: (r) => bovMoney(r.invoice_total) },
+  ] : [
+    { key: "invoice_number", label: "Invoice #", width: "16%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.invoice_number || String(r.invoice_id))}</span><span class="bov-cell-sub">${escapeHtml(bovDateShort(r.invoice_date))}</span>` },
+    { key: "business_name", label: "Customer", width: "30%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
+    { key: "sales_rep", label: "Rep", width: "14%", render: (r) => escapeHtml(r.sales_rep || "—") },
+    { key: "age_days", label: "Age", width: "12%", render: (r) => bovAgeChip(r.age_days) },
+    { key: "no_lines", label: "Lines", num: true, width: "10%", render: (r) => r.no_lines == null ? "—" : bovInt(r.no_lines) },
+    { key: "invoice_total", label: "Total", num: true, width: "14%", render: (r) => bovMoney(r.invoice_total) },
+  ];
+}
+
+function bovShippedInvoiceCols(multi) {
+  return multi ? [
     { key: "invoice_number", label: "Invoice #", width: "14%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.invoice_number || String(r.invoice_id))}</span>` },
     { key: "store_name", label: "Store", width: "12%", render: (r) => `<span class="bov-cell-store">${escapeHtml(bovStoreShort(r.store_name))}</span>` },
     { key: "ship_date", label: "Shipped", width: "12%", render: (r) => escapeHtml(bovDateShort(r.ship_date || r.invoice_date)) },
@@ -20367,8 +20534,6 @@ function bovRenderInvoices() {
     { key: "shipper", label: "Shipper", width: "18%", render: (r) => `${escapeHtml(r.shipper || "—")}${r.tracking_no ? `<span class="bov-cell-sub bov-cell-mono">${escapeHtml(r.tracking_no)}</span>` : ""}` },
     { key: "invoice_total", label: "Total", num: true, width: "14%", render: (r) => bovMoney(r.invoice_total) },
   ];
-  body.innerHTML = bovTableHtml("invoicesShipped", cols, shown, { rowAttrs: rowAttrs });
-  if (foot) foot.innerHTML = bovFootHtml("invoices", rows.length, shown.length, (d.truncated ? `Showing the first ${bovInt(rows.length)}` : (d.store_name ? `Source: ${escapeHtml(d.store_name)}` : "")) + partialNote);
 }
 
 function bovStoreShort(name) {
@@ -20414,8 +20579,12 @@ function bovRenderPurchases() {
     if (meta) meta.textContent = "";
     return;
   }
+  if (d.filtered_out) {
+    body.innerHTML = bovFilteredOutHtml();
+    if (meta) meta.textContent = "";
+    return;
+  }
   if (d.error) {
-    body.innerHTml = "";
     body.innerHTML = bovInlineErrorHtml(key, d.error, "Purchase orders unavailable");
     if (meta) meta.textContent = d.store_name ? `Source: ${d.store_name}` : "";
     return;
@@ -20432,14 +20601,7 @@ function bovRenderPurchases() {
       if (foot) foot.innerHTML = `<span class="bov-foot-left">${sourceFoot}</span>`;
       return;
     }
-    cols = [
-      { key: "po_number", label: "PO #", width: "16%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.po_number || String(r.po_id))}</span>` },
-      { key: "business_name", label: "Supplier", width: "32%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
-      { key: "po_date", label: "Ordered", width: "14%", render: (r) => escapeHtml(bovDateShort(r.po_date)) },
-      { key: "qty_outstanding", label: "Outstanding", num: true, width: "14%", render: (r) => `${bovInt(r.qty_outstanding)}<span class="bov-cell-sub">of ${bovInt(r.tot_qty_ord)}</span>` },
-      { key: "outstanding_value", label: "Open $", num: true, width: "12%", render: (r) => bovMoney(r.outstanding_value) },
-      { key: "po_total", label: "PO total", num: true, width: "12%", render: (r) => bovMoney(r.po_total) },
-    ];
+    cols = bovPoCols("incoming");
   } else if (tab === "purchased") {
     sortKey = "purchasesPurchased";
     const cur = (d.totals && d.totals.current) || {};
@@ -20449,14 +20611,7 @@ function bovRenderPurchases() {
       body.innerHTML = bovEmptyHtml("No purchase orders placed in this period.");
       return;
     }
-    cols = [
-      { key: "po_number", label: "PO #", width: "16%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.po_number || String(r.po_id))}</span>` },
-      { key: "business_name", label: "Supplier", width: "34%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
-      { key: "po_date", label: "Ordered", width: "14%", render: (r) => escapeHtml(bovDateShort(r.po_date)) },
-      { key: "status", label: "Status", width: "12%", render: (r) => `<span class="qip-status-chip ${r.status === 1 ? "complete" : "picking"}">${r.status === 1 ? "Received" : "Open"}</span>` },
-      { key: "tot_qty_ord", label: "Qty", num: true, width: "10%", render: (r) => bovInt(r.tot_qty_ord) },
-      { key: "po_total", label: "Total", num: true, width: "14%", render: (r) => bovMoney(r.po_total) },
-    ];
+    cols = bovPoCols("purchased");
   } else {
     sortKey = "purchasesReceived";
     const cur = (d.totals && d.totals.current) || {};
@@ -20466,19 +20621,141 @@ function bovRenderPurchases() {
       body.innerHTML = bovEmptyHtml("Nothing received in this period.");
       return;
     }
-    cols = [
-      { key: "po_number", label: "PO #", width: "16%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.po_number || String(r.po_id))}</span>` },
-      { key: "business_name", label: "Supplier", width: "34%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
-      { key: "last_received", label: "Received", width: "14%", render: (r) => escapeHtml(bovDateShort(r.last_received)) },
-      { key: "qty_received", label: "Qty", num: true, width: "12%", render: (r) => `${bovInt(r.qty_received)}<span class="bov-cell-sub">of ${bovInt(r.tot_qty_ord)}</span>` },
-      { key: "received_value", label: "Value", num: true, width: "12%", render: (r) => bovMoney(r.received_value) },
-      { key: "po_total", label: "PO total", num: true, width: "12%", render: (r) => bovMoney(r.po_total) },
-    ];
+    cols = bovPoCols("received");
   }
   const sorted = bovSortRows(rows, bovState.sort[sortKey]);
   const shown = bovState.expanded.purchases ? sorted : sorted.slice(0, BOV_ROWS_COLLAPSED);
-  body.innerHTML = bovTableHtml(sortKey, cols, shown, { rowAttrs: (r) => `data-bov-open="po" data-bov-id="${r.po_id}"` });
+  body.innerHTML = bovTableHtml(sortKey, cols, shown, { rowAttrs: bovPoRowAttrs });
   if (foot) foot.innerHTML = bovFootHtml("purchases", rows.length, shown.length, sourceFoot);
+}
+
+function bovPoRowAttrs(r) {
+  return `data-bov-open="po" data-bov-id="${r.po_id}"`;
+}
+
+function bovPoCols(tab) {
+  if (tab === "incoming") {
+    return [
+      { key: "po_number", label: "PO #", width: "16%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.po_number || String(r.po_id))}</span>` },
+      { key: "business_name", label: "Supplier", width: "32%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
+      { key: "po_date", label: "Ordered", width: "14%", render: (r) => escapeHtml(bovDateShort(r.po_date)) },
+      { key: "qty_outstanding", label: "Outstanding", num: true, width: "14%", render: (r) => `${bovInt(r.qty_outstanding)}<span class="bov-cell-sub">of ${bovInt(r.tot_qty_ord)}</span>` },
+      { key: "outstanding_value", label: "Open $", num: true, width: "12%", render: (r) => bovMoney(r.outstanding_value) },
+      { key: "po_total", label: "PO total", num: true, width: "12%", render: (r) => bovMoney(r.po_total) },
+    ];
+  }
+  if (tab === "purchased") {
+    return [
+      { key: "po_number", label: "PO #", width: "16%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.po_number || String(r.po_id))}</span>` },
+      { key: "business_name", label: "Supplier", width: "34%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
+      { key: "po_date", label: "Ordered", width: "14%", render: (r) => escapeHtml(bovDateShort(r.po_date)) },
+      { key: "status", label: "Status", width: "12%", render: (r) => `<span class="qip-status-chip ${r.status === 1 ? "complete" : "picking"}">${r.status === 1 ? "Received" : "Open"}</span>` },
+      { key: "tot_qty_ord", label: "Qty", num: true, width: "10%", render: (r) => bovInt(r.tot_qty_ord) },
+      { key: "po_total", label: "Total", num: true, width: "14%", render: (r) => bovMoney(r.po_total) },
+    ];
+  }
+  return [
+    { key: "po_number", label: "PO #", width: "16%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.po_number || String(r.po_id))}</span>` },
+    { key: "business_name", label: "Supplier", width: "34%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
+    { key: "last_received", label: "Received", width: "14%", render: (r) => escapeHtml(bovDateShort(r.last_received)) },
+    { key: "qty_received", label: "Qty", num: true, width: "12%", render: (r) => `${bovInt(r.qty_received)}<span class="bov-cell-sub">of ${bovInt(r.tot_qty_ord)}</span>` },
+    { key: "received_value", label: "Value", num: true, width: "12%", render: (r) => bovMoney(r.received_value) },
+    { key: "po_total", label: "PO total", num: true, width: "12%", render: (r) => bovMoney(r.po_total) },
+  ];
+}
+
+// ---------------------------------------------------------------------------
+// Full-list modal (shared by the three ops cards)
+// ---------------------------------------------------------------------------
+
+function bovListDef(kind) {
+  if (kind === "quotations") {
+    return { widgetKey: "quotations", title: "Quotations in progress", rowsOf: (d) => d.quotations || [], cols: () => bovQuotationCols(), rowAttrs: bovQuotationRowAttrs,
+      searchFields: ["quotation_number", "business_name", "account_no", "sales_rep", "status", "packer", "checker", "source_db"],
+      meta: (d) => `${bovInt(d.count || (d.quotations || []).length)} · ${bovCompactMoney(d.total_amount || 0)}${d.store_name ? ` · ${d.store_name}` : ""}` };
+  }
+  if (kind === "invoices") {
+    const key = bovActiveInvoicesKey();
+    if (key === "invoicesOpen") {
+      return { widgetKey: key, title: "Open invoices", rowsOf: (d) => d.invoices || [], cols: (d) => bovOpenInvoiceCols((d.stores || []).length > 1), rowAttrs: bovInvoiceRowAttrs,
+        searchFields: ["invoice_number", "business_name", "account_no", "sales_rep", "shipper", "store_name", "po_number"],
+        meta: (d) => `${bovInt(d.count || 0)} open · ${bovCompactMoney(d.total_amount || 0)}${d.store_name ? ` · ${d.store_name}` : ""}` };
+    }
+    return { widgetKey: key, title: "Invoices shipped", rowsOf: (d) => d.invoices || [], cols: (d) => bovShippedInvoiceCols((d.stores || []).length > 1), rowAttrs: bovInvoiceRowAttrs,
+      searchFields: ["invoice_number", "business_name", "account_no", "sales_rep", "shipper", "tracking_no", "store_name", "po_number"],
+      meta: (d) => { const c = (d.totals && d.totals.current) || {}; return `${bovInt(c.invoices || 0)} shipped · ${bovCompactMoney(c.total_amount || 0)}${d.store_name ? ` · ${d.store_name}` : ""}`; } };
+  }
+  const key = bovActivePurchasesKey();
+  const tab = bovState.tabs.purchases;
+  const titles = { incoming: "Incoming purchase orders", purchased: "Purchase orders placed", received: "Purchase orders received" };
+  return { widgetKey: key, title: titles[tab] || "Purchase orders", rowsOf: (d) => d.purchase_orders || [], cols: () => bovPoCols(tab), rowAttrs: bovPoRowAttrs,
+    searchFields: ["po_number", "business_name", "account_no"],
+    meta: (d) => {
+      if (tab === "incoming") return `${bovInt(d.count || 0)} open · ${bovCompactMoney(d.outstanding_value || 0)} outstanding${d.store_name ? ` · ${d.store_name}` : ""}`;
+      const c = (d.totals && d.totals.current) || {};
+      return tab === "purchased"
+        ? `${bovInt(c.purchase_orders || 0)} placed · ${bovCompactMoney(c.total || 0)}${d.store_name ? ` · ${d.store_name}` : ""}`
+        : `${bovInt(c.purchase_orders || 0)} PO received · ${bovCompactMoney(c.value || 0)}${d.store_name ? ` · ${d.store_name}` : ""}`;
+    } };
+}
+
+function bovOpenListModal(kind) {
+  const def = bovListDef(kind);
+  bovState.listModal = { kind, widgetKey: def.widgetKey, search: "" };
+  const search = document.getElementById("bov-list-search");
+  if (search) search.value = "";
+  bovRenderListModal();
+  openModal("bov-list-modal");
+  setTimeout(() => search?.focus(), 30);
+}
+
+function bovRenderListModal() {
+  const lm = bovState.listModal;
+  const title = document.getElementById("bov-list-title");
+  const meta = document.getElementById("bov-list-meta");
+  const count = document.getElementById("bov-list-count");
+  const body = document.getElementById("bov-list-body");
+  if (!lm || !body) return;
+  const def = bovListDef(lm.kind);
+  lm.widgetKey = def.widgetKey;
+  if (title) title.textContent = def.title;
+  const w = bovState.widgets[def.widgetKey];
+  const d = w && w.data;
+  if (!d) {
+    body.innerHTML = w && w.error ? bovInlineErrorHtml(def.widgetKey, w.error, "Could not load") : bovSkeletonHtml(6);
+    if (meta) meta.textContent = "";
+    if (count) count.textContent = "";
+    return;
+  }
+  if (!d.configured) {
+    body.innerHTML = bovUnconfiguredHtml("Not configured", "Pick the data source under Data sources.", null);
+    if (meta) meta.textContent = "";
+    if (count) count.textContent = "";
+    return;
+  }
+  if (d.filtered_out) {
+    body.innerHTML = bovFilteredOutHtml();
+    if (meta) meta.textContent = "";
+    if (count) count.textContent = "";
+    return;
+  }
+  if (d.error) {
+    body.innerHTML = bovInlineErrorHtml(def.widgetKey, d.error, "Unavailable");
+    if (meta) meta.textContent = "";
+    if (count) count.textContent = "";
+    return;
+  }
+  const all = def.rowsOf(d);
+  if (meta) meta.textContent = def.meta(d);
+  const q = (lm.search || "").trim().toLowerCase();
+  const rows = q
+    ? all.filter((r) => def.searchFields.some((f) => r[f] != null && String(r[f]).toLowerCase().includes(q)))
+    : all;
+  const sorted = bovSortRows(rows, bovState.sort[def.widgetKey] || { key: null, dir: "desc" });
+  if (count) count.textContent = q ? `${bovInt(sorted.length)} of ${bovInt(all.length)}` : `${bovInt(all.length)} row${all.length === 1 ? "" : "s"}${d.truncated ? " (first page)" : ""}`;
+  body.innerHTML = sorted.length
+    ? bovTableHtml(def.widgetKey, def.cols(d), sorted, { rowAttrs: def.rowAttrs })
+    : bovEmptyHtml(q ? "No rows match your search." : "Nothing here.");
 }
 
 // ---------------------------------------------------------------------------
@@ -20768,20 +21045,27 @@ function bovRenderConfigBar() {
   ];
   summary.innerHTML = `<span class="bov-config-summary-label">Sources</span> ${bits.map((b) => `<span class="bov-config-bit">${b}</span>`).join("")}`;
 
-  const shopNames = (cfg.shopify_store_names || []).join(", ");
+  // Per-store sync state comes from /config/options (loaded with the config).
+  const optShop = ((bovState.options && bovState.options.shopify_stores) || []);
+  const shopNames = (cfg.shopify_store_ids || []).map((id, i) => {
+    const name = (cfg.shopify_store_names || [])[i] || `Store ${id}`;
+    const o = optShop.find((x) => Number(x.id) === Number(id));
+    if (!o) return name;
+    return o.synced ? `${name} (synced${o.last_synced_at ? ` ${formatRelative(o.last_synced_at)}` : ""})` : `${name} (not synced — run Data Sync in Shopify Analytics)`;
+  }).join(", ");
   const rows = [
     ["Sales & invoices", salesLabel || "Not set — revenue, margin and invoice widgets are off", salesN > 0],
     ["Purchases", cfg.purchases_store_name || "Not set — purchase-order widgets are off", !!cfg.purchases_store_id],
     ["Shopify", shopNames || "None — Shopify revenue is not included", shopN > 0],
     ["Quotation statuses", (cfg.quotation_statuses || []).join(", ") || "All statuses", true],
-    ["Admin DB (quotations)", cfg.admin_store_name || "Not set — choose it under Settings → Roles", !!cfg.admin_store_id],
+    ["Admin DB (quotations)", cfg.admin_store_name || "Not set — pick it under Edit sources", !!cfg.admin_store_id],
     ["Cost source for Shopify", cfg.cost_store_name || "Not resolved (Item Tracker S2S or first sales store)", !!cfg.cost_store_id],
     ["Timezone", cfg.timezone || "America/Chicago", true],
     ["Excluded customers", `${bovInt(cfg.sales_exclusions_count || 0)} account${cfg.sales_exclusions_count === 1 ? "" : "s"} removed from BackOffice sales totals`, true],
   ];
   details.innerHTML =
     `<div class="bov-config-rows">${rows.map(([k, v, ok]) => `<div class="bov-config-row${ok ? "" : " is-warn"}">${bovConfigDot(ok, !ok)}<span class="bov-config-row-key">${escapeHtml(k)}</span><span class="bov-config-row-val">${escapeHtml(v)}</span></div>`).join("")}</div>` +
-    `<div class="bov-config-links"><a href="#" data-bov-action="config">Edit sources</a><a href="#" data-bov-action="exclusions">Manage exclusions</a><a href="#" data-bov-action="settings-roles">Admin DB (Settings)</a><a href="#" data-bov-action="data-sync">Shopify Data Sync</a></div>`;
+    `<div class="bov-config-links"><a href="#" data-bov-action="config">Edit sources</a><a href="#" data-bov-action="exclusions">Manage exclusions</a><a href="#" data-bov-action="settings-roles">Admin DB</a></div>`;
 }
 
 function bovToggleConfigDetails(force) {
@@ -20837,6 +21121,7 @@ function bovPopulateConfigForm(cfg, opts = {}) {
     if (!mssql.length) sel.innerHTML += `<option value="" disabled>No active MSSQL stores</option>`;
   };
   fill("bov-cfg-purchases", cfg.purchases_store_id);
+  fill("bov-cfg-admin", cfg.admin_store_id);
 
   const salesWrap = document.getElementById("bov-cfg-sales");
   if (salesWrap) {
@@ -20864,7 +21149,7 @@ function bovPopulateConfigForm(cfg, opts = {}) {
     });
     stWrap.innerHTML = all.map((s) => bovStatusPillHtml(s, chosen.some((c) => c.toLowerCase() === s.toLowerCase()))).join("");
     if (!options.admin_configured) {
-      stWrap.insertAdjacentHTML("beforeend", `<span class="bov-field-help bov-field-help-inline">Admin DB not set — statuses cannot be discovered. <a href="#" data-bov-action="settings-roles">Settings → Roles</a></span>`);
+      stWrap.insertAdjacentHTML("beforeend", `<span class="bov-field-help bov-field-help-inline">Admin DB not set — statuses cannot be discovered until it is chosen above.</span>`);
     }
   }
   const tz = document.getElementById("bov-cfg-tz");
@@ -20873,7 +21158,6 @@ function bovPopulateConfigForm(cfg, opts = {}) {
   const ro = document.getElementById("bov-config-ro");
   if (ro) {
     ro.innerHTML =
-      `<div class="bov-config-row${cfg.admin_store_id ? "" : " is-warn"}">${bovConfigDot(!!cfg.admin_store_id, true)}<span class="bov-config-row-key">Admin DB (quotations in progress)</span><span class="bov-config-row-val">${escapeHtml(cfg.admin_store_name || "Not set")} · <a href="#" data-bov-action="settings-roles">Change in Settings → Roles</a></span></div>` +
       `<div class="bov-config-row">${bovConfigDot(true)}<span class="bov-config-row-key">Excluded customers</span><span class="bov-config-row-val">${bovInt(cfg.sales_exclusions_count || 0)} account${cfg.sales_exclusions_count === 1 ? "" : "s"} · <a href="#" id="bov-excl-toggle-link">Manage</a></span></div>`;
     document.getElementById("bov-excl-toggle-link")?.addEventListener("click", (e) => {
       e.preventDefault();
@@ -20926,6 +21210,13 @@ async function bovSaveConfig() {
   };
   if (btn) btn.disabled = true;
   try {
+    // Admin DB lives in the shared `admin_store_id` setting (same as Settings → Roles).
+    const adminSel = document.getElementById("bov-cfg-admin");
+    const adminVal = adminSel ? (adminSel.value || "") : null;
+    const adminCur = bovState.config && bovState.config.admin_store_id != null ? String(bovState.config.admin_store_id) : "";
+    if (adminVal !== null && adminVal !== adminCur) {
+      await bovSaveAdminStore(adminVal);
+    }
     const resp = await fetch(`${API_BASE}/business-overview/config`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -20937,6 +21228,10 @@ async function bovSaveConfig() {
       throw new Error(detail);
     }
     bovState.config = await resp.json();
+    try { bovState.options = await bovFetchJson("/config/options"); } catch (e) { /* keep old options */ }
+    bovValidateStoreFilter();
+    bovSavePrefs();
+    bovRenderStoreChips();
     showToast("✓ Overview sources saved", "success");
     bovState.configEditing = false;
     document.getElementById("bov-config-setup").hidden = true;
@@ -20953,6 +21248,21 @@ async function bovSaveConfig() {
   } finally {
     if (btn) btn.disabled = false;
   }
+}
+
+async function bovSaveAdminStore(value) {
+  const patch = await fetch(`${API_BASE}/settings/admin_store_id`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ value }),
+  });
+  if (patch.ok) return;
+  const post = await fetch(`${API_BASE}/settings`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ key: "admin_store_id", value, description: "DB_ADMIN store for Quotations In Progress" }),
+  });
+  if (!post.ok) throw new Error("Could not save the Admin DB setting");
 }
 
 // ----- Exclusions manager (shared SalesExclusion list) -----
