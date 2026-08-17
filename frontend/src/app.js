@@ -21129,14 +21129,17 @@ function bovRenderConfigBar() {
   const shopN = (cfg.shopify_store_ids || []).length;
   const salesN = bovSalesStoreIds(cfg).length;
   const salesLabel = bovSalesStoreLabel(cfg);
+  const shopTitle = (cfg.shopify_store_names || []).join(", ");
+  const bit = (ok, key, value, title) =>
+    `<span class="bov-config-bit${ok ? "" : " is-off"}"${title ? ` title="${escapeHtml(title)}"` : ""}>${bovConfigDot(ok, !ok)}<span class="bov-config-bit-key">${escapeHtml(key)}</span><span class="bov-config-bit-val">${escapeHtml(value)}</span></span>`;
   const bits = [
-    `${bovConfigDot(salesN > 0)} Sales ${escapeHtml(salesN > 2 ? `${salesN} stores` : (salesLabel || "not set"))}`,
-    `${bovConfigDot(!!cfg.purchases_store_id)} Purchases ${escapeHtml(cfg.purchases_store_name || "not set")}`,
-    `${bovConfigDot(shopN > 0)} Shopify ${shopN ? `${shopN} store${shopN === 1 ? "" : "s"}` : "none"}`,
-    `${bovConfigDot(!!cfg.admin_store_id)} Admin DB ${escapeHtml(cfg.admin_store_name || "not set")}`,
-    `${bovConfigDot(true)} Exclusions ${bovInt(cfg.sales_exclusions_count || 0)}`,
+    bit(salesN > 0, "Sales", salesN > 2 ? `${salesN} stores` : (salesLabel || "not set"), salesLabel),
+    bit(!!cfg.purchases_store_id, "Purchases", cfg.purchases_store_name || "not set"),
+    bit(shopN > 0, "Shopify", shopN ? `${shopN} store${shopN === 1 ? "" : "s"}` : "none", shopTitle),
+    bit(!!cfg.admin_store_id, "Admin DB", cfg.admin_store_name || "not set"),
+    bit(true, "Exclusions", `${bovInt(cfg.sales_exclusions_count || 0)} account${cfg.sales_exclusions_count === 1 ? "" : "s"}`),
   ];
-  summary.innerHTML = `<span class="bov-config-summary-label">Sources</span> ${bits.map((b) => `<span class="bov-config-bit">${b}</span>`).join("")}`;
+  summary.innerHTML = `<span class="bov-config-summary-label">Sources</span>${bits.join("")}`;
 
   // Per-store sync state comes from /config/options (loaded with the config).
   const optShop = ((bovState.options && bovState.options.shopify_stores) || []);

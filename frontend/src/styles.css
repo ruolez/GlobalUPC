@@ -7546,3 +7546,32 @@ tr.bov-line-void td { opacity: 0.55; text-decoration: line-through; }
   font-variant-numeric: tabular-nums;
 }
 .bov-list-stores .sa-chip.active .bov-store-chip-tag { color: inherit; opacity: 0.7; }
+
+/* Business Overview — sources bar: labelled pills instead of a run-on line */
+#bov-config-summary {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.375rem 0.5rem;
+  min-width: 0;
+}
+.bov-config-summary { gap: 0.375rem 0.625rem; }
+.bov-config-head { padding: 0.625rem 0.875rem; }
+.bov-config-summary .bov-config-summary-label { margin-right: 0.25rem; }
+.bov-config-summary .bov-config-bit {
+  gap: 0.4rem;
+  padding: 0.25rem 0.625rem 0.25rem 0.5rem;
+  border-radius: 999px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  font-size: 0.8125rem;
+  line-height: 1.2;
+  color: var(--text-primary);
+}
+.bov-config-summary .bov-config-bit.is-off { color: var(--text-secondary); }
+.bov-config-bit-key { color: var(--text-tertiary); }
+.bov-config-bit-val { font-weight: 600; }
+.bov-config-summary .bov-config-bit.is-off .bov-config-bit-val { font-weight: 500; }
+@media (max-width: 900px) {
+  .bov-config-summary .bov-config-bit { font-size: 0.75rem; }
+}
