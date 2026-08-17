@@ -71,7 +71,7 @@ from schemas import (
     BOVPurchasesRangeBlock, BOVPurchasesRangeResponse,
     BOVPurchaseOrderLine, BOVPurchaseOrderHeader, BOVPurchaseOrderDetailResponse,
     BOVSalesSourceTotals, BOVSalesBucket, BOVSalesSourceStatus, BOVSalesTrendResponse,
-    BOVBreakdownRow, BOVSalesBreakdownResponse, BOVStoreStatus, BOVShopifyStoreOrders, BOVShopifyOrdersResponse, BOVShopifyRefreshResult, BOVShopifyRefreshResponse,
+    BOVBreakdownRow, BOVSalesBreakdownResponse, BOVStoreStatus, BOVInvoicesPeriodResponse, BOVShopifyStoreOrders, BOVShopifyOrdersResponse, BOVShopifyRefreshResult, BOVShopifyRefreshResponse,
     BOVShopifyStoreOpen, BOVShopifyOpenOrdersBlock, BOVSalesSummaryBlock,
     BusinessOverviewSummaryResponse,
 )
@@ -10233,6 +10233,50 @@ async def get_business_overview_open_invoices(
                                           limit=limit, sort_by=sort_by, sort_order=sort_order,
                                           only_ids=_bov_parse_store_ids(store_ids))
     return BOVOpenInvoicesResponse(**block)
+
+
+@app.get("/api/business-overview/invoices/period", response_model=BOVInvoicesPeriodResponse)
+async def get_business_overview_invoices_period(
+    preset: Optional[str] = None, date_from: Optional[str] = None, date_to: Optional[str] = None,
+    limit: int = 500, sort_by: str = "invoice_date", sort_order: str = "desc",
+    store_ids: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Every non-void invoice dated in the period across the selected sales stores,
+    each flagged is_shipped (TrackingNo present) — the card's All/Open/Shipped view.
+    """
+    cfg = _bov_config(db)
+    period = _bov_period(cfg, preset, date_from, date_to)
+    only = _bov_parse_store_ids(store_ids)
+    if not _bov_sales_stores(db, cfg):
+        return BOVInvoicesPeriodResponse(configured=False, period=BOVPeriod(**period.as_dict()))
+    stores = _bov_sales_stores(db, cfg, only)
+    if not stores:
+        return BOVInvoicesPeriodResponse(configured=True, filtered_out=True, period=BOVPeriod(**period.as_dict()))
+    today = bov.today_in_tz(_bov_tz(cfg))
+    results = await _bov_fanout(stores, lambda st: bov.invoices_in_period_async(
+        **_bov_conn_kwargs(st), date_from=period.start.isoformat(), date_to_excl=period.end_excl,
+        limit=limit, sort_by=sort_by, sort_order=sort_order, include_list=True, today=today))
+    base = _bov_multi_base(stores, results, {"period": period.as_dict()})
+    if base.get("error"):
+        return BOVInvoicesPeriodResponse(**base)
+    invoices: List[Dict[str, Any]] = []
+    sums = {"count": 0, "open_count": 0, "shipped_count": 0, "total_amount": 0.0,
+            "open_amount": 0.0, "shipped_amount": 0.0, "total_qty": 0.0}
+    truncated = False
+    for st, ok, _err, p in results:
+        if not ok:
+            continue
+        invoices.extend(_bov_tag_rows(list(p.get("invoices") or []), st))
+        for k in sums:
+            sums[k] += (p.get(k) or 0)
+        truncated = truncated or bool(p.get("truncated"))
+    for k in ("total_amount", "open_amount", "shipped_amount"):
+        sums[k] = round(sums[k], 2)
+    base.update(sums)
+    base.update({"invoices": invoices, "limit": limit, "truncated": truncated})
+    return BOVInvoicesPeriodResponse(**base)
 
 
 @app.get("/api/business-overview/invoices/shipped", response_model=BOVShippedInvoicesResponse)

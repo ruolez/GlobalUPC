@@ -18425,7 +18425,7 @@ async function sacrUpdateDataSourceNote() {
 // offline-capable and theme-aware.
 
 const BOV_AUTOREFRESH_MS = 60000;
-const BOV_LIVE_WIDGETS = ["summary", "quotations", "invoicesOpen", "purchasesIncoming", "shopifyOrders"];
+const BOV_LIVE_WIDGETS = ["summary", "quotations", "invoicesPeriod", "invoicesOpen", "purchasesIncoming", "shopifyOrders"];
 const BOV_SHOPIFY_WIDGETS = ["summary", "top", "shopifyOrders"];
 const BOV_SHOPIFY_AUTO_REFRESH_MS = 15 * 60 * 1000;
 const BOV_PREFS_KEY = "bov_prefs";
@@ -18477,14 +18477,14 @@ const bovState = {
   collapsedCards: {},   // cardId -> true when the user collapsed it
   listModal: null,      // {kind, widgetKey, search} while #bov-list-modal is open
   seriesHidden: { cost: true },
-  tabs: { invoices: "open", purchases: "incoming", top: "customer" },
+  tabs: { invoices: "all", purchases: "incoming", top: "customer" },
   agingFilter: null,
   openInRange: true,    // open invoices limited to those invoiced in the selected period
   expanded: { quotations: false, invoices: false, purchases: false },
   sort: {
     quotations: { key: "quotation_total", dir: "desc" },
+    invoicesPeriod: { key: "invoice_date", dir: "desc" },
     invoicesOpen: { key: "age_days", dir: "desc" },
-    invoicesShipped: { key: "ship_date", dir: "desc" },
     purchasesIncoming: { key: "po_date", dir: "desc" },
     purchasesPurchased: { key: "po_date", dir: "desc" },
     purchasesReceived: { key: "last_received", dir: "desc" },
@@ -18494,8 +18494,8 @@ const bovState = {
     trend: bovEmptyWidget(),
     top: bovEmptyWidget(),
     quotations: bovEmptyWidget(),
+    invoicesPeriod: bovEmptyWidget(),
     invoicesOpen: bovEmptyWidget(),
-    invoicesShipped: bovEmptyWidget(),
     purchasesIncoming: bovEmptyWidget(),
     purchasesPurchased: bovEmptyWidget(),
     purchasesReceived: bovEmptyWidget(),
@@ -19076,7 +19076,7 @@ function bovBindOnce() {
     if (e.target && e.target.id === "bov-inv-open-range") {
       bovState.openInRange = !!e.target.checked;
       bovSavePrefs();
-      bovFetchAll({ only: ["invoicesOpen", "summary"] });
+      bovFetchAll({ only: ["invoicesOpen", "invoicesPeriod", "summary"] });
     }
   });
 
@@ -19406,14 +19406,16 @@ const BOV_WIDGET_DEFS = {
     request: () => ["/quotations", { limit: BOV_LIST_LIMIT, ...bovStoreParams() }],
     render: () => bovRenderQuotationsTable(),
   },
-  invoicesOpen: {
+  invoicesPeriod: {
     card: "bov-invoices-card",
-    request: () => ["/invoices/open", { limit: BOV_LIST_LIMIT, ...(bovState.openInRange ? bovRangeParams() : {}), ...bovStoreParams() }],
+    request: () => ["/invoices/period", { ...bovRangeParams(), limit: BOV_LIST_LIMIT, ...bovStoreParams() }],
     render: () => bovRenderInvoices(),
   },
-  invoicesShipped: {
+  invoicesOpen: {
+    // Whole unshipped backlog (any date) — only fetched when the Open tab is
+    // switched to "all dates"; the in-period view comes from invoicesPeriod.
     card: "bov-invoices-card",
-    request: () => ["/invoices/shipped", { ...bovRangeParams(), bucket: "day", limit: BOV_LIST_LIMIT, ...bovStoreParams() }],
+    request: () => (bovState.openInRange ? null : ["/invoices/open", { limit: BOV_LIST_LIMIT, ...bovStoreParams() }]),
     render: () => bovRenderInvoices(),
   },
   purchasesIncoming: {
@@ -19534,8 +19536,8 @@ function bovPaintSkeleton(key) {
     trend: "bov-trend-wrap",
     top: "bov-top-body",
     quotations: "bov-quotations-body",
+    invoicesPeriod: "bov-invoices-body",
     invoicesOpen: "bov-invoices-body",
-    invoicesShipped: "bov-invoices-body",
     purchasesIncoming: "bov-purchases-body",
     purchasesPurchased: "bov-purchases-body",
     purchasesReceived: "bov-purchases-body",
@@ -20537,7 +20539,9 @@ function bovRenderTopBars() {
 // ---------------------------------------------------------------------------
 
 function bovActiveInvoicesKey() {
-  return bovState.tabs.invoices === "shipped" ? "invoicesShipped" : "invoicesOpen";
+  // Open + "all dates" is the whole unshipped backlog (/invoices/open); every
+  // other view is the period dataset (/invoices/period), filtered client-side.
+  return bovState.tabs.invoices === "open" && !bovState.openInRange ? "invoicesOpen" : "invoicesPeriod";
 }
 
 function bovActivePurchasesKey() {
@@ -20717,6 +20721,15 @@ function bovQuotationCols() {
 // Ops card: invoices
 // ---------------------------------------------------------------------------
 
+function bovInvoicesTabRows(d) {
+  // Rows for the active tab from the period dataset (all statuses, flagged is_shipped)
+  const tab = bovState.tabs.invoices;
+  const rows = (d && d.invoices) || [];
+  if (tab === "shipped") return rows.filter((r) => r.is_shipped);
+  if (tab === "open") return rows.filter((r) => !r.is_shipped);
+  return rows;
+}
+
 function bovRenderInvoices() {
   const body = document.getElementById("bov-invoices-body");
   const meta = document.getElementById("bov-invoices-meta");
@@ -20725,12 +20738,17 @@ function bovRenderInvoices() {
   const tab = bovState.tabs.invoices;
   const key = bovActiveInvoicesKey();
   const w = bovState.widgets[key];
-  const openW = bovState.widgets.invoicesOpen;
-  const shipW = bovState.widgets.invoicesShipped;
-  const cOpen = document.getElementById("bov-tab-count-open");
-  const cShip = document.getElementById("bov-tab-count-shipped");
-  if (cOpen) cOpen.textContent = openW.data && openW.data.configured && !openW.data.error ? bovInt(openW.data.count || 0) : "";
-  if (cShip) cShip.textContent = shipW.data && shipW.data.configured && !shipW.data.error && shipW.data.totals ? bovInt((shipW.data.totals.current || {}).invoices || 0) : "";
+  const pw = bovState.widgets.invoicesPeriod;
+  const pd = pw.data && pw.data.configured && !pw.data.error && !pw.data.filtered_out ? pw.data : null;
+  const setCount = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+  setCount("bov-tab-count-all", pd ? bovInt(pd.count || 0) : "");
+  setCount("bov-tab-count-shipped", pd ? bovInt(pd.shipped_count || 0) : "");
+  if (bovState.openInRange) {
+    setCount("bov-tab-count-open", pd ? bovInt(pd.open_count || 0) : "");
+  } else {
+    const ow = bovState.widgets.invoicesOpen;
+    setCount("bov-tab-count-open", ow.data && ow.data.configured && !ow.data.error ? bovInt(ow.data.count || 0) : "");
+  }
   document.querySelectorAll('[data-bov-tab="invoices"]').forEach((b) => b.classList.toggle("active", b.dataset.value === tab));
 
   if (!w.data && !w.error) {
@@ -20759,18 +20777,19 @@ function bovRenderInvoices() {
     if (meta) meta.textContent = d.store_name ? `Source: ${d.store_name}` : "";
     return;
   }
-  const rows = d.invoices || [];
   const multi = (d.stores || []).length > 1;
-  const rowAttrs = bovInvoiceRowAttrs;
   const failedStores = (d.stores || []).filter((st) => st.error);
   const partialNote = failedStores.length
     ? `<span class="bov-foot-warn" title="${escapeHtml(failedStores.map((st) => `${st.store_name}: ${st.error}`).join("\n"))}">⚠ ${escapeHtml(failedStores.map((st) => st.store_name).join(", "))} unavailable — figures exclude ${failedStores.length === 1 ? "that store" : "those stores"}</span>`
     : "";
-  const rangeToggle = `<label class="sancm-toggle bov-foot-toggle" title="Unchecked = every unshipped invoice regardless of date"><input type="checkbox" id="bov-inv-open-range"${bovState.openInRange ? " checked" : ""}> Invoiced in selected period only</label>`;
+  const rangeToggle = `<label class="sancm-toggle bov-foot-toggle" title="Unchecked = every unshipped invoice regardless of date (whole backlog)"><input type="checkbox" id="bov-inv-open-range"${bovState.openInRange ? " checked" : ""}> Invoiced in selected period only</label>`;
+  const srcNote = d.store_name ? `Source: ${escapeHtml(d.store_name)}` : "";
 
-  if (tab === "open") {
+  // ---- Open · all dates (whole unshipped backlog) — served by /invoices/open
+  if (tab === "open" && !bovState.openInRange) {
+    const rows = d.invoices || [];
     const aging = d.aging || {};
-    if (meta) meta.textContent = `${bovInt(d.count || 0)} open · ${bovCompactMoney(d.total_amount || 0)}${d.oldest_age_days != null ? ` · oldest ${d.oldest_age_days}d` : ""} · ${bovState.openInRange ? "invoiced in period" : "all dates"}`;
+    if (meta) meta.textContent = `${bovInt(d.count || 0)} unshipped · ${bovCompactMoney(d.total_amount || 0)}${d.oldest_age_days != null ? ` · oldest ${d.oldest_age_days}d` : ""} · all dates`;
     let filtered = rows;
     if (bovState.agingFilter) filtered = rows.filter((r) => bovAgingBucket(r.age_days).key === bovState.agingFilter);
     const chips = ["0-1", "2-3", "4+"].map((k) => {
@@ -20779,31 +20798,59 @@ function bovRenderInvoices() {
       return `<button type="button" class="dashboard-activity-status ${cls} bov-aging-chip${bovState.agingFilter === k ? " is-active" : ""}" data-bov-aging="${k}" aria-pressed="${bovState.agingFilter === k}" title="Show only invoices aged ${lab}">${lab} · ${bovInt(aging[k] || 0)}</button>`;
     }).join("");
     if (!rows.length) {
-      body.innerHTML = bovEmptyHtml(bovState.openInRange ? "No open invoices in this period." : "All invoices have shipped.");
-      if (foot) foot.innerHTML = `<span class="bov-foot-left">${rangeToggle}</span>`;
+      body.innerHTML = bovEmptyHtml("Every invoice has a tracking number — nothing unshipped.");
+      if (foot) foot.innerHTML = `<span class="bov-foot-left">${rangeToggle}${partialNote}</span>`;
       return;
     }
     const sorted = bovSortRows(filtered, bovState.sort.invoicesOpen);
     const shown = bovState.expanded.invoices ? sorted : sorted.slice(0, BOV_ROWS_COLLAPSED);
-    const cols = bovOpenInvoiceCols(multi);
-    body.innerHTML = (filtered.length ? bovTableHtml("invoicesOpen", cols, shown, { rowAttrs: rowAttrs }) : bovEmptyHtml("No open invoices in this age band."));
+    body.innerHTML = filtered.length ? bovTableHtml("invoicesOpen", bovOpenInvoiceCols(multi), shown, { rowAttrs: bovInvoiceRowAttrs }) : bovEmptyHtml("No open invoices in this age band.");
     if (foot) foot.innerHTML = bovFootHtml("invoices", filtered.length, shown.length, `<span class="bov-aging-chips">${chips}</span>${rangeToggle}${partialNote}`);
     return;
   }
 
-  // shipped
-  const cur = (d.totals && d.totals.current) || {};
-  const prv = (d.totals && d.totals.previous) || {};
-  if (meta) meta.textContent = `${bovInt(cur.invoices || 0)} shipped · ${bovCompactMoney(cur.total_amount || 0)}${prv.invoices != null ? ` · prev ${bovInt(prv.invoices)}` : ""}`;
+  // ---- Period dataset: All / Open / Shipped by InvoiceDate, status = tracking present
+  const rows = bovInvoicesTabRows(d);
+  const openN = d.open_count || 0;
+  const shipN = d.shipped_count || 0;
+  if (meta) {
+    const bits = [`${bovInt(d.count || 0)} invoiced in period · ${bovCompactMoney(d.total_amount || 0)}`,
+      `${bovInt(shipN)} shipped (${bovCompactMoney(d.shipped_amount || 0)})`,
+      `${bovInt(openN)} open (${bovCompactMoney(d.open_amount || 0)})`];
+    meta.textContent = bits.join(" · ");
+  }
   if (!rows.length) {
-    body.innerHTML = bovEmptyHtml("No invoices shipped in this period.");
+    body.innerHTML = bovEmptyHtml(
+      tab === "open" ? "No unshipped invoices dated in this period — every invoice here has a tracking number."
+        : tab === "shipped" ? "No shipped invoices dated in this period."
+          : "No invoices dated in this period.");
+    if (foot) foot.innerHTML = `<span class="bov-foot-left">${tab === "open" ? rangeToggle : srcNote}${partialNote}</span>`;
     return;
   }
-  const sorted = bovSortRows(rows, bovState.sort.invoicesShipped);
+  const sorted = bovSortRows(rows, bovState.sort.invoicesPeriod);
   const shown = bovState.expanded.invoices ? sorted : sorted.slice(0, BOV_ROWS_COLLAPSED);
-  const cols = bovShippedInvoiceCols(multi);
-  body.innerHTML = bovTableHtml("invoicesShipped", cols, shown, { rowAttrs: rowAttrs });
-  if (foot) foot.innerHTML = bovFootHtml("invoices", rows.length, shown.length, (d.truncated ? `Showing the first ${bovInt(rows.length)}` : (d.store_name ? `Source: ${escapeHtml(d.store_name)}` : "")) + partialNote);
+  body.innerHTML = bovTableHtml("invoicesPeriod", bovPeriodInvoiceCols(multi), shown, { rowAttrs: bovInvoiceRowAttrs });
+  const left = (tab === "open" ? rangeToggle : "") + (d.truncated ? `Showing the first ${bovInt((d.invoices || []).length)} of ${bovInt(d.count)}` : srcNote) + partialNote;
+  if (foot) foot.innerHTML = bovFootHtml("invoices", rows.length, shown.length, left);
+}
+
+function bovPeriodInvoiceCols(multi) {
+  const status = (r) => r.is_shipped
+    ? `<span class="qip-status-chip complete" title="${escapeHtml(r.tracking_no || "")}">Shipped</span>${r.tracking_no ? `<span class="bov-cell-sub bov-cell-mono">${escapeHtml(r.tracking_no)}</span>` : ""}`
+    : `<span class="qip-status-chip picking">Open</span><span class="bov-cell-sub">${escapeHtml(bovAgingBucket(r.age_days).label)} · no tracking</span>`;
+  const cols = [
+    { key: "invoice_number", label: "Invoice #", width: multi ? "13%" : "15%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.invoice_number || String(r.invoice_id))}</span><span class="bov-cell-sub">${escapeHtml(bovDateShort(r.invoice_date))}</span>` },
+  ];
+  if (multi) cols.push({ key: "store_name", label: "Store", width: "11%", render: (r) => `<span class="bov-cell-store">${escapeHtml(bovStoreShort(r.store_name))}</span>` });
+  cols.push(
+    { key: "business_name", label: "Customer", width: multi ? "22%" : "27%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
+    { key: "sales_rep", label: "Rep", width: "10%", render: (r) => escapeHtml(r.sales_rep || "—") },
+    { key: "is_shipped", label: "Status", width: "16%", render: status },
+    { key: "shipper", label: "Shipper", width: "11%", render: (r) => escapeHtml(r.shipper || "—") },
+    { key: "no_lines", label: "Lines", num: true, width: "6%", render: (r) => r.no_lines == null ? "—" : bovInt(r.no_lines) },
+    { key: "invoice_total", label: "Total", num: true, width: "11%", render: (r) => bovMoney(r.invoice_total) },
+  );
+  return cols;
 }
 
 function bovInvoiceRowAttrs(r) {
@@ -20999,9 +21046,11 @@ function bovListDef(kind) {
         searchFields: ["invoice_number", "business_name", "account_no", "sales_rep", "shipper", "store_name", "po_number"],
         meta: (d) => `${bovInt(d.count || 0)} open · ${bovCompactMoney(d.total_amount || 0)} · ${bovState.openInRange ? "invoiced in period" : "all dates"}${d.store_name ? ` · ${d.store_name}` : ""}` };
     }
-    return { widgetKey: key, title: "Invoices shipped", rowsOf: (d) => d.invoices || [], cols: (d) => bovShippedInvoiceCols((d.stores || []).length > 1), rowAttrs: bovInvoiceRowAttrs,
+    const tab = bovState.tabs.invoices;
+    const titles = { all: "Invoices in period", open: "Open invoices in period", shipped: "Shipped invoices in period" };
+    return { widgetKey: key, title: titles[tab] || "Invoices", rowsOf: (d) => bovInvoicesTabRows(d), cols: (d) => bovPeriodInvoiceCols((d.stores || []).length > 1), rowAttrs: bovInvoiceRowAttrs,
       searchFields: ["invoice_number", "business_name", "account_no", "sales_rep", "shipper", "tracking_no", "store_name", "po_number"],
-      meta: (d) => { const c = (d.totals && d.totals.current) || {}; return `${bovInt(c.invoices || 0)} shipped · ${bovCompactMoney(c.total_amount || 0)}${d.store_name ? ` · ${d.store_name}` : ""}`; } };
+      meta: (d) => `${bovInt(d.count || 0)} invoiced · ${bovInt(d.shipped_count || 0)} shipped · ${bovInt(d.open_count || 0)} open${d.store_name ? ` · ${d.store_name}` : ""}` };
   }
   const key = bovActivePurchasesKey();
   const tab = bovState.tabs.purchases;

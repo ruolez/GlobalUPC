@@ -403,8 +403,9 @@
                   </div>
                   <div class="bov-card-controls">
                     <div class="sancm-mode-group" data-bov-tabgroup="invoices">
-                      <button type="button" class="sancm-mode-btn active" data-bov-tab="invoices" data-value="open">Open <span class="bov-tab-count" id="bov-tab-count-open"></span></button>
-                      <button type="button" class="sancm-mode-btn" data-bov-tab="invoices" data-value="shipped">Shipped <span class="bov-tab-count" id="bov-tab-count-shipped"></span></button>
+                      <button type="button" class="sancm-mode-btn active" data-bov-tab="invoices" data-value="all" title="Every invoice dated in the selected period, flagged Shipped (tracking number present) or Open">All <span class="bov-tab-count" id="bov-tab-count-all"></span></button>
+                      <button type="button" class="sancm-mode-btn" data-bov-tab="invoices" data-value="open" title="Invoices without a tracking number (unshipped)">Open <span class="bov-tab-count" id="bov-tab-count-open"></span></button>
+                      <button type="button" class="sancm-mode-btn" data-bov-tab="invoices" data-value="shipped" title="Invoices with a tracking number">Shipped <span class="bov-tab-count" id="bov-tab-count-shipped"></span></button>
                     </div>
                     <button type="button" class="btn btn-secondary bov-btn-xs bov-card-link-btn" data-bov-action="list" data-bov-list="invoices">Full list ↗</button>
                   </div>

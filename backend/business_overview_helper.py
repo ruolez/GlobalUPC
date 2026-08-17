@@ -804,16 +804,16 @@ def _shipped_invoices_sync(
                 return False, "Table Invoices_tbl not found on this store", {}
             j = _invoice_joins(present)
             cur.execute(f"""
-                SELECT CAST(COALESCE(h.ShipDate, h.InvoiceDate) AS date) AS d,
+                SELECT CAST(h.InvoiceDate AS date) AS d,
                        COUNT(*) AS invoices,
                        SUM(ISNULL(h.InvoiceTotal,0)) AS total_amount,
                        SUM(ISNULL(h.TotQtyShp,0))    AS total_qty,
                        SUM(ISNULL(h.NoBoxes,0))      AS boxes
                 FROM Invoices_tbl h
                 WHERE {_SHIPPED_WHERE}
-                  AND COALESCE(h.ShipDate, h.InvoiceDate) >= ?
-                  AND COALESCE(h.ShipDate, h.InvoiceDate) <  ?
-                GROUP BY CAST(COALESCE(h.ShipDate, h.InvoiceDate) AS date)
+                  AND h.InvoiceDate >= ?
+                  AND h.InvoiceDate <  ?
+                GROUP BY CAST(h.InvoiceDate AS date)
                 ORDER BY d
             """, [series_from, date_to_excl])
             daily: Dict[date, Dict[str, float]] = {}
@@ -837,12 +837,81 @@ def _shipped_invoices_sync(
                     {j['rep_join']}
                     {j['shipper_join']}
                     WHERE {_SHIPPED_WHERE}
-                      AND COALESCE(h.ShipDate, h.InvoiceDate) >= ?
-                      AND COALESCE(h.ShipDate, h.InvoiceDate) <  ?
+                      AND h.InvoiceDate >= ?
+                      AND h.InvoiceDate <  ?
                     ORDER BY {sort_expr}
                 """, [limit, date_from, date_to_excl])
                 invoices = [_invoice_row(d) for d in _rows(cur)]
         return True, None, {"invoices": invoices, "daily": daily, "limit": limit}
+    except Exception as e:
+        return False, str(e), {}
+
+
+def _invoices_in_period_sync(
+    host, port, database, username, password,
+    date_from: str,
+    date_to_excl: str,
+    limit: int = DEFAULT_LIST_LIMIT,
+    sort_by: str = "invoice_date",
+    sort_order: str = "desc",
+    include_list: bool = True,
+    today: Optional[date] = None,
+) -> Tuple[bool, Optional[str], Dict[str, Any]]:
+    """
+    Every non-void invoice dated (InvoiceDate) in [date_from, date_to_excl),
+    each flagged is_shipped = TrackingNo present. Aggregates split the same way.
+    """
+    limit = _clamp_limit(limit)
+    tracking_blank = "(h.TrackingNo IS NULL OR LTRIM(RTRIM(h.TrackingNo)) = '')"
+    where = "ISNULL(h.Void, 0) = 0 AND h.InvoiceDate >= ? AND h.InvoiceDate < ?"
+    params: List[Any] = [date_from, date_to_excl]
+    try:
+        with _connect(host, port, database, username, password) as conn:
+            cur = conn.cursor()
+            present = _tables_present(cur, ["Invoices_tbl", "Employees_tbl", "Shippers_tbl"])
+            if not present.get("Invoices_tbl"):
+                return False, "Table Invoices_tbl not found on this store", {}
+            j = _invoice_joins(present)
+            cur.execute(f"""
+                SELECT COUNT(*) AS invoices,
+                       SUM(CASE WHEN {tracking_blank} THEN 1 ELSE 0 END)                       AS open_count,
+                       SUM(CASE WHEN {tracking_blank} THEN 0 ELSE 1 END)                       AS shipped_count,
+                       SUM(ISNULL(h.InvoiceTotal,0))                                            AS total_amount,
+                       SUM(CASE WHEN {tracking_blank} THEN ISNULL(h.InvoiceTotal,0) ELSE 0 END) AS open_amount,
+                       SUM(CASE WHEN {tracking_blank} THEN 0 ELSE ISNULL(h.InvoiceTotal,0) END) AS shipped_amount,
+                       SUM(ISNULL(h.TotQtyOrd,0))                                               AS total_qty
+                FROM Invoices_tbl h
+                WHERE {where}
+            """, params)
+            agg = _rows(cur)[0]
+            invoices: List[Dict[str, Any]] = []
+            if include_list:
+                sort_expr = _sort_sql(SORTABLE_INVOICE_COLUMNS, sort_by, "invoice_date", sort_order, ", h.InvoiceID DESC")
+                cur.execute(f"""
+                    SELECT TOP (?) {_INVOICE_SELECT.format(**j)}
+                    FROM Invoices_tbl h
+                    {j['rep_join']}
+                    {j['shipper_join']}
+                    WHERE {where}
+                    ORDER BY {sort_expr}
+                """, [limit] + params)
+                for d in _rows(cur):
+                    row = _invoice_row(d, today)
+                    row["is_shipped"] = bool(_s(d.get("TrackingNo")))
+                    invoices.append(row)
+        count = int(agg.get("invoices") or 0)
+        return True, None, {
+            "invoices": invoices,
+            "count": count,
+            "open_count": int(agg.get("open_count") or 0),
+            "shipped_count": int(agg.get("shipped_count") or 0),
+            "total_amount": round(_f(agg.get("total_amount")), 2),
+            "open_amount": round(_f(agg.get("open_amount")), 2),
+            "shipped_amount": round(_f(agg.get("shipped_amount")), 2),
+            "total_qty": _f(agg.get("total_qty")),
+            "limit": limit,
+            "truncated": include_list and count > len(invoices),
+        }
     except Exception as e:
         return False, str(e), {}
 
@@ -1733,6 +1802,10 @@ async def open_invoices_async(**kw):
 
 async def shipped_invoices_async(**kw):
     return await _run(_shipped_invoices_sync, **kw)
+
+
+async def invoices_in_period_async(**kw):
+    return await _run(_invoices_in_period_sync, **kw)
 
 
 async def invoice_detail_async(**kw):

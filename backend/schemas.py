@@ -1197,6 +1197,21 @@ class BOVInvoiceRow(BaseModel):
     invoice_total: Optional[float] = None
     notes: Optional[str] = None
     age_days: Optional[int] = None
+    is_shipped: Optional[bool] = None
+
+
+class BOVInvoicesPeriodResponse(BOVBlockStatus):
+    period: Optional[BOVPeriod] = None
+    count: int = 0
+    open_count: int = 0
+    shipped_count: int = 0
+    total_amount: float = 0.0
+    open_amount: float = 0.0
+    shipped_amount: float = 0.0
+    total_qty: float = 0.0
+    invoices: List[BOVInvoiceRow] = []
+    limit: int = 0
+    truncated: bool = False
 
 
 class BOVOpenInvoicesBlock(BOVBlockStatus):
