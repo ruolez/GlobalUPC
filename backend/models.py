@@ -146,7 +146,8 @@ class BusinessOverviewConfig(Base):
     __tablename__ = "business_overview_config"
 
     id = Column(Integer, primary_key=True, index=True)
-    sales_store_id = Column(Integer, ForeignKey("stores.id", ondelete="SET NULL"), nullable=True)
+    sales_store_id = Column(Integer, ForeignKey("stores.id", ondelete="SET NULL"), nullable=True)  # legacy single value
+    sales_store_ids = Column(JSONB, default=[])
     purchases_store_id = Column(Integer, ForeignKey("stores.id", ondelete="SET NULL"), nullable=True)
     shopify_store_ids = Column(JSONB, default=[])
     quotation_statuses = Column(JSONB, default=["In Progress", "Locked"])

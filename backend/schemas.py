@@ -1034,7 +1034,8 @@ BOV_DEFAULT_QUOTATION_STATUSES = ["In Progress", "Locked"]
 
 
 class BusinessOverviewConfigCreate(BaseModel):
-    sales_store_id: Optional[int] = None
+    sales_store_ids: List[int] = []
+    sales_store_id: Optional[int] = None      # legacy single value; merged into sales_store_ids
     purchases_store_id: Optional[int] = None
     shopify_store_ids: List[int] = []
     quotation_statuses: List[str] = list(BOV_DEFAULT_QUOTATION_STATUSES)
@@ -1044,7 +1045,9 @@ class BusinessOverviewConfigCreate(BaseModel):
 class BusinessOverviewConfigResponse(BaseModel):
     id: int = 0
     configured: bool = False
-    sales_store_id: Optional[int] = None
+    sales_store_ids: List[int] = []
+    sales_store_names: List[str] = []
+    sales_store_id: Optional[int] = None      # first sales store (legacy)
     sales_store_name: Optional[str] = None
     purchases_store_id: Optional[int] = None
     purchases_store_name: Optional[str] = None
@@ -1091,11 +1094,18 @@ class BOVPeriod(BaseModel):
     today: str
 
 
+class BOVStoreStatus(BaseModel):
+    store_id: int
+    store_name: str
+    error: Optional[str] = None
+
+
 class BOVBlockStatus(BaseModel):
     configured: bool = False
     store_id: Optional[int] = None
     store_name: Optional[str] = None
     error: Optional[str] = None
+    stores: List[BOVStoreStatus] = []        # per-store status when a block fans out
 
 
 class BOVSeriesPoint(BaseModel):
@@ -1158,6 +1168,8 @@ class BOVQuotationsResponse(BOVQuotationsBlock):
 # ---- Invoices ---------------------------------------------------------------
 class BOVInvoiceRow(BaseModel):
     invoice_id: int
+    store_id: Optional[int] = None
+    store_name: Optional[str] = None
     invoice_number: Optional[str] = None
     invoice_date: Optional[str] = None
     invoice_type: Optional[str] = None
@@ -1386,8 +1398,9 @@ class BOVSalesSourceStatus(BaseModel):
     configured: bool = False
     store_ids: List[int] = []
     store_names: List[str] = []
-    error: Optional[str] = None
+    error: Optional[str] = None               # set only when every store of the source failed
     skipped_stores: List[str] = []
+    failed_stores: List[str] = []             # "Store: error" for partial failures
 
 
 class BOVSalesTrendResponse(BaseModel):
@@ -1424,6 +1437,7 @@ class BOVSalesBreakdownResponse(BaseModel):
     error: Optional[str] = None
     rows: List[BOVBreakdownRow] = []
     total_revenue: float = 0.0
+    warnings: List[str] = []
 
 
 class BOVShopifyStoreOpen(BaseModel):

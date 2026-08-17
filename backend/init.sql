@@ -349,6 +349,7 @@ CREATE INDEX idx_sholi_order ON shopify_order_line_items(store_id, order_shopify
 CREATE TABLE IF NOT EXISTS business_overview_config (
     id SERIAL PRIMARY KEY,
     sales_store_id INTEGER REFERENCES stores(id) ON DELETE SET NULL,
+    sales_store_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
     purchases_store_id INTEGER REFERENCES stores(id) ON DELETE SET NULL,
     shopify_store_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
     quotation_statuses JSONB NOT NULL DEFAULT '["In Progress","Locked"]'::jsonb,

@@ -9418,12 +9418,71 @@ def _bov_conn_kwargs(store: Store) -> Dict[str, Any]:
             "username": c.username, "password": c.password}
 
 
+def _bov_sales_store_ids(cfg: Optional[BusinessOverviewConfig]) -> List[int]:
+    if not cfg:
+        return []
+    ids = list(cfg.sales_store_ids or [])
+    if not ids and cfg.sales_store_id:          # legacy single-store rows
+        ids = [cfg.sales_store_id]
+    out: List[int] = []
+    for i in ids:
+        try:
+            i = int(i)
+        except (TypeError, ValueError):
+            continue
+        if i not in out:
+            out.append(i)
+    return out
+
+
+def _bov_sales_stores(db: Session, cfg: Optional[BusinessOverviewConfig]) -> List[Store]:
+    """Active MSSQL stores selected as sales/invoice sources (order preserved)."""
+    out: List[Store] = []
+    for sid in _bov_sales_store_ids(cfg):
+        st = _bov_mssql_store(db, sid)
+        if st is not None:
+            out.append(st)
+    return out
+
+
 def _bov_cost_conn(db: Session, cfg: Optional[BusinessOverviewConfig]):
-    """Items_tbl cost source for Shopify lines: sales store, else Item Tracker S2S."""
-    store = _bov_mssql_store(db, cfg.sales_store_id if cfg else None)
-    if store is not None:
-        return store.mssql_connection
-    return _resolve_item_tracker_s2s_conn(db)
+    """
+    Items_tbl cost source for Shopify lines: Item Tracker S2S (the master
+    items DB) when configured, else the first selected sales store.
+    """
+    conn = _resolve_item_tracker_s2s_conn(db)
+    if conn is not None:
+        return conn
+    stores = _bov_sales_stores(db, cfg)
+    return stores[0].mssql_connection if stores else None
+
+
+async def _bov_fanout(stores: List[Store], make_coro) -> List[Tuple[Store, bool, Optional[str], Dict[str, Any]]]:
+    """Run make_coro(store) for every store in parallel; exceptions become (ok=False, err)."""
+    results = await asyncio.gather(*[make_coro(st) for st in stores], return_exceptions=True)
+    out: List[Tuple[Store, bool, Optional[str], Dict[str, Any]]] = []
+    for st, res in zip(stores, results):
+        if isinstance(res, Exception):
+            out.append((st, False, str(res), {}))
+        else:
+            ok, err, payload = res
+            out.append((st, bool(ok), err, payload or {}))
+    return out
+
+
+def _bov_store_statuses(results) -> List[Dict[str, Any]]:
+    return [{"store_id": st.id, "store_name": st.name, "error": (None if ok else (err or "failed"))}
+            for st, ok, err, _p in results]
+
+
+def _bov_merge_daily(dicts: List[Dict[Any, Dict[str, float]]]) -> Dict[Any, Dict[str, float]]:
+    merged: Dict[Any, Dict[str, float]] = {}
+    for d in dicts:
+        for k, vals in (d or {}).items():
+            slot = merged.setdefault(k, {})
+            for f, v in vals.items():
+                slot[f] = slot.get(f, 0.0) + float(v or 0)
+    return merged
 
 
 def _bov_shopify_stores(db: Session, cfg: Optional[BusinessOverviewConfig]) -> List[Dict[str, Any]]:
@@ -9475,7 +9534,7 @@ def _bov_series_points(rows: List[Dict[str, Any]]) -> List[BOVSeriesPoint]:
 
 
 def _bov_config_response(db: Session, cfg: Optional[BusinessOverviewConfig]) -> BusinessOverviewConfigResponse:
-    sales_store = _bov_mssql_store(db, cfg.sales_store_id if cfg else None)
+    sales_stores = _bov_sales_stores(db, cfg)
     purchases_store = _bov_mssql_store(db, cfg.purchases_store_id if cfg else None)
     shopify_ids = list((cfg.shopify_store_ids if cfg else []) or [])
     shopify_names: List[str] = []
@@ -9488,9 +9547,11 @@ def _bov_config_response(db: Session, cfg: Optional[BusinessOverviewConfig]) -> 
     cost_store = db.query(Store).filter(Store.id == cost_conn.store_id).first() if cost_conn else None
     return BusinessOverviewConfigResponse(
         id=cfg.id if cfg else 0,
-        configured=bool(sales_store or purchases_store or shopify_ids),
-        sales_store_id=cfg.sales_store_id if cfg else None,
-        sales_store_name=sales_store.name if sales_store else None,
+        configured=bool(sales_stores or purchases_store or shopify_ids),
+        sales_store_ids=[st.id for st in sales_stores],
+        sales_store_names=[st.name for st in sales_stores],
+        sales_store_id=(sales_stores[0].id if sales_stores else None),
+        sales_store_name=(sales_stores[0].name if sales_stores else None),
         purchases_store_id=cfg.purchases_store_id if cfg else None,
         purchases_store_name=purchases_store.name if purchases_store else None,
         shopify_store_ids=shopify_ids,
@@ -9514,7 +9575,11 @@ def get_business_overview_config(db: Session = Depends(get_db)):
 
 @app.post("/api/business-overview/config", response_model=BusinessOverviewConfigResponse)
 def save_business_overview_config(data: BusinessOverviewConfigCreate, db: Session = Depends(get_db)):
-    for sid, label in ((data.sales_store_id, "sales"), (data.purchases_store_id, "purchases")):
+    sales_ids: List[int] = []
+    for sid in list(data.sales_store_ids or []) + ([data.sales_store_id] if data.sales_store_id else []):
+        if sid and sid not in sales_ids:
+            sales_ids.append(sid)
+    for sid, label in [(i, "sales") for i in sales_ids] + [(data.purchases_store_id, "purchases")]:
         if sid and not db.query(Store).filter(Store.id == sid, Store.store_type == StoreType.mssql).first():
             raise HTTPException(status_code=400, detail=f"Invalid {label} store ID: {sid} (must be an MSSQL store)")
     for sid in data.shopify_store_ids:
@@ -9533,14 +9598,16 @@ def save_business_overview_config(data: BusinessOverviewConfigCreate, db: Sessio
 
     cfg = _bov_config(db)
     if cfg:
-        cfg.sales_store_id = data.sales_store_id
+        cfg.sales_store_ids = sales_ids
+        cfg.sales_store_id = sales_ids[0] if sales_ids else None
         cfg.purchases_store_id = data.purchases_store_id
         cfg.shopify_store_ids = list(dict.fromkeys(data.shopify_store_ids))
         cfg.quotation_statuses = statuses
         cfg.timezone = tz
     else:
         cfg = BusinessOverviewConfig(
-            sales_store_id=data.sales_store_id,
+            sales_store_ids=sales_ids,
+            sales_store_id=sales_ids[0] if sales_ids else None,
             purchases_store_id=data.purchases_store_id,
             shopify_store_ids=list(dict.fromkeys(data.shopify_store_ids)),
             quotation_statuses=statuses,
@@ -9601,22 +9668,69 @@ async def _bov_quotations_block(db: Session, cfg, include_list: bool, limit: int
     return base
 
 
+def _bov_tag_rows(rows: List[Dict[str, Any]], store: Store) -> List[Dict[str, Any]]:
+    for r in rows:
+        r["store_id"] = store.id
+        r["store_name"] = store.name
+    return rows
+
+
+def _bov_multi_base(stores: List[Store], results, extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Common block header for fanned-out sales-store blocks."""
+    base: Dict[str, Any] = {"configured": True, "stores": _bov_store_statuses(results)}
+    if len(stores) == 1:
+        base["store_id"] = stores[0].id
+        base["store_name"] = stores[0].name
+    else:
+        base["store_name"] = ", ".join(st.name for st in stores)
+    failures = [f"{st.name}: {err}" for st, ok, err, _p in results if not ok]
+    if failures and len(failures) == len(results):
+        base["error"] = "; ".join(failures)
+    if extra:
+        base.update(extra)
+    return base
+
+
 async def _bov_open_invoices_block(db: Session, cfg, include_list: bool, date_from=None, date_to=None,
                                    limit: int = 500, sort_by: str = "invoice_date", sort_order: str = "desc") -> Dict[str, Any]:
-    store = _bov_mssql_store(db, cfg.sales_store_id if cfg else None)
-    if store is None:
+    stores = _bov_sales_stores(db, cfg)
+    if not stores:
         return {"configured": False}
     today = bov.today_in_tz(_bov_tz(cfg))
-    ok, err, payload = await bov.open_invoices_async(
-        **_bov_conn_kwargs(store),
-        date_from=date_from,
-        date_to_excl=(bov.upper_bound(bov.parse_ymd(date_to)) if date_to else None),
-        limit=limit, sort_by=sort_by, sort_order=sort_order, include_list=include_list, today=today)
-    base = {"configured": True, "store_id": store.id, "store_name": store.name}
-    if not ok:
-        base["error"] = err
+    date_to_excl = bov.upper_bound(bov.parse_ymd(date_to)) if date_to else None
+    results = await _bov_fanout(stores, lambda st: bov.open_invoices_async(
+        **_bov_conn_kwargs(st), date_from=date_from, date_to_excl=date_to_excl,
+        limit=limit, sort_by=sort_by, sort_order=sort_order, include_list=include_list, today=today))
+    base = _bov_multi_base(stores, results)
+    if base.get("error"):
         return base
-    base.update(payload)
+    invoices: List[Dict[str, Any]] = []
+    count = 0
+    total_amount = 0.0
+    total_qty = 0.0
+    aging = {"0-1": 0, "2-3": 0, "4+": 0}
+    oldest: Optional[str] = None
+    oldest_age: Optional[int] = None
+    truncated = False
+    for st, ok, _err, p in results:
+        if not ok:
+            continue
+        invoices.extend(_bov_tag_rows(list(p.get("invoices") or []), st))
+        count += int(p.get("count") or 0)
+        total_amount += float(p.get("total_amount") or 0)
+        total_qty += float(p.get("total_qty") or 0)
+        for k, v in (p.get("aging") or {}).items():
+            aging[k] = aging.get(k, 0) + int(v or 0)
+        od = p.get("oldest_invoice_date")
+        if od and (oldest is None or od < oldest):
+            oldest = od
+            oldest_age = p.get("oldest_age_days")
+        truncated = truncated or bool(p.get("truncated"))
+    base.update({
+        "invoices": invoices, "count": count, "total_amount": round(total_amount, 2),
+        "total_qty": total_qty, "oldest_invoice_date": oldest, "oldest_age_days": oldest_age,
+        "aging": aging, "limit": limit, "truncated": truncated,
+    })
     return base
 
 
@@ -9635,24 +9749,31 @@ def _bov_range_block_from_daily(daily: Dict[Any, Dict[str, float]], period: bov.
 
 async def _bov_shipped_block(db: Session, cfg, period: bov.Period, bucket: str, include_list: bool,
                              limit: int = 500, sort_by: str = "ship_date", sort_order: str = "desc") -> Dict[str, Any]:
-    store = _bov_mssql_store(db, cfg.sales_store_id if cfg else None)
-    if store is None:
+    stores = _bov_sales_stores(db, cfg)
+    if not stores:
         return {"configured": False, "period": period.as_dict()}
-    ok, err, payload = await bov.shipped_invoices_async(
-        **_bov_conn_kwargs(store),
+    results = await _bov_fanout(stores, lambda st: bov.shipped_invoices_async(
+        **_bov_conn_kwargs(st),
         date_from=period.start.isoformat(), date_to_excl=period.end_excl,
         series_from=period.prev_start.isoformat(),
-        limit=limit, sort_by=sort_by, sort_order=sort_order, include_list=include_list)
-    base = {"configured": True, "store_id": store.id, "store_name": store.name, "period": period.as_dict(), "bucket": bucket}
-    if not ok:
-        base["error"] = err
+        limit=limit, sort_by=sort_by, sort_order=sort_order, include_list=include_list))
+    base = _bov_multi_base(stores, results, {"period": period.as_dict(), "bucket": bucket})
+    if base.get("error"):
         return base
-    base.update(_bov_range_block_from_daily(payload.get("daily") or {}, period, bucket,
+    daily = _bov_merge_daily([p.get("daily") or {} for _st, ok, _e, p in results if ok])
+    base.update(_bov_range_block_from_daily(daily, period, bucket,
                                             ["invoices", "total_amount", "total_qty", "boxes"]))
-    invoices = payload.get("invoices") or []
+    invoices: List[Dict[str, Any]] = []
+    truncated = False
+    for st, ok, _err, p in results:
+        if not ok:
+            continue
+        rows = _bov_tag_rows(list(p.get("invoices") or []), st)
+        invoices.extend(rows)
+        truncated = truncated or (include_list and len(rows) >= int(p.get("limit", limit)))
     base["invoices"] = invoices
-    base["limit"] = payload.get("limit", limit)
-    base["truncated"] = include_list and len(invoices) >= int(payload.get("limit", limit))
+    base["limit"] = limit
+    base["truncated"] = truncated
     return base
 
 
@@ -9754,17 +9875,22 @@ async def _bov_sales_trend(db: Session, cfg, period: bov.Period, bucket: str,
     src_status: Dict[str, Dict[str, Any]] = {}
     tasks: Dict[str, Any] = {}
 
-    sales_store = _bov_mssql_store(db, cfg.sales_store_id if cfg else None)
+    sales_stores = _bov_sales_stores(db, cfg)
+    bo_names_by_key: Dict[str, str] = {}
     if "backoffice" in sources:
-        if sales_store is None:
+        if not sales_stores:
             src_status["backoffice"] = {"configured": False}
         else:
-            src_status["backoffice"] = {"configured": True, "store_ids": [sales_store.id], "store_names": [sales_store.name]}
+            src_status["backoffice"] = {"configured": True, "store_ids": [st.id for st in sales_stores],
+                                        "store_names": [st.name for st in sales_stores], "failed_stores": []}
             excl_sales, excl_returns = _bov_excluded_names(db)
-            tasks["backoffice"] = bov.backoffice_daily_sales_async(
-                **_bov_conn_kwargs(sales_store),
-                date_from=period.prev_start.isoformat(), date_to_excl=period.end_excl,
-                excluded_sales_names=excl_sales, excluded_return_names=excl_returns)
+            for st in sales_stores:
+                key = f"backoffice:{st.id}"
+                bo_names_by_key[key] = st.name
+                tasks[key] = bov.backoffice_daily_sales_async(
+                    **_bov_conn_kwargs(st),
+                    date_from=period.prev_start.isoformat(), date_to_excl=period.end_excl,
+                    excluded_sales_names=excl_sales, excluded_return_names=excl_returns)
 
     shopify_stores = _bov_shopify_stores(db, cfg) if "shopify" in sources else []
     if "shopify" in sources:
@@ -9799,18 +9925,27 @@ async def _bov_sales_trend(db: Session, cfg, period: bov.Period, bucket: str,
 
     empty = bov.empty_totals()
     per_source: Dict[str, Dict[str, Any]] = {}
+    bo_days: List[Dict[Any, Dict[str, float]]] = []
+    bo_returns: List[Dict[Any, Dict[str, float]]] = []
+    bo_ok = 0
     for k, res in zip(keys, results):
+        name = k.split(":", 1)[0]
         if isinstance(res, Exception):
-            name = k.split(":", 1)[0]
-            src_status.setdefault(name, {"configured": True})["error"] = str(res)
-            warnings.append(f"{k}: {res}")
+            if name == "backoffice":
+                src_status["backoffice"].setdefault("failed_stores", []).append(f"{bo_names_by_key.get(k, k)}: {res}")
+            else:
+                src_status.setdefault(name, {"configured": True})["error"] = str(res)
+            warnings.append(f"{bo_names_by_key.get(k, k)}: {res}")
             continue
-        if k == "backoffice":
+        if name == "backoffice":
             ok, err, payload = res
             if not ok:
-                src_status["backoffice"]["error"] = err
+                src_status["backoffice"].setdefault("failed_stores", []).append(f"{bo_names_by_key.get(k, k)}: {err}")
+                warnings.append(f"{bo_names_by_key.get(k, k)}: {err}")
                 continue
-            per_source["backoffice"] = bov.compute_backoffice_series(payload, period, bucket)
+            bo_ok += 1
+            bo_days.append(payload.get("days") or {})
+            bo_returns.append(payload.get("returns") or {})
         else:
             sh = per_source.get("shopify")
             if sh is None:
@@ -9821,6 +9956,13 @@ async def _bov_sales_trend(db: Session, cfg, period: bov.Period, bucket: str,
                 sh["previous"] = bov.merge_bucket_lists([sh["previous"], res["previous"]])
                 sh["totals"] = bov.add_totals(sh["totals"], res["totals"])
                 sh["previous_totals"] = bov.add_totals(sh["previous_totals"], res["previous_totals"])
+
+    if "backoffice" in src_status and src_status["backoffice"].get("configured"):
+        if bo_ok:
+            per_source["backoffice"] = bov.compute_backoffice_series(
+                {"days": _bov_merge_daily(bo_days), "returns": _bov_merge_daily(bo_returns)}, period, bucket)
+        elif src_status["backoffice"].get("failed_stores"):
+            src_status["backoffice"]["error"] = "; ".join(src_status["backoffice"]["failed_stores"])
 
     def _build_buckets(which: str) -> List[Dict[str, Any]]:
         skel = bov.iter_buckets(period.start if which == "current" else period.prev_start,
@@ -10010,11 +10152,20 @@ async def get_business_overview_shipped_invoices(
 
 
 @app.get("/api/business-overview/invoices/{invoice_id}", response_model=BOVInvoiceDetailResponse)
-async def get_business_overview_invoice_detail(invoice_id: int, db: Session = Depends(get_db)):
+async def get_business_overview_invoice_detail(invoice_id: int, store_id: Optional[int] = None,
+                                               db: Session = Depends(get_db)):
     cfg = _bov_config(db)
-    store = _bov_mssql_store(db, cfg.sales_store_id if cfg else None)
-    if store is None:
+    stores = _bov_sales_stores(db, cfg)
+    if not stores:
         raise HTTPException(status_code=400, detail="Business Overview sales store is not configured.")
+    if store_id is not None:
+        store = next((st for st in stores if st.id == store_id), None)
+        if store is None:
+            raise HTTPException(status_code=400, detail=f"Store {store_id} is not a selected sales store.")
+    elif len(stores) == 1:
+        store = stores[0]
+    else:
+        raise HTTPException(status_code=400, detail="store_id is required when several sales stores are selected.")
     ok, err, payload = await bov.invoice_detail_async(**_bov_conn_kwargs(store), invoice_id=invoice_id)
     if not ok:
         raise HTTPException(status_code=502, detail=err or "Invoice lookup failed")
@@ -10157,30 +10308,67 @@ async def get_business_overview_sales_breakdown(
             resp["error"] = "; ".join(errors)
         return BOVSalesBreakdownResponse(**resp)
 
-    store = _bov_mssql_store(db, cfg.sales_store_id if cfg else None)
-    if store is None:
+    stores = _bov_sales_stores(db, cfg)
+    if not stores:
         return BOVSalesBreakdownResponse(**resp)
     resp["configured"] = True
     excl_sales, _ = _bov_excluded_names(db)
-    ok, err, rows = await bov.backoffice_breakdown_async(
-        **_bov_conn_kwargs(store), date_from=period.start.isoformat(), date_to_excl=period.end_excl,
-        by=by, limit=limit, excluded_sales_names=excl_sales)
-    if not ok:
-        resp["error"] = err
+    per_store_limit = limit if len(stores) == 1 else max(limit * 3, 50)
+    bd_results, daily_results = await asyncio.gather(
+        _bov_fanout(stores, lambda st: bov.backoffice_breakdown_async(
+            **_bov_conn_kwargs(st), date_from=period.start.isoformat(), date_to_excl=period.end_excl,
+            by=by, limit=per_store_limit, excluded_sales_names=excl_sales)),
+        _bov_fanout(stores, lambda st: bov.backoffice_daily_sales_async(
+            **_bov_conn_kwargs(st), date_from=period.start.isoformat(), date_to_excl=period.end_excl,
+            excluded_sales_names=excl_sales, excluded_return_names=[])),
+    )
+    failures = [f"{st.name}: {err}" for st, ok, err, _p in bd_results if not ok]
+    if failures and len(failures) == len(bd_results):
+        resp["error"] = "; ".join(failures)
         return BOVSalesBreakdownResponse(**resp)
-    # share of the listed rows' revenue against the period total from the daily query
-    ok2, _e2, daily = await bov.backoffice_daily_sales_async(
-        **_bov_conn_kwargs(store), date_from=period.start.isoformat(), date_to_excl=period.end_excl,
-        excluded_sales_names=excl_sales, excluded_return_names=[])
+    # Merge across stores. Customers merge by name, products by UPC; reps merge
+    # by name (SalesRepID is per-database, so ids never line up across stores).
+    merged: Dict[str, Dict[str, Any]] = {}
+    for st, ok, _err, rows in bd_results:
+        if not ok:
+            continue
+        for r in (rows if isinstance(rows, list) else []):
+            if by == "rep":
+                mk = (r.get("name") or "").strip().lower() or "__unassigned"
+            else:
+                mk = (r.get("key") or r.get("name") or "").strip().lower() or f"__{r.get('name')}"
+            m = merged.get(mk)
+            if m is None:
+                merged[mk] = dict(r)
+                continue
+            m["orders"] += r.get("orders") or 0
+            m["revenue"] += r.get("revenue") or 0.0
+            m["cost"] = (m.get("cost") or 0.0) + (r.get("cost") or 0.0)
+            m["units"] += r.get("units") or 0.0
+            if not m.get("secondary"):
+                m["secondary"] = r.get("secondary")
+    rows_out = sorted(merged.values(), key=lambda x: -(x.get("revenue") or 0))[:limit]
+    # share of revenue against the period total from the daily query (all stores that answered)
     total_rev = 0.0
-    if ok2:
-        total_rev = bov.sum_daily(daily.get("days") or {}, period.start, period.end, ["revenue"])["revenue"]
-    else:
-        total_rev = sum(r["revenue"] for r in rows)
-    for r in rows:
-        r["share_pct"] = (round(r["revenue"] / total_rev * 100, 2) if total_rev else None)
-    resp["rows"] = rows
+    any_daily = False
+    for _st, ok, _err, daily in daily_results:
+        if ok:
+            any_daily = True
+            total_rev += bov.sum_daily(daily.get("days") or {}, period.start, period.end, ["revenue"])["revenue"]
+    if not any_daily:
+        total_rev = sum(r.get("revenue") or 0.0 for r in merged.values())
+    for r in rows_out:
+        rev = round(r.get("revenue") or 0.0, 2)
+        cost = round(r.get("cost") or 0.0, 2)
+        r["revenue"] = rev
+        r["cost"] = cost
+        r["profit"] = round(rev - cost, 2)
+        r["margin_pct"] = bov.margin_pct(rev, cost)
+        r["share_pct"] = (round(rev / total_rev * 100, 2) if total_rev else None)
+    resp["rows"] = rows_out
     resp["total_revenue"] = round(total_rev, 2)
+    if failures:
+        resp["warnings"] = failures
     return BOVSalesBreakdownResponse(**resp)
 
 

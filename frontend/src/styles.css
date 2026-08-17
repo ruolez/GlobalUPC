@@ -7407,3 +7407,23 @@ tr.bov-line-void td { opacity: 0.55; text-decoration: line-through; }
   .bov-card, .sancm-chart-card { break-inside: avoid; }
   .bov-card-body { max-height: none; overflow: visible; }
 }
+
+/* Business Overview — multi-store additions */
+.bov-cell-store {
+  display: inline-block;
+  font-size: 0.6875rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bov-foot-warn {
+  color: var(--warning);
+  font-size: 0.75rem;
+  margin-left: 0.5rem;
+}
