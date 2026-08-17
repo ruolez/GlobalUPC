@@ -20623,7 +20623,7 @@ function bovRenderPurchases() {
   let sortKey;
   if (tab === "incoming") {
     sortKey = "purchasesIncoming";
-    if (meta) meta.textContent = `${bovInt(d.count || 0)} open · ${bovCompactMoney(d.outstanding_value || 0)} outstanding · ${bovInt(d.qty_outstanding || 0)} units`;
+    if (meta) meta.textContent = `${bovInt(d.count || 0)} open · ${bovCompactMoney(d.outstanding_value || 0)} outstanding · ${bovInt(d.qty_outstanding || 0)} units · still waiting on goods (any PO date)`;
     if (!rows.length) {
       body.innerHTML = bovEmptyHtml("No open purchase orders.");
       if (foot) foot.innerHTML = `<span class="bov-foot-left">${sourceFoot}</span>`;
@@ -20634,7 +20634,7 @@ function bovRenderPurchases() {
     sortKey = "purchasesPurchased";
     const cur = (d.totals && d.totals.current) || {};
     const prv = (d.totals && d.totals.previous) || {};
-    if (meta) meta.textContent = `${bovInt(cur.purchase_orders || 0)} placed · ${bovCompactMoney(cur.total || 0)}${prv.purchase_orders != null ? ` · prev ${bovInt(prv.purchase_orders)} / ${bovCompactMoney(prv.total || 0)}` : ""}`;
+    if (meta) meta.textContent = `${bovInt(cur.purchase_orders || 0)} placed in period · ${bovCompactMoney(cur.total || 0)}${prv.purchase_orders != null ? ` · prev ${bovInt(prv.purchase_orders)} / ${bovCompactMoney(prv.total || 0)}` : ""} · open and received alike`;
     if (!rows.length) {
       body.innerHTML = bovEmptyHtml("No purchase orders placed in this period.");
       return;
@@ -20644,7 +20644,7 @@ function bovRenderPurchases() {
     sortKey = "purchasesReceived";
     const cur = (d.totals && d.totals.current) || {};
     const prv = (d.totals && d.totals.previous) || {};
-    if (meta) meta.textContent = `${bovInt(cur.purchase_orders || 0)} PO received · ${bovInt(cur.qty || 0)} units · ${bovCompactMoney(cur.value || 0)}${prv.value != null ? ` · prev ${bovCompactMoney(prv.value || 0)}` : ""}`;
+    if (meta) meta.textContent = `${bovInt(cur.purchase_orders || 0)} PO with goods received in period · ${bovInt(cur.qty || 0)} units · ${bovCompactMoney(cur.value || 0)}${prv.value != null ? ` · prev ${bovCompactMoney(prv.value || 0)}` : ""}`;
     if (!rows.length) {
       body.innerHTML = bovEmptyHtml("Nothing received in this period.");
       return;
@@ -20682,13 +20682,19 @@ function bovPoCols(tab) {
       { key: "po_total", label: "Total", num: true, width: "14%", render: (r) => bovMoney(r.po_total) },
     ];
   }
+  const poState = (r) => {
+    const outstanding = Math.max(0, bovNum(r.tot_qty_ord) - bovNum(r.tot_qty_rcv));
+    if (r.status === 1 || outstanding <= 0) return `<span class="qip-status-chip complete">Complete</span>`;
+    return `<span class="qip-status-chip picking" title="${bovInt(outstanding)} still outstanding — also listed under Incoming">Partial · ${bovInt(outstanding)} left</span>`;
+  };
   return [
-    { key: "po_number", label: "PO #", width: "16%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.po_number || String(r.po_id))}</span>` },
-    { key: "business_name", label: "Supplier", width: "34%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
-    { key: "last_received", label: "Received", width: "14%", render: (r) => escapeHtml(bovDateShort(r.last_received)) },
-    { key: "qty_received", label: "Qty", num: true, width: "12%", render: (r) => `${bovInt(r.qty_received)}<span class="bov-cell-sub">of ${bovInt(r.tot_qty_ord)}</span>` },
-    { key: "received_value", label: "Value", num: true, width: "12%", render: (r) => bovMoney(r.received_value) },
-    { key: "po_total", label: "PO total", num: true, width: "12%", render: (r) => bovMoney(r.po_total) },
+    { key: "po_number", label: "PO #", width: "14%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.po_number || String(r.po_id))}</span>` },
+    { key: "business_name", label: "Supplier", width: "28%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
+    { key: "last_received", label: "Received", width: "12%", render: (r) => escapeHtml(bovDateShort(r.last_received)) },
+    { key: "status", label: "PO state", width: "14%", render: poState },
+    { key: "qty_received", label: "Qty in period", num: true, width: "12%", render: (r) => `${bovInt(r.qty_received)}<span class="bov-cell-sub">of ${bovInt(r.tot_qty_ord)} ordered</span>` },
+    { key: "received_value", label: "Value", num: true, width: "10%", render: (r) => bovMoney(r.received_value) },
+    { key: "po_total", label: "PO total", num: true, width: "10%", render: (r) => bovMoney(r.po_total) },
   ];
 }
 
@@ -20715,7 +20721,7 @@ function bovListDef(kind) {
   }
   const key = bovActivePurchasesKey();
   const tab = bovState.tabs.purchases;
-  const titles = { incoming: "Incoming purchase orders", purchased: "Purchase orders placed", received: "Purchase orders received" };
+  const titles = { incoming: "Incoming purchase orders", purchased: "Purchase orders placed in period", received: "Purchase orders with goods received in period" };
   return { widgetKey: key, title: titles[tab] || "Purchase orders", rowsOf: (d) => d.purchase_orders || [], cols: () => bovPoCols(tab), rowAttrs: bovPoRowAttrs,
     searchFields: ["po_number", "business_name", "account_no"],
     meta: (d) => {
