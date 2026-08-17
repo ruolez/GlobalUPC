@@ -342,11 +342,12 @@
                     <p class="sancm-chart-sub" id="bov-trend-sub"></p>
                   </div>
                   <div class="sancm-chart-controls">
-                    <label class="sancm-toggle"><input type="checkbox" id="bov-split-toggle"> Split BackOffice / Shopify</label>
+                    <label class="sancm-toggle bov-charts-only"><input type="checkbox" id="bov-split-toggle"> Split BackOffice / Shopify</label>
+                    <button type="button" class="btn btn-secondary bov-btn-sm" id="bov-charts-toggle" aria-expanded="false" aria-controls="bov-trend-wrap bov-margin-card">Show charts</button>
                   </div>
                 </div>
-                <div class="sancm-legend" id="bov-trend-legend"></div>
-                <div class="sancm-chart-wrap bov-chart-wrap" id="bov-trend-wrap"></div>
+                <div class="sancm-legend bov-charts-only" id="bov-trend-legend"></div>
+                <div class="sancm-chart-wrap bov-chart-wrap bov-charts-only" id="bov-trend-wrap"></div>
                 <div class="sancm-tooltip" id="bov-trend-tip" hidden></div>
               </div>
             </div>
@@ -4957,6 +4958,7 @@
         <div class="modal-body bov-modal-body" id="bov-list-body-wrap">
           <div class="bov-list-toolbar">
             <input type="search" id="bov-list-search" class="dark-input" placeholder="Search…" autocomplete="off" aria-label="Search list">
+            <div class="sa-chip-group bov-list-stores" id="bov-list-stores" role="group" aria-label="Filter by store" hidden></div>
             <span class="bov-list-count" id="bov-list-count"></span>
           </div>
           <div id="bov-list-body" class="bov-list-body"></div>

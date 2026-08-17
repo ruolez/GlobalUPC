@@ -9675,7 +9675,8 @@ async def get_business_overview_config_options(db: Session = Depends(get_db)):
     shopify: List[BOVStoreOption] = []
     for st in db.query(Store).order_by(Store.name).all():
         if st.store_type == StoreType.mssql and st.mssql_connection:
-            mssql.append(BOVStoreOption(id=st.id, name=st.name, store_type="mssql", is_active=bool(st.is_active)))
+            mssql.append(BOVStoreOption(id=st.id, name=st.name, store_type="mssql", is_active=bool(st.is_active),
+                                        database_name=st.mssql_connection.database_name))
         elif st.store_type == StoreType.shopify and st.shopify_connection:
             info = synced.get(st.id) or {}
             last = info.get("last_completed_at")

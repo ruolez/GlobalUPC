@@ -1073,6 +1073,7 @@ class BOVStoreOption(BaseModel):
     synced: Optional[bool] = None
     last_synced_at: Optional[str] = None
     shop_timezone: Optional[str] = None
+    database_name: Optional[str] = None      # MSSQL only — matches QuotationsInProgress.SourceDB
 
 
 class BusinessOverviewConfigOptions(BaseModel):

@@ -7495,3 +7495,13 @@ tr.bov-line-void td { opacity: 0.55; text-decoration: line-through; }
   .sa-page #bov-kpi-strip .bov-kpi { border-right: 0 !important; padding-left: 0.5rem !important; }
   .sa-page #bov-kpi-strip .bov-kpi:nth-child(n+2) { padding-top: 1rem; border-top: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent); }
 }
+
+/* Business Overview — collapsible charts + list-modal store chips */
+.bov-page:not(.is-charts-open) .bov-charts-only { display: none !important; }
+.bov-page:not(.is-charts-open) #bov-margin-card { display: none; }
+.bov-page:not(.is-charts-open) .bov-grid-second { grid-template-columns: minmax(0, 1fr); }
+.bov-page:not(.is-charts-open) #bov-trend-card { padding-bottom: 1rem; }
+.bov-page:not(.is-charts-open) #bov-trend-card .sancm-chart-head { margin-bottom: 0; }
+.bov-list-toolbar { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+.bov-list-stores { flex-wrap: wrap; }
+.bov-list-stores .sa-chip { font-size: 0.75rem; }

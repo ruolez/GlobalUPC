@@ -18471,6 +18471,7 @@ const bovState = {
   bucket: "auto",
   splitSources: false,
   storeFilter: [],      // store ids; [] = all configured sources
+  chartsOpen: false,    // revenue/margin charts collapsed by default
   listModal: null,      // {kind, widgetKey, search} while #bov-list-modal is open
   seriesHidden: { cost: true },
   tabs: { invoices: "open", purchases: "incoming", top: "customer" },
@@ -18670,6 +18671,7 @@ function bovLoadPrefs() {
     if (p && ["auto", "day", "week", "month"].includes(p.bucket)) bovState.bucket = p.bucket;
     if (p && typeof p.split === "boolean") bovState.splitSources = p.split;
     if (p && Array.isArray(p.storeIds)) bovState.storeFilter = p.storeIds.map(Number).filter((n) => !isNaN(n));
+    if (p && typeof p.charts === "boolean") bovState.chartsOpen = p.charts;
   } catch (e) {
     /* ignore */
   }
@@ -18686,6 +18688,7 @@ function bovSavePrefs() {
         bucket: bovState.bucket,
         split: bovState.splitSources,
         storeIds: bovState.storeFilter,
+        charts: bovState.chartsOpen,
       }),
     );
   } catch (e) {
@@ -18704,6 +18707,14 @@ async function loadBusinessOverviewPage() {
   bovRenderBucketButtons();
   const splitEl = document.getElementById("bov-split-toggle");
   if (splitEl) splitEl.checked = bovState.splitSources;
+  // Apply the persisted charts state without triggering a fetch (bovFetchAll below handles it).
+  document.getElementById("business-overview-page")?.classList.toggle("is-charts-open", bovState.chartsOpen);
+  const chartsBtn = document.getElementById("bov-charts-toggle");
+  if (chartsBtn) {
+    chartsBtn.textContent = bovState.chartsOpen ? "Hide charts" : "Show charts";
+    chartsBtn.setAttribute("aria-expanded", bovState.chartsOpen ? "true" : "false");
+  }
+  if (!bovState.chartsOpen) bovSetTrendCollapsedSub();
 
   await bovLoadConfig();
   const cfg = bovState.config;
@@ -18987,6 +18998,16 @@ function bovBindOnce() {
       bovState.listModal.search = e.target.value || "";
       bovRenderListModal();
     }
+  });
+  document.getElementById("bov-list-stores")?.addEventListener("click", (e) => {
+    const chip = e.target.closest("[data-bov-list-store]");
+    if (!chip || !bovState.listModal) return;
+    const v = chip.dataset.bovListStore;
+    bovState.listModal.store = v === "" ? null : v;
+    bovRenderListModal();
+  });
+  document.getElementById("bov-charts-toggle")?.addEventListener("click", () => {
+    bovSetChartsOpen(!bovState.chartsOpen);
   });
   page.addEventListener("change", (e) => {
     if (e.target && e.target.id === "bov-inv-open-range") {
@@ -19275,6 +19296,13 @@ async function bovFetchAll(opts = {}) {
     const def = BOV_WIDGET_DEFS[key];
     const w = bovState.widgets[key];
     if (!def || !w) return Promise.resolve();
+    // Charts are collapsed by default: don't pay for the trend query until
+    // the user opens them (data is invalidated so opening later refetches).
+    if (key === "trend" && !bovState.chartsOpen) {
+      w.data = null; w.error = null; w.loading = false;
+      bovSetTrendCollapsedSub();
+      return Promise.resolve();
+    }
     if (w.abort) {
       try { w.abort.abort(); } catch (e) { /* ignore */ }
     }
@@ -20699,9 +20727,43 @@ function bovListDef(kind) {
     } };
 }
 
+function bovSourceDbLabel(sourceDb) {
+  const raw = (sourceDb || "").trim();
+  if (!raw) return "";
+  const opts = (bovState.options && bovState.options.mssql_stores) || [];
+  const hit = opts.find((s) => s.database_name && String(s.database_name).toLowerCase() === raw.toLowerCase());
+  return hit ? hit.name : raw;
+}
+
+function bovSetTrendCollapsedSub() {
+  const subEl = document.getElementById("bov-trend-sub");
+  if (subEl) subEl.textContent = "Revenue, cost, profit and margin over the selected period — open the charts to see the trend.";
+  const legend = document.getElementById("bov-trend-legend");
+  if (legend) legend.innerHTML = "";
+}
+
+function bovSetChartsOpen(open) {
+  bovState.chartsOpen = !!open;
+  bovSavePrefs();
+  const page = document.getElementById("business-overview-page");
+  if (page) page.classList.toggle("is-charts-open", bovState.chartsOpen);
+  const btn = document.getElementById("bov-charts-toggle");
+  if (btn) {
+    btn.textContent = bovState.chartsOpen ? "Hide charts" : "Show charts";
+    btn.setAttribute("aria-expanded", bovState.chartsOpen ? "true" : "false");
+  }
+  if (bovState.chartsOpen) {
+    const w = bovState.widgets.trend;
+    if (!w.data && !w.loading) bovFetchAll({ only: ["trend"] });
+    else bovScheduleChartRender();
+  } else {
+    bovSetTrendCollapsedSub();
+  }
+}
+
 function bovOpenListModal(kind) {
   const def = bovListDef(kind);
-  bovState.listModal = { kind, widgetKey: def.widgetKey, search: "" };
+  bovState.listModal = { kind, widgetKey: def.widgetKey, search: "", store: null };
   const search = document.getElementById("bov-list-search");
   if (search) search.value = "";
   bovRenderListModal();
@@ -20747,12 +20809,34 @@ function bovRenderListModal() {
   }
   const all = def.rowsOf(d);
   if (meta) meta.textContent = def.meta(d);
+  // Store chips: group rows by their originating store (quotations carry the
+  // DB_ADMIN SourceDB, invoices/POs carry store_name); shown only when >1.
+  const storeOf = (r) => (lm.kind === "quotations" ? bovSourceDbLabel(r.source_db) : (r.store_name || ""));
+  const groups = new Map();
+  all.forEach((r) => { const k = storeOf(r) || "—"; groups.set(k, (groups.get(k) || 0) + 1); });
+  const chipsEl = document.getElementById("bov-list-stores");
+  if (chipsEl) {
+    if (groups.size > 1) {
+      if (lm.store != null && !groups.has(lm.store)) lm.store = null;
+      const names = Array.from(groups.keys()).sort((a, b) => a.localeCompare(b));
+      chipsEl.hidden = false;
+      chipsEl.innerHTML =
+        `<button type="button" class="sa-chip${lm.store == null ? " active" : ""}" data-bov-list-store="" aria-pressed="${lm.store == null}">All <span class="bov-store-chip-tag">${bovInt(all.length)}</span></button>` +
+        names.map((n) => `<button type="button" class="sa-chip${lm.store === n ? " active" : ""}" data-bov-list-store="${escapeHtml(n)}" aria-pressed="${lm.store === n}">${escapeHtml(n)} <span class="bov-store-chip-tag">${bovInt(groups.get(n))}</span></button>`).join("");
+    } else {
+      lm.store = null;
+      chipsEl.hidden = true;
+      chipsEl.innerHTML = "";
+    }
+  }
+  const byStore = lm.store == null ? all : all.filter((r) => (storeOf(r) || "—") === lm.store);
   const q = (lm.search || "").trim().toLowerCase();
   const rows = q
-    ? all.filter((r) => def.searchFields.some((f) => r[f] != null && String(r[f]).toLowerCase().includes(q)))
-    : all;
+    ? byStore.filter((r) => def.searchFields.some((f) => r[f] != null && String(r[f]).toLowerCase().includes(q)))
+    : byStore;
   const sorted = bovSortRows(rows, bovState.sort[def.widgetKey] || { key: null, dir: "desc" });
-  if (count) count.textContent = q ? `${bovInt(sorted.length)} of ${bovInt(all.length)}` : `${bovInt(all.length)} row${all.length === 1 ? "" : "s"}${d.truncated ? " (first page)" : ""}`;
+  const narrowed = q || lm.store != null;
+  if (count) count.textContent = narrowed ? `${bovInt(sorted.length)} of ${bovInt(all.length)}` : `${bovInt(all.length)} row${all.length === 1 ? "" : "s"}${d.truncated ? " (first page)" : ""}`;
   body.innerHTML = sorted.length
     ? bovTableHtml(def.widgetKey, def.cols(d), sorted, { rowAttrs: def.rowAttrs })
     : bovEmptyHtml(q ? "No rows match your search." : "Nothing here.");
