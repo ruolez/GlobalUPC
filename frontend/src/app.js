@@ -18456,7 +18456,7 @@ const BOV_COLORS = {
 };
 
 function bovEmptyWidget() {
-  return { data: null, loading: false, error: null, loadedAt: 0, abort: null, unsupported: false };
+  return { data: null, loading: false, error: null, loadedAt: 0, abort: null, unsupported: false, seq: 0 };
 }
 
 const bovState = {
@@ -19467,6 +19467,10 @@ async function bovFetchAll(opts = {}) {
     const controller = new AbortController();
     w.abort = controller;
     w.loading = true;
+    // Per-widget sequence: a partial refetch of other widgets (Shopify sync
+    // finishing, the 60 s tick) must never invalidate this widget's in-flight
+    // request — that left slow MSSQL cards stuck on their skeleton.
+    w.seq = (w.seq || 0) + 1;
     if (!silent) {
       if (!w.data && !w.error) {
         bovPaintSkeleton(key);
@@ -19474,13 +19478,12 @@ async function bovFetchAll(opts = {}) {
         document.getElementById(def.card)?.classList.add("is-loading");
       }
     }
-    return bovFetchWidget(key, seq, controller.signal);
+    return bovFetchWidget(key, w.seq, controller.signal);
   });
 
   await Promise.allSettled(promises);
-  if (seq !== bovState.seq) return;
   bovSetUpdatedNow();
-  if (!silent) bovSetRefreshSpinner(false);
+  if (seq === bovState.seq && !silent) bovSetRefreshSpinner(false);
   bovRenderRangeLabel();
 }
 
@@ -19494,7 +19497,7 @@ async function bovFetchWidget(key, seq, signal) {
   }
   try {
     const data = await bovFetchJson(req[0], req[1], signal);
-    if (seq !== bovState.seq) return;
+    if (seq !== w.seq) return;
     w.data = data;
     w.error = null;
     w.loadedAt = Date.now();
@@ -19504,19 +19507,19 @@ async function bovFetchWidget(key, seq, signal) {
     }
   } catch (e) {
     if (e && e.name === "AbortError") return;
-    if (seq !== bovState.seq) return;
+    if (seq !== w.seq) return;
     w.error = e.message || String(e);
     if (e.status === 404 && (key === "top" || key === "purchasesPurchased")) {
       w.unsupported = true;
     }
   } finally {
-    if (seq === bovState.seq) {
+    if (seq === w.seq) {
       w.loading = false;
       w.abort = null;
       document.getElementById(def.card)?.classList.remove("is-loading");
     }
   }
-  if (seq !== bovState.seq) return;
+  if (seq !== w.seq) return;
   try {
     def.render();
     if (bovState.listModal && bovState.listModal.widgetKey === key) bovRenderListModal();
