@@ -1062,7 +1062,13 @@ async def fetch_fulfilled_orders(
         }
         """
 
-        query_filter = f"fulfillment_status:shipped updated_at:>={start_date} updated_at:<={end_date}"
+        # Only a lower updated_at bound: an order fulfilled in range was
+        # necessarily updated on/after start_date, so it is a safe prefilter.
+        # An upper bound is NOT safe — Shopify bumps updated_at on delivery
+        # scans, refunds and tag edits, so it would drop orders that were
+        # touched after the range end (the real date gate is the fulfillment
+        # createdAt check below).
+        query_filter = f"fulfillment_status:shipped updated_at:>={start_date}"
         url = f"https://{shop_domain}/admin/api/{api_version}/graphql.json"
         headers = {
             "X-Shopify-Access-Token": admin_api_key,
@@ -1149,7 +1155,11 @@ async def fetch_fulfilled_orders(
 
                     for li_edge in order.get("lineItems", {}).get("edges", []):
                         li = li_edge.get("node", {})
-                        quantity = li.get("currentQuantity", 0) or li.get("quantity", 0)
+                        # currentQuantity 0 means fully refunded/removed — it
+                        # must not fall back to the ordered quantity.
+                        quantity = li.get("currentQuantity")
+                        if quantity is None:
+                            quantity = li.get("quantity", 0) or 0
                         if quantity <= 0:
                             continue
 

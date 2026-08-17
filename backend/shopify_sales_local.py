@@ -12,19 +12,14 @@ clean on a freshly synced store.
 Rules mirrored from the live path (shopify_helper.fetch_fulfilled_orders):
 
 - Order prefilter ``fulfillment_status:shipped`` becomes
-  ``fulfillment_status = 'FULFILLED'``. The live path also prefilters on
-  ``updated_at:<=end``, which is deliberately NOT mirrored: Shopify bumps an
-  order's updated_at on delivery/tracking events, so measured on real data
-  95% of a window's fulfilled orders had left the live result within three
-  days of the window end. Local mode reports them all, so for any window not
-  ending today local legitimately shows MORE than live.
+  ``fulfillment_status = 'FULFILLED'``. No updated_at bound on either side:
+  Shopify bumps an order's updated_at on delivery/tracking events, so an
+  upper bound would drop most orders of any window not ending today.
 - Real filter: some fulfillment with ``status = 'SUCCESS'`` whose ``createdAt``
   UTC date slice (``createdAt[:10]``, NOT the shop's local day) is in range.
-- ``quantity`` = currentQuantity when the sync captured it, else the ordered
-  quantity; ``unit_price`` = discounted unit price, falling back to the
-  original unit price. One deliberate divergence: live does
-  ``currentQuantity or quantity``, so a fully refunded line (currentQuantity
-  0) is counted at its ordered quantity there; here it is dropped.
+- ``quantity`` = currentQuantity when the sync captured it (0 = fully
+  refunded/removed, dropped), else the ordered quantity; ``unit_price`` =
+  discounted unit price, falling back to the original unit price.
 
 Known gaps (accepted):
 
