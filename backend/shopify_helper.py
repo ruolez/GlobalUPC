@@ -3009,6 +3009,67 @@ async def fetch_orders_line_items(
     return out
 
 
+_VARIANT_PRICES_QUERY = """
+query variantPrices($ids: [ID!]!) {
+  nodes(ids: $ids) {
+    ... on ProductVariant {
+      id
+      price
+    }
+  }
+}
+"""
+
+
+async def fetch_variant_prices(
+    shop_domain: str,
+    admin_api_key: str,
+    variant_ids: List[int],
+    api_version: str = "2025-01",
+) -> Tuple[bool, Optional[str], Dict[int, str]]:
+    """
+    Current price of each variant, in batches of 250. Deleted variants come
+    back as null nodes and are simply absent from the result.
+
+    Used by the Shopify Sales report in local-data mode: the mirror has no
+    products table, so "Today's Price" is the one thing still fetched live.
+    """
+    try:
+        shop_domain = validate_shop_domain(shop_domain)
+    except Exception as e:
+        return False, str(e), {}
+
+    ids = sorted({int(v) for v in variant_ids if v})
+    if not ids:
+        return True, None, {}
+
+    prices: Dict[int, str] = {}
+    try:
+        async with aiohttp.ClientSession() as session:
+            for i in range(0, len(ids), _LINE_ITEM_BATCH):
+                batch = [f"gid://shopify/ProductVariant/{v}" for v in ids[i:i + _LINE_ITEM_BATCH]]
+                data, _ = await _shopify_graphql(
+                    session, shop_domain, admin_api_key, api_version,
+                    _VARIANT_PRICES_QUERY, {"ids": batch},
+                    op_name="variant prices",
+                )
+                for node in data.get("nodes") or []:
+                    if not node or not node.get("id") or node.get("price") is None:
+                        continue
+                    try:
+                        prices[int(str(node["id"]).rsplit("/", 1)[-1])] = node["price"]
+                    except (TypeError, ValueError):
+                        continue
+    except ShopifyFetchError as e:
+        return False, str(e), {}
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        return False, f"Unexpected error: {e}", {}
+
+    return True, None, prices
+
+
 async def fetch_baseline_order_items(
     shop_domain: str,
     admin_api_key: str,

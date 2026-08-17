@@ -76,7 +76,7 @@ from shopify_helper import (
     search_products_by_barcode, update_barcodes_across_shopify_stores,
     check_barcode_exists, search_product_prices_by_barcode, update_variant_prices,
     get_all_product_variant_prices, search_product_prices_with_siblings,
-    fetch_fulfilled_orders,
+    fetch_fulfilled_orders, fetch_variant_prices,
     fetch_orders_with_tag, fetch_customer_orders_after,
     count_fulfillment_buckets_for_store,
     fetch_customers_with_last_order, fetch_customer_recent_orders,
@@ -4609,13 +4609,27 @@ async def shopify_sales_stream(request: ShopifySalesRequest, db: Session = Depen
                     "api_version": store.shopify_connection.api_version
                 }
 
+        use_local = request.use_local_data
+        data_source = "local" if use_local else "live"
+        skipped_names = []
+        if use_local:
+            # Stores without a completed sync are skipped, never silently
+            # routed to the live API — the checkbox means "no live order pull".
+            synced_map = await asyncio.to_thread(shopify_sync.get_synced_stores)
+            for sid in list(store_map):
+                if sid not in synced_map:
+                    skipped_names.append(store_map.pop(sid)["name"])
+
         all_line_items = []
         total_stores = len(store_map)
 
-        yield f"event: progress\ndata: {json.dumps({'status': 'started', 'total_stores': total_stores})}\n\n"
+        yield f"event: progress\ndata: {json.dumps({'status': 'started', 'total_stores': total_stores, 'data_source': data_source})}\n\n"
+
+        for name in skipped_names:
+            yield f"event: progress\ndata: {json.dumps({'status': 'skipped_store', 'store_name': name, 'message': 'Not synced — skipped in local data mode'})}\n\n"
 
         for s in store_map.values():
-            yield f"event: progress\ndata: {json.dumps({'status': 'searching_store', 'store_name': s['name']})}\n\n"
+            yield f"event: progress\ndata: {json.dumps({'status': 'searching_store', 'store_name': s['name'], 'data_source': data_source})}\n\n"
 
         async def fetch_store_orders(store_info):
             return store_info, await fetch_fulfilled_orders(
@@ -4626,7 +4640,28 @@ async def shopify_sales_stream(request: ShopifySalesRequest, db: Session = Depen
                 api_version=store_info["api_version"]
             )
 
-        tasks = [asyncio.create_task(fetch_store_orders(s)) for s in store_map.values()]
+        async def fetch_store_orders_local(store_info):
+            success, error, line_items = await shopify_sales_local.fetch_fulfilled_orders_local(
+                store_info["id"], start_date, end_date
+            )
+            if success and line_items:
+                # Today's Price is the one live value: the mirror has no
+                # products table. A failed lookup leaves it None for this
+                # store; the report itself still completes.
+                variant_ids = {i["variant_shopify_id"] for i in line_items if i.get("variant_shopify_id")}
+                ok, _, price_map = await fetch_variant_prices(
+                    shop_domain=store_info["shop_domain"],
+                    admin_api_key=store_info["admin_api_key"],
+                    variant_ids=list(variant_ids),
+                    api_version=store_info["api_version"],
+                )
+                if ok:
+                    for item in line_items:
+                        item["today_price"] = price_map.get(item.get("variant_shopify_id"))
+            return store_info, (success, error, line_items)
+
+        fetch_fn = fetch_store_orders_local if use_local else fetch_store_orders
+        tasks = [asyncio.create_task(fetch_fn(s)) for s in store_map.values()]
         completed_count = 0
 
         for completed_task in asyncio.as_completed(tasks):
@@ -4821,7 +4856,7 @@ async def shopify_sales_stream(request: ShopifySalesRequest, db: Session = Depen
         total_quantity = sum(r["total_quantity"] for r in results)
         total_revenue = sum(float(r["total_revenue"]) for r in results)
 
-        yield f"event: complete\ndata: {json.dumps({'results': results, 'summary': {'total_items': len(results), 'total_quantity': total_quantity, 'total_revenue': f'{total_revenue:.2f}', 'total_shipping': f'{total_shipping:.2f}', 'stores_searched': len(store_map), 'date_range': {'start': start_date, 'end': end_date}, 'excluded_products': excluded_products, 'excluded_total_revenue': f'{excluded_total_revenue:.2f}', 'excluded_total_quantity': excluded_total_quantity}})}\n\n"
+        yield f"event: complete\ndata: {json.dumps({'results': results, 'summary': {'total_items': len(results), 'total_quantity': total_quantity, 'total_revenue': f'{total_revenue:.2f}', 'total_shipping': f'{total_shipping:.2f}', 'stores_searched': len(store_map), 'date_range': {'start': start_date, 'end': end_date}, 'excluded_products': excluded_products, 'excluded_total_revenue': f'{excluded_total_revenue:.2f}', 'excluded_total_quantity': excluded_total_quantity, 'data_source': data_source, 'skipped_stores': skipped_names}})}\n\n"
 
     async def generate_sales_events_safe() -> AsyncGenerator[str, None]:
         try:
@@ -9185,6 +9220,7 @@ async def shopify_analytics_lost_products_stream(
 
 import shopify_sync_helper as shopify_sync
 import lost_customers_local
+import shopify_sales_local
 from sqlalchemy import text as sa_text
 
 

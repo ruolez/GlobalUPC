@@ -9273,10 +9273,66 @@ async function loadShopifySalesPage() {
     });
 
     updateShopifySalesFetchBtn();
+    shopifySalesUpdateSourceNote();
   } catch (error) {
     console.error("Error loading Shopify stores:", error);
   }
 }
+
+const SHOPIFY_SALES_USE_LOCAL_KEY = "shopify_sales_use_local";
+
+function shopifySalesUseLocal() {
+  return document.getElementById("shopify-sales-use-local")?.checked !== false;
+}
+
+// Data-source note under the "Use local data" checkbox: which of the selected
+// stores will actually be read locally, and which will be skipped because they
+// have never completed a sync (local mode never falls back to the live API).
+async function shopifySalesUpdateSourceNote() {
+  const el = document.getElementById("shopify-sales-data-source-note");
+  if (!el) return;
+  if (!shopifySalesUseLocal()) {
+    el.innerHTML = `<span style="color: var(--text-tertiary);">●</span> Live Shopify API — orders are fetched from each store on every run.`;
+    return;
+  }
+  try {
+    await fetchSyncStatus();
+  } catch (e) {
+    el.textContent = "";
+    return;
+  }
+  const byId = new Map(syncState.stores.map((s) => [s.store_id, s]));
+  const selected = Array.from(document.querySelectorAll(".shopify-sales-store-cb:checked")).map((cb) => ({
+    id: parseInt(cb.value, 10),
+    name: cb.nextElementSibling?.textContent || cb.value,
+  }));
+  if (!selected.length) {
+    el.innerHTML = `<span style="color: var(--success);">●</span> Local synced data — Today's Price is still looked up live.`;
+    return;
+  }
+  const synced = selected.filter((s) => byId.get(s.id)?.last_completed_at);
+  const unsynced = selected.filter((s) => !byId.get(s.id)?.last_completed_at);
+  let html = "";
+  if (synced.length) {
+    const ages = synced.map((s) => `${s.name} synced ${syncTimeAgo(byId.get(s.id).last_completed_at)}`).join(", ");
+    html += `<span style="color: var(--success);">●</span> ${escapeHtml(`Local data — ${ages}. Orders after a store's last sync are not included; Today's Price is still looked up live.`)}`;
+  }
+  if (unsynced.length) {
+    if (html) html += "<br>";
+    html += `<span style="color: var(--warning);">●</span> ${escapeHtml(`Not synced, will be skipped: ${unsynced.map((s) => s.name).join(", ")}. Sync in the Data Sync tab or uncheck Use local data.`)}`;
+  }
+  el.innerHTML = html;
+}
+
+document.getElementById("shopify-sales-use-local")?.addEventListener("change", (e) => {
+  localStorage.setItem(SHOPIFY_SALES_USE_LOCAL_KEY, e.target.checked ? "1" : "0");
+  shopifySalesUpdateSourceNote();
+});
+
+(() => {
+  const cb = document.getElementById("shopify-sales-use-local");
+  if (cb) cb.checked = localStorage.getItem(SHOPIFY_SALES_USE_LOCAL_KEY) !== "0";
+})();
 
 function updateShopifySalesFetchBtn() {
   const checked = document.querySelectorAll(
@@ -9290,7 +9346,10 @@ function updateShopifySalesFetchBtn() {
 
 document
   .getElementById("shopify-sales-store-checkboxes")
-  ?.addEventListener("change", updateShopifySalesFetchBtn);
+  ?.addEventListener("change", () => {
+    updateShopifySalesFetchBtn();
+    shopifySalesUpdateSourceNote();
+  });
 
 document
   .getElementById("shopify-sales-start-date")
@@ -9303,11 +9362,13 @@ document
 document.getElementById("shopify-sales-select-all")?.addEventListener("click", () => {
   document.querySelectorAll(".shopify-sales-store-cb").forEach((cb) => (cb.checked = true));
   updateShopifySalesFetchBtn();
+  shopifySalesUpdateSourceNote();
 });
 
 document.getElementById("shopify-sales-deselect-all")?.addEventListener("click", () => {
   document.querySelectorAll(".shopify-sales-store-cb").forEach((cb) => (cb.checked = false));
   updateShopifySalesFetchBtn();
+  shopifySalesUpdateSourceNote();
 });
 
 document.querySelectorAll("[data-range]").forEach((btn) => {
@@ -9378,6 +9439,7 @@ async function fetchShopifySales() {
         store_ids: storeIds,
         start_date: startDate,
         end_date: endDate,
+        use_local_data: shopifySalesUseLocal(),
       }),
     });
 
@@ -9404,11 +9466,18 @@ async function fetchShopifySales() {
 
         if (eventType === "progress") {
           if (data.status === "started") {
-            progressStatus.textContent = `Fetching orders from ${data.total_stores} store(s)...`;
+            const src = data.data_source === "local" ? "local data" : "Shopify";
+            progressStatus.textContent = `Fetching orders from ${data.total_stores} store(s) via ${src}...`;
+          } else if (data.status === "skipped_store") {
+            const item = document.createElement("div");
+            item.style.cssText = "display: flex; align-items: center; gap: 0.5rem;";
+            item.innerHTML = `<span style="color: var(--warning);">&#9679;</span> <span>${escapeHtml(data.store_name)} &mdash; skipped: ${escapeHtml(data.message || "not synced")}</span>`;
+            progressItems.appendChild(item);
           } else if (data.status === "searching_store") {
             const item = document.createElement("div");
             item.style.cssText = "display: flex; align-items: center; gap: 0.5rem;";
-            item.innerHTML = `<span style="color: var(--accent-primary); animation: pulse 1.5s ease-in-out infinite;">&#9679;</span> <span>${escapeHtml(data.store_name)} — fetching orders...</span>`;
+            const via = data.data_source === "local" ? "reading local data" : "fetching orders";
+            item.innerHTML = `<span style="color: var(--accent-primary); animation: pulse 1.5s ease-in-out infinite;">&#9679;</span> <span>${escapeHtml(data.store_name)} — ${via}...</span>`;
             storeItemMap.set(data.store_name, item);
             progressItems.appendChild(item);
           } else if (data.status === "completed_store") {
@@ -9618,7 +9687,13 @@ function displayShopifySalesResults(data) {
 
   const shippingVal = parseFloat(summary.total_shipping || 0);
   const shippingPart = shippingVal > 0 ? ` · $${shippingVal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} shipping` : "";
-  let summaryHtml = `<div>${summary.total_items} products · ${summary.total_quantity?.toLocaleString()} units sold · $${parseFloat(summary.total_revenue || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} total revenue${shippingPart} · ${summary.stores_searched} store(s) · ${summary.date_range?.start} to ${summary.date_range?.end}</div>`;
+  const sourcePart = summary.data_source === "local" ? " · local data" : "";
+  let summaryHtml = `<div>${summary.total_items} products · ${summary.total_quantity?.toLocaleString()} units sold · $${parseFloat(summary.total_revenue || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} total revenue${shippingPart} · ${summary.stores_searched} store(s) · ${summary.date_range?.start} to ${summary.date_range?.end}${sourcePart}</div>`;
+
+  const skippedStores = summary.skipped_stores || [];
+  if (skippedStores.length > 0) {
+    summaryHtml += `<div style="margin-top:6px;padding:6px 10px;border-left:3px solid var(--warning, #f9ab00);background:var(--bg-tertiary, rgba(255,255,255,0.04));border-radius:4px;font-size:0.85rem;">Skipped (not synced): ${escapeHtml(skippedStores.join(", "))} — run a sync in the Data Sync tab or uncheck Use local data.</div>`;
+  }
 
   const excludedProducts = summary.excluded_products || [];
   if (excludedProducts.length > 0) {

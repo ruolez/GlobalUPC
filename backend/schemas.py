@@ -564,6 +564,7 @@ class ShopifySalesRequest(BaseModel):
     store_ids: List[int]
     start_date: str
     end_date: str
+    use_local_data: bool = True
 
 
 class FulfillmentStatusRow(BaseModel):

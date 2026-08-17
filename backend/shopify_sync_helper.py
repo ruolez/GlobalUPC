@@ -100,16 +100,18 @@ _ORDER_NODE_FIELDS = """
         subtotalPriceSet { shopMoney { amount } }
         totalDiscountsSet { shopMoney { amount } }
         totalRefundedSet { shopMoney { amount } }
+        totalShippingPriceSet { shopMoney { amount } }
         customer { legacyResourceId }
         shippingAddress { provinceCode province countryCodeV2 zip city }
         shippingLine { title carrierIdentifier }
-        fulfillments { createdAt inTransitAt deliveredAt displayStatus trackingInfo { company number url } }
+        fulfillments { createdAt inTransitAt deliveredAt displayStatus status trackingInfo { company number url } }
 """
 
 _LINE_ITEM_NODE_FIELDS = """
         id
         title
         quantity
+        currentQuantity
         sku
         variantTitle
         vendor
@@ -305,6 +307,7 @@ def _shape_order(node: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "subtotal_price": _money(node.get("subtotalPriceSet")),
         "total_discounts": _money(node.get("totalDiscountsSet")),
         "total_refunded": _money(node.get("totalRefundedSet")),
+        "total_shipping": _money(node.get("totalShippingPriceSet")),
         "currency": total.get("currencyCode"),
         "ship_province_code": ship.get("provinceCode"),
         "ship_province": ship.get("province"),
@@ -342,6 +345,7 @@ def _shape_line_item(node: Dict[str, Any], order_shopify_id: int) -> Optional[Di
         "product_shopify_id": _int_or_none(product.get("legacyResourceId")),
         "variant_shopify_id": _int_or_none(variant.get("legacyResourceId")),
         "quantity": _int_or_none(node.get("quantity")),
+        "current_quantity": _int_or_none(node.get("currentQuantity")),
         "original_unit_price": _money(node.get("originalUnitPriceSet")),
         "discounted_total": _money(node.get("discountedTotalSet")),
         "raw": node,
@@ -365,7 +369,7 @@ _ORDER_COLS = (
     "email", "created_at", "processed_at", "shopify_updated_at", "cancelled_at",
     "closed_at", "financial_status", "fulfillment_status", "tags", "note",
     "total_price", "subtotal_price", "total_discounts", "total_refunded",
-    "currency", "ship_province_code", "ship_province", "ship_country_code",
+    "total_shipping", "currency", "ship_province_code", "ship_province", "ship_country_code",
     "ship_zip", "ship_city", "shipping_line_title", "shipping_carrier_identifier",
     "fulfilled_at", "in_transit_at", "delivered_at", "tracking_company",
     "tracking_number", "tracking_url", "fulfillments", "raw", "synced_at",
@@ -374,8 +378,8 @@ _ORDER_COLS = (
 _LINE_ITEM_COLS = (
     "store_id", "order_shopify_id", "shopify_id", "title", "variant_title",
     "sku", "vendor", "barcode", "product_title", "product_shopify_id",
-    "variant_shopify_id", "quantity", "original_unit_price", "discounted_total",
-    "raw",
+    "variant_shopify_id", "quantity", "current_quantity", "original_unit_price",
+    "discounted_total", "raw",
 )
 
 
