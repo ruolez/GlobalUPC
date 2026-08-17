@@ -345,6 +345,25 @@ CREATE TABLE shopify_order_line_items (
 
 CREATE INDEX idx_sholi_order ON shopify_order_line_items(store_id, order_shopify_id);
 
+-- Business Overview dashboard configuration (singleton; migration 019)
+CREATE TABLE IF NOT EXISTS business_overview_config (
+    id SERIAL PRIMARY KEY,
+    sales_store_id INTEGER REFERENCES stores(id) ON DELETE SET NULL,
+    purchases_store_id INTEGER REFERENCES stores(id) ON DELETE SET NULL,
+    shopify_store_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+    quotation_statuses JSONB NOT NULL DEFAULT '["In Progress","Locked"]'::jsonb,
+    timezone VARCHAR(64) NOT NULL DEFAULT 'America/Chicago',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_business_overview_config_singleton
+    ON business_overview_config ((true));
+
+CREATE TRIGGER update_business_overview_config_updated_at
+    BEFORE UPDATE ON business_overview_config
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
 -- Insert default settings
 INSERT INTO settings (key, value, description) VALUES
     ('app_name', 'Global UPC', 'Application name'),

@@ -35,6 +35,14 @@
           <h1>Global UPC</h1>
         </div>
         <nav class="nav">
+          <a href="#" class="nav-item" data-page="business-overview">
+            <svg width="18" height="18" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M5 26h22" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              <path d="m6 20 6-7 5 4 8-10" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              <circle cx="25" cy="7" r="2" fill="currentColor"/>
+            </svg>
+            <span>Overview</span>
+          </a>
           <a href="#" class="nav-item active" data-page="dashboard">
             <svg width="18" height="18" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
               <rect x="5" y="5" width="9" height="9" rx="1.5" stroke="currentColor" stroke-width="2"/>
@@ -185,6 +193,230 @@
 
       <!-- Main Content -->
       <main class="main-content">
+        <!-- Business Overview Page -->
+        <div id="business-overview-page" class="page sa-page bov-page" style="display: none">
+          <header class="page-header dashboard-page-header bov-header">
+            <div class="dashboard-page-title">
+              <h2>Business Overview</h2>
+              <p class="subtitle bov-range-label" id="bov-range-label">Today's numbers, trends and what is in motion</p>
+            </div>
+            <div class="dashboard-page-actions">
+              <span class="dashboard-updated" id="bov-updated"></span>
+              <button type="button" class="dashboard-refresh-btn" id="bov-refresh-btn" title="Refresh" aria-label="Refresh overview">
+                <svg width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M14.5 9a5.5 5.5 0 1 1-1.61-3.89" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                  <path d="M14.5 3v3.2H11.3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </button>
+              <button type="button" class="dashboard-refresh-btn" id="bov-config-gear" title="Data sources" aria-label="Configure data sources">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.7"/>
+                  <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+                </svg>
+              </button>
+            </div>
+          </header>
+
+          <!-- Collapsed data-sources bar -->
+          <div id="bov-config-bar" class="bov-config-bar" hidden>
+            <div class="bov-config-head" id="bov-config-head" role="button" tabindex="0" aria-expanded="false">
+              <div class="bov-config-summary">
+                <span class="bov-config-caret" id="bov-config-caret" aria-hidden="true">▶</span>
+                <span id="bov-config-summary">Sources</span>
+              </div>
+              <button type="button" class="btn btn-secondary bov-btn-xs" id="bov-config-edit-btn">Edit</button>
+            </div>
+            <div class="bov-config-details" id="bov-config-details" hidden></div>
+          </div>
+
+          <!-- Setup / edit form -->
+          <div id="bov-config-setup" class="bov-config-setup" hidden>
+            <div class="dashboard-card">
+              <div class="dashboard-card-header">
+                <h3 id="bov-config-title">Set up Business Overview</h3>
+                <span class="dashboard-card-meta">Pick where each part of the overview reads from</span>
+              </div>
+              <div class="bov-config-grid">
+                <div class="bov-field">
+                  <label class="bov-field-label" for="bov-cfg-sales">Sales &amp; invoices source</label>
+                  <select id="bov-cfg-sales" class="dark-input"></select>
+                  <small class="bov-field-help">MSSQL BackOffice for revenue, margin, open and shipped invoices. Product cost for Shopify sales is read from this store too.</small>
+                </div>
+                <div class="bov-field">
+                  <label class="bov-field-label" for="bov-cfg-purchases">Purchases source</label>
+                  <select id="bov-cfg-purchases" class="dark-input"></select>
+                  <small class="bov-field-help">MSSQL BackOffice holding the purchase orders.</small>
+                </div>
+                <div class="bov-field">
+                  <span class="bov-field-label">Shopify stores</span>
+                  <div id="bov-cfg-shopify" class="bov-pill-row"></div>
+                  <small class="bov-field-help">Only stores with a completed Data Sync contribute to sales; unsynced stores are skipped.</small>
+                </div>
+                <div class="bov-field">
+                  <span class="bov-field-label">Quotation statuses counted as in progress</span>
+                  <div id="bov-cfg-statuses" class="bov-pill-row"></div>
+                  <div class="bov-inline-add">
+                    <input type="text" id="bov-cfg-status-add" class="dark-input" placeholder="Add a status…" autocomplete="off">
+                    <button type="button" class="btn btn-secondary bov-btn-sm" id="bov-cfg-status-add-btn">Add</button>
+                  </div>
+                </div>
+                <div class="bov-field">
+                  <label class="bov-field-label" for="bov-cfg-tz">Business timezone</label>
+                  <input type="text" id="bov-cfg-tz" class="dark-input" list="bov-tz-list" placeholder="America/Chicago" autocomplete="off">
+                  <datalist id="bov-tz-list">
+                    <option value="America/Chicago"></option>
+                    <option value="America/New_York"></option>
+                    <option value="America/Denver"></option>
+                    <option value="America/Los_Angeles"></option>
+                    <option value="America/Phoenix"></option>
+                    <option value="UTC"></option>
+                  </datalist>
+                  <small class="bov-field-help">Used to resolve “today”, weeks and months on the server.</small>
+                </div>
+              </div>
+              <div class="bov-config-ro" id="bov-config-ro"></div>
+              <div id="bov-excl-manager" class="bov-excl-manager" hidden>
+                <div class="bov-excl-head">
+                  <strong>Excluded customers</strong>
+                  <span class="dashboard-card-meta">Removed from BackOffice sales, profit and margin totals (shared with the Sales report).</span>
+                </div>
+                <div class="bov-excl-add">
+                  <div class="bov-excl-input-wrap">
+                    <input type="text" id="bov-excl-name" class="dark-input" placeholder="Business / account name…" autocomplete="off">
+                    <div id="bov-excl-autocomplete" class="bov-excl-autocomplete" hidden></div>
+                  </div>
+                  <select id="bov-excl-scope" class="dark-input">
+                    <option value="0">Non-voided sales</option>
+                    <option value="">All events</option>
+                  </select>
+                  <button type="button" class="btn btn-secondary bov-btn-sm" id="bov-excl-add-btn">Exclude</button>
+                </div>
+                <div id="bov-excl-list" class="bov-excl-list"></div>
+              </div>
+              <div class="bov-config-actions">
+                <button type="button" class="btn btn-primary bov-btn-sm" id="bov-config-save">Save</button>
+                <button type="button" class="btn btn-secondary bov-btn-sm" id="bov-config-cancel">Cancel</button>
+              </div>
+            </div>
+          </div>
+
+          <div id="bov-content" hidden>
+            <!-- Toolbar: presets + custom range + bucket -->
+            <div class="bov-toolbar">
+              <div class="sa-chip-group bov-presets" id="bov-presets" role="radiogroup" aria-label="Period"></div>
+              <div class="bov-custom-range" id="bov-custom-range" hidden>
+                <input type="date" id="bov-custom-from" class="dark-input" aria-label="From">
+                <span class="bov-custom-sep">→</span>
+                <input type="date" id="bov-custom-to" class="dark-input" aria-label="To">
+                <button type="button" class="btn btn-primary bov-btn-xs" id="bov-custom-apply">Apply</button>
+              </div>
+              <div class="bov-toolbar-right">
+                <span class="bov-toolbar-label">Group by</span>
+                <div class="sancm-mode-group" id="bov-bucket" role="radiogroup" aria-label="Bucket">
+                  <button type="button" class="sancm-mode-btn active" data-bov-bucket="auto">Auto</button>
+                  <button type="button" class="sancm-mode-btn" data-bov-bucket="day">Day</button>
+                  <button type="button" class="sancm-mode-btn" data-bov-bucket="week">Week</button>
+                  <button type="button" class="sancm-mode-btn" data-bov-bucket="month">Month</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- KPI strip -->
+            <section class="sa-kpi-strip bov-kpi-strip" id="bov-kpi-strip" aria-label="Key figures"></section>
+
+            <!-- Trend row -->
+            <div class="bov-grid-trend">
+              <div class="sancm-chart-card bov-card bov-chart-card" id="bov-trend-card">
+                <div class="sancm-chart-head">
+                  <div>
+                    <h3 class="sancm-chart-title">Revenue &amp; profit</h3>
+                    <p class="sancm-chart-sub" id="bov-trend-sub"></p>
+                  </div>
+                  <div class="sancm-chart-controls">
+                    <label class="sancm-toggle"><input type="checkbox" id="bov-split-toggle"> Split BackOffice / Shopify</label>
+                  </div>
+                </div>
+                <div class="sancm-legend" id="bov-trend-legend"></div>
+                <div class="sancm-chart-wrap bov-chart-wrap" id="bov-trend-wrap"></div>
+                <div class="sancm-tooltip" id="bov-trend-tip" hidden></div>
+              </div>
+              <div class="bov-grid-side">
+                <div class="sancm-chart-card bov-card bov-chart-card" id="bov-margin-card">
+                  <div class="sancm-chart-head">
+                    <div>
+                      <h3 class="sancm-chart-title">Margin</h3>
+                      <p class="sancm-chart-sub" id="bov-margin-sub"></p>
+                    </div>
+                    <div class="bov-margin-headline" id="bov-margin-headline"></div>
+                  </div>
+                  <div class="sancm-chart-wrap bov-chart-wrap" id="bov-margin-wrap"></div>
+                  <div class="sancm-tooltip" id="bov-margin-tip" hidden></div>
+                </div>
+                <div class="dashboard-card bov-card" id="bov-top-card">
+                  <div class="dashboard-card-header bov-card-head">
+                    <div class="bov-card-title-wrap">
+                      <h3>Top customers</h3>
+                      <span class="dashboard-card-meta" id="bov-top-meta"></span>
+                    </div>
+                    <div class="sancm-mode-group" data-bov-tabgroup="top">
+                      <button type="button" class="sancm-mode-btn active" data-bov-tab="top" data-value="customer">Customers</button>
+                      <button type="button" class="sancm-mode-btn" data-bov-tab="top" data-value="rep">Reps</button>
+                      <button type="button" class="sancm-mode-btn" data-bov-tab="top" data-value="product">Products</button>
+                    </div>
+                  </div>
+                  <div class="bov-card-body" id="bov-top-body"></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Operations row -->
+            <div class="bov-grid-ops">
+              <div class="dashboard-card bov-card" id="bov-quotations-card">
+                <div class="dashboard-card-header bov-card-head">
+                  <div class="bov-card-title-wrap">
+                    <h3>Quotations in progress</h3>
+                    <span class="dashboard-card-meta" id="bov-quotations-meta"></span>
+                  </div>
+                  <a href="#" class="bov-card-link" data-page="quotations-in-progress">Open In Progress ›</a>
+                </div>
+                <div class="bov-card-body" id="bov-quotations-body"></div>
+                <div class="bov-card-foot" id="bov-quotations-foot"></div>
+              </div>
+
+              <div class="dashboard-card bov-card" id="bov-invoices-card">
+                <div class="dashboard-card-header bov-card-head">
+                  <div class="bov-card-title-wrap">
+                    <h3>Invoices</h3>
+                    <span class="dashboard-card-meta" id="bov-invoices-meta"></span>
+                  </div>
+                  <div class="sancm-mode-group" data-bov-tabgroup="invoices">
+                    <button type="button" class="sancm-mode-btn active" data-bov-tab="invoices" data-value="open">Open <span class="bov-tab-count" id="bov-tab-count-open"></span></button>
+                    <button type="button" class="sancm-mode-btn" data-bov-tab="invoices" data-value="shipped">Shipped <span class="bov-tab-count" id="bov-tab-count-shipped"></span></button>
+                  </div>
+                </div>
+                <div class="bov-card-body" id="bov-invoices-body"></div>
+                <div class="bov-card-foot" id="bov-invoices-foot"></div>
+              </div>
+
+              <div class="dashboard-card bov-card" id="bov-purchases-card">
+                <div class="dashboard-card-header bov-card-head">
+                  <div class="bov-card-title-wrap">
+                    <h3>Purchase orders</h3>
+                    <span class="dashboard-card-meta" id="bov-purchases-meta"></span>
+                  </div>
+                  <div class="sancm-mode-group" data-bov-tabgroup="purchases">
+                    <button type="button" class="sancm-mode-btn active" data-bov-tab="purchases" data-value="incoming">Incoming <span class="bov-tab-count" id="bov-tab-count-incoming"></span></button>
+                    <button type="button" class="sancm-mode-btn" data-bov-tab="purchases" data-value="purchased">Purchased <span class="bov-tab-count" id="bov-tab-count-purchased"></span></button>
+                    <button type="button" class="sancm-mode-btn" data-bov-tab="purchases" data-value="received">Received <span class="bov-tab-count" id="bov-tab-count-received"></span></button>
+                  </div>
+                </div>
+                <div class="bov-card-body" id="bov-purchases-body"></div>
+                <div class="bov-card-foot" id="bov-purchases-foot"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- Dashboard Page -->
         <div id="dashboard-page" class="page">
           <header class="page-header dashboard-page-header">
@@ -1110,6 +1342,7 @@
                   <h4 class="settings-subsection-title">Default Landing Page</h4>
                   <div class="form-group">
                     <select id="default-landing-page" style="max-width: 320px">
+                      <option value="business-overview">Overview</option>
                       <option value="dashboard">Dashboard</option>
                       <option value="update-upc">Update UPC</option>
                       <option value="sql-audit">Orphan UPCs</option>
@@ -4692,6 +4925,35 @@
         </div>
 
       </main>
+    </div>
+
+    <!-- Business Overview drill-ins -->
+    <div id="bov-quotation-modal" class="modal bov-modal">
+      <div class="modal-content" style="max-width: 940px; width: 95%">
+        <div class="modal-header">
+          <h3 id="bov-quotation-title">Quotation</h3>
+          <button type="button" class="modal-close" data-bov-close="bov-quotation-modal" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body bov-modal-body" id="bov-quotation-body"></div>
+      </div>
+    </div>
+    <div id="bov-invoice-modal" class="modal bov-modal">
+      <div class="modal-content" style="max-width: 940px; width: 95%">
+        <div class="modal-header">
+          <h3 id="bov-invoice-title">Invoice</h3>
+          <button type="button" class="modal-close" data-bov-close="bov-invoice-modal" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body bov-modal-body" id="bov-invoice-body"></div>
+      </div>
+    </div>
+    <div id="bov-po-modal" class="modal bov-modal">
+      <div class="modal-content" style="max-width: 940px; width: 95%">
+        <div class="modal-header">
+          <h3 id="bov-po-title">Purchase order</h3>
+          <button type="button" class="modal-close" data-bov-close="bov-po-modal" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body bov-modal-body" id="bov-po-body"></div>
+      </div>
     </div>
 
     <!-- Lost customer detail -->

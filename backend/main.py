@@ -2,7 +2,7 @@ from fastapi import FastAPI, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from typing import List, Union, AsyncGenerator, Optional, Dict, Any
+from typing import List, Union, AsyncGenerator, Optional, Dict, Any, Tuple
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
 from datetime import datetime, date, timedelta
@@ -16,7 +16,7 @@ import uuid
 import os
 
 from database import get_db, engine
-from models import Store, MSSQLConnection, ShopifyConnection, Setting, StoreType, StoreCategory, UPCUpdateHistory, UPCExclusion, ItemTrackerConfig, ItemTrackerExclusion, PriceUpdateHistory, StoreMirror, SalesConfig, SalesExclusion
+from models import Store, MSSQLConnection, ShopifyConnection, Setting, StoreType, StoreCategory, UPCUpdateHistory, UPCExclusion, ItemTrackerConfig, ItemTrackerExclusion, PriceUpdateHistory, StoreMirror, SalesConfig, SalesExclusion, BusinessOverviewConfig
 from schemas import (
     MSSQLStoreCreate, ShopifyStoreCreate, ShipperStoreCreate, MSSQLStoreUpdate, ShopifyStoreUpdate, ShipperStoreUpdate, StoreResponse, StoreNameUpdate, StoreCategoryUpdate,
     SettingCreate, SettingUpdate, SettingResponse,
@@ -60,6 +60,20 @@ from schemas import (
     CheckedOrdersRequest, CheckedOrdersResponse, CheckedOrder,
     ShopifySyncRequest,
     CheckedOrderUser, CheckedOrdersUsersResponse,
+    BOV_DEFAULT_QUOTATION_STATUSES,
+    BusinessOverviewConfigCreate, BusinessOverviewConfigResponse, BusinessOverviewConfigOptions,
+    BOVStoreOption, BOVPeriod, BOVBlockStatus, BOVSeriesPoint, BOVRangeTotals,
+    BOVQuotationRow, BOVQuotationStatusCount, BOVQuotationsBlock, BOVQuotationsResponse,
+    BOVInvoiceRow, BOVOpenInvoicesBlock, BOVOpenInvoicesResponse,
+    BOVShippedInvoicesBlock, BOVShippedInvoicesResponse,
+    BOVInvoiceLine, BOVInvoiceHeader, BOVInvoiceDetailResponse,
+    BOVPurchaseOrderRow, BOVIncomingPurchasesBlock, BOVIncomingPurchasesResponse,
+    BOVPurchasesRangeBlock, BOVPurchasesRangeResponse,
+    BOVPurchaseOrderLine, BOVPurchaseOrderHeader, BOVPurchaseOrderDetailResponse,
+    BOVSalesSourceTotals, BOVSalesBucket, BOVSalesSourceStatus, BOVSalesTrendResponse,
+    BOVBreakdownRow, BOVSalesBreakdownResponse,
+    BOVShopifyStoreOpen, BOVShopifyOpenOrdersBlock, BOVSalesSummaryBlock,
+    BusinessOverviewSummaryResponse,
 )
 from mssql_helper import (
     test_mssql_connection, search_upc_across_mssql_stores, search_products_by_upc,
@@ -134,6 +148,9 @@ async def lifespan(app: FastAPI):
     print("[SHUTDOWN] Shutting down Shopify Sync thread pool...")
     from shopify_sync_helper import shutdown_sync_executor
     shutdown_sync_executor()
+    print("[SHUTDOWN] Shutting down Business Overview thread pool...")
+    from business_overview_helper import shutdown_bov_executor
+    shutdown_bov_executor()
     print("[SHUTDOWN] Cleanup complete.")
 
 app = FastAPI(title="Global UPC API", version="1.0.0", lifespan=lifespan)
@@ -9362,6 +9379,809 @@ async def shopify_sync_stream(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )
+
+
+# ============================================================================
+# Business Overview
+#
+# Executive dashboard: quotations in progress (DB_ADMIN), open / shipped
+# invoices and revenue-cost-profit trends (configured "sales" MSSQL store),
+# purchase orders (configured "purchases" MSSQL store) and Shopify revenue
+# from the local mirror. Config lives in business_overview_config; DB_ADMIN
+# still comes from settings.admin_store_id. Every resolver here is SOFT so a
+# missing source degrades a widget (configured=False) instead of the page.
+# ============================================================================
+import business_overview_helper as bov
+from zoneinfo import ZoneInfo as _BovZoneInfo
+
+
+def _bov_config(db: Session) -> Optional[BusinessOverviewConfig]:
+    return db.query(BusinessOverviewConfig).first()
+
+
+def _bov_mssql_store(db: Session, store_id: Optional[int]) -> Optional[Store]:
+    if not store_id:
+        return None
+    store = db.query(Store).filter(
+        Store.id == store_id,
+        Store.store_type == StoreType.mssql,
+        Store.is_active == True,
+    ).first()
+    if not store or not store.mssql_connection:
+        return None
+    return store
+
+
+def _bov_conn_kwargs(store: Store) -> Dict[str, Any]:
+    c = store.mssql_connection
+    return {"host": c.host, "port": c.port, "database": c.database_name,
+            "username": c.username, "password": c.password}
+
+
+def _bov_cost_conn(db: Session, cfg: Optional[BusinessOverviewConfig]):
+    """Items_tbl cost source for Shopify lines: sales store, else Item Tracker S2S."""
+    store = _bov_mssql_store(db, cfg.sales_store_id if cfg else None)
+    if store is not None:
+        return store.mssql_connection
+    return _resolve_item_tracker_s2s_conn(db)
+
+
+def _bov_shopify_stores(db: Session, cfg: Optional[BusinessOverviewConfig]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for sid in (cfg.shopify_store_ids if cfg else []) or []:
+        st = db.query(Store).filter(
+            Store.id == sid, Store.store_type == StoreType.shopify, Store.is_active == True
+        ).first()
+        if st and st.shopify_connection:
+            sc = st.shopify_connection
+            out.append({"id": st.id, "name": st.name, "shop_domain": sc.shop_domain,
+                        "admin_api_key": sc.admin_api_key, "api_version": sc.api_version or "2025-01"})
+    return out
+
+
+def _bov_excluded_names(db: Session) -> Tuple[List[str], List[str]]:
+    """(excluded_sales_names, excluded_return_names) — same semantics as the Sales report."""
+    sales_names: List[str] = []
+    return_names: List[str] = []
+    for excl in db.query(SalesExclusion).all():
+        if excl.void_status is None or excl.void_status == 0:
+            sales_names.append(excl.business_name)
+        if excl.void_status is None:
+            return_names.append(excl.business_name)
+    return sales_names, return_names
+
+
+def _bov_tz(cfg: Optional[BusinessOverviewConfig]) -> str:
+    return (cfg.timezone if cfg and cfg.timezone else "America/Chicago")
+
+
+def _bov_period(cfg: Optional[BusinessOverviewConfig], preset: Optional[str],
+                date_from: Optional[str], date_to: Optional[str]) -> bov.Period:
+    try:
+        return bov.resolve_period(date_from, date_to, preset, _bov_tz(cfg))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+def _bov_check_bucket(bucket: Optional[str]) -> str:
+    b = (bucket or "day").strip().lower()
+    if b not in bov.BUCKETS:
+        raise HTTPException(status_code=400, detail="bucket must be day, week or month")
+    return b
+
+
+def _bov_series_points(rows: List[Dict[str, Any]]) -> List[BOVSeriesPoint]:
+    return [BOVSeriesPoint(**r) for r in rows]
+
+
+def _bov_config_response(db: Session, cfg: Optional[BusinessOverviewConfig]) -> BusinessOverviewConfigResponse:
+    sales_store = _bov_mssql_store(db, cfg.sales_store_id if cfg else None)
+    purchases_store = _bov_mssql_store(db, cfg.purchases_store_id if cfg else None)
+    shopify_ids = list((cfg.shopify_store_ids if cfg else []) or [])
+    shopify_names: List[str] = []
+    for sid in shopify_ids:
+        st = db.query(Store).filter(Store.id == sid).first()
+        if st:
+            shopify_names.append(st.name)
+    admin_store = _resolve_admin_store_soft(db)
+    cost_conn = _bov_cost_conn(db, cfg)
+    cost_store = db.query(Store).filter(Store.id == cost_conn.store_id).first() if cost_conn else None
+    return BusinessOverviewConfigResponse(
+        id=cfg.id if cfg else 0,
+        configured=bool(sales_store or purchases_store or shopify_ids),
+        sales_store_id=cfg.sales_store_id if cfg else None,
+        sales_store_name=sales_store.name if sales_store else None,
+        purchases_store_id=cfg.purchases_store_id if cfg else None,
+        purchases_store_name=purchases_store.name if purchases_store else None,
+        shopify_store_ids=shopify_ids,
+        shopify_store_names=shopify_names,
+        quotation_statuses=list((cfg.quotation_statuses if cfg else BOV_DEFAULT_QUOTATION_STATUSES) or []),
+        timezone=_bov_tz(cfg),
+        admin_store_id=admin_store.id if admin_store else None,
+        admin_store_name=admin_store.name if admin_store else None,
+        cost_store_id=cost_store.id if cost_store else None,
+        cost_store_name=cost_store.name if cost_store else None,
+        sales_exclusions_count=db.query(SalesExclusion).count(),
+        created_at=cfg.created_at if cfg else None,
+        updated_at=cfg.updated_at if cfg else None,
+    )
+
+
+@app.get("/api/business-overview/config", response_model=BusinessOverviewConfigResponse)
+def get_business_overview_config(db: Session = Depends(get_db)):
+    return _bov_config_response(db, _bov_config(db))
+
+
+@app.post("/api/business-overview/config", response_model=BusinessOverviewConfigResponse)
+def save_business_overview_config(data: BusinessOverviewConfigCreate, db: Session = Depends(get_db)):
+    for sid, label in ((data.sales_store_id, "sales"), (data.purchases_store_id, "purchases")):
+        if sid and not db.query(Store).filter(Store.id == sid, Store.store_type == StoreType.mssql).first():
+            raise HTTPException(status_code=400, detail=f"Invalid {label} store ID: {sid} (must be an MSSQL store)")
+    for sid in data.shopify_store_ids:
+        if not db.query(Store).filter(Store.id == sid, Store.store_type == StoreType.shopify).first():
+            raise HTTPException(status_code=400, detail=f"Invalid Shopify store ID: {sid}")
+    tz = (data.timezone or "").strip() or "America/Chicago"
+    try:
+        _BovZoneInfo(tz)
+    except Exception:
+        raise HTTPException(status_code=400, detail=f"Unknown timezone: {tz}")
+    statuses: List[str] = []
+    for s in data.quotation_statuses or []:
+        s2 = (s or "").strip()
+        if s2 and s2.lower() not in {x.lower() for x in statuses}:
+            statuses.append(s2)
+
+    cfg = _bov_config(db)
+    if cfg:
+        cfg.sales_store_id = data.sales_store_id
+        cfg.purchases_store_id = data.purchases_store_id
+        cfg.shopify_store_ids = list(dict.fromkeys(data.shopify_store_ids))
+        cfg.quotation_statuses = statuses
+        cfg.timezone = tz
+    else:
+        cfg = BusinessOverviewConfig(
+            sales_store_id=data.sales_store_id,
+            purchases_store_id=data.purchases_store_id,
+            shopify_store_ids=list(dict.fromkeys(data.shopify_store_ids)),
+            quotation_statuses=statuses,
+            timezone=tz,
+        )
+        db.add(cfg)
+    db.commit()
+    db.refresh(cfg)
+    return _bov_config_response(db, cfg)
+
+
+@app.get("/api/business-overview/config/options", response_model=BusinessOverviewConfigOptions)
+async def get_business_overview_config_options(db: Session = Depends(get_db)):
+    synced = await asyncio.to_thread(shopify_sync.get_synced_stores)
+    mssql: List[BOVStoreOption] = []
+    shopify: List[BOVStoreOption] = []
+    for st in db.query(Store).order_by(Store.name).all():
+        if st.store_type == StoreType.mssql and st.mssql_connection:
+            mssql.append(BOVStoreOption(id=st.id, name=st.name, store_type="mssql", is_active=bool(st.is_active)))
+        elif st.store_type == StoreType.shopify and st.shopify_connection:
+            info = synced.get(st.id) or {}
+            last = info.get("last_completed_at")
+            shopify.append(BOVStoreOption(
+                id=st.id, name=st.name, store_type="shopify", is_active=bool(st.is_active),
+                synced=bool(info),
+                last_synced_at=(last.isoformat() if hasattr(last, "isoformat") else (str(last) if last else None)),
+                shop_timezone=info.get("shop_timezone"),
+            ))
+    statuses: List[str] = []
+    admin_store = _resolve_admin_store_soft(db)
+    if admin_store is not None:
+        ok, _err, vals = await bov.quotation_status_options_async(**_bov_conn_kwargs(admin_store))
+        if ok:
+            statuses = vals
+    return BusinessOverviewConfigOptions(
+        mssql_stores=mssql, shopify_stores=shopify, quotation_statuses=statuses,
+        admin_configured=admin_store is not None,
+        admin_store_name=admin_store.name if admin_store else None,
+    )
+
+
+# ---- building blocks shared by /summary and the per-widget endpoints -------
+
+async def _bov_quotations_block(db: Session, cfg, include_list: bool, limit: int = 500,
+                                sort_by: str = "start_date", sort_order: str = "desc") -> Dict[str, Any]:
+    admin_store = _resolve_admin_store_soft(db)
+    statuses = list((cfg.quotation_statuses if cfg else BOV_DEFAULT_QUOTATION_STATUSES) or [])
+    if admin_store is None:
+        return {"configured": False, "statuses": statuses}
+    ok, err, payload = await bov.quotations_in_progress_async(
+        **_bov_conn_kwargs(admin_store), statuses=statuses, limit=limit,
+        sort_by=sort_by, sort_order=sort_order, include_list=include_list)
+    base = {"configured": True, "store_id": admin_store.id, "store_name": admin_store.name, "statuses": statuses}
+    if not ok:
+        base["error"] = err
+        return base
+    base.update(payload)
+    return base
+
+
+async def _bov_open_invoices_block(db: Session, cfg, include_list: bool, date_from=None, date_to=None,
+                                   limit: int = 500, sort_by: str = "invoice_date", sort_order: str = "desc") -> Dict[str, Any]:
+    store = _bov_mssql_store(db, cfg.sales_store_id if cfg else None)
+    if store is None:
+        return {"configured": False}
+    today = bov.today_in_tz(_bov_tz(cfg))
+    ok, err, payload = await bov.open_invoices_async(
+        **_bov_conn_kwargs(store),
+        date_from=date_from,
+        date_to_excl=(bov.upper_bound(bov.parse_ymd(date_to)) if date_to else None),
+        limit=limit, sort_by=sort_by, sort_order=sort_order, include_list=include_list, today=today)
+    base = {"configured": True, "store_id": store.id, "store_name": store.name}
+    if not ok:
+        base["error"] = err
+        return base
+    base.update(payload)
+    return base
+
+
+def _bov_range_block_from_daily(daily: Dict[Any, Dict[str, float]], period: bov.Period, bucket: str,
+                                fields: List[str]) -> Dict[str, Any]:
+    cur = bov.sum_daily(daily, period.start, period.end, fields)
+    prev = bov.sum_daily(daily, period.prev_start, period.prev_end, fields)
+    return {
+        "period": period.as_dict(),
+        "totals": bov.range_totals(cur, prev),
+        "bucket": bucket,
+        "series": bov.rollup_daily(daily, period.start, period.end, bucket, fields),
+        "previous_series": bov.rollup_daily(daily, period.prev_start, period.prev_end, bucket, fields),
+    }
+
+
+async def _bov_shipped_block(db: Session, cfg, period: bov.Period, bucket: str, include_list: bool,
+                             limit: int = 500, sort_by: str = "ship_date", sort_order: str = "desc") -> Dict[str, Any]:
+    store = _bov_mssql_store(db, cfg.sales_store_id if cfg else None)
+    if store is None:
+        return {"configured": False, "period": period.as_dict()}
+    ok, err, payload = await bov.shipped_invoices_async(
+        **_bov_conn_kwargs(store),
+        date_from=period.start.isoformat(), date_to_excl=period.end_excl,
+        series_from=period.prev_start.isoformat(),
+        limit=limit, sort_by=sort_by, sort_order=sort_order, include_list=include_list)
+    base = {"configured": True, "store_id": store.id, "store_name": store.name, "period": period.as_dict(), "bucket": bucket}
+    if not ok:
+        base["error"] = err
+        return base
+    base.update(_bov_range_block_from_daily(payload.get("daily") or {}, period, bucket,
+                                            ["invoices", "total_amount", "total_qty", "boxes"]))
+    invoices = payload.get("invoices") or []
+    base["invoices"] = invoices
+    base["limit"] = payload.get("limit", limit)
+    base["truncated"] = include_list and len(invoices) >= int(payload.get("limit", limit))
+    return base
+
+
+async def _bov_incoming_block(db: Session, cfg, include_list: bool, limit: int = 500,
+                              sort_by: str = "po_date", sort_order: str = "desc") -> Dict[str, Any]:
+    store = _bov_mssql_store(db, cfg.purchases_store_id if cfg else None)
+    if store is None:
+        return {"configured": False}
+    ok, err, payload = await bov.incoming_purchases_async(
+        **_bov_conn_kwargs(store), limit=limit, sort_by=sort_by, sort_order=sort_order, include_list=include_list)
+    base = {"configured": True, "store_id": store.id, "store_name": store.name}
+    if not ok:
+        base["error"] = err
+        return base
+    base.update(payload)
+    return base
+
+
+async def _bov_purchased_block(db: Session, cfg, period: bov.Period, bucket: str, include_list: bool,
+                               limit: int = 500, sort_by: str = "po_date", sort_order: str = "desc") -> Dict[str, Any]:
+    store = _bov_mssql_store(db, cfg.purchases_store_id if cfg else None)
+    if store is None:
+        return {"configured": False, "period": period.as_dict()}
+    ok, err, payload = await bov.purchased_in_range_async(
+        **_bov_conn_kwargs(store),
+        date_from=period.start.isoformat(), date_to_excl=period.end_excl,
+        series_from=period.prev_start.isoformat(),
+        limit=limit, sort_by=sort_by, sort_order=sort_order, include_list=include_list)
+    base = {"configured": True, "store_id": store.id, "store_name": store.name, "period": period.as_dict(), "bucket": bucket}
+    if not ok:
+        base["error"] = err
+        return base
+    base.update(_bov_range_block_from_daily(payload.get("daily") or {}, period, bucket,
+                                            ["purchase_orders", "total", "qty"]))
+    pos = payload.get("purchase_orders") or []
+    base["purchase_orders"] = pos
+    base["limit"] = payload.get("limit", limit)
+    base["truncated"] = include_list and len(pos) >= int(payload.get("limit", limit))
+    return base
+
+
+async def _bov_received_block(db: Session, cfg, period: bov.Period, bucket: str, include_list: bool,
+                              limit: int = 500) -> Dict[str, Any]:
+    store = _bov_mssql_store(db, cfg.purchases_store_id if cfg else None)
+    if store is None:
+        return {"configured": False, "period": period.as_dict()}
+    ok, err, payload = await bov.received_in_range_async(
+        **_bov_conn_kwargs(store),
+        date_from=period.start.isoformat(), date_to_excl=period.end_excl,
+        series_from=period.prev_start.isoformat(),
+        limit=limit, include_list=include_list)
+    base = {"configured": True, "store_id": store.id, "store_name": store.name, "period": period.as_dict(), "bucket": bucket}
+    if not ok:
+        base["error"] = err
+        return base
+    base.update(_bov_range_block_from_daily(payload.get("daily") or {}, period, bucket,
+                                            ["purchase_orders", "qty", "value"]))
+    pos = payload.get("purchase_orders") or []
+    base["purchase_orders"] = pos
+    base["limit"] = payload.get("limit", limit)
+    base["truncated"] = include_list and len(pos) >= int(payload.get("limit", limit))
+    return base
+
+
+def _bov_make_cost_lookup(db: Session, cfg):
+    """Memoised async barcode -> Items_tbl.UnitCost lookup against the cost store."""
+    conn = _bov_cost_conn(db, cfg)
+    cache: Dict[str, Optional[float]] = {}
+
+    async def lookup(barcodes: List[str]) -> Dict[str, float]:
+        if conn is None:
+            return {}
+        missing = [b for b in barcodes if b not in cache]
+        if missing:
+            ok, _err, by_upc = await get_item_prices_batch_async(
+                host=conn.host, port=conn.port, database=conn.database_name,
+                username=conn.username, password=conn.password,
+                upcs=missing, include_discontinued=True)
+            if ok and isinstance(by_upc, dict):
+                for b in missing:
+                    entry = by_upc.get(b)
+                    c = entry.get("unit_cost") if entry else None
+                    cache[b] = float(c) if c is not None else None
+            else:
+                lookup.failed = _err or "cost lookup failed"  # type: ignore[attr-defined]
+                for b in missing:
+                    cache[b] = None
+        return {b: cache[b] for b in barcodes if cache.get(b) is not None}
+
+    lookup.configured = conn is not None  # type: ignore[attr-defined]
+    lookup.failed = None  # type: ignore[attr-defined]
+    return lookup
+
+
+async def _bov_sales_trend(db: Session, cfg, period: bov.Period, bucket: str,
+                           sources: List[str]) -> Dict[str, Any]:
+    """Shared by /summary (sales block) and /sales/trend."""
+    warnings: List[str] = []
+    src_status: Dict[str, Dict[str, Any]] = {}
+    tasks: Dict[str, Any] = {}
+
+    sales_store = _bov_mssql_store(db, cfg.sales_store_id if cfg else None)
+    if "backoffice" in sources:
+        if sales_store is None:
+            src_status["backoffice"] = {"configured": False}
+        else:
+            src_status["backoffice"] = {"configured": True, "store_ids": [sales_store.id], "store_names": [sales_store.name]}
+            excl_sales, excl_returns = _bov_excluded_names(db)
+            tasks["backoffice"] = bov.backoffice_daily_sales_async(
+                **_bov_conn_kwargs(sales_store),
+                date_from=period.prev_start.isoformat(), date_to_excl=period.end_excl,
+                excluded_sales_names=excl_sales, excluded_return_names=excl_returns)
+
+    shopify_stores = _bov_shopify_stores(db, cfg) if "shopify" in sources else []
+    if "shopify" in sources:
+        if not shopify_stores:
+            src_status["shopify"] = {"configured": False}
+        else:
+            synced = await asyncio.to_thread(shopify_sync.get_synced_stores)
+            cost_lookup = _bov_make_cost_lookup(db, cfg)
+            if not getattr(cost_lookup, "configured", False):
+                warnings.append("No MSSQL cost source for Shopify lines — Shopify cost/margin unavailable")
+            usable: List[Dict[str, Any]] = []
+            skipped: List[str] = []
+            for st in shopify_stores:
+                info = synced.get(st["id"])
+                if not info:
+                    skipped.append(st["name"])
+                    warnings.append(f"{st['name']}: not synced — skipped (run Data Sync)")
+                    continue
+                st["_tz"] = info.get("shop_timezone") or _bov_tz(cfg)
+                usable.append(st)
+            src_status["shopify"] = {"configured": True, "store_ids": [s["id"] for s in shopify_stores],
+                                     "store_names": [s["name"] for s in shopify_stores], "skipped_stores": skipped}
+            for st in usable:
+                tasks[f"shopify:{st['id']}"] = bov.compute_shopify_series(st, st["_tz"], period, bucket, cost_lookup)
+
+    keys = list(tasks.keys())
+    results = await asyncio.gather(*[tasks[k] for k in keys], return_exceptions=True) if keys else []
+    if "shopify" in sources and shopify_stores:
+        failed = getattr(cost_lookup, "failed", None)
+        if failed:
+            warnings.append(f"Shopify cost lookup failed — margin unavailable: {failed}")
+
+    empty = bov.empty_totals()
+    per_source: Dict[str, Dict[str, Any]] = {}
+    for k, res in zip(keys, results):
+        if isinstance(res, Exception):
+            name = k.split(":", 1)[0]
+            src_status.setdefault(name, {"configured": True})["error"] = str(res)
+            warnings.append(f"{k}: {res}")
+            continue
+        if k == "backoffice":
+            ok, err, payload = res
+            if not ok:
+                src_status["backoffice"]["error"] = err
+                continue
+            per_source["backoffice"] = bov.compute_backoffice_series(payload, period, bucket)
+        else:
+            sh = per_source.get("shopify")
+            if sh is None:
+                per_source["shopify"] = {"current": res["current"], "previous": res["previous"],
+                                         "totals": res["totals"], "previous_totals": res["previous_totals"]}
+            else:
+                sh["current"] = bov.merge_bucket_lists([sh["current"], res["current"]])
+                sh["previous"] = bov.merge_bucket_lists([sh["previous"], res["previous"]])
+                sh["totals"] = bov.add_totals(sh["totals"], res["totals"])
+                sh["previous_totals"] = bov.add_totals(sh["previous_totals"], res["previous_totals"])
+
+    def _build_buckets(which: str) -> List[Dict[str, Any]]:
+        skel = bov.iter_buckets(period.start if which == "current" else period.prev_start,
+                                period.end if which == "current" else period.prev_end, bucket)
+        out: List[Dict[str, Any]] = []
+        for i, (k, cs, ce) in enumerate(skel):
+            b: Dict[str, Any] = {"key": k.isoformat(), "start": cs.isoformat(), "end": ce.isoformat(),
+                                 "label": bov.bucket_label(k, bucket), "backoffice": None, "shopify": None}
+            total = dict(empty)
+            for src in ("backoffice", "shopify"):
+                lst = (per_source.get(src) or {}).get(which)
+                if lst is not None and i < len(lst):
+                    b[src] = lst[i]["totals"]
+                    total = bov.add_totals(total, lst[i]["totals"])
+            b["total"] = total
+            out.append(b)
+        return out
+
+    totals: Dict[str, Any] = {}
+    prev_totals: Dict[str, Any] = {}
+    grand = dict(empty)
+    grand_prev = dict(empty)
+    for src in ("backoffice", "shopify"):
+        ps = per_source.get(src)
+        if ps:
+            totals[src] = ps["totals"]
+            prev_totals[src] = ps["previous_totals"]
+            grand = bov.add_totals(grand, ps["totals"])
+            grand_prev = bov.add_totals(grand_prev, ps["previous_totals"])
+    totals["total"] = grand
+    prev_totals["total"] = grand_prev
+    change = {k: bov.totals_change(totals[k], prev_totals[k]) for k in totals}
+
+    return {
+        "period": period.as_dict(),
+        "bucket": bucket,
+        "sources": src_status,
+        "buckets": _build_buckets("current"),
+        "previous_buckets": _build_buckets("previous"),
+        "totals": totals,
+        "previous_totals": prev_totals,
+        "change_pct": change,
+        "warnings": warnings,
+        "configured": any(v.get("configured") for v in src_status.values()),
+    }
+
+
+async def _bov_shopify_open_orders_block(db: Session, cfg) -> Dict[str, Any]:
+    stores = _bov_shopify_stores(db, cfg)
+    if not stores:
+        return {"configured": False}
+
+    async def _one(st: Dict[str, Any]) -> Dict[str, Any]:
+        row = {"store_id": st["id"], "store_name": st["name"], "count": None, "open_value": None,
+               "source": None, "error": None}
+        try:
+            ok, err, cnt = await count_orders(st["shop_domain"], st["admin_api_key"],
+                                              "fulfillment_status:unshipped status:open", st.get("api_version") or "2025-01")
+        except Exception as e:
+            ok, err, cnt = False, str(e), None
+        if ok and cnt is not None:
+            row["count"] = int(cnt)
+            row["source"] = "live"
+            return row
+        try:
+            local = await bov.shopify_open_orders_local(st["id"])
+            row["count"] = int(local.get("open_orders") or 0)
+            row["open_value"] = round(float(local.get("open_value") or 0), 2)
+            row["source"] = "local"
+            row["error"] = f"live count failed ({err}); showing mirror" if err else None
+        except Exception as e:
+            row["error"] = f"{err or ''} / mirror: {e}".strip(" /")
+        return row
+
+    per_store = await asyncio.gather(*[_one(s) for s in stores])
+    total = sum((r["count"] or 0) for r in per_store)
+    values = [r["open_value"] for r in per_store if r["open_value"] is not None]
+    return {
+        "configured": True,
+        "count": total,
+        "open_value": (round(sum(values), 2) if values else None),
+        "per_store": list(per_store),
+    }
+
+
+def _bov_result(res: Any, period: Optional[bov.Period] = None) -> Dict[str, Any]:
+    if isinstance(res, Exception):
+        d: Dict[str, Any] = {"configured": True, "error": str(res)}
+        if period is not None:
+            d["period"] = period.as_dict()
+        return d
+    return res
+
+
+@app.get("/api/business-overview/summary", response_model=BusinessOverviewSummaryResponse)
+async def get_business_overview_summary(
+    preset: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    cfg = _bov_config(db)
+    period = _bov_period(cfg, preset, date_from, date_to)
+    (quotations, invoices_open, invoices_shipped, incoming, purchased, received,
+     sales, shopify_open) = await asyncio.gather(
+        _bov_quotations_block(db, cfg, include_list=False),
+        _bov_open_invoices_block(db, cfg, include_list=False),
+        _bov_shipped_block(db, cfg, period, "day", include_list=False),
+        _bov_incoming_block(db, cfg, include_list=False),
+        _bov_purchased_block(db, cfg, period, "day", include_list=False),
+        _bov_received_block(db, cfg, period, "day", include_list=False),
+        _bov_sales_trend(db, cfg, period, "day", ["backoffice", "shopify"]),
+        _bov_shopify_open_orders_block(db, cfg),
+        return_exceptions=True,
+    )
+    sales = _bov_result(sales, period)
+    sales_block = {
+        "configured": bool(sales.get("configured")),
+        "sources": sales.get("sources") or {},
+        "totals": sales.get("totals") or {},
+        "previous_totals": sales.get("previous_totals") or {},
+        "change_pct": sales.get("change_pct") or {},
+        "sparkline": [{"key": b["key"], "start": b["start"], "end": b["end"], "label": b["label"],
+                       "values": {"revenue": b["total"]["revenue"], "profit": b["total"]["profit"],
+                                  "cost": b["total"]["cost"]}}
+                      for b in (sales.get("buckets") or [])],
+        "previous_sparkline": [{"key": b["key"], "start": b["start"], "end": b["end"], "label": b["label"],
+                                "values": {"revenue": b["total"]["revenue"], "profit": b["total"]["profit"],
+                                           "cost": b["total"]["cost"]}}
+                               for b in (sales.get("previous_buckets") or [])],
+        "warnings": list(sales.get("warnings") or []) + ([sales["error"]] if sales.get("error") else []),
+    }
+    return BusinessOverviewSummaryResponse(
+        period=BOVPeriod(**period.as_dict()),
+        quotations=BOVQuotationsBlock(**_bov_result(quotations)),
+        invoices_open=BOVOpenInvoicesBlock(**_bov_result(invoices_open)),
+        invoices_shipped=BOVShippedInvoicesBlock(**_bov_result(invoices_shipped, period)),
+        purchases_incoming=BOVIncomingPurchasesBlock(**_bov_result(incoming)),
+        purchases_purchased=BOVPurchasesRangeBlock(**_bov_result(purchased, period)),
+        purchases_received=BOVPurchasesRangeBlock(**_bov_result(received, period)),
+        sales=BOVSalesSummaryBlock(**sales_block),
+        shopify_open_orders=BOVShopifyOpenOrdersBlock(**_bov_result(shopify_open)),
+        generated_at=datetime.utcnow(),
+    )
+
+
+@app.get("/api/business-overview/quotations", response_model=BOVQuotationsResponse)
+async def get_business_overview_quotations(
+    limit: int = 500, sort_by: str = "start_date", sort_order: str = "desc",
+    db: Session = Depends(get_db),
+):
+    cfg = _bov_config(db)
+    block = await _bov_quotations_block(db, cfg, include_list=True, limit=limit, sort_by=sort_by, sort_order=sort_order)
+    return BOVQuotationsResponse(**block)
+
+
+@app.get("/api/business-overview/invoices/open", response_model=BOVOpenInvoicesResponse)
+async def get_business_overview_open_invoices(
+    date_from: Optional[str] = None, date_to: Optional[str] = None,
+    limit: int = 500, sort_by: str = "invoice_date", sort_order: str = "desc",
+    db: Session = Depends(get_db),
+):
+    if (date_from and not date_to) or (date_to and not date_from):
+        raise HTTPException(status_code=400, detail="date_from and date_to must be given together")
+    if date_from:
+        try:
+            bov.parse_ymd(date_from); bov.parse_ymd(date_to)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Dates must be YYYY-MM-DD")
+    cfg = _bov_config(db)
+    block = await _bov_open_invoices_block(db, cfg, include_list=True, date_from=date_from, date_to=date_to,
+                                          limit=limit, sort_by=sort_by, sort_order=sort_order)
+    return BOVOpenInvoicesResponse(**block)
+
+
+@app.get("/api/business-overview/invoices/shipped", response_model=BOVShippedInvoicesResponse)
+async def get_business_overview_shipped_invoices(
+    preset: Optional[str] = None, date_from: Optional[str] = None, date_to: Optional[str] = None,
+    bucket: str = "day", limit: int = 500, sort_by: str = "ship_date", sort_order: str = "desc",
+    db: Session = Depends(get_db),
+):
+    cfg = _bov_config(db)
+    period = _bov_period(cfg, preset, date_from, date_to)
+    b = _bov_check_bucket(bucket)
+    block = await _bov_shipped_block(db, cfg, period, b, include_list=True, limit=limit, sort_by=sort_by, sort_order=sort_order)
+    return BOVShippedInvoicesResponse(**block)
+
+
+@app.get("/api/business-overview/invoices/{invoice_id}", response_model=BOVInvoiceDetailResponse)
+async def get_business_overview_invoice_detail(invoice_id: int, db: Session = Depends(get_db)):
+    cfg = _bov_config(db)
+    store = _bov_mssql_store(db, cfg.sales_store_id if cfg else None)
+    if store is None:
+        raise HTTPException(status_code=400, detail="Business Overview sales store is not configured.")
+    ok, err, payload = await bov.invoice_detail_async(**_bov_conn_kwargs(store), invoice_id=invoice_id)
+    if not ok:
+        raise HTTPException(status_code=502, detail=err or "Invoice lookup failed")
+    if not payload.get("header"):
+        raise HTTPException(status_code=404, detail=f"Invoice {invoice_id} not found")
+    return BOVInvoiceDetailResponse(header=BOVInvoiceHeader(**payload["header"]),
+                                    lines=[BOVInvoiceLine(**l) for l in payload.get("lines") or []],
+                                    store_name=store.name)
+
+
+@app.get("/api/business-overview/purchases/incoming", response_model=BOVIncomingPurchasesResponse)
+async def get_business_overview_incoming_purchases(
+    limit: int = 500, sort_by: str = "po_date", sort_order: str = "desc",
+    db: Session = Depends(get_db),
+):
+    cfg = _bov_config(db)
+    block = await _bov_incoming_block(db, cfg, include_list=True, limit=limit, sort_by=sort_by, sort_order=sort_order)
+    return BOVIncomingPurchasesResponse(**block)
+
+
+@app.get("/api/business-overview/purchases/purchased", response_model=BOVPurchasesRangeResponse)
+async def get_business_overview_purchased(
+    preset: Optional[str] = None, date_from: Optional[str] = None, date_to: Optional[str] = None,
+    bucket: str = "day", limit: int = 500, sort_by: str = "po_date", sort_order: str = "desc",
+    db: Session = Depends(get_db),
+):
+    cfg = _bov_config(db)
+    period = _bov_period(cfg, preset, date_from, date_to)
+    b = _bov_check_bucket(bucket)
+    block = await _bov_purchased_block(db, cfg, period, b, include_list=True, limit=limit, sort_by=sort_by, sort_order=sort_order)
+    return BOVPurchasesRangeResponse(**block)
+
+
+@app.get("/api/business-overview/purchases/received", response_model=BOVPurchasesRangeResponse)
+async def get_business_overview_received(
+    preset: Optional[str] = None, date_from: Optional[str] = None, date_to: Optional[str] = None,
+    bucket: str = "day", limit: int = 500,
+    db: Session = Depends(get_db),
+):
+    cfg = _bov_config(db)
+    period = _bov_period(cfg, preset, date_from, date_to)
+    b = _bov_check_bucket(bucket)
+    block = await _bov_received_block(db, cfg, period, b, include_list=True, limit=limit)
+    return BOVPurchasesRangeResponse(**block)
+
+
+@app.get("/api/business-overview/purchases/{po_id}", response_model=BOVPurchaseOrderDetailResponse)
+async def get_business_overview_purchase_order_detail(po_id: int, db: Session = Depends(get_db)):
+    cfg = _bov_config(db)
+    store = _bov_mssql_store(db, cfg.purchases_store_id if cfg else None)
+    if store is None:
+        raise HTTPException(status_code=400, detail="Business Overview purchases store is not configured.")
+    ok, err, payload = await bov.purchase_order_detail_async(**_bov_conn_kwargs(store), po_id=po_id)
+    if not ok:
+        raise HTTPException(status_code=502, detail=err or "Purchase order lookup failed")
+    if not payload.get("header"):
+        raise HTTPException(status_code=404, detail=f"Purchase order {po_id} not found")
+    return BOVPurchaseOrderDetailResponse(header=BOVPurchaseOrderHeader(**payload["header"]),
+                                          lines=[BOVPurchaseOrderLine(**l) for l in payload.get("lines") or []],
+                                          store_name=store.name)
+
+
+@app.get("/api/business-overview/sales/trend", response_model=BOVSalesTrendResponse)
+async def get_business_overview_sales_trend(
+    preset: Optional[str] = None, date_from: Optional[str] = None, date_to: Optional[str] = None,
+    bucket: str = "day", sources: str = "backoffice,shopify",
+    db: Session = Depends(get_db),
+):
+    cfg = _bov_config(db)
+    period = _bov_period(cfg, preset, date_from, date_to)
+    b = _bov_check_bucket(bucket)
+    src = [s.strip().lower() for s in (sources or "").split(",") if s.strip()]
+    src = [s for s in src if s in ("backoffice", "shopify")] or ["backoffice", "shopify"]
+    res = await _bov_sales_trend(db, cfg, period, b, src)
+    return BOVSalesTrendResponse(
+        period=BOVPeriod(**res["period"]),
+        bucket=b,
+        sources={k: BOVSalesSourceStatus(**v) for k, v in res["sources"].items()},
+        buckets=[BOVSalesBucket(**x) for x in res["buckets"]],
+        previous_buckets=[BOVSalesBucket(**x) for x in res["previous_buckets"]],
+        totals={k: BOVSalesSourceTotals(**v) for k, v in res["totals"].items()},
+        previous_totals={k: BOVSalesSourceTotals(**v) for k, v in res["previous_totals"].items()},
+        change_pct=res["change_pct"],
+        warnings=res["warnings"],
+        generated_at=datetime.utcnow(),
+    )
+
+
+@app.get("/api/business-overview/sales/breakdown", response_model=BOVSalesBreakdownResponse)
+async def get_business_overview_sales_breakdown(
+    preset: Optional[str] = None, date_from: Optional[str] = None, date_to: Optional[str] = None,
+    by: str = "customer", source: str = "backoffice", limit: int = 10,
+    db: Session = Depends(get_db),
+):
+    cfg = _bov_config(db)
+    period = _bov_period(cfg, preset, date_from, date_to)
+    by = (by or "customer").strip().lower()
+    source = (source or "backoffice").strip().lower()
+    if by not in ("customer", "rep", "product"):
+        raise HTTPException(status_code=400, detail="by must be customer, rep or product")
+    if source not in ("backoffice", "shopify"):
+        raise HTTPException(status_code=400, detail="source must be backoffice or shopify")
+    limit = max(1, min(int(limit or 10), 200))
+    resp: Dict[str, Any] = {"period": period.as_dict(), "by": by, "source": source, "configured": False,
+                            "rows": [], "total_revenue": 0.0}
+    if source == "shopify":
+        if by != "product":
+            raise HTTPException(status_code=400, detail="Shopify breakdown supports by=product only")
+        stores = _bov_shopify_stores(db, cfg)
+        if not stores:
+            return BOVSalesBreakdownResponse(**resp)
+        resp["configured"] = True
+        synced = await asyncio.to_thread(shopify_sync.get_synced_stores)
+        merged: Dict[str, Dict[str, Any]] = {}
+        errors: List[str] = []
+        for st in stores:
+            info = synced.get(st["id"])
+            if not info:
+                errors.append(f"{st['name']}: not synced")
+                continue
+            try:
+                rows = await bov.shopify_top_products(st["id"], info.get("shop_timezone") or _bov_tz(cfg),
+                                                      period.start.isoformat(), period.end_excl, limit * 3)
+            except Exception as e:
+                errors.append(f"{st['name']}: {e}")
+                continue
+            for r in rows:
+                k = r["key"] or f"__{r['name']}"
+                m = merged.setdefault(k, {"key": r["key"], "name": r["name"], "secondary": r["secondary"],
+                                          "orders": 0, "revenue": 0.0, "units": 0.0})
+                m["orders"] += r["orders"]; m["revenue"] += r["revenue"]; m["units"] += r["units"]
+        rows_out = sorted(merged.values(), key=lambda x: -x["revenue"])[:limit]
+        total_rev = sum(r["revenue"] for r in merged.values())
+        for r in rows_out:
+            r["revenue"] = round(r["revenue"], 2)
+            r["share_pct"] = (round(r["revenue"] / total_rev * 100, 2) if total_rev else None)
+        resp["rows"] = rows_out
+        resp["total_revenue"] = round(total_rev, 2)
+        if errors:
+            resp["error"] = "; ".join(errors)
+        return BOVSalesBreakdownResponse(**resp)
+
+    store = _bov_mssql_store(db, cfg.sales_store_id if cfg else None)
+    if store is None:
+        return BOVSalesBreakdownResponse(**resp)
+    resp["configured"] = True
+    excl_sales, _ = _bov_excluded_names(db)
+    ok, err, rows = await bov.backoffice_breakdown_async(
+        **_bov_conn_kwargs(store), date_from=period.start.isoformat(), date_to_excl=period.end_excl,
+        by=by, limit=limit, excluded_sales_names=excl_sales)
+    if not ok:
+        resp["error"] = err
+        return BOVSalesBreakdownResponse(**resp)
+    # share of the listed rows' revenue against the period total from the daily query
+    ok2, _e2, daily = await bov.backoffice_daily_sales_async(
+        **_bov_conn_kwargs(store), date_from=period.start.isoformat(), date_to_excl=period.end_excl,
+        excluded_sales_names=excl_sales, excluded_return_names=[])
+    total_rev = 0.0
+    if ok2:
+        total_rev = bov.sum_daily(daily.get("days") or {}, period.start, period.end, ["revenue"])["revenue"]
+    else:
+        total_rev = sum(r["revenue"] for r in rows)
+    for r in rows:
+        r["share_pct"] = (round(r["revenue"] / total_rev * 100, 2) if total_rev else None)
+    resp["rows"] = rows
+    resp["total_revenue"] = round(total_rev, 2)
+    return BOVSalesBreakdownResponse(**resp)
 
 
 if __name__ == "__main__":

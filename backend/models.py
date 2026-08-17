@@ -142,6 +142,21 @@ class SalesConfig(Base):
 
     s2s_store = relationship("Store", foreign_keys=[s2s_store_id])
 
+class BusinessOverviewConfig(Base):
+    __tablename__ = "business_overview_config"
+
+    id = Column(Integer, primary_key=True, index=True)
+    sales_store_id = Column(Integer, ForeignKey("stores.id", ondelete="SET NULL"), nullable=True)
+    purchases_store_id = Column(Integer, ForeignKey("stores.id", ondelete="SET NULL"), nullable=True)
+    shopify_store_ids = Column(JSONB, default=[])
+    quotation_statuses = Column(JSONB, default=["In Progress", "Locked"])
+    timezone = Column(String(64), nullable=False, server_default="America/Chicago")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    sales_store = relationship("Store", foreign_keys=[sales_store_id])
+    purchases_store = relationship("Store", foreign_keys=[purchases_store_id])
+
 class PriceUpdateHistory(Base):
     __tablename__ = "price_update_history"
 

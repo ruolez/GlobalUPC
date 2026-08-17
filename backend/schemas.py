@@ -1025,3 +1025,441 @@ class ShopifySyncRequest(BaseModel):
     # successful run; full re-downloads everything and prunes deleted records.
     # The first-ever sync of a store always runs full regardless.
     mode: Literal["incremental", "full"] = "incremental"
+
+
+# ============================================================================
+# Business Overview Schemas
+# ============================================================================
+BOV_DEFAULT_QUOTATION_STATUSES = ["In Progress", "Locked"]
+
+
+class BusinessOverviewConfigCreate(BaseModel):
+    sales_store_id: Optional[int] = None
+    purchases_store_id: Optional[int] = None
+    shopify_store_ids: List[int] = []
+    quotation_statuses: List[str] = list(BOV_DEFAULT_QUOTATION_STATUSES)
+    timezone: str = "America/Chicago"
+
+
+class BusinessOverviewConfigResponse(BaseModel):
+    id: int = 0
+    configured: bool = False
+    sales_store_id: Optional[int] = None
+    sales_store_name: Optional[str] = None
+    purchases_store_id: Optional[int] = None
+    purchases_store_name: Optional[str] = None
+    shopify_store_ids: List[int] = []
+    shopify_store_names: List[str] = []
+    quotation_statuses: List[str] = []
+    timezone: str = "America/Chicago"
+    # Resolved read-only context (not stored on this table)
+    admin_store_id: Optional[int] = None
+    admin_store_name: Optional[str] = None
+    cost_store_id: Optional[int] = None
+    cost_store_name: Optional[str] = None
+    sales_exclusions_count: int = 0
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class BOVStoreOption(BaseModel):
+    id: int
+    name: str
+    store_type: str
+    is_active: bool = True
+    synced: Optional[bool] = None
+    last_synced_at: Optional[str] = None
+    shop_timezone: Optional[str] = None
+
+
+class BusinessOverviewConfigOptions(BaseModel):
+    mssql_stores: List[BOVStoreOption] = []
+    shopify_stores: List[BOVStoreOption] = []
+    quotation_statuses: List[str] = []
+    admin_configured: bool = False
+    admin_store_name: Optional[str] = None
+
+
+class BOVPeriod(BaseModel):
+    start: str
+    end: str
+    prev_start: str
+    prev_end: str
+    days: int
+    preset: Optional[str] = None
+    timezone: str
+    today: str
+
+
+class BOVBlockStatus(BaseModel):
+    configured: bool = False
+    store_id: Optional[int] = None
+    store_name: Optional[str] = None
+    error: Optional[str] = None
+
+
+class BOVSeriesPoint(BaseModel):
+    key: str
+    start: str
+    end: str
+    label: str
+    values: Dict[str, float] = {}
+
+
+class BOVRangeTotals(BaseModel):
+    current: Dict[str, float] = {}
+    previous: Dict[str, float] = {}
+    change_pct: Dict[str, Optional[float]] = {}
+
+
+# ---- Quotations in progress -----------------------------------------------
+class BOVQuotationRow(BaseModel):
+    quotation_number: str
+    source_db: Optional[str] = None
+    status: Optional[str] = None
+    user_status: Optional[str] = None
+    start_date: Optional[str] = None
+    last_update: Optional[str] = None
+    business_name: Optional[str] = None
+    account_no: Optional[str] = None
+    sales_rep: Optional[str] = None
+    sales_rep_id: Optional[int] = None
+    packer: Optional[str] = None
+    checker: Optional[str] = None
+    line_count: int = 0
+    total_qty: float = 0.0
+    quotation_total: Optional[float] = None
+    dop2: Optional[str] = None
+    dop3: Optional[str] = None
+    invoice_number: Optional[str] = None
+
+
+class BOVQuotationStatusCount(BaseModel):
+    status: Optional[str] = None
+    count: int = 0
+    total_amount: float = 0.0
+    total_qty: float = 0.0
+
+
+class BOVQuotationsBlock(BOVBlockStatus):
+    count: int = 0
+    total_amount: float = 0.0
+    total_qty: float = 0.0
+    by_status: List[BOVQuotationStatusCount] = []
+    statuses: List[str] = []
+
+
+class BOVQuotationsResponse(BOVQuotationsBlock):
+    quotations: List[BOVQuotationRow] = []
+    limit: int = 0
+    truncated: bool = False
+
+
+# ---- Invoices ---------------------------------------------------------------
+class BOVInvoiceRow(BaseModel):
+    invoice_id: int
+    invoice_number: Optional[str] = None
+    invoice_date: Optional[str] = None
+    invoice_type: Optional[str] = None
+    customer_id: Optional[int] = None
+    business_name: Optional[str] = None
+    account_no: Optional[str] = None
+    po_number: Optional[str] = None
+    ship_date: Optional[str] = None
+    ship_city: Optional[str] = None
+    ship_state: Optional[str] = None
+    sales_rep_id: Optional[int] = None
+    sales_rep: Optional[str] = None
+    shipper_id: Optional[int] = None
+    shipper: Optional[str] = None
+    tracking_no: Optional[str] = None
+    tot_qty_ord: Optional[float] = None
+    tot_qty_shp: Optional[float] = None
+    no_lines: Optional[int] = None
+    no_boxes: Optional[int] = None
+    invoice_subtotal: Optional[float] = None
+    total_taxes: Optional[float] = None
+    shipping_cost: Optional[float] = None
+    invoice_total: Optional[float] = None
+    notes: Optional[str] = None
+    age_days: Optional[int] = None
+
+
+class BOVOpenInvoicesBlock(BOVBlockStatus):
+    count: int = 0
+    total_amount: float = 0.0
+    total_qty: float = 0.0
+    oldest_invoice_date: Optional[str] = None
+    oldest_age_days: Optional[int] = None
+    aging: Dict[str, int] = {}          # keys "0-1", "2-3", "4+"
+
+
+class BOVOpenInvoicesResponse(BOVOpenInvoicesBlock):
+    invoices: List[BOVInvoiceRow] = []
+    limit: int = 0
+    truncated: bool = False
+
+
+class BOVShippedInvoicesBlock(BOVBlockStatus):
+    period: Optional[BOVPeriod] = None
+    totals: Optional[BOVRangeTotals] = None   # invoices, total_amount, total_qty, boxes
+
+
+class BOVShippedInvoicesResponse(BOVShippedInvoicesBlock):
+    bucket: str = "day"
+    series: List[BOVSeriesPoint] = []
+    previous_series: List[BOVSeriesPoint] = []
+    invoices: List[BOVInvoiceRow] = []
+    limit: int = 0
+    truncated: bool = False
+
+
+class BOVInvoiceLine(BaseModel):
+    line_id: int
+    product_id: Optional[int] = None
+    product_sku: Optional[str] = None
+    product_upc: Optional[str] = None
+    product_description: Optional[str] = None
+    unit_desc: Optional[str] = None
+    unit_qty: Optional[float] = None
+    qty_ordered: Optional[float] = None
+    qty_shipped: Optional[float] = None
+    unit_price: Optional[float] = None
+    unit_cost: Optional[float] = None
+    discount: Optional[float] = None
+    ds_percent: Optional[bool] = None
+    extended_price: Optional[float] = None
+    extended_cost: Optional[float] = None
+    line_cost: float = 0.0
+    line_profit: Optional[float] = None
+    margin_pct: Optional[float] = None
+    void: bool = False
+
+
+class BOVInvoiceHeader(BOVInvoiceRow):
+    invoice_title: Optional[str] = None
+    ship_to: Optional[str] = None
+    ship_address1: Optional[str] = None
+    ship_address2: Optional[str] = None
+    ship_contact: Optional[str] = None
+    ship_zip_code: Optional[str] = None
+    ship_phone_no: Optional[str] = None
+    term_id: Optional[int] = None
+    term: Optional[str] = None
+    tot_qty_rtrnd: Optional[float] = None
+    total_weight: Optional[float] = None
+    total_discounts: Optional[float] = None
+    other_charges: Optional[float] = None
+    total_credits: Optional[float] = None
+    total_payments: Optional[float] = None
+    void: bool = False
+    is_shipped: bool = False
+    revenue: float = 0.0
+    cost: float = 0.0
+    profit: float = 0.0
+    margin_pct: Optional[float] = None
+
+
+class BOVInvoiceDetailResponse(BaseModel):
+    header: BOVInvoiceHeader
+    lines: List[BOVInvoiceLine] = []
+    store_name: Optional[str] = None
+
+
+# ---- Purchase orders --------------------------------------------------------
+class BOVPurchaseOrderRow(BaseModel):
+    po_id: int
+    po_number: Optional[str] = None
+    po_date: Optional[str] = None
+    required_date: Optional[str] = None
+    supplier_id: Optional[int] = None
+    business_name: Optional[str] = None
+    account_no: Optional[str] = None
+    status: Optional[int] = None
+    po_total: Optional[float] = None
+    no_lines: Optional[int] = None
+    tot_qty_ord: Optional[float] = None
+    tot_qty_rcv: Optional[float] = None
+    qty_outstanding: Optional[float] = None
+    outstanding_value: Optional[float] = None
+    last_received: Optional[str] = None
+    qty_received: Optional[float] = None
+    received_value: Optional[float] = None
+    lines_received: Optional[int] = None
+
+
+class BOVIncomingPurchasesBlock(BOVBlockStatus):
+    count: int = 0
+    po_total: float = 0.0
+    outstanding_value: float = 0.0
+    qty_outstanding: float = 0.0
+    oldest_po_date: Optional[str] = None
+
+
+class BOVIncomingPurchasesResponse(BOVIncomingPurchasesBlock):
+    purchase_orders: List[BOVPurchaseOrderRow] = []
+    limit: int = 0
+    truncated: bool = False
+
+
+class BOVPurchasesRangeBlock(BOVBlockStatus):
+    period: Optional[BOVPeriod] = None
+    # purchased: purchase_orders, total, qty  |  received: purchase_orders, qty, value
+    totals: Optional[BOVRangeTotals] = None
+
+
+class BOVPurchasesRangeResponse(BOVPurchasesRangeBlock):
+    bucket: str = "day"
+    series: List[BOVSeriesPoint] = []
+    previous_series: List[BOVSeriesPoint] = []
+    purchase_orders: List[BOVPurchaseOrderRow] = []
+    limit: int = 0
+    truncated: bool = False
+
+
+class BOVPurchaseOrderLine(BaseModel):
+    line_id: int
+    product_id: Optional[int] = None
+    product_sku: Optional[str] = None
+    product_upc: Optional[str] = None
+    supplier_sku: Optional[str] = None
+    product_description: Optional[str] = None
+    unit_desc: Optional[str] = None
+    unit_qty: Optional[float] = None
+    qty_ordered: Optional[float] = None
+    qty_received: Optional[float] = None
+    qty_outstanding: float = 0.0
+    unit_cost: Optional[float] = None
+    extended_cost: Optional[float] = None
+    date_received: Optional[str] = None
+
+
+class BOVPurchaseOrderHeader(BOVPurchaseOrderRow):
+    po_title: Optional[str] = None
+    ship_to: Optional[str] = None
+    ship_address1: Optional[str] = None
+    ship_address2: Optional[str] = None
+    ship_contact: Optional[str] = None
+    ship_city: Optional[str] = None
+    ship_state: Optional[str] = None
+    ship_zip_code: Optional[str] = None
+    ship_phone_no: Optional[str] = None
+    employee_id: Optional[int] = None
+    term_id: Optional[int] = None
+    shipper_id: Optional[int] = None
+    notes: Optional[str] = None
+    supplier_contact: Optional[str] = None
+    supplier_phone: Optional[str] = None
+    is_received: bool = False
+
+
+class BOVPurchaseOrderDetailResponse(BaseModel):
+    header: BOVPurchaseOrderHeader
+    lines: List[BOVPurchaseOrderLine] = []
+    store_name: Optional[str] = None
+
+
+# ---- Sales / margin ---------------------------------------------------------
+class BOVSalesSourceTotals(BaseModel):
+    revenue: float = 0.0
+    cost: float = 0.0
+    profit: float = 0.0
+    margin_pct: Optional[float] = None
+    returns: float = 0.0
+    net_revenue: float = 0.0
+    orders: int = 0
+    units: float = 0.0
+    cost_coverage: Optional[float] = None   # Shopify: share of units with a known cost (0..1)
+
+
+class BOVSalesBucket(BaseModel):
+    key: str
+    start: str
+    end: str
+    label: str
+    backoffice: Optional[BOVSalesSourceTotals] = None
+    shopify: Optional[BOVSalesSourceTotals] = None
+    total: BOVSalesSourceTotals
+
+
+class BOVSalesSourceStatus(BaseModel):
+    configured: bool = False
+    store_ids: List[int] = []
+    store_names: List[str] = []
+    error: Optional[str] = None
+    skipped_stores: List[str] = []
+
+
+class BOVSalesTrendResponse(BaseModel):
+    period: BOVPeriod
+    bucket: str
+    sources: Dict[str, BOVSalesSourceStatus] = {}          # "backoffice", "shopify"
+    buckets: List[BOVSalesBucket] = []
+    previous_buckets: List[BOVSalesBucket] = []
+    totals: Dict[str, BOVSalesSourceTotals] = {}           # "backoffice", "shopify", "total"
+    previous_totals: Dict[str, BOVSalesSourceTotals] = {}
+    change_pct: Dict[str, Dict[str, Optional[float]]] = {} # per source: revenue/cost/profit/margin_pct/orders/units
+    warnings: List[str] = []
+    generated_at: datetime
+
+
+class BOVBreakdownRow(BaseModel):
+    key: Optional[str] = None
+    name: Optional[str] = None
+    secondary: Optional[str] = None
+    orders: int = 0
+    revenue: float = 0.0
+    cost: Optional[float] = None
+    profit: Optional[float] = None
+    margin_pct: Optional[float] = None
+    units: float = 0.0
+    share_pct: Optional[float] = None
+
+
+class BOVSalesBreakdownResponse(BaseModel):
+    period: BOVPeriod
+    by: str
+    source: str
+    configured: bool = False
+    error: Optional[str] = None
+    rows: List[BOVBreakdownRow] = []
+    total_revenue: float = 0.0
+
+
+class BOVShopifyStoreOpen(BaseModel):
+    store_id: int
+    store_name: str
+    count: Optional[int] = None
+    open_value: Optional[float] = None
+    source: Optional[str] = None       # "live" | "local"
+    error: Optional[str] = None
+
+
+class BOVShopifyOpenOrdersBlock(BOVBlockStatus):
+    count: int = 0
+    open_value: Optional[float] = None
+    per_store: List[BOVShopifyStoreOpen] = []
+
+
+class BOVSalesSummaryBlock(BaseModel):
+    configured: bool = False
+    sources: Dict[str, BOVSalesSourceStatus] = {}
+    totals: Dict[str, BOVSalesSourceTotals] = {}
+    previous_totals: Dict[str, BOVSalesSourceTotals] = {}
+    change_pct: Dict[str, Dict[str, Optional[float]]] = {}
+    sparkline: List[BOVSeriesPoint] = []            # daily, values: revenue, profit
+    previous_sparkline: List[BOVSeriesPoint] = []
+    warnings: List[str] = []
+
+
+class BusinessOverviewSummaryResponse(BaseModel):
+    period: BOVPeriod
+    quotations: BOVQuotationsBlock
+    invoices_open: BOVOpenInvoicesBlock
+    invoices_shipped: BOVShippedInvoicesBlock
+    purchases_incoming: BOVIncomingPurchasesBlock
+    purchases_purchased: BOVPurchasesRangeBlock
+    purchases_received: BOVPurchasesRangeBlock
+    sales: BOVSalesSummaryBlock
+    shopify_open_orders: BOVShopifyOpenOrdersBlock
+    generated_at: datetime
