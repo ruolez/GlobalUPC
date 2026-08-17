@@ -1004,30 +1004,7 @@ async def fetch_fulfilled_orders(
     try:
         shop_domain = validate_shop_domain(shop_domain)
 
-        query_gql = """
-        query fetchFulfilledOrders($query: String!, $first: Int!, $after: String) {
-          orders(first: $first, after: $after, query: $query) {
-            pageInfo {
-              hasNextPage
-              endCursor
-            }
-            edges {
-              node {
-                id
-                name
-                totalShippingPriceSet {
-                  shopMoney {
-                    amount
-                    currencyCode
-                  }
-                }
-                fulfillments(first: 10) {
-                  createdAt
-                  status
-                }
-                lineItems(first: 100) {
-                  edges {
-                    node {
+        line_item_fields = """
                       title
                       quantity
                       currentQuantity
@@ -1053,13 +1030,66 @@ async def fetch_fulfilled_orders(
                           title
                         }
                       }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
+        """
+
+        query_gql = f"""
+        query fetchFulfilledOrders($query: String!, $first: Int!, $after: String) {{
+          orders(first: $first, after: $after, query: $query) {{
+            pageInfo {{
+              hasNextPage
+              endCursor
+            }}
+            edges {{
+              node {{
+                id
+                name
+                totalShippingPriceSet {{
+                  shopMoney {{
+                    amount
+                    currencyCode
+                  }}
+                }}
+                fulfillments(first: 10) {{
+                  createdAt
+                  status
+                }}
+                lineItems(first: 100) {{
+                  pageInfo {{
+                    hasNextPage
+                    endCursor
+                  }}
+                  edges {{
+                    node {{
+                      {line_item_fields}
+                    }}
+                  }}
+                }}
+              }}
+            }}
+          }}
+        }}
+        """
+
+        # Wholesale orders can exceed the 100 line items fetched inline; the
+        # rest are paged per order so nothing past line 100 is dropped.
+        more_items_gql = f"""
+        query fetchOrderLineItems($id: ID!, $after: String) {{
+          node(id: $id) {{
+            ... on Order {{
+              lineItems(first: 250, after: $after) {{
+                pageInfo {{
+                  hasNextPage
+                  endCursor
+                }}
+                edges {{
+                  node {{
+                    {line_item_fields}
+                  }}
+                }}
+              }}
+            }}
+          }}
+        }}
         """
 
         # Only a lower updated_at bound: an order fulfilled in range was
@@ -1082,19 +1112,12 @@ async def fetch_fulfilled_orders(
         backoff_seconds = [1, 2, 4]
 
         async with aiohttp.ClientSession() as session:
-            while has_next_page:
-                variables = {
-                    "query": query_filter,
-                    "first": 250,
-                }
-                if cursor:
-                    variables["after"] = cursor
 
-                response_data = None
+            async def post_gql(query: str, variables: Dict[str, Any]) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
                 for attempt in range(max_retries + 1):
                     async with session.post(
                         url,
-                        json={"query": query_gql, "variables": variables},
+                        json={"query": query, "variables": variables},
                         headers=headers,
                         timeout=aiohttp.ClientTimeout(total=60)
                     ) as response:
@@ -1102,11 +1125,11 @@ async def fetch_fulfilled_orders(
                             if attempt < max_retries:
                                 await asyncio.sleep(backoff_seconds[attempt])
                                 continue
-                            return False, "Shopify rate limit exceeded after retries", []
+                            return None, "Shopify rate limit exceeded after retries"
 
                         if response.status != 200:
                             error_text = await response.text()
-                            return False, f"HTTP {response.status}: {error_text}", []
+                            return None, f"HTTP {response.status}: {error_text}"
 
                         response_data = await response.json()
 
@@ -1116,19 +1139,62 @@ async def fetch_fulfilled_orders(
                             if "throttl" in error_msg.lower() and attempt < max_retries:
                                 await asyncio.sleep(backoff_seconds[attempt])
                                 continue
-                            return False, f"GraphQL errors: {error_msg}", []
+                            return None, f"GraphQL errors: {error_msg}"
 
-                        break
+                        return response_data, None
+                return None, "No response received"
 
-                if not response_data:
-                    return False, "No response received", []
+            def append_line_items(order_name: str, shipping_amount: str, edges: List[Dict[str, Any]]) -> None:
+                for li_edge in edges:
+                    li = li_edge.get("node", {})
+                    # currentQuantity 0 means fully refunded/removed — it
+                    # must not fall back to the ordered quantity.
+                    quantity = li.get("currentQuantity")
+                    if quantity is None:
+                        quantity = li.get("quantity", 0) or 0
+                    if quantity <= 0:
+                        continue
+
+                    variant = li.get("variant") or {}
+                    product = variant.get("product") or {}
+
+                    product_title = product.get("title") or li.get("title", "")
+                    variant_title = variant.get("title") or li.get("variantTitle") or "Default Title"
+
+                    price_set = li.get("discountedUnitPriceSet") or li.get("originalUnitPriceSet") or {}
+                    shop_money = price_set.get("shopMoney") or {}
+                    unit_price = shop_money.get("amount", "0")
+                    currency = shop_money.get("currencyCode", "USD")
+
+                    all_line_items.append({
+                        "order_name": order_name,
+                        "product_title": product_title,
+                        "variant_title": variant_title,
+                        "barcode": variant.get("barcode") or "",
+                        "sku": li.get("sku") or "",
+                        "quantity": quantity,
+                        "unit_price": unit_price,
+                        "today_price": variant.get("price"),
+                        "currency": currency,
+                        "shipping_amount": shipping_amount
+                    })
+
+            while has_next_page:
+                variables = {
+                    "query": query_filter,
+                    "first": 250,
+                }
+                if cursor:
+                    variables["after"] = cursor
+
+                response_data, error = await post_gql(query_gql, variables)
+                if error:
+                    return False, error, []
 
                 orders_data = response_data.get("data", {}).get("orders", {})
                 page_info = orders_data.get("pageInfo", {})
                 has_next_page = page_info.get("hasNextPage", False)
                 cursor = page_info.get("endCursor")
-
-                from datetime import datetime as dt
 
                 for edge in orders_data.get("edges", []):
                     order = edge.get("node", {})
@@ -1153,39 +1219,21 @@ async def fetch_fulfilled_orders(
                     shipping_money = shipping_price_set.get("shopMoney") or {}
                     shipping_amount = shipping_money.get("amount", "0")
 
-                    for li_edge in order.get("lineItems", {}).get("edges", []):
-                        li = li_edge.get("node", {})
-                        # currentQuantity 0 means fully refunded/removed — it
-                        # must not fall back to the ordered quantity.
-                        quantity = li.get("currentQuantity")
-                        if quantity is None:
-                            quantity = li.get("quantity", 0) or 0
-                        if quantity <= 0:
-                            continue
+                    line_items_conn = order.get("lineItems") or {}
+                    append_line_items(order_name, shipping_amount, line_items_conn.get("edges", []))
 
-                        variant = li.get("variant") or {}
-                        product = variant.get("product") or {}
-
-                        product_title = product.get("title") or li.get("title", "")
-                        variant_title = variant.get("title") or li.get("variantTitle") or "Default Title"
-
-                        price_set = li.get("discountedUnitPriceSet") or li.get("originalUnitPriceSet") or {}
-                        shop_money = price_set.get("shopMoney") or {}
-                        unit_price = shop_money.get("amount", "0")
-                        currency = shop_money.get("currencyCode", "USD")
-
-                        all_line_items.append({
-                            "order_name": order_name,
-                            "product_title": product_title,
-                            "variant_title": variant_title,
-                            "barcode": variant.get("barcode") or "",
-                            "sku": li.get("sku") or "",
-                            "quantity": quantity,
-                            "unit_price": unit_price,
-                            "today_price": variant.get("price"),
-                            "currency": currency,
-                            "shipping_amount": shipping_amount
-                        })
+                    li_page = line_items_conn.get("pageInfo") or {}
+                    li_cursor = li_page.get("endCursor")
+                    while li_page.get("hasNextPage") and li_cursor and order.get("id"):
+                        more_data, error = await post_gql(
+                            more_items_gql, {"id": order["id"], "after": li_cursor}
+                        )
+                        if error:
+                            return False, error, []
+                        more_conn = ((more_data.get("data") or {}).get("node") or {}).get("lineItems") or {}
+                        append_line_items(order_name, shipping_amount, more_conn.get("edges", []))
+                        li_page = more_conn.get("pageInfo") or {}
+                        li_cursor = li_page.get("endCursor")
 
         return True, None, all_line_items
 
