@@ -7503,5 +7503,46 @@ tr.bov-line-void td { opacity: 0.55; text-decoration: line-through; }
 .bov-page:not(.is-charts-open) #bov-trend-card { padding-bottom: 1rem; }
 .bov-page:not(.is-charts-open) #bov-trend-card .sancm-chart-head { margin-bottom: 0; }
 .bov-list-toolbar { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
-.bov-list-stores { flex-wrap: wrap; }
-.bov-list-stores .sa-chip { font-size: 0.75rem; }
+/* .sa-chip is scoped to .sa-page; the list modal lives outside the page, so
+   restate the segmented-chip look for modal chip groups. */
+.bov-modal .sa-chip-group {
+  display: inline-flex;
+  flex-wrap: wrap;
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-md);
+  padding: 0.125rem;
+  gap: 0.125rem;
+}
+.bov-modal .sa-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  background: transparent;
+  border: 0;
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  padding: 0.3125rem 0.75rem;
+  border-radius: calc(var(--radius-md) - 0.125rem);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+  white-space: nowrap;
+}
+.bov-modal .sa-chip:hover { color: var(--text-primary); }
+.bov-modal .sa-chip.active {
+  background: var(--bg-primary);
+  color: var(--accent-primary);
+  box-shadow: 0 1px 0 0 color-mix(in srgb, var(--accent-primary) 25%, transparent);
+  font-weight: 600;
+}
+.bov-list-stores .bov-store-chip-tag {
+  border: 0;
+  padding: 0;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.bov-list-stores .sa-chip.active .bov-store-chip-tag { color: inherit; opacity: 0.7; }
