@@ -9640,6 +9640,27 @@ function sortShopifySalesResults(results) {
   });
 }
 
+// Every whitespace-separated term must appear somewhere in the row's
+// description (title + variant), UPC or SKU — so "pipe 5 lb" narrows as you
+// type and a pasted UPC matches on its own.
+function filterShopifySalesResults(results) {
+  const raw = (document.getElementById("shopify-sales-filter")?.value || "").trim().toLowerCase();
+  if (!raw) return results;
+  const terms = raw.split(/\s+/);
+  return results.filter((r) => {
+    const haystack = `${r.product_title || ""} ${r.variant_title || ""} ${r.barcode || ""} ${r.sku || ""}`.toLowerCase();
+    return terms.every((t) => haystack.includes(t));
+  });
+}
+
+let shopifySalesFilterTimer = null;
+document.getElementById("shopify-sales-filter")?.addEventListener("input", () => {
+  clearTimeout(shopifySalesFilterTimer);
+  shopifySalesFilterTimer = setTimeout(() => {
+    if (shopifySalesResults) displayShopifySalesResults(shopifySalesResults);
+  }, 150);
+});
+
 function updateShopifySalesSortIndicators() {
   const table = document.getElementById("shopify-sales-table");
   if (!table) return;
@@ -9765,14 +9786,21 @@ function displayShopifySalesResults(data) {
     }
   };
 
-  const sorted = sortShopifySalesResults(results);
+  const filtered = filterShopifySalesResults(results);
+  const sorted = sortShopifySalesResults(filtered);
 
-  tbody.innerHTML = sorted
-    .map((r) => `<tr>${visibleCols.map((col) => cellHtml(col, r)).join("")}</tr>`)
-    .join("");
+  const filterCountEl = document.getElementById("shopify-sales-filter-count");
+  if (filterCountEl) {
+    filterCountEl.textContent =
+      filtered.length === results.length ? "" : `${filtered.length.toLocaleString()} of ${results.length.toLocaleString()} products`;
+  }
 
-  const totalQty = results.reduce((s, r) => s + r.total_quantity, 0);
-  const totalRev = results.reduce((s, r) => s + parseFloat(r.total_revenue), 0);
+  tbody.innerHTML = sorted.length
+    ? sorted.map((r) => `<tr>${visibleCols.map((col) => cellHtml(col, r)).join("")}</tr>`).join("")
+    : `<tr><td colspan="${visibleCols.length}" style="text-align: center; color: var(--text-tertiary); padding: 1.5rem;">No products match the filter.</td></tr>`;
+
+  const totalQty = filtered.reduce((s, r) => s + r.total_quantity, 0);
+  const totalRev = filtered.reduce((s, r) => s + parseFloat(r.total_revenue), 0);
   const avgAll = totalQty > 0 ? (totalRev / totalQty).toFixed(2) : "0.00";
   const footerValues = {
     avg_price: `$${avgAll}`,
@@ -9835,12 +9863,13 @@ function exportShopifySalesToExcel() {
     });
 
   const headers = visibleCols.map((col) => col.label);
-  const dataRows = sortShopifySalesResults(shopifySalesResults.results).map((r) =>
+  const exportRows = filterShopifySalesResults(shopifySalesResults.results);
+  const dataRows = sortShopifySalesResults(exportRows).map((r) =>
     visibleCols.map((col) => exportValue(col, r)),
   );
 
-  const totalQty = shopifySalesResults.results.reduce((s, r) => s + r.total_quantity, 0);
-  const totalRev = shopifySalesResults.results.reduce((s, r) => s + parseFloat(r.total_revenue), 0);
+  const totalQty = exportRows.reduce((s, r) => s + r.total_quantity, 0);
+  const totalRev = exportRows.reduce((s, r) => s + parseFloat(r.total_revenue), 0);
   const totalsRow = alignedRow({ total_quantity: totalQty, total_revenue: totalRev }, "Totals");
 
   const extraRows = [];
