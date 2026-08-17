@@ -1547,6 +1547,57 @@ def _shopify_bucketed_line_items_sync(store_id: int, tz: str, date_from: str, da
     return out
 
 
+_SHOPIFY_UNFULFILLED = ("'UNFULFILLED','PARTIALLY_FULFILLED','IN_PROGRESS','ON_HOLD',"
+                        "'SCHEDULED','PENDING_FULFILLMENT','OPEN'")
+
+
+def _shopify_period_orders_sync(store_id: int, tz: str, date_from: str, date_to_excl: str) -> Dict[str, float]:
+    """
+    Order-flow counts for one store over [date_from, date_to_excl) in the shop's
+    calendar: placed (non-cancelled), revenue, cancelled, still-unfulfilled among
+    those placed, and orders whose first fulfillment happened in the period.
+    """
+    tz = _safe_tz(tz)
+    with engine.connect() as conn:
+        placed = conn.execute(text(f"""
+            SELECT COUNT(*) FILTER (WHERE o.cancelled_at IS NULL)                                   AS orders,
+                   COALESCE(SUM(o.subtotal_price) FILTER (WHERE o.cancelled_at IS NULL), 0)         AS revenue,
+                   COUNT(*) FILTER (WHERE o.cancelled_at IS NOT NULL)                               AS cancelled,
+                   COUNT(*) FILTER (WHERE o.cancelled_at IS NULL
+                                      AND o.fulfillment_status IN ({_SHOPIFY_UNFULFILLED}))         AS unfulfilled_from_period,
+                   COUNT(*) FILTER (WHERE o.cancelled_at IS NULL
+                                      AND o.fulfillment_status = 'FULFILLED')                       AS fulfilled_from_period,
+                   COUNT(*) FILTER (WHERE o.cancelled_at IS NULL
+                                      AND o.fulfillment_status IN ('ON_HOLD'))                      AS on_hold_from_period
+            FROM shopify_orders o
+            WHERE o.store_id = :sid
+              AND o.created_at >= (CAST(:start AS date)::timestamp AT TIME ZONE :tz)
+              AND o.created_at <  (CAST(:end_excl AS date)::timestamp AT TIME ZONE :tz)
+        """), {"sid": store_id, "start": date_from, "end_excl": date_to_excl, "tz": tz}).mappings().first()
+        fulfilled = conn.execute(text("""
+            SELECT COUNT(*) AS fulfilled_in_period
+            FROM shopify_orders o
+            WHERE o.store_id = :sid
+              AND o.cancelled_at IS NULL
+              AND o.fulfilled_at IS NOT NULL
+              AND o.fulfilled_at >= (CAST(:start AS date)::timestamp AT TIME ZONE :tz)
+              AND o.fulfilled_at <  (CAST(:end_excl AS date)::timestamp AT TIME ZONE :tz)
+        """), {"sid": store_id, "start": date_from, "end_excl": date_to_excl, "tz": tz}).mappings().first()
+    return {
+        "orders": int(placed["orders"] or 0),
+        "revenue": round(_f(placed["revenue"]), 2),
+        "cancelled": int(placed["cancelled"] or 0),
+        "unfulfilled_from_period": int(placed["unfulfilled_from_period"] or 0),
+        "fulfilled_from_period": int(placed["fulfilled_from_period"] or 0),
+        "on_hold_from_period": int(placed["on_hold_from_period"] or 0),
+        "fulfilled_in_period": int(fulfilled["fulfilled_in_period"] or 0),
+    }
+
+
+async def shopify_period_orders(store_id: int, tz: str, date_from: str, date_to_excl: str) -> Dict[str, float]:
+    return await asyncio.to_thread(_shopify_period_orders_sync, store_id, tz, date_from, date_to_excl)
+
+
 def _shopify_open_orders_local_sync(store_id: int) -> Dict[str, float]:
     sql = """
         SELECT COUNT(*) AS open_orders, COALESCE(SUM(o.total_price),0) AS open_value

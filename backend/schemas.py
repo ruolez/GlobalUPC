@@ -1469,6 +1469,55 @@ class BOVSalesSummaryBlock(BaseModel):
     warnings: List[str] = []
 
 
+class BOVShopifyStoreOrders(BaseModel):
+    store_id: int
+    store_name: str
+    synced: bool = False
+    last_synced_at: Optional[str] = None
+    # Mirror (selected period, shop calendar)
+    orders: Optional[int] = None
+    revenue: Optional[float] = None
+    cancelled: Optional[int] = None
+    fulfilled_in_period: Optional[int] = None
+    fulfilled_from_period: Optional[int] = None
+    unfulfilled_from_period: Optional[int] = None
+    on_hold_from_period: Optional[int] = None
+    error: Optional[str] = None
+    # Live fulfillment buckets (whole open backlog, any date)
+    open_orders: Optional[int] = None
+    on_hold: Optional[int] = None
+    in_process: Optional[int] = None
+    on_picklist: Optional[int] = None
+    to_fulfill: Optional[int] = None
+    live_error: Optional[str] = None
+
+
+class BOVShopifyOrdersResponse(BOVBlockStatus):
+    period: Optional[BOVPeriod] = None
+    live: bool = True
+    stores: List[BOVStoreStatus] = []
+    per_store: List[BOVShopifyStoreOrders] = []
+    totals: Dict[str, float] = {}
+    skipped_stores: List[str] = []
+
+
+class BOVShopifyRefreshResult(BaseModel):
+    store_id: int
+    store_name: str
+    status: str                       # synced | fresh | running | never_synced | failed
+    note: Optional[str] = None
+    seconds: Optional[float] = None
+    orders: Optional[int] = None
+    customers: Optional[int] = None
+    last_synced_at: Optional[str] = None
+
+
+class BOVShopifyRefreshResponse(BaseModel):
+    results: List[BOVShopifyRefreshResult] = []
+    synced_any: bool = False
+    seconds: float = 0.0
+
+
 class BusinessOverviewSummaryResponse(BaseModel):
     period: BOVPeriod
     quotations: BOVQuotationsBlock

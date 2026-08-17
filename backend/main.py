@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from typing import List, Union, AsyncGenerator, Optional, Dict, Any, Tuple, Set
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 import uvicorn
 import asyncio
 import calendar
@@ -71,7 +71,7 @@ from schemas import (
     BOVPurchasesRangeBlock, BOVPurchasesRangeResponse,
     BOVPurchaseOrderLine, BOVPurchaseOrderHeader, BOVPurchaseOrderDetailResponse,
     BOVSalesSourceTotals, BOVSalesBucket, BOVSalesSourceStatus, BOVSalesTrendResponse,
-    BOVBreakdownRow, BOVSalesBreakdownResponse,
+    BOVBreakdownRow, BOVSalesBreakdownResponse, BOVStoreStatus, BOVShopifyStoreOrders, BOVShopifyOrdersResponse, BOVShopifyRefreshResult, BOVShopifyRefreshResponse,
     BOVShopifyStoreOpen, BOVShopifyOpenOrdersBlock, BOVSalesSummaryBlock,
     BusinessOverviewSummaryResponse,
 )
@@ -10483,6 +10483,161 @@ async def get_business_overview_sales_breakdown(
     if failures:
         resp["warnings"] = failures
     return BOVSalesBreakdownResponse(**resp)
+
+
+# ---- Shopify: order flow + catch-up sync ------------------------------------
+
+@app.get("/api/business-overview/shopify/orders", response_model=BOVShopifyOrdersResponse)
+async def get_business_overview_shopify_orders(
+    preset: Optional[str] = None, date_from: Optional[str] = None, date_to: Optional[str] = None,
+    store_ids: Optional[str] = None, live: bool = True,
+    db: Session = Depends(get_db),
+):
+    """
+    Per Shopify store: orders placed / fulfilled / unfulfilled / cancelled in the
+    period (local mirror, shop calendar) plus the live fulfillment buckets used
+    by the Fulfillment Status page (open backlog, to fulfil, on picklist,
+    in process, on hold) when `live` is set.
+    """
+    cfg = _bov_config(db)
+    period = _bov_period(cfg, preset, date_from, date_to)
+    only = _bov_parse_store_ids(store_ids)
+    if not _bov_shopify_stores(db, cfg):
+        return BOVShopifyOrdersResponse(configured=False, period=BOVPeriod(**period.as_dict()), live=live)
+    stores = _bov_shopify_stores(db, cfg, only)
+    if not stores:
+        return BOVShopifyOrdersResponse(configured=True, filtered_out=True, period=BOVPeriod(**period.as_dict()), live=live)
+    synced = await asyncio.to_thread(shopify_sync.get_synced_stores)
+
+    async def one(st: Dict[str, Any]) -> Dict[str, Any]:
+        row: Dict[str, Any] = {"store_id": st["id"], "store_name": st["name"], "synced": st["id"] in synced}
+        info = synced.get(st["id"]) or {}
+        last = info.get("last_completed_at")
+        row["last_synced_at"] = last.isoformat() if hasattr(last, "isoformat") else (str(last) if last else None)
+        tasks = []
+        if row["synced"]:
+            tasks.append(bov.shopify_period_orders(st["id"], info.get("shop_timezone") or _bov_tz(cfg),
+                                                   period.start.isoformat(), period.end_excl))
+        else:
+            tasks.append(asyncio.sleep(0, result=None))
+        if live:
+            tasks.append(count_fulfillment_buckets_for_store(st))
+        else:
+            tasks.append(asyncio.sleep(0, result=None))
+        mirror_res, live_res = await asyncio.gather(*tasks, return_exceptions=True)
+        if isinstance(mirror_res, Exception):
+            row["error"] = str(mirror_res)
+        elif isinstance(mirror_res, dict):
+            row.update(mirror_res)
+        elif not row["synced"]:
+            row["error"] = "not synced — run Data Sync"
+        if isinstance(live_res, Exception):
+            row["live_error"] = str(live_res)
+        elif isinstance(live_res, dict):
+            if live_res.get("error"):
+                row["live_error"] = live_res["error"]
+            for k in ("open_orders", "on_hold", "in_process", "on_picklist", "to_fulfill"):
+                row[k] = live_res.get(k)
+        return row
+
+    per_store = await asyncio.gather(*[one(st) for st in stores])
+    totals: Dict[str, float] = {}
+    for r in per_store:
+        for k in ("orders", "revenue", "cancelled", "fulfilled_in_period", "fulfilled_from_period",
+                  "unfulfilled_from_period", "on_hold_from_period", "open_orders", "on_hold",
+                  "in_process", "on_picklist", "to_fulfill"):
+            v = r.get(k)
+            if v is not None:
+                totals[k] = totals.get(k, 0) + float(v)
+    totals["revenue"] = round(totals.get("revenue", 0.0), 2)
+    statuses = [{"store_id": r["store_id"], "store_name": r["store_name"],
+                 "error": r.get("error") or r.get("live_error")} for r in per_store]
+    all_failed = all((r.get("error") and (not live or r.get("live_error"))) for r in per_store) if per_store else False
+    return BOVShopifyOrdersResponse(
+        configured=True, live=live, period=BOVPeriod(**period.as_dict()),
+        stores=[BOVStoreStatus(**x) for x in statuses],
+        per_store=[BOVShopifyStoreOrders(**r) for r in per_store],
+        totals=totals,
+        skipped_stores=[r["store_name"] for r in per_store if not r["synced"]],
+        error=("; ".join(f"{r['store_name']}: {r.get('error') or r.get('live_error')}" for r in per_store) if all_failed else None),
+        store_name=(stores[0]["name"] if len(stores) == 1 else ", ".join(st["name"] for st in stores)),
+        store_id=(stores[0]["id"] if len(stores) == 1 else None),
+    )
+
+
+@app.post("/api/business-overview/shopify/refresh", response_model=BOVShopifyRefreshResponse)
+async def business_overview_shopify_refresh(
+    store_ids: Optional[str] = None, max_age_minutes: float = 10.0,
+    db: Session = Depends(get_db),
+):
+    """
+    Catch-up incremental sync of the configured Shopify mirrors (same claim /
+    run / release sequence as the Lost Customers pre-run refresh). Stores whose
+    last successful sync is younger than `max_age_minutes`, that never synced,
+    or that are mid-sync are skipped; failures never raise — the page keeps
+    using the last synced data.
+    """
+    cfg = _bov_config(db)
+    only = _bov_parse_store_ids(store_ids)
+    stores = _bov_shopify_stores(db, cfg, only)
+    if not stores:
+        return BOVShopifyRefreshResponse(results=[], synced_any=False, seconds=0.0)
+    started = asyncio.get_running_loop().time()
+    state_rows = {r["store_id"]: dict(r) for r in db.execute(sa_text(
+        "SELECT store_id, last_completed_at, last_sync_started_at, status, heartbeat_at "
+        "FROM shopify_sync_state WHERE store_id = ANY(:ids)"), {"ids": [st["id"] for st in stores]}).mappings()}
+    now = datetime.now(timezone.utc)
+
+    async def refresh_one(sh: Dict[str, Any]) -> Dict[str, Any]:
+        res: Dict[str, Any] = {"store_id": sh["id"], "store_name": sh["name"]}
+        st = state_rows.get(sh["id"])
+        last = st["last_completed_at"] if st else None
+        res["last_synced_at"] = last.isoformat() if last else None
+        anchor = st["last_sync_started_at"] if st else None
+        if not st or last is None or anchor is None:
+            res.update(status="never_synced", note="never synced — run a full Data Sync first")
+            return res
+        if max_age_minutes > 0 and (now - last).total_seconds() < max_age_minutes * 60:
+            res.update(status="fresh", note=f"synced {int((now - last).total_seconds() // 60)} min ago")
+            return res
+        token = await asyncio.to_thread(shopify_sync.claim_sync, sh["id"], "incremental")
+        if token is None:
+            res.update(status="running", note="a sync is already running")
+            return res
+
+        async def _quiet_emit(kind, payload):
+            return None
+
+        t0 = asyncio.get_running_loop().time()
+        try:
+            summary = await shopify_sync.run_store_sync(dict(sh), "incremental", anchor, _quiet_emit, claim_token=token)
+            await asyncio.to_thread(shopify_sync.release_sync, sh["id"], counts=summary["totals"],
+                                    run_started=summary["run_started"], claim_token=token)
+            d = summary["synced"]
+            res.update(status="synced", seconds=round(asyncio.get_running_loop().time() - t0, 1),
+                       orders=int(d.get("orders") or 0), customers=int(d.get("customers") or 0),
+                       note=f"{int(d.get('orders') or 0):,} order(s) updated",
+                       last_synced_at=summary["run_started"].isoformat() if summary.get("run_started") else res["last_synced_at"])
+        except asyncio.CancelledError:
+            asyncio.create_task(asyncio.to_thread(shopify_sync.release_sync, sh["id"], error="cancelled", claim_token=token))
+            raise
+        except Exception as e:
+            await asyncio.to_thread(shopify_sync.release_sync, sh["id"], error=str(e)[:500], claim_token=token)
+            res.update(status="failed", note=f"refresh failed: {str(e)[:160]} — using last synced data")
+        return res
+
+    results = await asyncio.gather(*[refresh_one(sh) for sh in stores], return_exceptions=True)
+    out: List[Dict[str, Any]] = []
+    for sh, r in zip(stores, results):
+        if isinstance(r, Exception):
+            out.append({"store_id": sh["id"], "store_name": sh["name"], "status": "failed", "note": str(r)[:160]})
+        else:
+            out.append(r)
+    return BOVShopifyRefreshResponse(
+        results=[BOVShopifyRefreshResult(**r) for r in out],
+        synced_any=any(r.get("status") == "synced" for r in out),
+        seconds=round(asyncio.get_running_loop().time() - started, 1),
+    )
 
 
 if __name__ == "__main__":

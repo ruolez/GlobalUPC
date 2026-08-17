@@ -18425,7 +18425,9 @@ async function sacrUpdateDataSourceNote() {
 // offline-capable and theme-aware.
 
 const BOV_AUTOREFRESH_MS = 60000;
-const BOV_LIVE_WIDGETS = ["summary", "quotations", "invoicesOpen", "purchasesIncoming"];
+const BOV_LIVE_WIDGETS = ["summary", "quotations", "invoicesOpen", "purchasesIncoming", "shopifyOrders"];
+const BOV_SHOPIFY_WIDGETS = ["summary", "top", "shopifyOrders"];
+const BOV_SHOPIFY_AUTO_REFRESH_MS = 15 * 60 * 1000;
 const BOV_PREFS_KEY = "bov_prefs";
 const BOV_ROWS_COLLAPSED = 12;
 const BOV_LIST_LIMIT = 500;
@@ -18496,8 +18498,12 @@ const bovState = {
     purchasesIncoming: bovEmptyWidget(),
     purchasesPurchased: bovEmptyWidget(),
     purchasesReceived: bovEmptyWidget(),
+    shopifyOrders: bovEmptyWidget(),
   },
   seq: 0,
+  shopifyRefreshing: false,
+  lastShopifyRefreshAt: 0,
+  shopifySyncNote: null,   // {text, tone} shown under "Updated …"
   modalCache: { quotation: new Map(), invoice: new Map(), po: new Map() },
   refreshTimer: null,
   updatedTimer: null,
@@ -18732,6 +18738,9 @@ async function loadBusinessOverviewPage() {
   bovRenderStoreChips();
   bovApplyPreset(bovState.preset, { fetch: false });
   bovFetchAll();
+  // Catch the Shopify mirrors up in the background; first paint uses whatever
+  // is local and the Shopify widgets refetch once the delta lands.
+  bovRefreshShopify({ maxAgeMinutes: 5 });
   startBovAutoRefresh();
   bovScheduleChartRender();
 }
@@ -18863,6 +18872,7 @@ function bovBindOnce() {
     bovState.modalCache.invoice.clear();
     bovState.modalCache.po.clear();
     bovFetchAll();
+    bovRefreshShopify({ maxAgeMinutes: 0 });
   });
 
   // Config
@@ -19062,6 +19072,9 @@ function startBovAutoRefresh() {
   bovState.refreshTimer = setInterval(() => {
     if (document.hidden || !isBovVisible() || bovState.configEditing) return;
     bovFetchAll({ only: BOV_LIVE_WIDGETS, silent: true });
+    if (Date.now() - bovState.lastShopifyRefreshAt >= BOV_SHOPIFY_AUTO_REFRESH_MS) {
+      bovRefreshShopify({ maxAgeMinutes: 15, silent: true });
+    }
   }, BOV_AUTOREFRESH_MS);
 }
 
@@ -19080,11 +19093,93 @@ function bovSetUpdatedNow() {
 function bovTickUpdated() {
   const el = document.getElementById("bov-updated");
   if (!el) return;
-  if (!bovState.lastUpdated) {
-    el.textContent = "";
+  const updated = bovState.lastUpdated ? `Updated ${formatRelative(new Date(bovState.lastUpdated).toISOString())}` : "";
+  const note = bovState.shopifySyncNote;
+  if (!note) {
+    el.textContent = updated;
     return;
   }
-  el.textContent = `Updated ${formatRelative(new Date(bovState.lastUpdated).toISOString())}`;
+  const cls = `bov-sync-status${note.tone === "busy" ? " is-busy" : note.tone === "warn" ? " is-warn" : ""}`;
+  el.innerHTML = `<span class="bov-updated-wrap">${updated ? `<span>${escapeHtml(updated)}</span>` : ""}<span class="${cls}" title="${escapeHtml(note.title || note.text)}">${note.tone === "busy" ? "⟳ " : ""}${escapeHtml(note.text)}</span></span>`;
+}
+
+function bovSetSyncNote(text, tone, title) {
+  bovState.shopifySyncNote = text ? { text, tone: tone || "info", title } : null;
+  bovTickUpdated();
+}
+
+function bovShopifyFilterActive() {
+  const cfg = bovState.config || {};
+  const ids = (cfg.shopify_store_ids || []).map(Number);
+  if (!ids.length) return false;
+  if (!bovState.storeFilter.length) return true;
+  return ids.some((id) => bovState.storeFilter.includes(id));
+}
+
+async function bovRefreshShopify(opts = {}) {
+  const maxAge = opts.maxAgeMinutes != null ? opts.maxAgeMinutes : 5;
+  const silent = !!opts.silent;
+  if (bovState.shopifyRefreshing) return null;
+  if (!bovShopifyFilterActive()) return null;
+  bovState.shopifyRefreshing = true;
+  bovState.lastShopifyRefreshAt = Date.now();
+  const btn = document.getElementById("bov-refresh-btn");
+  const wasSpinning = btn?.classList.contains("is-spinning");
+  bovSetSyncNote("Syncing Shopify data…", "busy");
+  btn?.classList.add("is-spinning");
+  const usp = new URLSearchParams({ max_age_minutes: String(maxAge), ...bovStoreParams() });
+  let result = null;
+  try {
+    const resp = await fetch(`${API_BASE}/business-overview/shopify/refresh?${usp.toString()}`, { method: "POST" });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    result = await resp.json();
+    const results = result.results || [];
+    // Reflect fresh sync state in the config bar / orders card.
+    const optShop = (bovState.options && bovState.options.shopify_stores) || [];
+    results.forEach((r) => {
+      const o = optShop.find((x) => x.id === r.store_id);
+      if (o && r.last_synced_at) {
+        o.last_synced_at = r.last_synced_at;
+        o.synced = true;
+      }
+    });
+    if (typeof bovRenderConfigBar === "function" && !bovState.configEditing) bovRenderConfigBar();
+    const synced = results.filter((r) => r.status === "synced");
+    const failed = results.filter((r) => r.status === "failed");
+    const never = results.filter((r) => r.status === "never_synced");
+    const running = results.filter((r) => r.status === "running");
+    if (result.synced_any) {
+      const detail = synced.map((r) => `${r.store_name}: ${bovInt(r.orders || 0)} order${r.orders === 1 ? "" : "s"} updated`).join(" · ");
+      bovSetSyncNote(`Shopify synced just now${synced.length === 1 ? ` · ${detail}` : ` · ${synced.length} stores`}`, "info", detail);
+      if (!silent) showToast(`✓ Shopify synced · ${detail}`, "success");
+      const only = BOV_SHOPIFY_WIDGETS.slice();
+      if (bovState.chartsOpen) only.push("trend");
+      bovFetchAll({ only, silent: true });
+    } else if (failed.length) {
+      bovSetSyncNote(`Shopify sync failed for ${failed.map((r) => r.store_name).join(", ")} — showing last synced data`, "warn", failed.map((r) => `${r.store_name}: ${r.note || ""}`).join("\n"));
+      showToast(`⚠ Shopify sync failed: ${failed.map((r) => r.note || r.store_name).join("; ")}`, "warning");
+    } else if (running.length && !synced.length) {
+      bovSetSyncNote(`Shopify sync already running (${running.map((r) => r.store_name).join(", ")})`, "info");
+    } else if (never.length && never.length === results.length) {
+      bovSetSyncNote("Shopify store(s) never synced — run a full Data Sync", "warn", never.map((r) => r.store_name).join(", "));
+    } else if (results.length) {
+      const fresh = results.find((r) => r.status === "fresh");
+      bovSetSyncNote(fresh ? `Shopify data current (${fresh.note || "recently synced"})` : "Shopify data current", "info");
+    } else {
+      bovSetSyncNote(null);
+    }
+    if (failed.length && result.synced_any && !silent) {
+      showToast(`⚠ ${failed.map((r) => r.note || r.store_name).join("; ")}`, "warning");
+    }
+  } catch (e) {
+    bovSetSyncNote("Shopify catch-up sync unavailable — showing last synced data", "warn", e.message || String(e));
+    if (!silent) showToast(`⚠ Shopify sync: ${e.message || e}`, "warning");
+  } finally {
+    bovState.shopifyRefreshing = false;
+    if (!wasSpinning && !bovState.refreshing) btn?.classList.remove("is-spinning");
+    bovRenderShopifyOrders();
+  }
+  return result;
 }
 
 function bovSetRefreshSpinner(active) {
@@ -19285,6 +19380,14 @@ const BOV_WIDGET_DEFS = {
     request: () => ["/purchases/received", { ...bovRangeParams(), bucket: "day", limit: BOV_LIST_LIMIT, ...bovStoreParams() }],
     render: () => bovRenderPurchases(),
   },
+  shopifyOrders: {
+    card: "bov-shopify-card",
+    request: () => ["/shopify/orders", { ...bovRangeParams(), live: "true", ...bovStoreParams() }],
+    render: () => {
+      bovRenderShopifyOrders();
+      bovRenderKpiFoot();
+    },
+  },
 };
 
 async function bovFetchAll(opts = {}) {
@@ -19382,6 +19485,7 @@ function bovPaintSkeleton(key) {
     purchasesIncoming: "bov-purchases-body",
     purchasesPurchased: "bov-purchases-body",
     purchasesReceived: "bov-purchases-body",
+    shopifyOrders: "bov-shopify-body",
   }[key];
   const el = bodyId && document.getElementById(bodyId);
   if (!el) return;
@@ -19430,6 +19534,8 @@ function bovHandleAction(action, el) {
     setTimeout(() => document.getElementById("bov-cfg-admin")?.focus(), 60);
   } else if (action === "list") {
     bovOpenListModal(el?.dataset.bovList || "quotations");
+  } else if (action === "shopify-sync") {
+    bovRefreshShopify({ maxAgeMinutes: 0 });
   } else if (action === "exclusions") {
     bovOpenConfigEdit();
     setTimeout(() => {
@@ -19726,11 +19832,33 @@ function bovRenderKpis() {
   }
 
   strip.innerHTML = tiles.map(bovKpiTile).join("");
+  bovRenderKpiFoot();
+}
 
-  // Shopify open orders as a footnote strip under the KPI tiles.
+function bovRenderKpiFoot() {
+  const strip = document.getElementById("bov-kpi-strip");
+  if (!strip) return;
+  const sw = bovState.widgets.summary;
+  const s = (sw && sw.data) || {};
   const so = s.shopify_open_orders || {};
+  const ow = bovState.widgets.shopifyOrders;
+  const od = ow && ow.data;
   let foot = "";
-  if (so.configured && !so.filtered_out) {
+  if (od && od.configured && !od.filtered_out && !od.error && (od.per_store || []).length) {
+    // Richer line from the Shopify orders card once it has loaded.
+    const t = od.totals || {};
+    const bits = [
+      `<strong>${bovInt(t.orders || 0)}</strong> orders in period`,
+      `${bovInt(t.fulfilled_in_period || 0)} fulfilled`,
+      `${bovInt(t.unfulfilled_from_period || 0)} unfulfilled`,
+      `${bovInt(t.on_hold || 0)} on hold`,
+      `${bovInt(t.to_fulfill || 0)} to fulfil`,
+    ];
+    const per = (od.per_store || []).length > 1
+      ? (od.per_store || []).map((x) => `${escapeHtml(x.store_name)} ${x.orders != null ? bovInt(x.orders) : "—"}${x.error || x.live_error ? " (error)" : ""}`).join(" · ")
+      : "";
+    foot = `Shopify: ${bits.join(" · ")}${per ? ` <span class="bov-kpi-foot-detail">${per}</span>` : ""}`;
+  } else if (so.configured && !so.filtered_out) {
     if (so.error) {
       foot = `Shopify open orders: unavailable (${escapeHtml(so.error)})`;
     } else {
@@ -19747,6 +19875,105 @@ function bovRenderKpis() {
   }
   footEl.innerHTML = foot;
   footEl.hidden = !foot;
+}
+
+// ---------------------------------------------------------------------------
+// Ops card: Shopify orders (mirror counts for the period + live buckets)
+// ---------------------------------------------------------------------------
+
+function bovRenderShopifyOrders() {
+  const body = document.getElementById("bov-shopify-body");
+  const meta = document.getElementById("bov-shopify-meta");
+  const foot = document.getElementById("bov-shopify-foot");
+  const key = "shopifyOrders";
+  if (!body) return;
+  const w = bovState.widgets[key];
+  if (!w.data && !w.error) {
+    if (!w.loading) bovPaintSkeleton(key);
+    return;
+  }
+  if (foot) foot.innerHTML = "";
+  if (w.error && !w.data) {
+    body.innerHTML = bovInlineErrorHtml(key, w.error, "Shopify orders could not load");
+    if (meta) meta.textContent = "";
+    return;
+  }
+  const d = w.data;
+  if (!d.configured) {
+    body.innerHTML = bovUnconfiguredHtml("No Shopify stores selected", "Pick the Shopify stores under Data sources to see order flow.", "config");
+    if (meta) meta.textContent = "";
+    return;
+  }
+  if (d.filtered_out) {
+    body.innerHTML = bovFilteredOutHtml();
+    if (meta) meta.textContent = "";
+    return;
+  }
+  if (d.error) {
+    body.innerHTML = bovInlineErrorHtml(key, d.error, "Shopify orders unavailable");
+    if (meta) meta.textContent = d.store_name ? `Source: ${d.store_name}` : "";
+    return;
+  }
+  const rows = d.per_store || [];
+  const t = d.totals || {};
+  if (meta) {
+    meta.textContent = `${bovInt(t.orders || 0)} orders · ${bovCompactMoney(t.revenue || 0)} · ${bovInt(t.fulfilled_in_period || 0)} fulfilled · ${bovInt(t.open_orders || 0)} open · ${bovInt(t.on_hold || 0)} on hold`;
+  }
+  if (!rows.length) {
+    body.innerHTML = bovEmptyHtml("No Shopify stores in the current selection.");
+    return;
+  }
+  const n = (v) => (v == null ? "—" : bovInt(v));
+  const m = (v) => (v == null ? "—" : bovMoney(v));
+  const cell = (v, warn) => `<td class="bov-num">${v}${warn ? `<span class="bov-cell-warn" title="${escapeHtml(warn)}">${escapeHtml(warn.length > 40 ? `${warn.slice(0, 40)}…` : warn)}</span>` : ""}</td>`;
+  const head = `<thead>
+      <tr>
+        <th style="width:16%">Store</th>
+        <th class="bov-num" style="width:8%" title="Orders placed in the selected period (not cancelled)">Orders</th>
+        <th class="bov-num" style="width:10%" title="Product revenue of orders placed in the period">Revenue</th>
+        <th class="bov-num" style="width:9%" title="Orders whose first fulfilment happened in the period">Fulfilled</th>
+        <th class="bov-num" style="width:9%" title="Orders placed in the period that are still unfulfilled">Unfulfilled</th>
+        <th class="bov-num" style="width:8%" title="Orders placed in the period that were cancelled">Cancelled</th>
+        <th class="bov-num" style="width:8%" title="Live: all open orders, any date">Open (all)</th>
+        <th class="bov-num" style="width:8%" title="Live: unfulfilled orders not yet checked or on a picklist">To fulfil</th>
+        <th class="bov-num" style="width:8%" title="Live: unfulfilled orders on a picklist">On picklist</th>
+        <th class="bov-num" style="width:8%" title="Live: unfulfilled orders tagged checked">In process</th>
+        <th class="bov-num" style="width:8%" title="Live: fulfillment on hold">On hold</th>
+      </tr></thead>`;
+  const bodyRows = rows.map((r) => {
+    let storeCell = escapeHtml(r.store_name);
+    if (!r.synced) {
+      storeCell += `<span class="bov-cell-warn">not synced — run a full Data Sync in Shopify Analytics</span>`;
+    } else if (r.last_synced_at) {
+      storeCell += `<span class="bov-cell-sub">mirror ${escapeHtml(formatRelative(r.last_synced_at))}</span>`;
+    }
+    const mirrorErr = r.error && r.synced ? r.error : null;
+    const liveErr = r.live_error || null;
+    return `<tr>
+        <td>${storeCell}</td>
+        ${cell(n(r.orders), mirrorErr)}
+        ${cell(m(r.revenue))}
+        ${cell(n(r.fulfilled_in_period))}
+        ${cell(n(r.unfulfilled_from_period))}
+        ${cell(n(r.cancelled))}
+        ${cell(n(r.open_orders), liveErr)}
+        ${cell(n(r.to_fulfill))}
+        ${cell(n(r.on_picklist))}
+        ${cell(n(r.in_process))}
+        ${cell(n(r.on_hold))}
+      </tr>`;
+  }).join("");
+  const totalRow = rows.length > 1
+    ? `<tr class="bov-shopify-total"><td>Total</td>${cell(n(t.orders))}${cell(m(t.revenue))}${cell(n(t.fulfilled_in_period))}${cell(n(t.unfulfilled_from_period))}${cell(n(t.cancelled))}${cell(n(t.open_orders))}${cell(n(t.to_fulfill))}${cell(n(t.on_picklist))}${cell(n(t.in_process))}${cell(n(t.on_hold))}</tr>`
+    : "";
+  body.innerHTML = `<div class="bov-table-scroll"><table class="data-table bov-mini-table bov-shopify-table">${head}<tbody>${bodyRows}${totalRow}</tbody></table></div>`;
+  if (foot) {
+    const synced = rows.filter((r) => r.synced && r.last_synced_at);
+    const newest = synced.length ? synced.map((r) => r.last_synced_at).sort().slice(-1)[0] : null;
+    const left = `Mirror as of ${newest ? escapeHtml(formatRelative(newest)) : "—"} · live buckets straight from Shopify${d.skipped_stores && d.skipped_stores.length ? ` · not synced: ${escapeHtml(d.skipped_stores.join(", "))}` : ""}`;
+    const busy = bovState.shopifyRefreshing;
+    foot.innerHTML = `<span class="bov-foot-left">${left}</span><button type="button" class="bov-link-btn" data-bov-action="shopify-sync"${busy ? " disabled" : ""}>${busy ? "Syncing…" : "Sync now"}</button>`;
+  }
 }
 
 // ---------------------------------------------------------------------------
