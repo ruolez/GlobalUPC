@@ -18598,6 +18598,22 @@ function bovDateShort(str) {
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
+// Dates in the lists and modals use the US business format.
+function bovDateMdy(str) {
+  const d = bovParseDate(str);
+  if (!d) return "—";
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${mm}/${dd}/${d.getFullYear()}`;
+}
+
+function bovTimeHm(str) {
+  if (!str || !/T\d{2}:\d{2}/.test(String(str))) return "";
+  const d = new Date(str);
+  if (isNaN(d)) return "";
+  return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+}
+
 function bovDateMed(str) {
   const d = bovParseDate(str);
   if (!d) return "—";
@@ -21184,7 +21200,7 @@ function bovShopifyOrderRowAttrs(r) {
 
 function bovShopifyOrderCols(multi) {
   const cols = [
-    { key: "name", label: "Order #", width: multi ? "12%" : "14%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.name || String(r.shopify_id))}</span><span class="bov-cell-sub">${escapeHtml(bovDateShort(r.created_at))}</span>` },
+    { key: "name", label: "Order #", width: multi ? "12%" : "14%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.name || String(r.shopify_id))}</span><span class="bov-cell-sub">${escapeHtml(bovDateMdy(r.created_at))}</span>` },
   ];
   if (multi) cols.push({ key: "store_name", label: "Store", width: "10%", render: (r) => `<span class="bov-cell-store">${escapeHtml(bovStoreShort(r.store_name))}</span>` });
   cols.push(
@@ -21321,10 +21337,10 @@ function bovRenderShopifyOrderModal(data) {
   const tracking = h.tracking_number
     ? (h.tracking_url ? `<a href="${escapeHtml(h.tracking_url)}" target="_blank" rel="noopener">${escapeHtml([h.tracking_company, h.tracking_number].filter(Boolean).join(" "))}</a>` : escapeHtml([h.tracking_company, h.tracking_number].filter(Boolean).join(" ")))
     : "—";
-  const fulf = (h.fulfillments || []).map((f) => `<span class="bov-cell-sub">${escapeHtml(f.display_status || f.status || "—")}${f.created_at ? ` · ${escapeHtml(bovDateMed(f.created_at))}` : ""}${f.tracking_number ? ` · ${escapeHtml([f.tracking_company, f.tracking_number].filter(Boolean).join(" "))}` : ""}</span>`).join("<br>") || "—";
+  const fulf = (h.fulfillments || []).map((f) => `<span class="bov-cell-sub">${escapeHtml(f.display_status || f.status || "—")}${f.created_at ? ` · ${escapeHtml(bovDateMdy(f.created_at))}` : ""}${f.tracking_number ? ` · ${escapeHtml([f.tracking_company, f.tracking_number].filter(Boolean).join(" "))}` : ""}</span>`).join("<br>") || "—";
   const kv = [
     bovKv("Customer", `${escapeHtml(h.customer_name || "—")}${h.email ? `<span class="bov-cell-sub">${escapeHtml(h.email)}</span>` : ""}${h.customer_orders != null ? `<span class="bov-cell-sub">${bovInt(h.customer_orders)} order${h.customer_orders === 1 ? "" : "s"} lifetime</span>` : ""}`),
-    bovKv("Placed", `${escapeHtml(h.created_at ? bovDateMed(h.created_at) : "—")}${h.age_hours != null ? ` ${bovAgeHoursChip(h.age_hours)}` : ""}`),
+    bovKv("Placed", `${escapeHtml(h.created_at ? bovDateMdy(h.created_at) : "—")}${h.age_hours != null ? ` ${bovAgeHoursChip(h.age_hours)}` : ""}`),
     bovKv("Ship to", escapeHtml(shipTo || "—")),
     bovKv("Shipping method", escapeHtml(h.shipping_line_title || "—")),
     bovKv("Tracking", tracking),
@@ -21599,13 +21615,14 @@ function bovQuotationRowAttrs(r) {
 
 function bovQuotationCols() {
   return [
-    { key: "quotation_number", label: "Quote #", width: "17%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.quotation_number)}</span>${r.source_db ? `<span class="bov-cell-sub">${escapeHtml(r.source_db)}</span>` : ""}` },
-    { key: "business_name", label: "Customer", width: "27%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
-    { key: "sales_rep", label: "Rep", width: "13%", render: (r) => escapeHtml(r.sales_rep || "—") },
-    { key: "packer", label: "Packer", width: "13%", render: (r) => `${escapeHtml(r.packer || "—")}${r.checker ? `<span class="bov-cell-sub">chk ${escapeHtml(r.checker)}</span>` : ""}` },
-    { key: "status", label: "Status", width: "13%", render: (r) => bovStatusChip(r.status) },
-    { key: "total_qty", label: "Qty", num: true, width: "8%", render: (r) => bovInt(r.total_qty) },
-    { key: "quotation_total", label: "Total", num: true, width: "12%", render: (r) => bovMoney(r.quotation_total) },
+    { key: "quotation_number", label: "Quote #", width: "14%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.quotation_number)}</span>${r.source_db ? `<span class="bov-cell-sub">${escapeHtml(bovSourceDbLabel(r.source_db))}</span>` : ""}` },
+    { key: "start_date", label: "Started", width: "12%", render: (r) => `${escapeHtml(bovDateMdy(r.start_date))}${bovTimeHm(r.start_date) ? `<span class="bov-cell-sub">${escapeHtml(bovTimeHm(r.start_date))}</span>` : ""}` },
+    { key: "business_name", label: "Customer", width: "24%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
+    { key: "sales_rep", label: "Rep", width: "11%", render: (r) => escapeHtml(r.sales_rep || "—") },
+    { key: "packer", label: "Packer", width: "11%", render: (r) => `${escapeHtml(r.packer || "—")}${r.checker ? `<span class="bov-cell-sub">chk ${escapeHtml(r.checker)}</span>` : ""}` },
+    { key: "status", label: "Status", width: "11%", render: (r) => bovStatusChip(r.status) },
+    { key: "total_qty", label: "Qty", num: true, width: "7%", render: (r) => bovInt(r.total_qty) },
+    { key: "quotation_total", label: "Total", num: true, width: "10%", render: (r) => bovMoney(r.quotation_total) },
   ];
 }
 
@@ -21733,7 +21750,7 @@ function bovPeriodInvoiceCols(multi) {
     ? `<span class="qip-status-chip complete" title="${escapeHtml(r.tracking_no || "")}">Shipped</span>${r.tracking_no ? `<span class="bov-cell-sub bov-cell-mono">${escapeHtml(r.tracking_no)}</span>` : ""}`
     : `<span class="qip-status-chip picking">Open</span><span class="bov-cell-sub">${escapeHtml(bovAgingBucket(r.age_days).label)} · no tracking</span>`;
   const cols = [
-    { key: "invoice_number", label: "Invoice #", width: multi ? "13%" : "15%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.invoice_number || String(r.invoice_id))}</span><span class="bov-cell-sub">${escapeHtml(bovDateShort(r.invoice_date))}</span>` },
+    { key: "invoice_number", label: "Invoice #", width: multi ? "13%" : "15%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.invoice_number || String(r.invoice_id))}</span><span class="bov-cell-sub">${escapeHtml(bovDateMdy(r.invoice_date))}</span>` },
   ];
   if (multi) cols.push({ key: "store_name", label: "Store", width: "11%", render: (r) => `<span class="bov-cell-store">${escapeHtml(bovStoreShort(r.store_name))}</span>` });
   cols.push(
@@ -21753,7 +21770,7 @@ function bovInvoiceRowAttrs(r) {
 
 function bovOpenInvoiceCols(multi) {
   return multi ? [
-    { key: "invoice_number", label: "Invoice #", width: "15%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.invoice_number || String(r.invoice_id))}</span><span class="bov-cell-sub">${escapeHtml(bovDateShort(r.invoice_date))}</span>` },
+    { key: "invoice_number", label: "Invoice #", width: "15%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.invoice_number || String(r.invoice_id))}</span><span class="bov-cell-sub">${escapeHtml(bovDateMdy(r.invoice_date))}</span>` },
     { key: "store_name", label: "Store", width: "13%", render: (r) => `<span class="bov-cell-store">${escapeHtml(bovStoreShort(r.store_name))}</span>` },
     { key: "business_name", label: "Customer", width: "26%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
     { key: "sales_rep", label: "Rep", width: "12%", render: (r) => escapeHtml(r.sales_rep || "—") },
@@ -21761,7 +21778,7 @@ function bovOpenInvoiceCols(multi) {
     { key: "no_lines", label: "Lines", num: true, width: "9%", render: (r) => r.no_lines == null ? "—" : bovInt(r.no_lines) },
     { key: "invoice_total", label: "Total", num: true, width: "14%", render: (r) => bovMoney(r.invoice_total) },
   ] : [
-    { key: "invoice_number", label: "Invoice #", width: "16%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.invoice_number || String(r.invoice_id))}</span><span class="bov-cell-sub">${escapeHtml(bovDateShort(r.invoice_date))}</span>` },
+    { key: "invoice_number", label: "Invoice #", width: "16%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.invoice_number || String(r.invoice_id))}</span><span class="bov-cell-sub">${escapeHtml(bovDateMdy(r.invoice_date))}</span>` },
     { key: "business_name", label: "Customer", width: "30%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
     { key: "sales_rep", label: "Rep", width: "14%", render: (r) => escapeHtml(r.sales_rep || "—") },
     { key: "age_days", label: "Age", width: "12%", render: (r) => bovAgeChip(r.age_days) },
@@ -21774,14 +21791,14 @@ function bovShippedInvoiceCols(multi) {
   return multi ? [
     { key: "invoice_number", label: "Invoice #", width: "14%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.invoice_number || String(r.invoice_id))}</span>` },
     { key: "store_name", label: "Store", width: "12%", render: (r) => `<span class="bov-cell-store">${escapeHtml(bovStoreShort(r.store_name))}</span>` },
-    { key: "ship_date", label: "Shipped", width: "12%", render: (r) => escapeHtml(bovDateShort(r.ship_date || r.invoice_date)) },
+    { key: "ship_date", label: "Shipped", width: "12%", render: (r) => escapeHtml(bovDateMdy(r.ship_date || r.invoice_date)) },
     { key: "business_name", label: "Customer", width: "24%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
     { key: "sales_rep", label: "Rep", width: "10%", render: (r) => escapeHtml(r.sales_rep || "—") },
     { key: "shipper", label: "Shipper", width: "15%", render: (r) => `${escapeHtml(r.shipper || "—")}${r.tracking_no ? `<span class="bov-cell-sub bov-cell-mono">${escapeHtml(r.tracking_no)}</span>` : ""}` },
     { key: "invoice_total", label: "Total", num: true, width: "13%", render: (r) => bovMoney(r.invoice_total) },
   ] : [
     { key: "invoice_number", label: "Invoice #", width: "16%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.invoice_number || String(r.invoice_id))}</span>` },
-    { key: "ship_date", label: "Shipped", width: "13%", render: (r) => escapeHtml(bovDateShort(r.ship_date || r.invoice_date)) },
+    { key: "ship_date", label: "Shipped", width: "13%", render: (r) => escapeHtml(bovDateMdy(r.ship_date || r.invoice_date)) },
     { key: "business_name", label: "Customer", width: "27%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
     { key: "sales_rep", label: "Rep", width: "12%", render: (r) => escapeHtml(r.sales_rep || "—") },
     { key: "shipper", label: "Shipper", width: "18%", render: (r) => `${escapeHtml(r.shipper || "—")}${r.tracking_no ? `<span class="bov-cell-sub bov-cell-mono">${escapeHtml(r.tracking_no)}</span>` : ""}` },
@@ -21896,7 +21913,7 @@ function bovPoCols(tab) {
     return [
       { key: "po_number", label: "PO #", width: "16%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.po_number || String(r.po_id))}</span>` },
       { key: "business_name", label: "Supplier", width: "32%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
-      { key: "po_date", label: "Ordered", width: "14%", render: (r) => escapeHtml(bovDateShort(r.po_date)) },
+      { key: "po_date", label: "Ordered", width: "14%", render: (r) => escapeHtml(bovDateMdy(r.po_date)) },
       { key: "qty_outstanding", label: "Outstanding", num: true, width: "14%", render: (r) => `${bovInt(r.qty_outstanding)}<span class="bov-cell-sub">of ${bovInt(r.tot_qty_ord)}</span>` },
       { key: "outstanding_value", label: "Open $", num: true, width: "12%", render: (r) => bovMoney(r.outstanding_value) },
       { key: "po_total", label: "PO total", num: true, width: "12%", render: (r) => bovMoney(r.po_total) },
@@ -21906,7 +21923,7 @@ function bovPoCols(tab) {
     return [
       { key: "po_number", label: "PO #", width: "16%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.po_number || String(r.po_id))}</span>` },
       { key: "business_name", label: "Supplier", width: "34%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
-      { key: "po_date", label: "Ordered", width: "14%", render: (r) => escapeHtml(bovDateShort(r.po_date)) },
+      { key: "po_date", label: "Ordered", width: "14%", render: (r) => escapeHtml(bovDateMdy(r.po_date)) },
       { key: "status", label: "Status", width: "12%", render: (r) => `<span class="qip-status-chip ${r.status === 1 ? "complete" : "picking"}">${r.status === 1 ? "Received" : "Open"}</span>` },
       { key: "tot_qty_ord", label: "Qty", num: true, width: "10%", render: (r) => bovInt(r.tot_qty_ord) },
       { key: "po_total", label: "Total", num: true, width: "14%", render: (r) => bovMoney(r.po_total) },
@@ -21920,7 +21937,7 @@ function bovPoCols(tab) {
   return [
     { key: "po_number", label: "PO #", width: "14%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.po_number || String(r.po_id))}</span>` },
     { key: "business_name", label: "Supplier", width: "28%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
-    { key: "last_received", label: "Received", width: "12%", render: (r) => escapeHtml(bovDateShort(r.last_received)) },
+    { key: "last_received", label: "Received", width: "12%", render: (r) => escapeHtml(bovDateMdy(r.last_received)) },
     { key: "status", label: "PO state", width: "14%", render: poState },
     { key: "qty_received", label: "Qty in period", num: true, width: "12%", render: (r) => `${bovInt(r.qty_received)}<span class="bov-cell-sub">of ${bovInt(r.tot_qty_ord)} ordered</span>` },
     { key: "received_value", label: "Value", num: true, width: "10%", render: (r) => bovMoney(r.received_value) },
@@ -22109,8 +22126,8 @@ function bovRenderInvoiceModal(data) {
     bovKv("Customer", `${escapeHtml(h.business_name || "—")}${h.account_no ? `<span class="bov-cell-sub">${escapeHtml(h.account_no)}</span>` : ""}`),
     bovKv("Sales rep", escapeHtml(h.sales_rep || "—")),
     bovKv("Status", statusChip),
-    bovKv("Invoice date", escapeHtml(bovDateMed(h.invoice_date))),
-    bovKv("Ship date", escapeHtml(h.ship_date ? bovDateMed(h.ship_date) : "—")),
+    bovKv("Invoice date", escapeHtml(bovDateMdy(h.invoice_date))),
+    bovKv("Ship date", escapeHtml(h.ship_date ? bovDateMdy(h.ship_date) : "—")),
     bovKv("Shipper", escapeHtml(h.shipper || "—")),
     bovKv("Tracking", h.tracking_no ? `<span class="bov-cell-mono">${escapeHtml(h.tracking_no)}</span>` : "—"),
     bovKv("PO #", escapeHtml(h.po_number || "—")),
@@ -22174,8 +22191,8 @@ function bovRenderPoModal(data) {
     bovKv("Supplier", `${escapeHtml(h.business_name || "—")}${h.account_no ? `<span class="bov-cell-sub">${escapeHtml(h.account_no)}</span>` : ""}`),
     bovKv("Contact", `${escapeHtml(h.supplier_contact || "—")}${h.supplier_phone ? `<span class="bov-cell-sub">${escapeHtml(h.supplier_phone)}</span>` : ""}`),
     bovKv("Status", statusChip),
-    bovKv("PO date", escapeHtml(bovDateMed(h.po_date))),
-    bovKv("Required by", escapeHtml(h.required_date ? bovDateMed(h.required_date) : "—")),
+    bovKv("PO date", escapeHtml(bovDateMdy(h.po_date))),
+    bovKv("Required by", escapeHtml(h.required_date ? bovDateMdy(h.required_date) : "—")),
     bovKv("Ordered / received", `${bovInt(h.tot_qty_ord)} / ${bovInt(h.tot_qty_rcv)}`),
     bovKv("Outstanding value", escapeHtml(h.outstanding_value != null ? bovMoney(h.outstanding_value) : "—")),
     bovKv("PO total", `<strong>${escapeHtml(bovMoney(h.po_total))}</strong>`),
@@ -22184,7 +22201,7 @@ function bovRenderPoModal(data) {
   ].join("");
   const rowsHtml = lines.map((l) => {
     const out = bovNum(l.qty_outstanding);
-    return `<tr><td><span class="bov-cell-main">${escapeHtml(l.product_description || "—")}</span><span class="bov-cell-sub bov-cell-mono">${escapeHtml([l.product_sku, l.product_upc, l.supplier_sku].filter(Boolean).join(" · "))}</span></td><td class="bov-num">${bovInt(l.qty_ordered)}</td><td class="bov-num">${bovInt(l.qty_received)}${l.date_received ? `<span class="bov-cell-sub">${escapeHtml(bovDateShort(l.date_received))}</span>` : ""}</td><td class="bov-num">${out > 0 ? `<span class="dashboard-activity-status warn bov-age-chip">${bovInt(out)}</span>` : "0"}</td><td class="bov-num">${bovMoney(l.unit_cost)}</td><td class="bov-num">${bovMoney(l.extended_cost)}</td></tr>`;
+    return `<tr><td><span class="bov-cell-main">${escapeHtml(l.product_description || "—")}</span><span class="bov-cell-sub bov-cell-mono">${escapeHtml([l.product_sku, l.product_upc, l.supplier_sku].filter(Boolean).join(" · "))}</span></td><td class="bov-num">${bovInt(l.qty_ordered)}</td><td class="bov-num">${bovInt(l.qty_received)}${l.date_received ? `<span class="bov-cell-sub">${escapeHtml(bovDateMdy(l.date_received))}</span>` : ""}</td><td class="bov-num">${out > 0 ? `<span class="dashboard-activity-status warn bov-age-chip">${bovInt(out)}</span>` : "0"}</td><td class="bov-num">${bovMoney(l.unit_cost)}</td><td class="bov-num">${bovMoney(l.extended_cost)}</td></tr>`;
   }).join("");
   const sums = lines.reduce((a, l) => {
     a.ord += bovNum(l.qty_ordered); a.rcv += bovNum(l.qty_received); a.out += bovNum(l.qty_outstanding); a.ext += bovNum(l.extended_cost); return a;
