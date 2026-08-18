@@ -8220,3 +8220,9 @@ tr.bov-line-void td { opacity: 0.55; text-decoration: line-through; }
 .bov-rule-store-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .bov-rule-store .dark-input { width: 7.5rem; padding: 0.2rem 0.4rem; font-size: 0.8125rem; }
 .bov-rule-store-unit { font-size: 0.75rem; color: var(--text-tertiary); }
+
+/* Shopify order modal / list */
+.bov-modal-link { color: var(--accent-primary); font-size: 0.8125rem; text-decoration: none; font-weight: 600; }
+.bov-modal-link:hover { text-decoration: underline; }
+#bov-shopify-orders-card { margin-top: 1.5rem; }
+.bov-modal-totals { display: flex; justify-content: flex-end; gap: 1.5rem; margin-top: 0.75rem; font-size: 0.8125rem; }

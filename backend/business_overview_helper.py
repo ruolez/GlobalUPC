@@ -1762,6 +1762,106 @@ async def shopify_exception_counts(store_id: int, unfulfilled_hours: float) -> D
     return await asyncio.to_thread(_shopify_exception_counts_sync, store_id, unfulfilled_hours)
 
 
+_SHOPIFY_ORDER_ROW = """
+    o.store_id, o.shopify_id, o.name, o.created_at, o.processed_at, o.fulfilled_at, o.closed_at, o.cancelled_at,
+    o.financial_status, o.fulfillment_status, o.total_price, o.subtotal_price, o.total_shipping, o.total_refunded,
+    o.currency, o.email, o.tags, o.note, o.ship_city, o.ship_province_code, o.ship_country_code, o.ship_zip,
+    o.shipping_line_title, o.tracking_company, o.tracking_number, o.tracking_url,
+    c.display_name AS customer_name, c.number_of_orders AS customer_orders
+"""
+
+
+def _shopify_order_row(r: Any) -> Dict[str, Any]:
+    created = r["created_at"]
+    age_h = None
+    if created is not None:
+        try:
+            age_h = round((datetime.now(created.tzinfo) - created).total_seconds() / 3600, 1)
+        except Exception:
+            age_h = None
+    return {
+        "store_id": int(r["store_id"]), "shopify_id": int(r["shopify_id"]), "name": r["name"],
+        "created_at": _iso(r["created_at"]), "processed_at": _iso(r["processed_at"]), "fulfilled_at": _iso(r["fulfilled_at"]),
+        "closed_at": _iso(r["closed_at"]), "cancelled_at": _iso(r["cancelled_at"]),
+        "financial_status": r["financial_status"], "fulfillment_status": r["fulfillment_status"],
+        "total_price": _fo(r["total_price"]), "subtotal_price": _fo(r["subtotal_price"]),
+        "total_shipping": _fo(r["total_shipping"]), "total_refunded": _fo(r["total_refunded"]), "currency": r["currency"],
+        "email": r["email"], "tags": list(r["tags"] or []), "note": r["note"],
+        "ship_city": r["ship_city"], "ship_province_code": r["ship_province_code"], "ship_country_code": r["ship_country_code"], "ship_zip": r["ship_zip"],
+        "shipping_line_title": r["shipping_line_title"], "tracking_company": r["tracking_company"],
+        "tracking_number": r["tracking_number"], "tracking_url": r["tracking_url"],
+        "customer_name": r["customer_name"], "customer_orders": _io(r["customer_orders"]),
+        "age_hours": age_h,
+    }
+
+
+def _shopify_orders_list_sync(store_id: int, kind: str, older_than_hours: float = 0.0, limit: int = 500) -> List[Dict[str, Any]]:
+    """
+    Order lists behind the Shopify alerts (mirror):
+      on_hold          — open, fulfillment on hold
+      unfulfilled_aged — open, unfulfilled, created ≥ N hours ago
+      open             — every open unfulfilled order
+    """
+    if kind == "on_hold":
+        cond = "o.fulfillment_status = 'ON_HOLD'"
+    elif kind == "unfulfilled_aged":
+        cond = f"o.fulfillment_status IN ({_SHOPIFY_UNFULFILLED}) AND o.created_at < now() - (CAST(:h AS double precision) * interval '1 hour')"
+    else:
+        cond = f"o.fulfillment_status IN ({_SHOPIFY_UNFULFILLED})"
+    sql = f"""
+        SELECT {_SHOPIFY_ORDER_ROW}
+        FROM shopify_orders o
+        LEFT JOIN shopify_customers c ON c.store_id = o.store_id AND c.shopify_id = o.customer_shopify_id
+        WHERE o.store_id = :sid AND o.cancelled_at IS NULL AND o.closed_at IS NULL AND {cond}
+        ORDER BY o.created_at ASC
+        LIMIT :limit
+    """
+    with engine.connect() as conn:
+        rows = conn.execute(text(sql), {"sid": store_id, "h": float(older_than_hours or 0), "limit": int(limit)}).mappings().all()
+    return [_shopify_order_row(r) for r in rows]
+
+
+def _shopify_order_detail_sync(store_id: int, shopify_id: int) -> Dict[str, Any]:
+    with engine.connect() as conn:
+        head = conn.execute(text(f"""
+            SELECT {_SHOPIFY_ORDER_ROW}, o.fulfillments
+            FROM shopify_orders o
+            LEFT JOIN shopify_customers c ON c.store_id = o.store_id AND c.shopify_id = o.customer_shopify_id
+            WHERE o.store_id = :sid AND o.shopify_id = :oid
+        """), {"sid": store_id, "oid": shopify_id}).mappings().first()
+        if not head:
+            return {"header": None, "lines": []}
+        lines = conn.execute(text("""
+            SELECT li.shopify_id, li.title, li.variant_title, li.sku, li.vendor, li.barcode, li.product_title,
+                   li.quantity, li.current_quantity, li.original_unit_price, li.discounted_total
+            FROM shopify_order_line_items li
+            WHERE li.store_id = :sid AND li.order_shopify_id = :oid
+            ORDER BY li.id
+        """), {"sid": store_id, "oid": shopify_id}).mappings().all()
+    header = _shopify_order_row(head)
+    fl = head["fulfillments"] or []
+    header["fulfillments"] = [
+        {"status": f.get("status"), "display_status": f.get("displayStatus"), "created_at": f.get("createdAt"),
+         "tracking_company": ((f.get("trackingInfo") or [{}])[0] or {}).get("company") if isinstance(f.get("trackingInfo"), list) else None,
+         "tracking_number": ((f.get("trackingInfo") or [{}])[0] or {}).get("number") if isinstance(f.get("trackingInfo"), list) else None}
+        for f in fl if isinstance(f, dict)
+    ]
+    return {"header": header, "lines": [{
+        "shopify_id": _io(l["shopify_id"]), "title": l["title"], "variant_title": l["variant_title"], "sku": l["sku"],
+        "vendor": l["vendor"], "barcode": l["barcode"], "product_title": l["product_title"],
+        "quantity": _io(l["quantity"]), "current_quantity": _io(l["current_quantity"]),
+        "unit_price": _fo(l["original_unit_price"]), "discounted_total": _fo(l["discounted_total"]),
+    } for l in lines]}
+
+
+async def shopify_orders_list(store_id: int, kind: str, older_than_hours: float = 0.0, limit: int = 500) -> List[Dict[str, Any]]:
+    return await asyncio.to_thread(_shopify_orders_list_sync, store_id, kind, older_than_hours, limit)
+
+
+async def shopify_order_detail(store_id: int, shopify_id: int) -> Dict[str, Any]:
+    return await asyncio.to_thread(_shopify_order_detail_sync, store_id, shopify_id)
+
+
 def _shopify_open_orders_local_sync(store_id: int) -> Dict[str, float]:
     sql = """
         SELECT COUNT(*) AS open_orders, COALESCE(SUM(o.total_price),0) AS open_value

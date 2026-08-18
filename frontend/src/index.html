@@ -439,6 +439,27 @@
                 <div class="bov-card-body" id="bov-shopify-body"></div>
                 <div class="bov-card-foot" id="bov-shopify-foot"></div>
               </div>
+
+              <div class="dashboard-card bov-card" id="bov-shopify-orders-card">
+                <div class="dashboard-card-header bov-card-head">
+                  <div class="bov-card-title-wrap">
+                    <h3>Shopify orders needing attention</h3>
+                    <span class="dashboard-card-meta" id="bov-shopifyorders-meta"></span>
+                  </div>
+                </div>
+                <div class="bov-list-toolbar bov-card-toolbar" id="bov-shopifyorders-toolbar">
+                  <div class="sancm-mode-group" data-bov-tabgroup="shopifyorders">
+                    <button type="button" class="sancm-mode-btn active" data-bov-tab="shopifyorders" data-value="on_hold" title="Open orders whose fulfillment is on hold">On hold <span class="bov-tab-count" id="bov-tab-count-on_hold"></span></button>
+                    <button type="button" class="sancm-mode-btn" data-bov-tab="shopifyorders" data-value="unfulfilled_aged" title="Open, unfulfilled orders older than the alert threshold"><span id="bov-tab-label-unfulfilled_aged">Unfulfilled &gt; 2 days</span> <span class="bov-tab-count" id="bov-tab-count-unfulfilled_aged"></span></button>
+                    <button type="button" class="sancm-mode-btn" data-bov-tab="shopifyorders" data-value="open" title="Every open, unfulfilled order">All open <span class="bov-tab-count" id="bov-tab-count-open_orders"></span></button>
+                  </div>
+                  <div class="sa-chip-group bov-list-stores" id="bov-shopifyorders-stores" role="group" aria-label="Filter by store" hidden></div>
+                  <input type="search" class="dark-input bov-list-search-input" data-bov-kind="shopifyorders" placeholder="Search orders…" autocomplete="off" aria-label="Search Shopify orders">
+                  <span class="bov-list-count" id="bov-shopifyorders-count"></span>
+                </div>
+                <div class="bov-card-body" id="bov-shopifyorders-body"></div>
+                <div class="bov-card-foot" id="bov-shopifyorders-foot"></div>
+              </div>
             </section>
           </div>
         </div>
@@ -5118,6 +5139,18 @@
           <button type="button" class="modal-close" data-bov-close="bov-invoice-modal" aria-label="Close">&times;</button>
         </div>
         <div class="modal-body bov-modal-body" id="bov-invoice-body"></div>
+      </div>
+    </div>
+    <div id="bov-shopify-order-modal" class="modal bov-modal">
+      <div class="modal-content" style="max-width: 920px; width: 95%">
+        <div class="modal-header">
+          <div class="bov-list-modal-title-wrap">
+            <h3 id="bov-shopify-order-title">Shopify order</h3>
+            <span class="dashboard-card-meta" id="bov-shopify-order-meta"></span>
+          </div>
+          <button type="button" class="modal-close" data-bov-close="bov-shopify-order-modal" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body bov-modal-body" id="bov-shopify-order-body"></div>
       </div>
     </div>
     <div id="bov-po-modal" class="modal bov-modal">

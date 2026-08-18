@@ -71,7 +71,7 @@ from schemas import (
     BOVPurchasesRangeBlock, BOVPurchasesRangeResponse,
     BOVPurchaseOrderLine, BOVPurchaseOrderHeader, BOVPurchaseOrderDetailResponse,
     BOVSalesSourceTotals, BOVSalesBucket, BOVSalesSourceStatus, BOVSalesTrendResponse,
-    BOVBreakdownRow, BOVSalesBreakdownResponse, BOVStoreStatus, BOVInvoicesPeriodResponse, BOVAlert, BOVAlertAction, BOVAlertsResponse, bov_merge_alert_rules, bov_validate_alert_rules, BOVShopifyStoreOrders, BOVShopifyOrdersResponse, BOVShopifyRefreshResult, BOVShopifyRefreshResponse,
+    BOVBreakdownRow, BOVSalesBreakdownResponse, BOVStoreStatus, BOVInvoicesPeriodResponse, BOVAlert, BOVAlertAction, BOVAlertsResponse, BOVShopifyOrderRow, BOVShopifyOrdersListResponse, BOVShopifyOrderLine, BOVShopifyOrderHeader, BOVShopifyOrderDetailResponse, bov_merge_alert_rules, bov_validate_alert_rules, BOVShopifyStoreOrders, BOVShopifyOrdersResponse, BOVShopifyRefreshResult, BOVShopifyRefreshResponse,
     BOVShopifyStoreOpen, BOVShopifyOpenOrdersBlock, BOVSalesSummaryBlock,
     BusinessOverviewSummaryResponse,
 )
@@ -10484,124 +10484,157 @@ async def get_business_overview_sales_trend(
 @app.get("/api/business-overview/sales/breakdown", response_model=BOVSalesBreakdownResponse)
 async def get_business_overview_sales_breakdown(
     preset: Optional[str] = None, date_from: Optional[str] = None, date_to: Optional[str] = None,
-    by: str = "customer", source: str = "backoffice", limit: int = 10,
+    by: str = "customer", source: str = "all", limit: int = 10,
     store_ids: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
+    """
+    Top customers / reps (BackOffice) and top products (BackOffice + Shopify,
+    merged by barcode = ProductUPC; Shopify cost via Items_tbl.UnitCost).
+    """
     cfg = _bov_config(db)
     period = _bov_period(cfg, preset, date_from, date_to)
     only = _bov_parse_store_ids(store_ids)
     by = (by or "customer").strip().lower()
-    source = (source or "backoffice").strip().lower()
+    source = (source or "all").strip().lower()
     if by not in ("customer", "rep", "product"):
         raise HTTPException(status_code=400, detail="by must be customer, rep or product")
-    if source not in ("backoffice", "shopify"):
-        raise HTTPException(status_code=400, detail="source must be backoffice or shopify")
+    if source not in ("backoffice", "shopify", "all"):
+        raise HTTPException(status_code=400, detail="source must be backoffice, shopify or all")
+    if by != "product" and source == "shopify":
+        raise HTTPException(status_code=400, detail="Shopify breakdown supports by=product only")
+    if by != "product":
+        source = "backoffice"
     limit = max(1, min(int(limit or 10), 200))
     resp: Dict[str, Any] = {"period": period.as_dict(), "by": by, "source": source, "configured": False,
-                            "rows": [], "total_revenue": 0.0}
-    if source == "shopify":
-        if by != "product":
-            raise HTTPException(status_code=400, detail="Shopify breakdown supports by=product only")
-        if not _bov_shopify_stores(db, cfg):
-            return BOVSalesBreakdownResponse(**resp)
-        resp["configured"] = True
-        stores = _bov_shopify_stores(db, cfg, only)
-        if not stores:
-            return BOVSalesBreakdownResponse(**resp)
-        synced = await asyncio.to_thread(shopify_sync.get_synced_stores)
-        merged: Dict[str, Dict[str, Any]] = {}
-        errors: List[str] = []
-        for st in stores:
-            info = synced.get(st["id"])
-            if not info:
-                errors.append(f"{st['name']}: not synced")
-                continue
-            try:
-                rows = await bov.shopify_top_products(st["id"], info.get("shop_timezone") or _bov_tz(cfg),
-                                                      period.start.isoformat(), period.end_excl, limit * 3)
-            except Exception as e:
-                errors.append(f"{st['name']}: {e}")
-                continue
-            for r in rows:
-                k = r["key"] or f"__{r['name']}"
-                m = merged.setdefault(k, {"key": r["key"], "name": r["name"], "secondary": r["secondary"],
-                                          "orders": 0, "revenue": 0.0, "units": 0.0})
-                m["orders"] += r["orders"]; m["revenue"] += r["revenue"]; m["units"] += r["units"]
-        rows_out = sorted(merged.values(), key=lambda x: -x["revenue"])[:limit]
-        total_rev = sum(r["revenue"] for r in merged.values())
-        for r in rows_out:
-            r["revenue"] = round(r["revenue"], 2)
-            r["share_pct"] = (round(r["revenue"] / total_rev * 100, 2) if total_rev else None)
-        resp["rows"] = rows_out
-        resp["total_revenue"] = round(total_rev, 2)
-        if errors:
-            resp["error"] = "; ".join(errors)
-        return BOVSalesBreakdownResponse(**resp)
-
-    if not _bov_sales_stores(db, cfg):
-        return BOVSalesBreakdownResponse(**resp)
-    resp["configured"] = True
-    stores = _bov_sales_stores(db, cfg, only)
-    if not stores:
-        return BOVSalesBreakdownResponse(**resp)
-    excl_sales, _ = _bov_excluded_names(db)
-    per_store_limit = limit if len(stores) == 1 else max(limit * 3, 50)
-    bd_results, daily_results = await asyncio.gather(
-        _bov_fanout(stores, lambda st: bov.backoffice_breakdown_async(
-            **_bov_conn_kwargs(st), date_from=period.start.isoformat(), date_to_excl=period.end_excl,
-            by=by, limit=per_store_limit, excluded_sales_names=excl_sales)),
-        _bov_fanout(stores, lambda st: bov.backoffice_daily_sales_async(
-            **_bov_conn_kwargs(st), date_from=period.start.isoformat(), date_to_excl=period.end_excl,
-            excluded_sales_names=excl_sales, excluded_return_names=[])),
-    )
-    failures = [f"{st.name}: {err}" for st, ok, err, _p in bd_results if not ok]
-    if failures and len(failures) == len(bd_results):
-        resp["error"] = "; ".join(failures)
-        return BOVSalesBreakdownResponse(**resp)
-    # Merge across stores. Customers merge by name, products by UPC; reps merge
-    # by name (SalesRepID is per-database, so ids never line up across stores).
+                            "rows": [], "total_revenue": 0.0, "warnings": []}
+    warnings: List[str] = []
     merged: Dict[str, Dict[str, Any]] = {}
-    for st, ok, _err, rows in bd_results:
-        if not ok:
-            continue
-        for r in (rows if isinstance(rows, list) else []):
-            if by == "rep":
-                mk = (r.get("name") or "").strip().lower() or "__unassigned"
-            else:
-                mk = (r.get("key") or r.get("name") or "").strip().lower() or f"__{r.get('name')}"
-            m = merged.get(mk)
-            if m is None:
-                merged[mk] = dict(r)
-                continue
-            m["orders"] += r.get("orders") or 0
-            m["revenue"] += r.get("revenue") or 0.0
-            m["cost"] = (m.get("cost") or 0.0) + (r.get("cost") or 0.0)
-            m["units"] += r.get("units") or 0.0
-            if not m.get("secondary"):
-                m["secondary"] = r.get("secondary")
-    rows_out = sorted(merged.values(), key=lambda x: -(x.get("revenue") or 0))[:limit]
-    # share of revenue against the period total from the daily query (all stores that answered)
     total_rev = 0.0
-    any_daily = False
-    for _st, ok, _err, daily in daily_results:
-        if ok:
-            any_daily = True
-            total_rev += bov.sum_daily(daily.get("days") or {}, period.start, period.end, ["revenue"])["revenue"]
-    if not any_daily:
-        total_rev = sum(r.get("revenue") or 0.0 for r in merged.values())
+
+    def _mkey(r: Dict[str, Any]) -> str:
+        if by == "rep":
+            return (r.get("name") or "").strip().lower() or "__unassigned"
+        return (r.get("key") or r.get("name") or "").strip().lower() or f"__{r.get('name')}"
+
+    def _add(r: Dict[str, Any], src: str) -> None:
+        mk = _mkey(r)
+        m = merged.get(mk)
+        if m is None:
+            m = merged[mk] = {"key": r.get("key"), "name": r.get("name"), "secondary": r.get("secondary"),
+                              "orders": 0, "revenue": 0.0, "cost": 0.0, "units": 0.0,
+                              "revenue_backoffice": 0.0, "revenue_shopify": 0.0,
+                              "units_backoffice": 0.0, "units_shopify": 0.0, "cost_known": True}
+        elif not m.get("name") and r.get("name"):
+            m["name"] = r["name"]
+        if not m.get("secondary"):
+            m["secondary"] = r.get("secondary")
+        m["orders"] += int(r.get("orders") or 0)
+        m["revenue"] += float(r.get("revenue") or 0.0)
+        m["units"] += float(r.get("units") or 0.0)
+        m[f"revenue_{src}"] += float(r.get("revenue") or 0.0)
+        m[f"units_{src}"] += float(r.get("units") or 0.0)
+        if r.get("cost") is None:
+            m["cost_known"] = False
+        else:
+            m["cost"] += float(r.get("cost") or 0.0)
+
+    # ---- BackOffice
+    if source in ("backoffice", "all"):
+        if _bov_sales_stores(db, cfg):
+            resp["configured"] = True
+            stores = _bov_sales_stores(db, cfg, only)
+            if stores:
+                excl_sales, _ = _bov_excluded_names(db)
+                per_store_limit = limit if len(stores) == 1 and source == "backoffice" else max(limit * 3, 50)
+                bd_results, daily_results = await asyncio.gather(
+                    _bov_fanout(stores, lambda st: bov.backoffice_breakdown_async(
+                        **_bov_conn_kwargs(st), date_from=period.start.isoformat(), date_to_excl=period.end_excl,
+                        by=by, limit=per_store_limit, excluded_sales_names=excl_sales)),
+                    _bov_fanout(stores, lambda st: bov.backoffice_daily_sales_async(
+                        **_bov_conn_kwargs(st), date_from=period.start.isoformat(), date_to_excl=period.end_excl,
+                        excluded_sales_names=excl_sales, excluded_return_names=[])),
+                )
+                failures = [f"{st.name}: {err}" for st, ok, err, _p in bd_results if not ok]
+                warnings.extend(failures)
+                for st, ok, _err, rows in bd_results:
+                    if ok:
+                        for r in (rows if isinstance(rows, list) else []):
+                            _add(r, "backoffice")
+                any_daily = False
+                for _st, ok, _err, daily in daily_results:
+                    if ok:
+                        any_daily = True
+                        total_rev += bov.sum_daily(daily.get("days") or {}, period.start, period.end, ["revenue"])["revenue"]
+                if not any_daily:
+                    total_rev += sum(float(r.get("revenue_backoffice") or 0.0) for r in merged.values())
+
+    # ---- Shopify (products only, merged by barcode)
+    if by == "product" and source in ("shopify", "all"):
+        if _bov_shopify_stores(db, cfg):
+            resp["configured"] = True
+            stores = _bov_shopify_stores(db, cfg, only)
+            if stores:
+                synced = await asyncio.to_thread(shopify_sync.get_synced_stores)
+                sh_rows: List[Dict[str, Any]] = []
+                for st in stores:
+                    info = synced.get(st["id"])
+                    if not info:
+                        warnings.append(f"{st['name']}: not synced")
+                        continue
+                    try:
+                        rows = await bov.shopify_top_products(st["id"], info.get("shop_timezone") or _bov_tz(cfg),
+                                                              period.start.isoformat(), period.end_excl, max(limit * 3, 50))
+                        sh_rows.extend(rows)
+                    except Exception as e:
+                        warnings.append(f"{st['name']}: {e}")
+                # cost per unit from Items_tbl by barcode (memoised lookup, one round trip)
+                cost_lookup = _bov_make_cost_lookup(db, cfg)
+                barcodes = sorted({(r.get("key") or "").strip() for r in sh_rows if (r.get("key") or "").strip()})
+                unit_costs = await cost_lookup(barcodes) if (barcodes and getattr(cost_lookup, "configured", False)) else {}
+                for r in sh_rows:
+                    bc = (r.get("key") or "").strip()
+                    uc = unit_costs.get(bc)
+                    r["cost"] = (float(uc) * float(r.get("units") or 0)) if uc is not None else None
+                    _add(r, "shopify")
+                # period Shopify revenue for the share denominator
+                for st in stores:
+                    info = synced.get(st["id"])
+                    if not info:
+                        continue
+                    try:
+                        po = await bov.shopify_period_orders(st["id"], info.get("shop_timezone") or _bov_tz(cfg),
+                                                             period.start.isoformat(), period.end_excl)
+                        total_rev += float(po.get("revenue") or 0.0)
+                    except Exception:
+                        pass
+
+    if not resp["configured"]:
+        return BOVSalesBreakdownResponse(**resp)
+    rows_out = sorted(merged.values(), key=lambda x: -(x.get("revenue") or 0))[:limit]
+    if not total_rev:
+        total_rev = sum(float(r.get("revenue") or 0.0) for r in merged.values())
+    out_rows: List[Dict[str, Any]] = []
     for r in rows_out:
         rev = round(r.get("revenue") or 0.0, 2)
-        cost = round(r.get("cost") or 0.0, 2)
-        r["revenue"] = rev
-        r["cost"] = cost
-        r["profit"] = round(rev - cost, 2)
-        r["margin_pct"] = bov.margin_pct(rev, cost)
-        r["share_pct"] = (round(rev / total_rev * 100, 2) if total_rev else None)
-    resp["rows"] = rows_out
+        cost = round(r.get("cost") or 0.0, 2) if r.get("cost_known", True) else None
+        out_rows.append({
+            "key": r.get("key"), "name": r.get("name"), "secondary": r.get("secondary"),
+            "orders": int(r.get("orders") or 0), "revenue": rev,
+            "cost": cost, "profit": (round(rev - cost, 2) if cost is not None else None),
+            "margin_pct": (bov.margin_pct(rev, cost) if cost is not None else None),
+            "units": float(r.get("units") or 0.0),
+            "share_pct": (round(rev / total_rev * 100, 2) if total_rev else None),
+            "revenue_backoffice": round(r.get("revenue_backoffice") or 0.0, 2),
+            "revenue_shopify": round(r.get("revenue_shopify") or 0.0, 2),
+            "units_backoffice": float(r.get("units_backoffice") or 0.0),
+            "units_shopify": float(r.get("units_shopify") or 0.0),
+        })
+    resp["rows"] = out_rows
     resp["total_revenue"] = round(total_rev, 2)
-    if failures:
-        resp["warnings"] = failures
+    resp["warnings"] = warnings
+    if warnings and not out_rows:
+        resp["error"] = "; ".join(warnings)
     return BOVSalesBreakdownResponse(**resp)
 
 
@@ -10683,6 +10716,72 @@ async def get_business_overview_shopify_orders(
         store_name=(stores[0]["name"] if len(stores) == 1 else ", ".join(st["name"] for st in stores)),
         store_id=(stores[0]["id"] if len(stores) == 1 else None),
     )
+
+
+@app.get("/api/business-overview/shopify/orders/list", response_model=BOVShopifyOrdersListResponse)
+async def get_business_overview_shopify_orders_list(
+    kind: str = "open", days: Optional[float] = None, store_ids: Optional[str] = None, limit: int = 500,
+    db: Session = Depends(get_db),
+):
+    """Orders behind the Shopify alerts across the configured stores (mirror): on_hold | unfulfilled_aged | open."""
+    kind = (kind or "open").strip().lower()
+    if kind not in ("on_hold", "unfulfilled_aged", "open"):
+        raise HTTPException(status_code=400, detail="kind must be on_hold, unfulfilled_aged or open")
+    cfg = _bov_config(db)
+    only = _bov_parse_store_ids(store_ids)
+    if not _bov_shopify_stores(db, cfg):
+        return BOVShopifyOrdersListResponse(configured=False, kind=kind)
+    stores = _bov_shopify_stores(db, cfg, only)
+    if not stores:
+        return BOVShopifyOrdersListResponse(configured=True, filtered_out=True, kind=kind)
+    rules = bov_merge_alert_rules(cfg.alert_rules if cfg else None)
+    if days is None:
+        days = float(rules["shopify_unfulfilled_age"].get("days", 2))
+    synced = await asyncio.to_thread(shopify_sync.get_synced_stores)
+    usable = [st for st in stores if st["id"] in synced]
+    skipped = [st["name"] for st in stores if st["id"] not in synced]
+    limit = max(1, min(int(limit or 500), 2000))
+    results = await asyncio.gather(*[bov.shopify_orders_list(st["id"], kind, days * 24.0, limit) for st in usable], return_exceptions=True)
+    rows: List[Dict[str, Any]] = []
+    statuses: List[Dict[str, Any]] = []
+    for st, res in zip(usable, results):
+        if isinstance(res, Exception):
+            statuses.append({"store_id": st["id"], "store_name": st["name"], "error": str(res)})
+            continue
+        for r in res:
+            r["store_name"] = st["name"]
+        rows.extend(res)
+        statuses.append({"store_id": st["id"], "store_name": st["name"], "count": len(res),
+                         "amount": round(sum(float(r.get("total_price") or 0) for r in res), 2)})
+    rows.sort(key=lambda r: r.get("created_at") or "")
+    all_failed = bool(statuses) and all(x.get("error") for x in statuses)
+    return BOVShopifyOrdersListResponse(
+        configured=True, kind=kind, older_than_days=(days if kind == "unfulfilled_aged" else None),
+        orders=[BOVShopifyOrderRow(**r) for r in rows], count=len(rows),
+        total_amount=round(sum(float(r.get("total_price") or 0) for r in rows), 2),
+        stores=[BOVStoreStatus(**x) for x in statuses], skipped_stores=skipped, limit=limit,
+        truncated=any((x.get("count") or 0) >= limit for x in statuses),
+        error=("; ".join(f"{x['store_name']}: {x['error']}" for x in statuses) if all_failed else None),
+        store_name=(", ".join(st["name"] for st in usable) if usable else None),
+    )
+
+
+@app.get("/api/business-overview/shopify/orders/{store_id}/{shopify_id}", response_model=BOVShopifyOrderDetailResponse)
+async def get_business_overview_shopify_order_detail(store_id: int, shopify_id: int, db: Session = Depends(get_db)):
+    cfg = _bov_config(db)
+    store = next((st for st in _bov_shopify_stores(db, cfg) if st["id"] == store_id), None)
+    if store is None:
+        raise HTTPException(status_code=400, detail=f"Store {store_id} is not a configured Shopify store.")
+    payload = await bov.shopify_order_detail(store_id, shopify_id)
+    if not payload.get("header"):
+        raise HTTPException(status_code=404, detail="Order not found in the local mirror")
+    header = payload["header"]
+    header["store_name"] = store["name"]
+    domain = (store.get("shop_domain") or "").replace("https://", "").replace("http://", "").strip("/")
+    admin_url = f"https://{domain}/admin/orders/{shopify_id}" if domain else None
+    return BOVShopifyOrderDetailResponse(header=BOVShopifyOrderHeader(**header),
+                                         lines=[BOVShopifyOrderLine(**l) for l in payload.get("lines") or []],
+                                         store_name=store["name"], admin_url=admin_url)
 
 
 @app.post("/api/business-overview/shopify/refresh", response_model=BOVShopifyRefreshResponse)
@@ -10984,12 +11083,12 @@ async def get_business_overview_alerts(
                 if rules["shopify_on_hold"].get("enabled") and on_hold > 0:
                     alerts.append({"key": "shopify_on_hold", "severity": "warn", "count": on_hold, "amount": round(on_hold_v, 2), "stores": [n.rsplit(" ", 1)[0] for n in hold_names],
                                    "title": f"{bovInt(on_hold)} Shopify order{'s' if on_hold != 1 else ''} on hold", "detail": ", ".join(hold_names),
-                                   "action": {"section": "shopify", "target": "bov-shopify-card"}})
+                                   "action": {"section": "shopify", "tab": "shopifyorders:on_hold", "target": "bov-shopify-orders-card"}})
                 if rules["shopify_unfulfilled_age"].get("enabled") and unf > 0:
                     rr = rules["shopify_unfulfilled_age"]
                     alerts.append({"key": "shopify_unfulfilled_age", "severity": "warn", "count": unf, "amount": round(unf_v, 2), "stores": [n.rsplit(" ", 1)[0] for n in unf_names],
                                    "title": f"{bovInt(unf)} Shopify order{'s' if unf != 1 else ''} unfulfilled for more than {_bov_days_label(rr.get('days', 2))}", "detail": ", ".join(unf_names),
-                                   "action": {"section": "shopify", "target": "bov-shopify-card"}})
+                                   "action": {"section": "shopify", "tab": "shopifyorders:unfulfilled_aged", "target": "bov-shopify-orders-card"}})
         except Exception as e:  # never let a rule take the strip down
             errors.append(f"{key}: {e}")
 

@@ -1,5 +1,5 @@
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from typing import Optional, Literal, List, Dict, Tuple
+from typing import Optional, Literal, List, Dict, Tuple, Any
 from datetime import datetime, date
 
 # Store Schemas
@@ -1582,6 +1582,10 @@ class BOVBreakdownRow(BaseModel):
     margin_pct: Optional[float] = None
     units: float = 0.0
     share_pct: Optional[float] = None
+    revenue_backoffice: Optional[float] = None
+    revenue_shopify: Optional[float] = None
+    units_backoffice: Optional[float] = None
+    units_shopify: Optional[float] = None
 
 
 class BOVSalesBreakdownResponse(BaseModel):
@@ -1652,6 +1656,75 @@ class BOVShopifyOrdersResponse(BOVBlockStatus):
     per_store: List[BOVShopifyStoreOrders] = []
     totals: Dict[str, float] = {}
     skipped_stores: List[str] = []
+
+
+class BOVShopifyOrderRow(BaseModel):
+    store_id: int
+    store_name: Optional[str] = None
+    shopify_id: int
+    name: Optional[str] = None
+    created_at: Optional[str] = None
+    processed_at: Optional[str] = None
+    fulfilled_at: Optional[str] = None
+    closed_at: Optional[str] = None
+    cancelled_at: Optional[str] = None
+    financial_status: Optional[str] = None
+    fulfillment_status: Optional[str] = None
+    total_price: Optional[float] = None
+    subtotal_price: Optional[float] = None
+    total_shipping: Optional[float] = None
+    total_refunded: Optional[float] = None
+    currency: Optional[str] = None
+    email: Optional[str] = None
+    tags: List[str] = []
+    note: Optional[str] = None
+    ship_city: Optional[str] = None
+    ship_province_code: Optional[str] = None
+    ship_country_code: Optional[str] = None
+    ship_zip: Optional[str] = None
+    shipping_line_title: Optional[str] = None
+    tracking_company: Optional[str] = None
+    tracking_number: Optional[str] = None
+    tracking_url: Optional[str] = None
+    customer_name: Optional[str] = None
+    customer_orders: Optional[int] = None
+    age_hours: Optional[float] = None
+
+
+class BOVShopifyOrdersListResponse(BOVBlockStatus):
+    kind: str
+    older_than_days: Optional[float] = None
+    orders: List[BOVShopifyOrderRow] = []
+    count: int = 0
+    total_amount: float = 0.0
+    skipped_stores: List[str] = []
+    limit: int = 0
+    truncated: bool = False
+
+
+class BOVShopifyOrderLine(BaseModel):
+    shopify_id: Optional[int] = None
+    title: Optional[str] = None
+    variant_title: Optional[str] = None
+    sku: Optional[str] = None
+    vendor: Optional[str] = None
+    barcode: Optional[str] = None
+    product_title: Optional[str] = None
+    quantity: Optional[int] = None
+    current_quantity: Optional[int] = None
+    unit_price: Optional[float] = None
+    discounted_total: Optional[float] = None
+
+
+class BOVShopifyOrderHeader(BOVShopifyOrderRow):
+    fulfillments: List[Dict[str, Any]] = []
+
+
+class BOVShopifyOrderDetailResponse(BaseModel):
+    header: BOVShopifyOrderHeader
+    lines: List[BOVShopifyOrderLine] = []
+    store_name: Optional[str] = None
+    admin_url: Optional[str] = None
 
 
 class BOVShopifyRefreshResult(BaseModel):

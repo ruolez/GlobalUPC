@@ -18425,8 +18425,8 @@ async function sacrUpdateDataSourceNote() {
 // offline-capable and theme-aware.
 
 const BOV_AUTOREFRESH_MS = 60000;
-const BOV_LIVE_WIDGETS = ["summary", "quotations", "invoicesPeriod", "invoicesOpen", "purchasesIncoming", "shopifyOrders", "alerts"];
-const BOV_SHOPIFY_WIDGETS = ["summary", "top", "shopifyOrders", "alerts"];
+const BOV_LIVE_WIDGETS = ["summary", "quotations", "invoicesPeriod", "invoicesOpen", "purchasesIncoming", "shopifyOrders", "shopifyOrders_list", "alerts"];
+const BOV_SHOPIFY_WIDGETS = ["summary", "top", "shopifyOrders", "shopifyOrders_list", "alerts"];
 // Rule keys with the form fields they carry (mirror of BOV_DEFAULT_ALERT_RULES).
 const BOV_ALERT_RULE_FIELDS = {
   unshipped_cutoff: ["cutoff"],
@@ -18493,9 +18493,10 @@ const bovState = {
     quotations: { store: null, status: null, search: "" },
     invoices: { store: null, search: "" },
     purchases: { store: null, search: "" },
+    shopifyorders: { store: null, search: "" },
   },
   seriesHidden: { cost: true },
-  tabs: { invoices: "all", purchases: "incoming", top: "customer" },
+  tabs: { invoices: "all", purchases: "incoming", top: "customer", shopifyorders: "on_hold" },
   agingFilter: null,
   openInRange: true,    // open invoices limited to those invoiced in the selected period
   expanded: { quotations: false, invoices: false, purchases: false },
@@ -18506,6 +18507,7 @@ const bovState = {
     purchasesIncoming: { key: "po_date", dir: "desc" },
     purchasesPurchased: { key: "po_date", dir: "desc" },
     purchasesReceived: { key: "last_received", dir: "desc" },
+    shopifyOrders_list: { key: "created_at", dir: "asc" },
   },
   widgets: {
     summary: bovEmptyWidget(),
@@ -18518,13 +18520,14 @@ const bovState = {
     purchasesPurchased: bovEmptyWidget(),
     purchasesReceived: bovEmptyWidget(),
     shopifyOrders: bovEmptyWidget(),
+    shopifyOrders_list: bovEmptyWidget(),
     alerts: bovEmptyWidget(),
   },
   seq: 0,
   shopifyRefreshing: false,
   lastShopifyRefreshAt: 0,
   shopifySyncNote: null,   // {text, tone} shown under "Updated …"
-  modalCache: { quotation: new Map(), invoice: new Map(), po: new Map() },
+  modalCache: { quotation: new Map(), invoice: new Map(), po: new Map(), shopifyOrder: new Map() },
   refreshTimer: null,
   updatedTimer: null,
   refreshing: false,
@@ -19675,7 +19678,7 @@ const BOV_WIDGET_DEFS = {
   },
   top: {
     card: "bov-top-card",
-    request: () => ["/sales/breakdown", { ...bovRangeParams(), by: bovState.tabs.top, source: "backoffice", limit: 8, ...bovStoreParams() }],
+    request: () => ["/sales/breakdown", { ...bovRangeParams(), by: bovState.tabs.top, source: bovState.tabs.top === "product" ? "all" : "backoffice", limit: 8, ...bovStoreParams() }],
     render: () => bovRenderTopBars(),
   },
   quotations: {
@@ -19717,6 +19720,11 @@ const BOV_WIDGET_DEFS = {
       bovRenderShopifyOrders();
       bovRenderKpiFoot();
     },
+  },
+  shopifyOrders_list: {
+    card: "bov-shopify-orders-card",
+    request: () => ["/shopify/orders/list", { kind: bovState.tabs.shopifyorders || "on_hold", limit: BOV_LIST_LIMIT, ...bovStoreParams() }],
+    render: () => bovRenderShopifyOrdersList(),
   },
   alerts: {
     card: "bov-attention",
@@ -19828,6 +19836,7 @@ function bovPaintSkeleton(key) {
     purchasesPurchased: "bov-purchases-body",
     purchasesReceived: "bov-purchases-body",
     shopifyOrders: "bov-shopify-body",
+    shopifyOrders_list: "bov-shopifyorders-body",
     alerts: "bov-attention-body",
   }[key];
   const el = bodyId && document.getElementById(bodyId);
@@ -21115,22 +21124,231 @@ function bovRenderTopBars() {
     return;
   }
   const rows = d.rows || [];
-  if (meta) meta.textContent = rows.length ? `by revenue · ${bovCompactMoney(d.total_revenue || 0)} total` : "";
+  if (meta) meta.textContent = rows.length
+    ? `by revenue · ${bovCompactMoney(d.total_revenue || 0)} total${by === "product" ? " · BackOffice + Shopify, matched by barcode" : ""}`
+    : (by === "product" ? "BackOffice + Shopify, matched by barcode" : "");
   if (!rows.length) {
     const boInFilter = !bovState.storeFilter.length || bovFilterableStores().some((st) => st.type === "BackOffice" && bovState.storeFilter.includes(st.id));
     body.innerHTML = boInFilter ? bovEmptyHtml("No sales in this range") : bovFilteredOutHtml();
     return;
   }
   body.innerHTML = bovBarList(
-    rows.map((r) => ({
-      label: r.name || (by === "rep" ? "Unassigned" : "—"),
-      sub: by === "product" ? (r.secondary || r.key || "") : (r.secondary || ""),
-      value: bovNum(r.revenue),
-      share: r.share_pct,
-      title: `${r.name || "—"} · ${formatCurrency(r.revenue)}${r.margin_pct != null ? ` · margin ${bovPct(r.margin_pct)}` : ""} · ${bovInt(r.orders)} invoices`,
-    })),
+    rows.map((r) => {
+      let sub = by === "product" ? (r.secondary || r.key || "") : (r.secondary || "");
+      if (by === "product") {
+        const bits = [];
+        if (bovNum(r.revenue_backoffice) > 0) bits.push(`BO ${bovCompactMoney(r.revenue_backoffice)}`);
+        if (bovNum(r.revenue_shopify) > 0) bits.push(`Shopify ${bovCompactMoney(r.revenue_shopify)}`);
+        if (bits.length) sub = `${sub ? `${sub} · ` : ""}${bits.join(" · ")}`;
+      }
+      return {
+        label: r.name || (by === "rep" ? "Unassigned" : "—"),
+        sub,
+        value: bovNum(r.revenue),
+        share: r.share_pct,
+        title: `${r.name || "—"} · ${formatCurrency(r.revenue)} · margin ${r.margin_pct != null ? bovPct(r.margin_pct) : "—"} · cost ${r.cost != null ? formatCurrency(r.cost) : "—"} · ${bovInt(r.orders)} ${by === "product" ? "orders" : "invoices"}${by === "product" ? ` · ${bovInt(r.units)} units` : ""}`,
+      };
+    }),
     { valueFmt: (v) => bovCompactMoney(v) },
   );
+}
+
+// ---------------------------------------------------------------------------
+// Ops card: Shopify orders needing attention (on hold / unfulfilled aged / open)
+// ---------------------------------------------------------------------------
+
+function bovAgeHoursChip(hours) {
+  if (hours == null || !isFinite(hours)) return `<span class="dashboard-activity-status ok bov-age-chip">—</span>`;
+  const h = Math.max(0, hours);
+  const d = Math.floor(h / 24);
+  const rem = Math.round(h - d * 24);
+  const label = d > 0 ? `${d}d ${rem}h` : `${Math.round(h)}h`;
+  const cls = h >= 72 ? "fail" : h >= 24 ? "warn" : "ok";
+  return `<span class="dashboard-activity-status ${cls} bov-age-chip" title="${escapeHtml(`${h.toFixed(1)} hours since the order was placed`)}">${escapeHtml(label)}</span>`;
+}
+
+function bovShopifyStatusChip(status) {
+  const s = String(status || "").trim();
+  const low = s.toLowerCase();
+  const label = s ? s.replace(/_/g, " ").toLowerCase().replace(/^./, (c) => c.toUpperCase()) : "—";
+  let cls = "pending";
+  if (low === "fulfilled") cls = "complete";
+  else if (low === "on_hold") cls = "pending";
+  else if (low.includes("unfulfilled") || low === "in_progress" || low === "partially_fulfilled") cls = "picking";
+  return `<span class="qip-status-chip ${cls}">${escapeHtml(label)}</span>`;
+}
+
+function bovShopifyOrderRowAttrs(r) {
+  return `data-bov-open="shopify-order" data-bov-id="${r.shopify_id}" data-bov-store="${r.store_id}"`;
+}
+
+function bovShopifyOrderCols(multi) {
+  const cols = [
+    { key: "name", label: "Order #", width: multi ? "12%" : "14%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.name || String(r.shopify_id))}</span><span class="bov-cell-sub">${escapeHtml(bovDateShort(r.created_at))}</span>` },
+  ];
+  if (multi) cols.push({ key: "store_name", label: "Store", width: "10%", render: (r) => `<span class="bov-cell-store">${escapeHtml(bovStoreShort(r.store_name))}</span>` });
+  cols.push(
+    { key: "customer_name", label: "Customer", width: multi ? "20%" : "22%", render: (r) => bovCustomerCell(r.customer_name || r.email || "—", r.customer_name ? (r.email || "") : "") },
+    { key: "age_hours", label: "Age", num: true, width: "9%", render: (r) => bovAgeHoursChip(r.age_hours) },
+    { key: "fulfillment_status", label: "Status", width: "14%", render: (r) => `${bovShopifyStatusChip(r.fulfillment_status)}${r.financial_status ? `<span class="bov-cell-sub">${escapeHtml(String(r.financial_status).toLowerCase())}</span>` : ""}` },
+    { key: "tags", label: "Tags", width: "15%", render: (r) => {
+      const t = r.tags || [];
+      if (!t.length) return `<span class="bov-cell-sub">—</span>`;
+      const shown = t.slice(0, 2).map((x) => `<span class="bov-cell-store" title="${escapeHtml(t.join(", "))}">${escapeHtml(x)}</span>`).join(" ");
+      return `${shown}${t.length > 2 ? ` <span class="bov-cell-sub" title="${escapeHtml(t.join(", "))}">+${t.length - 2}</span>` : ""}`;
+    } },
+    { key: "ship_city", label: "Ship to", width: "12%", render: (r) => escapeHtml([r.ship_city, r.ship_province_code].filter(Boolean).join(", ") || "—") },
+    { key: "total_price", label: "Total", num: true, width: "10%", render: (r) => bovMoney(r.total_price) },
+  );
+  return cols;
+}
+
+function bovShopifyOrdersTabLabel() {
+  const rules = (bovState.config && bovState.config.alert_rules) || {};
+  const days = rules.shopify_unfulfilled_age && rules.shopify_unfulfilled_age.days != null ? rules.shopify_unfulfilled_age.days : 2;
+  const el = document.getElementById("bov-tab-label-unfulfilled_aged");
+  if (el) el.textContent = `Unfulfilled > ${days} day${Number(days) === 1 ? "" : "s"}`;
+  return days;
+}
+
+function bovRenderShopifyOrdersList() {
+  const body = document.getElementById("bov-shopifyorders-body");
+  const meta = document.getElementById("bov-shopifyorders-meta");
+  const foot = document.getElementById("bov-shopifyorders-foot");
+  if (!body) return;
+  const tab = bovState.tabs.shopifyorders || "on_hold";
+  const key = "shopifyOrders_list";
+  const w = bovState.widgets[key];
+  const days = bovShopifyOrdersTabLabel();
+  document.querySelectorAll('[data-bov-tab="shopifyorders"]').forEach((b) => b.classList.toggle("active", b.dataset.value === tab));
+  // Tab counts from the per-store orders widget (live buckets) when it has loaded.
+  const so = bovState.widgets.shopifyOrders.data;
+  const t = (so && so.configured && !so.error && !so.filtered_out && so.totals) || null;
+  const setCount = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+  setCount("bov-tab-count-on_hold", t && t.on_hold != null ? bovInt(t.on_hold) : "");
+  setCount("bov-tab-count-open_orders", t && t.open_orders != null ? bovInt(t.open_orders) : "");
+  const alertsW = bovState.widgets.alerts;
+  const agedAlert = alertsW && alertsW.data && (alertsW.data.alerts || []).find((a) => a.key === "shopify_unfulfilled_age");
+  setCount("bov-tab-count-unfulfilled_aged", agedAlert && agedAlert.count != null ? bovInt(agedAlert.count) : "");
+
+  if (!w.data && !w.error) {
+    if (!w.loading) bovPaintSkeleton(key);
+    return;
+  }
+  if (foot) foot.innerHTML = "";
+  if (w.error && !w.data) {
+    body.innerHTML = bovInlineErrorHtml(key, w.error, "Shopify orders could not load");
+    if (meta) meta.textContent = "";
+    return;
+  }
+  const d = w.data;
+  if (!d.configured) {
+    body.innerHTML = bovUnconfiguredHtml("No Shopify stores configured", "Pick the Shopify stores under Data sources.", "config");
+    if (meta) meta.textContent = "";
+    return;
+  }
+  if (d.filtered_out) {
+    body.innerHTML = bovFilteredOutHtml();
+    if (meta) meta.textContent = "";
+    return;
+  }
+  if (d.error) {
+    body.innerHTML = bovInlineErrorHtml(key, d.error, "Shopify orders unavailable");
+    if (meta) meta.textContent = "";
+    return;
+  }
+  const allRows = d.orders || [];
+  const rows = bovApplyCardFilters("shopifyorders", allRows, {
+    storeOf: (r) => r.store_name || "",
+    searchFields: ["name", "customer_name", "email", "tags", "ship_city", "tracking_number", "fulfillment_status"],
+  });
+  const kindLabel = { on_hold: "on hold", unfulfilled_aged: `unfulfilled > ${days} day${Number(days) === 1 ? "" : "s"}`, open: "open" }[tab] || tab;
+  const storeNames = (d.stores || []).filter((st) => !st.error).map((st) => st.store_name);
+  if (meta) meta.textContent = `${bovInt(d.count || 0)} ${kindLabel} · ${bovCompactMoney(d.total_amount || 0)}${storeNames.length ? ` · ${storeNames.join(", ")}` : ""}${(d.skipped_stores || []).length ? ` · not synced: ${d.skipped_stores.join(", ")}` : ""}`;
+  const failedStores = (d.stores || []).filter((st) => st.error);
+  const partialNote = failedStores.length
+    ? `<span class="bov-foot-warn" title="${escapeHtml(failedStores.map((st) => `${st.store_name}: ${st.error}`).join("\n"))}">⚠ ${escapeHtml(failedStores.map((st) => st.store_name).join(", "))} unavailable</span>`
+    : "";
+  if (!rows.length) {
+    const emptyMsg = bovCardFiltersActive("shopifyorders")
+      ? "No orders match the filters."
+      : tab === "on_hold" ? "✓ Nothing on hold." : tab === "unfulfilled_aged" ? `✓ No unfulfilled orders older than ${days} day${Number(days) === 1 ? "" : "s"}.` : "✓ No open orders.";
+    body.innerHTML = bovEmptyHtml(emptyMsg);
+    if (foot) foot.innerHTML = `<span class="bov-foot-left">${partialNote}</span>`;
+    return;
+  }
+  const multi = (d.stores || []).length > 1;
+  const sorted = bovSortRows(rows, bovState.sort[key]);
+  body.innerHTML = bovTableHtml(key, bovShopifyOrderCols(multi), sorted, { rowAttrs: bovShopifyOrderRowAttrs });
+  const left = (d.truncated ? `Showing the first ${bovInt(allRows.length)} per store` : "Oldest first · from the local mirror") + partialNote;
+  if (foot) foot.innerHTML = bovFootHtml("shopifyorders", rows.length, sorted.length, left);
+}
+
+async function bovOpenShopifyOrderModal(storeId, shopifyId) {
+  const title = document.getElementById("bov-shopify-order-title");
+  const metaEl = document.getElementById("bov-shopify-order-meta");
+  const body = document.getElementById("bov-shopify-order-body");
+  if (!body) return;
+  if (title) title.textContent = "Shopify order";
+  if (metaEl) metaEl.textContent = "";
+  openModal("bov-shopify-order-modal");
+  const cacheKey = `${storeId}:${shopifyId}`;
+  const cache = bovState.modalCache.shopifyOrder;
+  if (cache.has(cacheKey)) {
+    bovRenderShopifyOrderModal(cache.get(cacheKey));
+    return;
+  }
+  bovModalLoading(body, "Loading order…");
+  try {
+    const data = await bovFetchJson(`/shopify/orders/${storeId}/${shopifyId}`);
+    cache.set(cacheKey, data);
+    bovRenderShopifyOrderModal(data);
+  } catch (e) {
+    bovModalError(body, `Could not load this order: ${e.message || e}`);
+  }
+}
+
+function bovRenderShopifyOrderModal(data) {
+  const title = document.getElementById("bov-shopify-order-title");
+  const metaEl = document.getElementById("bov-shopify-order-meta");
+  const body = document.getElementById("bov-shopify-order-body");
+  if (!body) return;
+  const h = data.header || {};
+  const lines = data.lines || [];
+  if (title) title.textContent = `Order ${h.name || h.shopify_id || ""}${data.store_name ? ` — ${data.store_name}` : ""}`;
+  if (metaEl) metaEl.innerHTML = `${bovShopifyStatusChip(h.fulfillment_status)} ${h.financial_status ? `<span class="qip-status-chip ${String(h.financial_status).toUpperCase() === "PAID" ? "complete" : "pending"}">${escapeHtml(String(h.financial_status).toLowerCase())}</span>` : ""}`;
+  const shipTo = [h.ship_city, h.ship_province_code, h.ship_zip, h.ship_country_code].filter(Boolean).join(", ");
+  const tracking = h.tracking_number
+    ? (h.tracking_url ? `<a href="${escapeHtml(h.tracking_url)}" target="_blank" rel="noopener">${escapeHtml([h.tracking_company, h.tracking_number].filter(Boolean).join(" "))}</a>` : escapeHtml([h.tracking_company, h.tracking_number].filter(Boolean).join(" ")))
+    : "—";
+  const fulf = (h.fulfillments || []).map((f) => `<span class="bov-cell-sub">${escapeHtml(f.display_status || f.status || "—")}${f.created_at ? ` · ${escapeHtml(bovDateMed(f.created_at))}` : ""}${f.tracking_number ? ` · ${escapeHtml([f.tracking_company, f.tracking_number].filter(Boolean).join(" "))}` : ""}</span>`).join("<br>") || "—";
+  const kv = [
+    bovKv("Customer", `${escapeHtml(h.customer_name || "—")}${h.email ? `<span class="bov-cell-sub">${escapeHtml(h.email)}</span>` : ""}${h.customer_orders != null ? `<span class="bov-cell-sub">${bovInt(h.customer_orders)} order${h.customer_orders === 1 ? "" : "s"} lifetime</span>` : ""}`),
+    bovKv("Placed", `${escapeHtml(h.created_at ? bovDateMed(h.created_at) : "—")}${h.age_hours != null ? ` ${bovAgeHoursChip(h.age_hours)}` : ""}`),
+    bovKv("Ship to", escapeHtml(shipTo || "—")),
+    bovKv("Shipping method", escapeHtml(h.shipping_line_title || "—")),
+    bovKv("Tracking", tracking),
+    bovKv("Fulfillments", fulf),
+    bovKv("Tags", (h.tags || []).length ? h.tags.map((t) => `<span class="bov-cell-store">${escapeHtml(t)}</span>`).join(" ") : "—"),
+    bovKv("Note", h.note ? escapeHtml(h.note) : "—"),
+    bovKv("Subtotal", escapeHtml(bovMoney(h.subtotal_price))),
+    bovKv("Shipping / refunded", `${escapeHtml(bovMoney(h.total_shipping))} / ${escapeHtml(bovMoney(h.total_refunded))}`),
+    bovKv("Total", `<strong>${escapeHtml(bovMoney(h.total_price))}</strong>${h.currency ? ` <span class="bov-cell-sub">${escapeHtml(h.currency)}</span>` : ""}`),
+  ].join("");
+  const rowsHtml = lines.map((l) => {
+    const qty = l.current_quantity != null ? l.current_quantity : l.quantity;
+    const qtyHtml = l.current_quantity != null && l.quantity != null && l.current_quantity !== l.quantity ? `${bovInt(l.current_quantity)} <span class="bov-cell-sub">of ${bovInt(l.quantity)}</span>` : bovInt(qty || 0);
+    const subBits = [l.variant_title, l.sku ? `SKU ${l.sku}` : "", l.barcode ? `UPC ${l.barcode}` : ""].filter(Boolean).join(" · ");
+    return `<tr><td>${escapeHtml(l.title || l.product_title || "—")}${subBits ? `<span class="bov-cell-sub">${escapeHtml(subBits)}</span>` : ""}</td><td class="bov-num">${qtyHtml}</td><td class="bov-num">${bovMoney(l.unit_price)}</td><td class="bov-num">${bovMoney(l.discounted_total)}</td></tr>`;
+  }).join("");
+  const totalQty = lines.reduce((a, l) => a + bovNum(l.current_quantity != null ? l.current_quantity : l.quantity), 0);
+  const totalLines = lines.reduce((a, l) => a + bovNum(l.discounted_total), 0);
+  body.innerHTML =
+    `<div class="bov-kv-grid">${kv}</div>` +
+    (lines.length
+      ? `<div class="bov-table-scroll"><table class="data-table bov-mini-table bov-modal-table"><thead><tr><th style="width:55%">Product</th><th class="bov-num" style="width:15%">Qty</th><th class="bov-num" style="width:15%">Unit price</th><th class="bov-num" style="width:15%">Line total</th></tr></thead><tbody>${rowsHtml}</tbody><tfoot><tr><td>${bovInt(lines.length)} line${lines.length === 1 ? "" : "s"}</td><td class="bov-num">${bovInt(totalQty)}</td><td></td><td class="bov-num">${bovMoney(totalLines)}</td></tr></tfoot></table></div>`
+      : bovEmptyHtml("No line items in the local mirror for this order.")) +
+    (data.admin_url ? `<div class="bov-modal-totals"><a class="bov-modal-link" href="${escapeHtml(data.admin_url)}" target="_blank" rel="noopener">Open in Shopify admin ↗</a></div>` : "");
 }
 
 // ---------------------------------------------------------------------------
@@ -21164,6 +21382,13 @@ function bovSetTab(group, value) {
     bovRenderPurchases();
     const key = bovActivePurchasesKey();
     if (!bovState.widgets[key].data && !bovState.widgets[key].loading) bovFetchAll({ only: [key] });
+  } else if (group === "shopifyorders") {
+    // One widget whose request depends on the tab: drop the old list and refetch.
+    const w = bovState.widgets.shopifyOrders_list;
+    w.data = null;
+    w.error = null;
+    bovRenderShopifyOrdersList();
+    bovFetchAll({ only: ["shopifyOrders_list"] });
   }
 }
 
@@ -21183,6 +21408,7 @@ function bovRenderCard(key) {
   if (key === "quotations") bovRenderQuotationsTable();
   else if (key === "invoices" || key.startsWith("invoices")) bovRenderInvoices();
   else if (key === "purchases" || key.startsWith("purchases")) bovRenderPurchases();
+  else if (key === "shopifyorders" || key === "shopifyOrders_list") bovRenderShopifyOrdersList();
 }
 
 function bovSortRows(rows, sort) {
@@ -21751,6 +21977,7 @@ function bovOpenRow(rowEl) {
   if (kind === "quotation") bovOpenQuotationModal(id);
   else if (kind === "invoice") bovOpenInvoiceModal(parseInt(id, 10), rowEl.dataset.bovStore ? parseInt(rowEl.dataset.bovStore, 10) : null);
   else if (kind === "po") bovOpenPoModal(parseInt(id, 10));
+  else if (kind === "shopify-order") bovOpenShopifyOrderModal(parseInt(rowEl.dataset.bovStore, 10), id);
 }
 
 function bovKv(label, valueHtml) {
