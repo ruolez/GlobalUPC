@@ -9727,9 +9727,11 @@ async def _bov_quotations_block(db: Session, cfg, include_list: bool, limit: int
         base.update({"filtered_out": True, "count": 0, "total_amount": 0.0, "total_qty": 0.0,
                      "quotations": [], "limit": limit, "truncated": False})
         return base
+    excl_names, _ = _bov_excluded_names(db)
     ok, err, payload = await bov.quotations_in_progress_async(
         **_bov_conn_kwargs(admin_store), statuses=statuses, limit=limit,
-        sort_by=sort_by, sort_order=sort_order, include_list=include_list, source_dbs=source_dbs)
+        sort_by=sort_by, sort_order=sort_order, include_list=include_list, source_dbs=source_dbs,
+        excluded_names=excl_names)
     if not ok:
         base["error"] = err
         return base
@@ -9771,9 +9773,11 @@ async def _bov_open_invoices_block(db: Session, cfg, include_list: bool, date_fr
         return {"configured": True, "filtered_out": True, "invoices": [], "limit": limit}
     today = bov.today_in_tz(_bov_tz(cfg))
     date_to_excl = bov.upper_bound(bov.parse_ymd(date_to)) if date_to else None
+    excl_names, _ = _bov_excluded_names(db)
     results = await _bov_fanout(stores, lambda st: bov.open_invoices_async(
         **_bov_conn_kwargs(st), date_from=date_from, date_to_excl=date_to_excl,
-        limit=limit, sort_by=sort_by, sort_order=sort_order, include_list=include_list, today=today))
+        limit=limit, sort_by=sort_by, sort_order=sort_order, include_list=include_list, today=today,
+        excluded_names=excl_names))
     base = _bov_multi_base(stores, results, None,
                            count_of=lambda p: p.get("count"), amount_of=lambda p: p.get("total_amount"))
     if base.get("error"):
@@ -9830,11 +9834,13 @@ async def _bov_shipped_block(db: Session, cfg, period: bov.Period, bucket: str, 
     if not stores:
         return {"configured": True, "filtered_out": True, "period": period.as_dict(), "bucket": bucket,
                 "invoices": [], "limit": limit}
+    excl_names, _ = _bov_excluded_names(db)
     results = await _bov_fanout(stores, lambda st: bov.shipped_invoices_async(
         **_bov_conn_kwargs(st),
         date_from=period.start.isoformat(), date_to_excl=period.end_excl,
         series_from=period.prev_start.isoformat(),
-        limit=limit, sort_by=sort_by, sort_order=sort_order, include_list=include_list))
+        limit=limit, sort_by=sort_by, sort_order=sort_order, include_list=include_list,
+        excluded_names=excl_names))
     def _cur_sum(p, field):
         return bov.sum_daily(p.get("daily") or {}, period.start, period.end, [field])[field]
     base = _bov_multi_base(stores, results, {"period": period.as_dict(), "bucket": bucket},
@@ -10293,9 +10299,11 @@ async def get_business_overview_invoices_period(
     if not stores:
         return BOVInvoicesPeriodResponse(configured=True, filtered_out=True, period=BOVPeriod(**period.as_dict()))
     today = bov.today_in_tz(_bov_tz(cfg))
+    excl_names, _ = _bov_excluded_names(db)
     results = await _bov_fanout(stores, lambda st: bov.invoices_in_period_async(
         **_bov_conn_kwargs(st), date_from=period.start.isoformat(), date_to_excl=period.end_excl,
-        limit=limit, sort_by=sort_by, sort_order=sort_order, include_list=True, today=today))
+        limit=limit, sort_by=sort_by, sort_order=sort_order, include_list=True, today=today,
+        excluded_names=excl_names))
     base = _bov_multi_base(stores, results, {"period": period.as_dict()},
                            count_of=lambda p: p.get("count"), amount_of=lambda p: p.get("total_amount"))
     if base.get("error"):

@@ -22075,7 +22075,7 @@ async function bovAddExclusion() {
     bovHideExclAutocomplete();
     showToast(`✓ ${name} excluded from sales totals`, "success");
     await bovLoadExclusions();
-    bovFetchAll({ only: ["summary", "trend", "top"] });
+    bovFetchAll({ only: ["summary", "trend", "top", "quotations", "invoicesPeriod", "invoicesOpen"] });
   } catch (e) {
     showToast(`✗ ${e.message || "Could not add exclusion"}`, "error");
   }
@@ -22088,7 +22088,7 @@ async function bovRemoveExclusion(id) {
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     showToast("Exclusion removed", "success");
     await bovLoadExclusions();
-    bovFetchAll({ only: ["summary", "trend", "top"] });
+    bovFetchAll({ only: ["summary", "trend", "top", "quotations", "invoicesPeriod", "invoicesOpen"] });
   } catch (e) {
     showToast(`✗ ${e.message || "Could not remove"}`, "error");
   }

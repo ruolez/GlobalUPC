@@ -407,14 +407,17 @@ def _invoice_joins(present: Dict[str, bool]) -> Dict[str, str]:
 
 def _excl_clause(names: List[str], column: str = "h.BusinessName") -> Tuple[str, List[Any]]:
     """AND (col IS NULL OR col NOT IN (...)) — chunked at MAX_PARAMS."""
-    clean = [n for n in (names or []) if n is not None and str(n).strip() != ""]
+    # Trim both sides so a stray space in the exclusion or the invoice never
+    # lets an excluded customer slip through (SQL Server compares
+    # case-insensitively under the default collation).
+    clean = [str(n).strip() for n in (names or []) if n is not None and str(n).strip() != ""]
     if not clean:
         return "", []
     parts: List[str] = []
     params: List[Any] = []
     for i in range(0, len(clean), MAX_PARAMS):
         chunk = clean[i:i + MAX_PARAMS]
-        parts.append(f"{column} NOT IN ({','.join(['?'] * len(chunk))})")
+        parts.append(f"LTRIM(RTRIM({column})) NOT IN ({','.join(['?'] * len(chunk))})")
         params.extend(chunk)
     return f" AND ({column} IS NULL OR ({' AND '.join(parts)}))", params
 
@@ -493,15 +496,24 @@ def _quotations_in_progress_sync(
     sort_order: str = "desc",
     include_list: bool = True,
     source_dbs: Optional[List[str]] = None,
+    excluded_names: Optional[List[str]] = None,
 ) -> Tuple[bool, Optional[str], Dict[str, Any]]:
     limit = _clamp_limit(limit)
     clean_statuses = [s.strip() for s in (statuses or []) if s and s.strip()]
-    having_sql = ""
+    having_parts: List[str] = []
     having_params: List[Any] = []
     if clean_statuses:
         ph = ",".join(["?"] * len(clean_statuses))
-        having_sql = f"HAVING (MAX(qs.Status) IN ({ph}) OR MAX(qip.Status) IN ({ph}))"
-        having_params = clean_statuses + clean_statuses
+        having_parts.append(f"(MAX(qs.Status) IN ({ph}) OR MAX(qip.Status) IN ({ph}))")
+        having_params += clean_statuses + clean_statuses
+    # Customer exclusions (same list as sales): the quotation's customer is the
+    # aggregated QuotationsStatus.BusinessName, so this belongs in HAVING.
+    clean_excl = [str(n).strip() for n in (excluded_names or []) if n and str(n).strip()]
+    if clean_excl:
+        ph = ",".join(["?"] * len(clean_excl))
+        having_parts.append(f"(MAX(qs.BusinessName) IS NULL OR LTRIM(RTRIM(MAX(qs.BusinessName))) NOT IN ({ph}))")
+        having_params += clean_excl
+    having_sql = ("HAVING " + " AND ".join(having_parts)) if having_parts else ""
     # Store filter: SourceDB holds the originating BackOffice database name.
     # A row predicate, so it belongs in WHERE (before the GROUP BY).
     where_sql = ""
@@ -719,6 +731,7 @@ def _open_invoices_sync(
     sort_order: str = "desc",
     include_list: bool = True,
     today: Optional[date] = None,
+    excluded_names: Optional[List[str]] = None,
 ) -> Tuple[bool, Optional[str], Dict[str, Any]]:
     limit = _clamp_limit(limit)
     today = today or date.today()
@@ -730,6 +743,9 @@ def _open_invoices_sync(
     if date_to_excl:
         where += " AND h.InvoiceDate < ?"
         params.append(date_to_excl)
+    excl_sql, excl_params = _excl_clause(excluded_names or [])
+    where += excl_sql
+    params.extend(excl_params)
     try:
         with _connect(host, port, database, username, password) as conn:
             cur = conn.cursor()
@@ -802,9 +818,11 @@ def _shipped_invoices_sync(
     sort_by: str = "ship_date",
     sort_order: str = "desc",
     include_list: bool = True,
+    excluded_names: Optional[List[str]] = None,
 ) -> Tuple[bool, Optional[str], Dict[str, Any]]:
     """List = shipped in [date_from, date_to_excl); daily = [series_from, date_to_excl)."""
     limit = _clamp_limit(limit)
+    excl_sql, excl_params = _excl_clause(excluded_names or [])
     try:
         with _connect(host, port, database, username, password) as conn:
             cur = conn.cursor()
@@ -822,9 +840,10 @@ def _shipped_invoices_sync(
                 WHERE {_SHIPPED_WHERE}
                   AND h.InvoiceDate >= ?
                   AND h.InvoiceDate <  ?
+                  {excl_sql}
                 GROUP BY CAST(h.InvoiceDate AS date)
                 ORDER BY d
-            """, [series_from, date_to_excl])
+            """, [series_from, date_to_excl] + excl_params)
             daily: Dict[date, Dict[str, float]] = {}
             for r in _rows(cur):
                 d = r.get("d")
@@ -848,8 +867,9 @@ def _shipped_invoices_sync(
                     WHERE {_SHIPPED_WHERE}
                       AND h.InvoiceDate >= ?
                       AND h.InvoiceDate <  ?
+                      {excl_sql}
                     ORDER BY {sort_expr}
-                """, [limit, date_from, date_to_excl])
+                """, [limit, date_from, date_to_excl] + excl_params)
                 invoices = [_invoice_row(d) for d in _rows(cur)]
         return True, None, {"invoices": invoices, "daily": daily, "limit": limit}
     except Exception as e:
@@ -865,6 +885,7 @@ def _invoices_in_period_sync(
     sort_order: str = "desc",
     include_list: bool = True,
     today: Optional[date] = None,
+    excluded_names: Optional[List[str]] = None,
 ) -> Tuple[bool, Optional[str], Dict[str, Any]]:
     """
     Every non-void invoice dated (InvoiceDate) in [date_from, date_to_excl),
@@ -874,6 +895,9 @@ def _invoices_in_period_sync(
     tracking_blank = _TRACKING_BLANK
     where = "ISNULL(h.Void, 0) = 0 AND h.InvoiceDate >= ? AND h.InvoiceDate < ?"
     params: List[Any] = [date_from, date_to_excl]
+    excl_sql, excl_params = _excl_clause(excluded_names or [])
+    where += excl_sql
+    params.extend(excl_params)
     try:
         with _connect(host, port, database, username, password) as conn:
             cur = conn.cursor()
