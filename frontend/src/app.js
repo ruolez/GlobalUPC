@@ -19341,7 +19341,10 @@ function bovTickUpdated() {
     return;
   }
   const cls = `bov-sync-status${note.tone === "busy" ? " is-busy" : note.tone === "warn" ? " is-warn" : ""}`;
-  el.innerHTML = `<span class="bov-updated-wrap">${updated ? `<span>${escapeHtml(updated)}</span>` : ""}<span class="${cls}" title="${escapeHtml(note.title || note.text)}">${note.tone === "busy" ? "⟳ " : ""}${escapeHtml(note.text)}</span></span>`;
+  // The note breaks at " · " into its own short lines so the status block stays
+  // narrow (up to three lines) instead of pushing the controls apart.
+  const lines = String(note.text).split(" · ").map((x) => escapeHtml(x)).filter(Boolean).slice(0, 2);
+  el.innerHTML = `<span class="bov-updated-wrap">${updated ? `<span>${escapeHtml(updated)}</span>` : ""}<span class="${cls}" title="${escapeHtml(note.title || note.text)}">${lines.map((l, i) => `<span class="bov-sync-line">${i === 0 && note.tone === "busy" ? "⟳ " : ""}${l}</span>`).join("")}</span></span>`;
 }
 
 function bovSetSyncNote(text, tone, title) {
