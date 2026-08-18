@@ -18722,7 +18722,8 @@ function bovLoadPrefs() {
       bovState.collapsedCards = {};
       Object.keys(p.collapsed).forEach((k) => { if (BOV_COLLAPSIBLE_CARDS.includes(k) && p.collapsed[k]) bovState.collapsedCards[k] = true; });
     }
-    if (p && BOV_SECTIONS.includes(p.section)) bovState.section = p.section;
+    // The section is intentionally NOT restored: opening the Overview page
+    // always starts on the Overview tab (sections are a within-visit state).
   } catch (e) {
     /* ignore */
   }
@@ -18878,7 +18879,8 @@ async function loadBusinessOverviewPage() {
   bovBindOnce();
   bovLoadPrefs();
   BOV_COLLAPSIBLE_CARDS.forEach(bovApplyCollapsed);
-  bovSetSection(bovState.section, { silent: true });
+  bovState.section = "overview";           // always land on the Overview tab
+  bovSetSection("overview", { silent: true });
   bovRenderPresetChips();
   bovRenderBucketButtons();
   const splitEl = document.getElementById("bov-split-toggle");
