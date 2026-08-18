@@ -1377,6 +1377,7 @@ class BOVInvoiceLine(BaseModel):
     qty_shipped: Optional[float] = None
     unit_price: Optional[float] = None
     unit_cost: Optional[float] = None
+    line_unit_cost: Optional[float] = None       # cost stamped on the invoice line (reference)
     discount: Optional[float] = None
     ds_percent: Optional[bool] = None
     extended_price: Optional[float] = None
@@ -1415,6 +1416,7 @@ class BOVInvoiceDetailResponse(BaseModel):
     header: BOVInvoiceHeader
     lines: List[BOVInvoiceLine] = []
     store_name: Optional[str] = None
+    cost_basis: str = "local"                     # local = store Items_tbl.UnitCost, s2s = S2S Items_tbl.UnitCost
 
 
 # ---- Purchase orders --------------------------------------------------------
@@ -1566,6 +1568,7 @@ class BOVSalesTrendResponse(BaseModel):
     previous_totals: Dict[str, BOVSalesSourceTotals] = {}
     change_pct: Dict[str, Dict[str, Optional[float]]] = {} # per source: revenue/cost/profit/margin_pct/orders/units
     per_store: List[BOVSalesStoreTotals] = []
+    cost_mode: str = "default"
     warnings: List[str] = []
     store_ids: List[int] = []                              # store filter applied (empty = all)
     generated_at: datetime
@@ -1596,6 +1599,7 @@ class BOVSalesBreakdownResponse(BaseModel):
     error: Optional[str] = None
     rows: List[BOVBreakdownRow] = []
     total_revenue: float = 0.0
+    cost_mode: str = "default"
     warnings: List[str] = []
 
 
@@ -1616,6 +1620,7 @@ class BOVShopifyOpenOrdersBlock(BOVBlockStatus):
 
 class BOVSalesSummaryBlock(BaseModel):
     configured: bool = False
+    cost_mode: str = "default"
     per_store: List[BOVSalesStoreTotals] = []
     sources: Dict[str, BOVSalesSourceStatus] = {}
     totals: Dict[str, BOVSalesSourceTotals] = {}

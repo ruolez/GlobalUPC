@@ -18486,6 +18486,7 @@ const bovState = {
   splitSources: false,
   storeFilter: [],      // store ids; [] = all configured sources
   chartsOpen: false,    // revenue/margin charts collapsed by default
+  costMode: "default",  // "default" (local UnitCost / S2S UnitPriceC) | "s2s" (S2S UnitCost everywhere)
   collapsedCards: {},   // cardId -> true when the user collapsed it
   section: "overview",  // active section tab
   popover: null,        // id of the open topbar popover
@@ -18718,6 +18719,7 @@ function bovLoadPrefs() {
     if (p && Array.isArray(p.storeIds)) bovState.storeFilter = p.storeIds.map(Number).filter((n) => !isNaN(n));
     if (p && typeof p.charts === "boolean") bovState.chartsOpen = p.charts;
     if (p && typeof p.openInRange === "boolean") bovState.openInRange = p.openInRange;
+    if (p && ["default", "s2s"].includes(p.costMode)) bovState.costMode = p.costMode;
     if (p && p.collapsed && typeof p.collapsed === "object") {
       bovState.collapsedCards = {};
       Object.keys(p.collapsed).forEach((k) => { if (BOV_COLLAPSIBLE_CARDS.includes(k) && p.collapsed[k]) bovState.collapsedCards[k] = true; });
@@ -18742,6 +18744,7 @@ function bovSavePrefs() {
         storeIds: bovState.storeFilter,
         charts: bovState.chartsOpen,
         openInRange: bovState.openInRange,
+        costMode: bovState.costMode,
         collapsed: bovState.collapsedCards,
         section: bovState.section,
       }),
@@ -18933,6 +18936,7 @@ async function loadBusinessOverviewPage() {
   bovShowLock(false);
   bovBindOnce();
   bovLoadPrefs();
+  bovSyncCostToggle();
   BOV_COLLAPSIBLE_CARDS.forEach(bovApplyCollapsed);
   bovState.section = "overview";           // always land on the Overview tab
   bovSetSection("overview", { silent: true });
@@ -19001,6 +19005,35 @@ function bovValidateStoreFilter() {
 
 function bovStoreParams() {
   return bovState.storeFilter.length ? { store_ids: bovState.storeFilter.join(",") } : {};
+}
+
+function bovCostParams() {
+  return bovState.costMode === "s2s" ? { cost_mode: "s2s" } : {};
+}
+
+// Widgets whose figures depend on the cost basis (S2S Cost toggle).
+const BOV_COST_WIDGETS = ["summary", "trend", "top"];
+
+function bovSyncCostToggle() {
+  const cb = document.getElementById("bov-cost-s2s");
+  if (cb) cb.checked = bovState.costMode === "s2s";
+  document.getElementById("bov-cost-toggle")?.classList.toggle("is-on", bovState.costMode === "s2s");
+}
+
+function bovSetCostMode(mode) {
+  const next = mode === "s2s" ? "s2s" : "default";
+  if (bovState.costMode === next) return;
+  bovState.costMode = next;
+  bovSavePrefs();
+  bovSyncCostToggle();
+  bovState.modalCache.invoice.clear();
+  bovFetchAll({ only: BOV_COST_WIDGETS });
+}
+
+function bovCostBasisLabel() {
+  return bovState.costMode === "s2s"
+    ? "S2S cost — every sale costed from the Item Tracker S2S Items_tbl.UnitCost"
+    : "BackOffice: each store's own Items_tbl.UnitCost · Shopify: S2S Items_tbl.UnitPriceC";
 }
 
 function bovFilteredStoreNames() {
@@ -19208,6 +19241,11 @@ function bovBindOnce() {
     bovState.splitSources = !!e.target.checked;
     bovSavePrefs();
     bovRenderTrendChart();
+  });
+
+  // Cost basis (S2S Cost)
+  document.getElementById("bov-cost-s2s")?.addEventListener("change", (e) => {
+    bovSetCostMode(e.target.checked ? "s2s" : "default");
   });
 
   // Refresh
@@ -19747,12 +19785,12 @@ function bovRangeParams() {
 const BOV_WIDGET_DEFS = {
   summary: {
     card: "bov-kpi-strip",
-    request: () => ["/summary", { ...bovRangeParams(), open_scope: bovState.openInRange ? "range" : "all", ...bovStoreParams() }],
+    request: () => ["/summary", { ...bovRangeParams(), open_scope: bovState.openInRange ? "range" : "all", ...bovStoreParams(), ...bovCostParams() }],
     render: () => bovRenderKpis(),
   },
   trend: {
     card: "bov-trend-card",
-    request: () => ["/sales/trend", { ...bovRangeParams(), bucket: bovResolvedBucket(), ...bovStoreParams() }],
+    request: () => ["/sales/trend", { ...bovRangeParams(), bucket: bovResolvedBucket(), ...bovStoreParams(), ...bovCostParams() }],
     render: () => {
       bovRenderTrendChart();
       bovRenderMarginChart();
@@ -19761,7 +19799,7 @@ const BOV_WIDGET_DEFS = {
   },
   top: {
     card: "bov-top-card",
-    request: () => ["/sales/breakdown", { ...bovRangeParams(), by: bovState.tabs.top, source: bovState.tabs.top === "product" ? "all" : "backoffice", limit: 8, ...bovStoreParams() }],
+    request: () => ["/sales/breakdown", { ...bovRangeParams(), by: bovState.tabs.top, source: bovState.tabs.top === "product" ? "all" : "backoffice", limit: 8, ...bovStoreParams(), ...bovCostParams() }],
     render: () => bovRenderTopBars(),
   },
   quotations: {
@@ -20275,18 +20313,23 @@ function bovRenderKpis() {
         label: "Profit",
         value: "—",
         delta: { cls: "is-flat", glyph: "•", text: "cost unavailable" },
-        note: "No cost source for these sales — set a sales store or the Item Tracker S2S store",
+        note: bovState.costMode === "s2s"
+          ? "S2S Cost needs the Item Tracker S2S store — set it in Item Tracker settings"
+          : "No cost source for these sales — Shopify cost needs the Item Tracker S2S store (Items_tbl.UnitPriceC)",
         noteTone: "warn",
         state: "warn",
         scrollTo: "bov-margin-card",
       });
     } else {
       const coverage = sh && sh.cost_coverage != null && sh.units ? sh.cost_coverage : null;
+      const boCoverage = bo && bo.cost_coverage != null && bo.units ? bo.cost_coverage : null;
       const pf = [
-        { k: "cost", v: money(tot.cost) },
+        { k: "cost", v: money(tot.cost), title: bovCostBasisLabel() },
+        { k: "basis", v: bovState.costMode === "s2s" ? "S2S UnitCost" : "local / S2S UnitPriceC", title: bovCostBasisLabel(), tone: bovState.costMode === "s2s" ? "accent" : undefined },
         margin != null ? { k: "margin", v: `${bovNum(margin).toFixed(1)}%` } : null,
         tot.returns ? { k: "returns", v: money(tot.returns) } : null,
-        coverage != null && coverage < 0.999 ? { k: "Shopify cost known", v: `${Math.round(coverage * 100)}%`, vHtml: `<a href="#" class="bov-kpi-link" data-bov-action="missing-cost" title="View and export the products without cost">${Math.round(coverage * 100)}% · view</a>`, tone: "warn", title: "Share of Shopify units whose barcode resolved to an Items_tbl cost — margin is partial. Click to see the products." } : null,
+        coverage != null && coverage < 0.999 ? { k: "Shopify cost known", v: `${Math.round(coverage * 100)}%`, vHtml: `<a href="#" class="bov-kpi-link" data-bov-action="missing-cost" title="View and export the products without cost">${Math.round(coverage * 100)}% · view</a>`, tone: "warn", title: "Share of Shopify units whose barcode resolved to a cost in the S2S Items_tbl — margin is partial. Click to see the products." } : null,
+        boCoverage != null && boCoverage < 0.999 ? { k: "BackOffice cost known", v: `${Math.round(boCoverage * 100)}%`, tone: "warn", title: "Share of BackOffice units whose UPC resolved to a UnitCost in the S2S Items_tbl (S2S cost mode) — margin is partial." } : null,
       ].filter(Boolean);
       tiles.push({
         label: "Profit",
@@ -21383,7 +21426,7 @@ async function bovOpenMissingCostModal() {
   bovModalLoading(body, "Checking Shopify products against the items table…");
   try {
     const [data, excl] = await Promise.all([
-      bovFetchJson("/shopify/missing-cost", { ...bovRangeParams(), ...bovStoreParams() }),
+      bovFetchJson("/shopify/missing-cost", { ...bovRangeParams(), ...bovStoreParams(), ...bovCostParams() }),
       bovFetchJson("/shopify/exclusions", {}).catch(() => ({ exclusions: [], total: 0 })),
     ]);
     bovState.missingCost = data;
@@ -21398,7 +21441,7 @@ async function bovReloadMissingCost() {
   const body = document.getElementById("bov-missing-cost-body");
   try {
     const [data, excl] = await Promise.all([
-      bovFetchJson("/shopify/missing-cost", { ...bovRangeParams(), ...bovStoreParams() }),
+      bovFetchJson("/shopify/missing-cost", { ...bovRangeParams(), ...bovStoreParams(), ...bovCostParams() }),
       bovFetchJson("/shopify/exclusions", {}).catch(() => ({ exclusions: [], total: 0 })),
     ]);
     bovState.missingCost = data;
@@ -22329,7 +22372,7 @@ async function bovOpenInvoiceModal(invoiceId, storeId) {
   }
   bovModalLoading(body, "Loading invoice…");
   try {
-    const data = await bovFetchJson(`/invoices/${invoiceId}`, sid != null ? { store_id: sid } : {});
+    const data = await bovFetchJson(`/invoices/${invoiceId}`, { ...(sid != null ? { store_id: sid } : {}), ...bovCostParams() });
     cache.set(cacheKey, data);
     bovRenderInvoiceModal(data);
   } catch (e) {
@@ -22367,10 +22410,13 @@ function bovRenderInvoiceModal(data) {
     bovKv("Invoice total", `<strong>${escapeHtml(bovMoney(h.invoice_total))}</strong>`),
     bovKv("Paid / credits", `${escapeHtml(bovMoney(h.total_payments))} / ${escapeHtml(bovMoney(h.total_credits))}`),
     bovKv("Profit", `${escapeHtml(bovMoney(h.profit))}${h.margin_pct != null ? ` <span class="sa-kpi-pct">${escapeHtml(bovPct(h.margin_pct))}</span>` : ""}`),
+    bovKv("Cost basis", data.cost_basis === "s2s"
+      ? `<span class="bov-cost-basis is-s2s" title="S2S Cost is on — every line costed from the Item Tracker S2S Items_tbl.UnitCost by UPC">S2S UnitCost</span>`
+      : `<span class="bov-cost-basis" title="Each line costed from this store's Items_tbl.UnitCost by UPC (invoice line cost when the item is missing)">Store UnitCost</span>`),
   ].join("");
   const rowsHtml = lines.map((l) => {
     const qty = bovNum(l.qty_shipped);
-    return `<tr${l.void ? ' class="bov-line-void"' : ""}><td><span class="bov-cell-main">${escapeHtml(l.product_description || "—")}</span><span class="bov-cell-sub bov-cell-mono">${escapeHtml([l.product_sku, l.product_upc].filter(Boolean).join(" · "))}${l.unit_desc ? ` · ${escapeHtml(l.unit_desc)}` : ""}</span></td><td class="bov-num">${bovInt(qty)}${l.qty_ordered != null && bovNum(l.qty_ordered) !== qty ? `<span class="bov-cell-sub">of ${bovInt(l.qty_ordered)}</span>` : ""}</td><td class="bov-num">${bovMoney(l.unit_price)}</td><td class="bov-num">${bovMoney(l.unit_cost)}</td><td class="bov-num">${bovMoney(l.extended_price)}</td><td class="bov-num">${l.line_profit != null ? bovMoney(l.line_profit) : "—"}${l.margin_pct != null ? `<span class="bov-cell-sub">${escapeHtml(bovPct(l.margin_pct))}</span>` : ""}</td></tr>`;
+    return `<tr${l.void ? ' class="bov-line-void"' : ""}><td><span class="bov-cell-main">${escapeHtml(l.product_description || "—")}</span><span class="bov-cell-sub bov-cell-mono">${escapeHtml([l.product_sku, l.product_upc].filter(Boolean).join(" · "))}${l.unit_desc ? ` · ${escapeHtml(l.unit_desc)}` : ""}</span></td><td class="bov-num">${bovInt(qty)}${l.qty_ordered != null && bovNum(l.qty_ordered) !== qty ? `<span class="bov-cell-sub">of ${bovInt(l.qty_ordered)}</span>` : ""}</td><td class="bov-num">${bovMoney(l.unit_price)}</td><td class="bov-num">${l.unit_cost != null ? bovMoney(l.unit_cost) : "—"}${l.line_unit_cost != null && l.unit_cost != null && Math.abs(bovNum(l.line_unit_cost) - bovNum(l.unit_cost)) > 0.004 ? `<span class="bov-cell-sub" title="Cost stamped on the invoice line">line ${escapeHtml(bovMoney(l.line_unit_cost))}</span>` : ""}</td><td class="bov-num">${bovMoney(l.extended_price)}</td><td class="bov-num">${l.line_profit != null ? bovMoney(l.line_profit) : "—"}${l.margin_pct != null ? `<span class="bov-cell-sub">${escapeHtml(bovPct(l.margin_pct))}</span>` : ""}</td></tr>`;
   }).join("");
   body.innerHTML =
     `<div class="bov-kv-grid">${kv}</div>` +

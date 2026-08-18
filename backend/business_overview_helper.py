@@ -981,11 +981,12 @@ def _invoices_in_period_sync(
         return False, str(e), {}
 
 
-def _invoice_detail_sync(host, port, database, username, password, invoice_id: int) -> Tuple[bool, Optional[str], Dict[str, Any]]:
+def _invoice_detail_sync(host, port, database, username, password, invoice_id: int,
+                         cost_mode: str = "default") -> Tuple[bool, Optional[str], Dict[str, Any]]:
     try:
         with _connect(host, port, database, username, password) as conn:
             cur = conn.cursor()
-            present = _tables_present(cur, ["Invoices_tbl", "InvoicesDetails_tbl", "Employees_tbl", "Shippers_tbl", "Terms_tbl"])
+            present = _tables_present(cur, ["Invoices_tbl", "InvoicesDetails_tbl", "Employees_tbl", "Shippers_tbl", "Terms_tbl", "Items_tbl"])
             if not present.get("Invoices_tbl"):
                 return False, "Table Invoices_tbl not found on this store", {}
             j = _invoice_joins(present)
@@ -1032,17 +1033,22 @@ def _invoice_detail_sync(host, port, database, username, password, invoice_id: i
             })
             lines: List[Dict[str, Any]] = []
             if present.get("InvoicesDetails_tbl"):
-                cur.execute("""
+                local_cost = present.get("Items_tbl") and cost_mode != "s2s"
+                cur.execute(f"""
                     SELECT d.LineID, d.ProductID, d.ProductSKU, d.ProductUPC, d.ProductDescription,
                            d.UnitDesc, d.UnitQty, d.QtyOrdered, d.QtyShipped, d.UnitPrice, d.UnitCost,
                            d.Discount, d.ds_Percent, d.ExtendedPrice, d.ExtendedCost, ISNULL(d.Void,0) AS Void
+                           {", ic.ItemUnitCost" if local_cost else ", CAST(NULL AS money) AS ItemUnitCost"}
                     FROM InvoicesDetails_tbl d
+                    {_LOCAL_COST_APPLY if local_cost else ""}
                     WHERE d.InvoiceID = ?
                     ORDER BY d.LineID
                 """, [int(invoice_id)])
                 for r in _rows(cur):
                     qty = _f(r.get("QtyShipped"))
-                    ucost = _fo(r.get("UnitCost"))
+                    # unit cost basis: this store's Items_tbl.UnitCost, else the invoice line cost;
+                    # in S2S mode the caller overwrites unit_cost from the S2S lookup.
+                    ucost = _fo(r.get("ItemUnitCost")) if local_cost and r.get("ItemUnitCost") is not None else _fo(r.get("UnitCost"))
                     ext_price = _fo(r.get("ExtendedPrice"))
                     line_cost = qty * (ucost or 0.0)
                     line_profit = (ext_price - line_cost) if ext_price is not None else None
@@ -1058,6 +1064,7 @@ def _invoice_detail_sync(host, port, database, username, password, invoice_id: i
                         "qty_shipped": _fo(r.get("QtyShipped")),
                         "unit_price": _fo(r.get("UnitPrice")),
                         "unit_cost": ucost,
+                        "line_unit_cost": _fo(r.get("UnitCost")),
                         "discount": _fo(r.get("Discount")),
                         "ds_percent": (bool(r.get("ds_Percent")) if r.get("ds_Percent") is not None else None),
                         "extended_price": ext_price,
@@ -1375,29 +1382,49 @@ def _purchase_order_detail_sync(host, port, database, username, password, po_id:
 # BackOffice sales (revenue / cost / returns) and breakdown
 # ============================================================================
 
+# BackOffice unit cost: the store's own Items_tbl.UnitCost by UPC (current cost),
+# falling back to the cost stamped on the invoice line when the item is missing.
+_LOCAL_COST_APPLY = """
+    OUTER APPLY (SELECT TOP 1 i.UnitCost AS ItemUnitCost
+                 FROM Items_tbl i
+                 WHERE i.ProductUPC = d.ProductUPC AND d.ProductUPC IS NOT NULL AND LTRIM(RTRIM(d.ProductUPC)) <> '') ic
+"""
+_LOCAL_COST_EXPR = "ISNULL(d.QtyShipped, 0) * ISNULL(ic.ItemUnitCost, ISNULL(d.UnitCost, 0))"
+
+
 def _backoffice_daily_sales_sync(
     host, port, database, username, password,
     date_from: str,
     date_to_excl: str,
     excluded_sales_names: Optional[List[str]] = None,
     excluded_return_names: Optional[List[str]] = None,
+    cost_mode: str = "default",
 ) -> Tuple[bool, Optional[str], Dict[str, Any]]:
+    """
+    cost_mode 'default': cost = qty × this store's Items_tbl.UnitCost (fallback line cost).
+    cost_mode 's2s': the caller re-costs from the S2S store, so units per (day, UPC)
+    are returned in `units_by_upc` and `cost` is left at 0.
+    """
     excl_sql, excl_params = _excl_clause(excluded_sales_names or [])
     ret_excl_sql, ret_excl_params = _excl_clause(excluded_return_names or [])
     try:
         with _connect(host, port, database, username, password) as conn:
             cur = conn.cursor()
-            present = _tables_present(cur, ["Invoices_tbl", "InvoicesDetails_tbl", "CreditMemos_tbl", "CreditMemosDetails_tbl"])
+            present = _tables_present(cur, ["Invoices_tbl", "InvoicesDetails_tbl", "Items_tbl", "CreditMemos_tbl", "CreditMemosDetails_tbl"])
             if not (present.get("Invoices_tbl") and present.get("InvoicesDetails_tbl")):
                 return False, "Invoices_tbl / InvoicesDetails_tbl not found on this store", {}
+            local_cost = present.get("Items_tbl") and cost_mode != "s2s"
+            cost_apply = _LOCAL_COST_APPLY if local_cost else ""
+            cost_expr = _LOCAL_COST_EXPR if local_cost else ("0" if cost_mode == "s2s" else "ISNULL(d.QtyShipped, 0) * ISNULL(d.UnitCost, 0)")
             cur.execute(f"""
                 SELECT CAST(h.InvoiceDate AS date)                          AS d,
                        COUNT(DISTINCT h.InvoiceID)                          AS invoices,
                        SUM(ISNULL(d.ExtendedPrice, 0))                      AS revenue,
-                       SUM(ISNULL(d.QtyShipped, 0) * ISNULL(d.UnitCost, 0)) AS cost,
+                       SUM({cost_expr})                                     AS cost,
                        SUM(ISNULL(d.QtyShipped, 0))                         AS units
                 FROM InvoicesDetails_tbl d
                 INNER JOIN Invoices_tbl h ON h.InvoiceID = d.InvoiceID
+                {cost_apply}
                 WHERE ISNULL(h.Void, 0) = 0
                   AND h.InvoiceDate >= ?
                   AND h.InvoiceDate <  ?
@@ -1413,6 +1440,25 @@ def _backoffice_daily_sales_sync(
                 if isinstance(d, date):
                     days[d] = {"invoices": _f(r.get("invoices")), "revenue": _f(r.get("revenue")),
                                "cost": _f(r.get("cost")), "units": _f(r.get("units"))}
+            units_by_upc: List[Tuple[date, str, float]] = []
+            if cost_mode == "s2s":
+                cur.execute(f"""
+                    SELECT CAST(h.InvoiceDate AS date) AS d, LTRIM(RTRIM(d.ProductUPC)) AS upc,
+                           SUM(ISNULL(d.QtyShipped, 0)) AS units
+                    FROM InvoicesDetails_tbl d
+                    INNER JOIN Invoices_tbl h ON h.InvoiceID = d.InvoiceID
+                    WHERE ISNULL(h.Void, 0) = 0
+                      AND h.InvoiceDate >= ?
+                      AND h.InvoiceDate <  ?
+                      {excl_sql}
+                    GROUP BY CAST(h.InvoiceDate AS date), LTRIM(RTRIM(d.ProductUPC))
+                """, [date_from, date_to_excl] + excl_params)
+                for r in _rows(cur):
+                    dd = r.get("d")
+                    if isinstance(dd, datetime):
+                        dd = dd.date()
+                    if isinstance(dd, date):
+                        units_by_upc.append((dd, (r.get("upc") or "").strip(), _f(r.get("units"))))
             returns: Dict[date, Dict[str, float]] = {}
             has_cm = bool(present.get("CreditMemos_tbl") and present.get("CreditMemosDetails_tbl"))
             if has_cm:
@@ -1435,7 +1481,8 @@ def _backoffice_daily_sales_sync(
                     if isinstance(d, date):
                         returns[d] = {"credit_memos": _f(r.get("credit_memos")),
                                       "amount": _f(r.get("amount")), "units": _f(r.get("units"))}
-        return True, None, {"days": days, "returns": returns, "has_credit_memos": has_cm}
+        return True, None, {"days": days, "returns": returns, "has_credit_memos": has_cm,
+                            "units_by_upc": units_by_upc, "cost_mode": cost_mode}
     except Exception as e:
         return False, str(e), {}
 
@@ -1447,16 +1494,20 @@ def _backoffice_breakdown_sync(
     by: str = "customer",
     limit: int = 10,
     excluded_sales_names: Optional[List[str]] = None,
+    cost_mode: str = "default",
 ) -> Tuple[bool, Optional[str], List[Dict[str, Any]]]:
     excl_sql, excl_params = _excl_clause(excluded_sales_names or [])
     limit = max(1, min(int(limit or 10), 200))
     try:
         with _connect(host, port, database, username, password) as conn:
             cur = conn.cursor()
-            present = _tables_present(cur, ["Invoices_tbl", "InvoicesDetails_tbl", "Employees_tbl"])
+            present = _tables_present(cur, ["Invoices_tbl", "InvoicesDetails_tbl", "Employees_tbl", "Items_tbl"])
             if not (present.get("Invoices_tbl") and present.get("InvoicesDetails_tbl")):
                 return False, "Invoices_tbl / InvoicesDetails_tbl not found on this store", []
             j = _invoice_joins(present)
+            local_cost = present.get("Items_tbl") and cost_mode != "s2s"
+            cost_apply = _LOCAL_COST_APPLY if local_cost else ""
+            cost_expr = _LOCAL_COST_EXPR if local_cost else ("NULL" if cost_mode == "s2s" else "ISNULL(d.QtyShipped,0)*ISNULL(d.UnitCost,0)")
             base_where = f"ISNULL(h.Void,0)=0 AND h.InvoiceDate >= ? AND h.InvoiceDate < ? {excl_sql}"
             params = [limit, date_from, date_to_excl] + excl_params
             if by == "rep":
@@ -1464,10 +1515,11 @@ def _backoffice_breakdown_sync(
                     SELECT TOP (?) h.SalesRepID AS k, {j['rep_agg_expr']} AS name, CAST(NULL AS nvarchar(20)) AS secondary,
                            COUNT(DISTINCT h.InvoiceID) AS orders,
                            SUM(ISNULL(d.ExtendedPrice,0)) AS revenue,
-                           SUM(ISNULL(d.QtyShipped,0)*ISNULL(d.UnitCost,0)) AS cost,
+                           SUM({cost_expr}) AS cost,
                            SUM(ISNULL(d.QtyShipped,0)) AS units
                     FROM InvoicesDetails_tbl d INNER JOIN Invoices_tbl h ON h.InvoiceID = d.InvoiceID
                     {j['rep_join']}
+                    {cost_apply}
                     WHERE {base_where}
                     GROUP BY h.SalesRepID
                     ORDER BY revenue DESC
@@ -1477,9 +1529,10 @@ def _backoffice_breakdown_sync(
                     SELECT TOP (?) d.ProductUPC AS k, MAX(d.ProductDescription) AS name, MAX(d.ProductSKU) AS secondary,
                            COUNT(DISTINCT h.InvoiceID) AS orders,
                            SUM(ISNULL(d.ExtendedPrice,0)) AS revenue,
-                           SUM(ISNULL(d.QtyShipped,0)*ISNULL(d.UnitCost,0)) AS cost,
+                           SUM({cost_expr}) AS cost,
                            SUM(ISNULL(d.QtyShipped,0)) AS units
                     FROM InvoicesDetails_tbl d INNER JOIN Invoices_tbl h ON h.InvoiceID = d.InvoiceID
+                    {cost_apply}
                     WHERE {base_where}
                     GROUP BY d.ProductUPC
                     ORDER BY revenue DESC
@@ -1489,9 +1542,10 @@ def _backoffice_breakdown_sync(
                     SELECT TOP (?) h.BusinessName AS k, h.BusinessName AS name, MAX(h.AccountNo) AS secondary,
                            COUNT(DISTINCT h.InvoiceID) AS orders,
                            SUM(ISNULL(d.ExtendedPrice,0)) AS revenue,
-                           SUM(ISNULL(d.QtyShipped,0)*ISNULL(d.UnitCost,0)) AS cost,
+                           SUM({cost_expr}) AS cost,
                            SUM(ISNULL(d.QtyShipped,0)) AS units
                     FROM InvoicesDetails_tbl d INNER JOIN Invoices_tbl h ON h.InvoiceID = d.InvoiceID
+                    {cost_apply}
                     WHERE {base_where}
                     GROUP BY h.BusinessName
                     ORDER BY revenue DESC
@@ -1500,7 +1554,7 @@ def _backoffice_breakdown_sync(
             rows: List[Dict[str, Any]] = []
             for r in _rows(cur):
                 rev = _f(r.get("revenue"))
-                cost = _f(r.get("cost"))
+                cost = _fo(r.get("cost"))
                 k = r.get("k")
                 name = _s(r.get("name"))
                 if by == "rep" and (k is None or int(k or 0) == 0):
@@ -1511,9 +1565,9 @@ def _backoffice_breakdown_sync(
                     "secondary": _s(r.get("secondary")),
                     "orders": int(r.get("orders") or 0),
                     "revenue": round(rev, 2),
-                    "cost": round(cost, 2),
-                    "profit": round(rev - cost, 2),
-                    "margin_pct": margin_pct(rev, cost),
+                    "cost": (round(cost, 2) if cost is not None else None),
+                    "profit": (round(rev - cost, 2) if cost is not None else None),
+                    "margin_pct": (margin_pct(rev, cost) if cost is not None else None),
                     "units": _f(r.get("units")),
                     "share_pct": None,
                 })
@@ -1522,11 +1576,36 @@ def _backoffice_breakdown_sync(
         return False, str(e), []
 
 
+def recost_backoffice_days(payload: Dict[str, Any], unit_costs: Dict[str, float]) -> Dict[str, Any]:
+    """
+    S2S mode: replace each day's cost with Σ units × S2S unit cost from
+    `units_by_upc`, tracking how many units had a known cost (`known_units`).
+    """
+    days: Dict[date, Dict[str, float]] = payload.get("days") or {}
+    for d in days.values():
+        d["cost"] = 0.0
+        d["known_units"] = 0.0
+    for (d, upc, units) in payload.get("units_by_upc") or []:
+        slot = days.setdefault(d, {"invoices": 0.0, "revenue": 0.0, "cost": 0.0, "units": 0.0, "known_units": 0.0})
+        c = unit_costs.get(upc) if upc else None
+        if c is not None:
+            slot["cost"] = slot.get("cost", 0.0) + units * float(c)
+            slot["known_units"] = slot.get("known_units", 0.0) + units
+    payload["recosted"] = True
+    return payload
+
+
 def compute_backoffice_series(payload: Dict[str, Any], period: Period, bucket: str) -> Dict[str, Any]:
     """Roll daily BackOffice payload into current/previous bucket lists + totals."""
     days: Dict[date, Dict[str, float]] = payload.get("days") or {}
     returns: Dict[date, Dict[str, float]] = payload.get("returns") or {}
-    fields = ["invoices", "revenue", "cost", "units"]
+    recosted = bool(payload.get("recosted"))
+    fields = ["invoices", "revenue", "cost", "units"] + (["known_units"] if recosted else [])
+
+    def _cov(v: Dict[str, float]) -> Optional[float]:
+        if not recosted:
+            return 1.0
+        return (round(v.get("known_units", 0.0) / v["units"], 4) if v.get("units") else None)
 
     def _series(start: date, end: date) -> List[Dict[str, Any]]:
         cur = rollup_daily(days, start, end, bucket, fields)
@@ -1538,14 +1617,14 @@ def compute_backoffice_series(payload: Dict[str, Any], period: Period, bucket: s
             cost = v["cost"]
             out.append({
                 "key": c["key"], "start": c["start"], "end": c["end"], "label": c["label"],
-                "totals": _totals_dict(rev, cost, r["values"]["amount"], int(v["invoices"]), v["units"], 1.0),
+                "totals": _totals_dict(rev, cost, r["values"]["amount"], int(v["invoices"]), v["units"], _cov(v)),
             })
         return out
 
     def _tot(start: date, end: date) -> Dict[str, Any]:
         s = sum_daily(days, start, end, fields)
         r = sum_daily(returns, start, end, ["amount"])
-        return _totals_dict(s["revenue"], s["cost"], r["amount"], int(s["invoices"]), s["units"], 1.0)
+        return _totals_dict(s["revenue"], s["cost"], r["amount"], int(s["invoices"]), s["units"], _cov(s))
 
     return {
         "current": _series(period.start, period.end),

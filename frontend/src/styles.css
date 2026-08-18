@@ -7661,6 +7661,69 @@ tr.bov-line-void td { opacity: 0.55; text-decoration: line-through; }
 .bov-topbar-status .bov-updated { font-size: 0.75rem; color: var(--text-tertiary); max-width: 16rem; line-height: 1.2; }
 .bov-topbar-status .bov-updated-wrap { display: flex; flex-direction: column; align-items: flex-start; gap: 0.1rem; line-height: 1.2; }
 
+/* --- S2S Cost toggle --- */
+.bov-cost-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  height: 38px;
+  padding: 0 0.75rem 0 0.55rem;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+.bov-cost-toggle:hover { border-color: var(--text-tertiary); background: var(--bg-hover); }
+.bov-cost-toggle input { position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none; }
+.bov-cost-toggle-track {
+  position: relative;
+  width: 30px;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  transition: background 0.15s ease, border-color 0.15s ease;
+  flex: none;
+}
+.bov-cost-toggle-track::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+.bov-cost-toggle.is-on {
+  border-color: var(--accent-primary);
+  background: color-mix(in srgb, var(--accent-primary) 12%, var(--bg-secondary));
+  color: var(--text-primary);
+}
+.bov-cost-toggle.is-on .bov-cost-toggle-track { background: var(--accent-primary); border-color: var(--accent-primary); }
+.bov-cost-toggle.is-on .bov-cost-toggle-track::after { transform: translateX(12px); background: #fff; }
+.bov-cost-toggle input:focus-visible + .bov-cost-toggle-track { outline: 2px solid var(--accent-primary); outline-offset: 2px; }
+.bov-cost-basis {
+  display: inline-block;
+  padding: 0.05rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-tertiary);
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+.bov-cost-basis.is-s2s {
+  border-color: color-mix(in srgb, var(--accent-primary) 45%, var(--border-color));
+  background: color-mix(in srgb, var(--accent-primary) 12%, var(--bg-secondary));
+  color: var(--text-primary);
+}
+
 /* --- Filter triggers (Period / Stores) --- */
 .bov-filter { position: relative; }
 .bov-filter-trigger {
@@ -8030,6 +8093,7 @@ tr.bov-line-void td { opacity: 0.55; text-decoration: line-through; }
 .bov-kpi-fact-v { font-size: 0.8125rem; font-weight: 600; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 16rem; }
 .bov-kpi-fact-k { font-size: 0.6875rem; color: var(--text-tertiary); white-space: nowrap; }
 .bov-kpi-fact.is-warn .bov-kpi-fact-v { color: var(--warning); }
+.bov-kpi-fact.is-accent .bov-kpi-fact-v { color: var(--accent-primary); }
 /* Aging bar (open invoices) */
 .bov-aging-bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: var(--bg-tertiary); gap: 2px; }
 .bov-aging-seg { display: block; height: 100%; }

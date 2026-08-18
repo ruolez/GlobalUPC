@@ -138,6 +138,27 @@ def test_alert_rules_merge_and_validate():
     assert "hours" in schemas.bov_validate_alert_rules({"quotation_stuck": {"hours": "abc"}})
 
 
+def test_recost_backoffice_days_s2s_mode():
+    d1, d2 = date(2026, 8, 3), date(2026, 8, 4)
+    payload = {
+        "days": {d1: {"invoices": 1.0, "revenue": 100.0, "cost": 40.0, "units": 4.0},
+                 d2: {"invoices": 1.0, "revenue": 50.0, "cost": 20.0, "units": 2.0}},
+        "returns": {},
+        "units_by_upc": [(d1, "111", 3.0), (d1, "222", 1.0), (d2, "333", 2.0)],
+    }
+    bov.recost_backoffice_days(payload, {"111": 10.0, "333": 5.0})   # 222 unknown in S2S
+    assert payload["days"][d1]["cost"] == 30.0 and payload["days"][d1]["known_units"] == 3.0
+    assert payload["days"][d2]["cost"] == 10.0 and payload["days"][d2]["known_units"] == 2.0
+    period = bov.resolve_period("2026-08-03", "2026-08-04", None, "UTC", today=date(2026, 8, 10))
+    out = bov.compute_backoffice_series(payload, period, "day")
+    t = out["totals"]
+    assert (t["revenue"], t["cost"], t["profit"], t["cost_coverage"]) == (150.0, 40.0, 110.0, 0.8333)
+    assert out["current"][1]["totals"]["cost_coverage"] == 1.0
+    # default (not recosted) payloads keep full coverage
+    plain = {"days": {d1: {"invoices": 1.0, "revenue": 100.0, "cost": 40.0, "units": 4.0}}, "returns": {}}
+    assert bov.compute_backoffice_series(plain, period, "day")["totals"]["cost_coverage"] == 1.0
+
+
 if __name__ == "__main__":
     import sys
     mod = sys.modules[__name__]

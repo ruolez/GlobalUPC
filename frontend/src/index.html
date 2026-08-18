@@ -255,6 +255,12 @@
                     <div class="bov-popover-hint">Every figure below is limited to the selected sources.</div>
                   </div>
                 </div>
+                <!-- Cost basis toggle -->
+                <label class="bov-cost-toggle" id="bov-cost-toggle" title="Off: BackOffice cost = each store's own Items_tbl.UnitCost, Shopify cost = Item Tracker S2S Items_tbl.UnitPriceC. On: every sale is re-costed from the Item Tracker S2S Items_tbl.UnitCost and profit / margin recalculated.">
+                  <input type="checkbox" id="bov-cost-s2s" />
+                  <span class="bov-cost-toggle-track" aria-hidden="true"></span>
+                  <span class="bov-cost-toggle-text">S2S Cost</span>
+                </label>
                 <!-- Refresh + status -->
                 <div class="bov-topbar-status">
                   <button type="button" class="dashboard-refresh-btn" id="bov-refresh-btn" title="Refresh (also syncs Shopify)" aria-label="Refresh overview">

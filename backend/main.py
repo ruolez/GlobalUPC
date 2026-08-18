@@ -9493,14 +9493,26 @@ def _bov_purchases_store(db: Session, cfg: Optional[BusinessOverviewConfig],
 
 def _bov_cost_conn(db: Session, cfg: Optional[BusinessOverviewConfig]):
     """
-    Items_tbl cost source for Shopify lines: Item Tracker S2S (the master
-    items DB) when configured, else the first selected sales store.
+    The S2S cost source = the Item Tracker S2S store (master items DB).
+    Shopify lines are always costed from it (Items_tbl.UnitPriceC by default,
+    UnitCost in "S2S cost" mode); in S2S mode BackOffice lines use it too.
     """
-    conn = _resolve_item_tracker_s2s_conn(db)
-    if conn is not None:
-        return conn
-    stores = _bov_sales_stores(db, cfg)
-    return stores[0].mssql_connection if stores else None
+    return _resolve_item_tracker_s2s_conn(db)
+
+
+BOV_COST_MODES = ("default", "s2s")
+
+
+def _bov_cost_mode(cost_mode: Optional[str]) -> str:
+    m = (cost_mode or "default").strip().lower()
+    if m not in BOV_COST_MODES:
+        raise HTTPException(status_code=400, detail="cost_mode must be default or s2s")
+    return m
+
+
+def _bov_shopify_cost_field(cost_mode: str) -> str:
+    """Items_tbl column used for Shopify unit cost: UnitPriceC by default, UnitCost in S2S mode."""
+    return "unit_cost" if cost_mode == "s2s" else "unit_delivery_b"
 
 
 async def _bov_fanout(stores: List[Store], make_coro) -> List[Tuple[Store, bool, Optional[str], Dict[str, Any]]]:
@@ -9971,8 +9983,12 @@ async def _bov_received_block(db: Session, cfg, period: bov.Period, bucket: str,
     return base
 
 
-def _bov_make_cost_lookup(db: Session, cfg):
-    """Memoised async barcode -> Items_tbl.UnitCost lookup against the cost store."""
+def _bov_make_cost_lookup(db: Session, cfg, field: str = "unit_delivery_b"):
+    """
+    Memoised async barcode -> unit cost lookup against the S2S store.
+    `field` picks the Items_tbl column: 'unit_delivery_b' = UnitPriceC (Shopify default),
+    'unit_cost' = UnitCost (S2S cost mode).
+    """
     conn = _bov_cost_conn(db, cfg)
     cache: Dict[str, Optional[float]] = {}
 
@@ -9988,7 +10004,7 @@ def _bov_make_cost_lookup(db: Session, cfg):
             if ok and isinstance(by_upc, dict):
                 for b in missing:
                     entry = by_upc.get(b)
-                    c = entry.get("unit_cost") if entry else None
+                    c = entry.get(field) if entry else None
                     cache[b] = float(c) if c is not None else None
             else:
                 lookup.failed = _err or "cost lookup failed"  # type: ignore[attr-defined]
@@ -10002,11 +10018,19 @@ def _bov_make_cost_lookup(db: Session, cfg):
 
 
 async def _bov_sales_trend(db: Session, cfg, period: bov.Period, bucket: str,
-                           sources: List[str], only_ids: Optional[Set[int]] = None) -> Dict[str, Any]:
-    """Shared by /summary (sales block) and /sales/trend."""
+                           sources: List[str], only_ids: Optional[Set[int]] = None,
+                           cost_mode: str = "default") -> Dict[str, Any]:
+    """
+    Shared by /summary (sales block) and /sales/trend.
+    cost_mode 'default': BackOffice = each store's own Items_tbl.UnitCost, Shopify = S2S Items_tbl.UnitPriceC.
+    cost_mode 's2s': everything = S2S Items_tbl.UnitCost.
+    """
     warnings: List[str] = []
     src_status: Dict[str, Dict[str, Any]] = {}
     tasks: Dict[str, Any] = {}
+    s2s_lookup = _bov_make_cost_lookup(db, cfg, "unit_cost") if cost_mode == "s2s" else None
+    if cost_mode == "s2s" and not getattr(s2s_lookup, "configured", False):
+        warnings.append("S2S cost: Item Tracker S2S store is not configured — cost/margin unavailable")
 
     sales_stores = _bov_sales_stores(db, cfg, only_ids)
     bo_names_by_key: Dict[str, str] = {}
@@ -10025,7 +10049,8 @@ async def _bov_sales_trend(db: Session, cfg, period: bov.Period, bucket: str,
                 tasks[key] = bov.backoffice_daily_sales_async(
                     **_bov_conn_kwargs(st),
                     date_from=period.prev_start.isoformat(), date_to_excl=period.end_excl,
-                    excluded_sales_names=excl_sales, excluded_return_names=excl_returns)
+                    excluded_sales_names=excl_sales, excluded_return_names=excl_returns,
+                    cost_mode=cost_mode)
 
     shopify_stores = _bov_shopify_stores(db, cfg, only_ids) if "shopify" in sources else []
     if "shopify" in sources:
@@ -10035,9 +10060,9 @@ async def _bov_sales_trend(db: Session, cfg, period: bov.Period, bucket: str,
             src_status["shopify"] = {"configured": True, "store_ids": [], "store_names": []}
         else:
             synced = await asyncio.to_thread(shopify_sync.get_synced_stores)
-            cost_lookup = _bov_make_cost_lookup(db, cfg)
+            cost_lookup = s2s_lookup or _bov_make_cost_lookup(db, cfg, _bov_shopify_cost_field(cost_mode))
             if not getattr(cost_lookup, "configured", False):
-                warnings.append("No MSSQL cost source for Shopify lines — Shopify cost/margin unavailable")
+                warnings.append("Item Tracker S2S store not configured — Shopify cost/margin unavailable")
             usable: List[Dict[str, Any]] = []
             skipped: List[str] = []
             sh_excl = _bov_shopify_exclusions(db)
@@ -10061,6 +10086,19 @@ async def _bov_sales_trend(db: Session, cfg, period: bov.Period, bucket: str,
         failed = getattr(cost_lookup, "failed", None)
         if failed:
             warnings.append(f"Shopify cost lookup failed — margin unavailable: {failed}")
+    if s2s_lookup is not None:
+        # S2S mode: re-cost every BackOffice day from units × S2S Items_tbl.UnitCost by UPC.
+        upcs: Set[str] = set()
+        for k, res in zip(keys, results):
+            if k.startswith("backoffice:") and not isinstance(res, Exception) and res[0]:
+                upcs.update(u for (_d, u, _n) in (res[2].get("units_by_upc") or []) if u)
+        unit_costs = await s2s_lookup(sorted(upcs)) if (upcs and getattr(s2s_lookup, "configured", False)) else {}
+        failed = getattr(s2s_lookup, "failed", None)
+        if failed:
+            warnings.append(f"S2S cost lookup failed — margin unavailable: {failed}")
+        for k, res in zip(keys, results):
+            if k.startswith("backoffice:") and not isinstance(res, Exception) and res[0]:
+                bov.recost_backoffice_days(res[2], unit_costs)
 
     empty = bov.empty_totals()
     per_source: Dict[str, Dict[str, Any]] = {}
@@ -10117,7 +10155,8 @@ async def _bov_sales_trend(db: Session, cfg, period: bov.Period, bucket: str,
     if "backoffice" in src_status and src_status["backoffice"].get("configured"):
         if bo_ok:
             per_source["backoffice"] = bov.compute_backoffice_series(
-                {"days": _bov_merge_daily(bo_days), "returns": _bov_merge_daily(bo_returns)}, period, bucket)
+                {"days": _bov_merge_daily(bo_days), "returns": _bov_merge_daily(bo_returns),
+                 "recosted": s2s_lookup is not None}, period, bucket)
         elif src_status["backoffice"].get("failed_stores"):
             src_status["backoffice"]["error"] = "; ".join(src_status["backoffice"]["failed_stores"])
 
@@ -10163,6 +10202,7 @@ async def _bov_sales_trend(db: Session, cfg, period: bov.Period, bucket: str,
         "previous_totals": prev_totals,
         "change_pct": change,
         "warnings": warnings,
+        "cost_mode": cost_mode,
         "configured": any(v.get("configured") for v in src_status.values()),
         "store_ids": sorted(only_ids) if only_ids is not None else [],
         "per_store": per_store,
@@ -10225,11 +10265,13 @@ async def get_business_overview_summary(
     date_to: Optional[str] = None,
     store_ids: Optional[str] = None,
     open_scope: str = "range",
+    cost_mode: str = "default",
     db: Session = Depends(get_db),
 ):
     cfg = _bov_config(db)
     period = _bov_period(cfg, preset, date_from, date_to)
     only = _bov_parse_store_ids(store_ids)
+    cmode = _bov_cost_mode(cost_mode)
     # Open (unshipped) invoices: "range" = invoiced within the selected period
     # (default — the whole historical backlog is rarely what the owner wants);
     # "all" = every unshipped invoice regardless of date.
@@ -10246,13 +10288,14 @@ async def get_business_overview_summary(
         _bov_incoming_block(db, cfg, include_list=False, only_ids=only),
         _bov_purchased_block(db, cfg, period, "day", include_list=False, only_ids=only),
         _bov_received_block(db, cfg, period, "day", include_list=False, only_ids=only),
-        _bov_sales_trend(db, cfg, period, "day", ["backoffice", "shopify"], only_ids=only),
+        _bov_sales_trend(db, cfg, period, "day", ["backoffice", "shopify"], only_ids=only, cost_mode=cmode),
         _bov_shopify_open_orders_block(db, cfg, only_ids=only),
         return_exceptions=True,
     )
     sales = _bov_result(sales, period)
     sales_block = {
         "configured": bool(sales.get("configured")),
+        "cost_mode": cmode,
         "per_store": sales.get("per_store") or [],
         "sources": sales.get("sources") or {},
         "totals": sales.get("totals") or {},
@@ -10380,8 +10423,10 @@ async def get_business_overview_shipped_invoices(
 
 @app.get("/api/business-overview/invoices/{invoice_id}", response_model=BOVInvoiceDetailResponse)
 async def get_business_overview_invoice_detail(invoice_id: int, store_id: Optional[int] = None,
+                                               cost_mode: str = "default",
                                                db: Session = Depends(get_db)):
     cfg = _bov_config(db)
+    cmode = _bov_cost_mode(cost_mode)
     stores = _bov_sales_stores(db, cfg)
     if not stores:
         raise HTTPException(status_code=400, detail="Business Overview sales store is not configured.")
@@ -10393,14 +10438,33 @@ async def get_business_overview_invoice_detail(invoice_id: int, store_id: Option
         store = stores[0]
     else:
         raise HTTPException(status_code=400, detail="store_id is required when several sales stores are selected.")
-    ok, err, payload = await bov.invoice_detail_async(**_bov_conn_kwargs(store), invoice_id=invoice_id)
+    ok, err, payload = await bov.invoice_detail_async(**_bov_conn_kwargs(store), invoice_id=invoice_id, cost_mode=cmode)
     if not ok:
         raise HTTPException(status_code=502, detail=err or "Invoice lookup failed")
     if not payload.get("header"):
         raise HTTPException(status_code=404, detail=f"Invoice {invoice_id} not found")
+    lines = payload.get("lines") or []
+    cost_basis = "local"
+    if cmode == "s2s":
+        cost_basis = "s2s"
+        lookup = _bov_make_cost_lookup(db, cfg, "unit_cost")
+        upcs = sorted({(l.get("product_upc") or "").strip() for l in lines if (l.get("product_upc") or "").strip()})
+        unit_costs = await lookup(upcs) if (upcs and getattr(lookup, "configured", False)) else {}
+        for l in lines:
+            uc = unit_costs.get((l.get("product_upc") or "").strip())
+            qty = float(l.get("qty_shipped") or 0)
+            ext = float(l.get("extended_price") or 0)
+            l["unit_cost"] = float(uc) if uc is not None else None
+            l["line_cost"] = round(qty * float(uc), 4) if uc is not None else 0.0
+            l["line_profit"] = (round(ext - qty * float(uc), 4) if uc is not None else None)
+            l["margin_pct"] = (bov.margin_pct(ext, qty * float(uc)) if (uc is not None and ext) else None)
+        revenue = sum(float(l.get("extended_price") or 0) for l in lines)
+        cost = sum(float(l.get("line_cost") or 0) for l in lines)
+        payload["header"].update({"revenue": round(revenue, 2), "cost": round(cost, 2),
+                                  "profit": round(revenue - cost, 2), "margin_pct": bov.margin_pct(revenue, cost)})
     return BOVInvoiceDetailResponse(header=BOVInvoiceHeader(**payload["header"]),
-                                    lines=[BOVInvoiceLine(**l) for l in payload.get("lines") or []],
-                                    store_name=store.name)
+                                    lines=[BOVInvoiceLine(**l) for l in lines],
+                                    store_name=store.name, cost_basis=cost_basis)
 
 
 @app.get("/api/business-overview/purchases/incoming", response_model=BOVIncomingPurchasesResponse)
@@ -10465,7 +10529,7 @@ async def get_business_overview_purchase_order_detail(po_id: int, db: Session = 
 async def get_business_overview_sales_trend(
     preset: Optional[str] = None, date_from: Optional[str] = None, date_to: Optional[str] = None,
     bucket: str = "day", sources: str = "backoffice,shopify",
-    store_ids: Optional[str] = None,
+    store_ids: Optional[str] = None, cost_mode: str = "default",
     db: Session = Depends(get_db),
 ):
     cfg = _bov_config(db)
@@ -10473,7 +10537,8 @@ async def get_business_overview_sales_trend(
     b = _bov_check_bucket(bucket)
     src = [s.strip().lower() for s in (sources or "").split(",") if s.strip()]
     src = [s for s in src if s in ("backoffice", "shopify")] or ["backoffice", "shopify"]
-    res = await _bov_sales_trend(db, cfg, period, b, src, only_ids=_bov_parse_store_ids(store_ids))
+    res = await _bov_sales_trend(db, cfg, period, b, src, only_ids=_bov_parse_store_ids(store_ids),
+                                 cost_mode=_bov_cost_mode(cost_mode))
     return BOVSalesTrendResponse(
         period=BOVPeriod(**res["period"]),
         bucket=b,
@@ -10484,6 +10549,7 @@ async def get_business_overview_sales_trend(
         previous_totals={k: BOVSalesSourceTotals(**v) for k, v in res["previous_totals"].items()},
         change_pct=res["change_pct"],
         warnings=res["warnings"],
+        cost_mode=res.get("cost_mode") or "default",
         per_store=res.get("per_store") or [],
         store_ids=res.get("store_ids") or [],
         generated_at=datetime.utcnow(),
@@ -10494,12 +10560,14 @@ async def get_business_overview_sales_trend(
 async def get_business_overview_sales_breakdown(
     preset: Optional[str] = None, date_from: Optional[str] = None, date_to: Optional[str] = None,
     by: str = "customer", source: str = "all", limit: int = 10,
-    store_ids: Optional[str] = None,
+    store_ids: Optional[str] = None, cost_mode: str = "default",
     db: Session = Depends(get_db),
 ):
     """
     Top customers / reps (BackOffice) and top products (BackOffice + Shopify,
-    merged by barcode = ProductUPC; Shopify cost via Items_tbl.UnitCost).
+    merged by barcode = ProductUPC). Cost basis follows cost_mode: BackOffice =
+    local Items_tbl.UnitCost, Shopify = S2S UnitPriceC; 's2s' = S2S UnitCost for
+    everything (customer/rep cost then unavailable — no UPC dimension).
     """
     cfg = _bov_config(db)
     period = _bov_period(cfg, preset, date_from, date_to)
@@ -10517,6 +10585,11 @@ async def get_business_overview_sales_breakdown(
     limit = max(1, min(int(limit or 10), 200))
     resp: Dict[str, Any] = {"period": period.as_dict(), "by": by, "source": source, "configured": False,
                             "rows": [], "total_revenue": 0.0, "warnings": []}
+    cmode = _bov_cost_mode(cost_mode)
+    resp["cost_mode"] = cmode
+    s2s_lookup = _bov_make_cost_lookup(db, cfg, "unit_cost")
+    if cmode == "s2s" and not getattr(s2s_lookup, "configured", False):
+        warnings.append("S2S cost: Item Tracker S2S store is not configured — cost unavailable")
     warnings: List[str] = []
     merged: Dict[str, Dict[str, Any]] = {}
     total_rev = 0.0
@@ -10559,17 +10632,25 @@ async def get_business_overview_sales_breakdown(
                 bd_results, daily_results = await asyncio.gather(
                     _bov_fanout(stores, lambda st: bov.backoffice_breakdown_async(
                         **_bov_conn_kwargs(st), date_from=period.start.isoformat(), date_to_excl=period.end_excl,
-                        by=by, limit=per_store_limit, excluded_sales_names=excl_sales)),
+                        by=by, limit=per_store_limit, excluded_sales_names=excl_sales, cost_mode=cmode)),
                     _bov_fanout(stores, lambda st: bov.backoffice_daily_sales_async(
                         **_bov_conn_kwargs(st), date_from=period.start.isoformat(), date_to_excl=period.end_excl,
                         excluded_sales_names=excl_sales, excluded_return_names=[])),
                 )
                 failures = [f"{st.name}: {err}" for st, ok, err, _p in bd_results if not ok]
                 warnings.extend(failures)
+                bo_rows: List[Dict[str, Any]] = []
                 for st, ok, _err, rows in bd_results:
                     if ok:
-                        for r in (rows if isinstance(rows, list) else []):
-                            _add(r, "backoffice")
+                        bo_rows.extend(rows if isinstance(rows, list) else [])
+                if cmode == "s2s" and by == "product" and bo_rows:
+                    upcs = sorted({(r.get("key") or "").strip() for r in bo_rows if (r.get("key") or "").strip()})
+                    unit_costs = await s2s_lookup(upcs) if (upcs and getattr(s2s_lookup, "configured", False)) else {}
+                    for r in bo_rows:
+                        uc = unit_costs.get((r.get("key") or "").strip())
+                        r["cost"] = (float(uc) * float(r.get("units") or 0)) if uc is not None else None
+                for r in bo_rows:
+                    _add(r, "backoffice")
                 any_daily = False
                 for _st, ok, _err, daily in daily_results:
                     if ok:
@@ -10598,8 +10679,8 @@ async def get_business_overview_sales_breakdown(
                         sh_rows.extend(rows)
                     except Exception as e:
                         warnings.append(f"{st['name']}: {e}")
-                # cost per unit from Items_tbl by barcode (memoised lookup, one round trip)
-                cost_lookup = _bov_make_cost_lookup(db, cfg)
+                # cost per unit from the S2S Items_tbl by barcode (memoised lookup, one round trip)
+                cost_lookup = s2s_lookup if cmode == "s2s" else _bov_make_cost_lookup(db, cfg, _bov_shopify_cost_field(cmode))
                 barcodes = sorted({(r.get("key") or "").strip() for r in sh_rows if (r.get("key") or "").strip()})
                 unit_costs = await cost_lookup(barcodes) if (barcodes and getattr(cost_lookup, "configured", False)) else {}
                 for r in sh_rows:
@@ -10823,17 +10904,19 @@ async def get_business_overview_shopify_order_detail(store_id: int, shopify_id: 
 @app.get("/api/business-overview/shopify/missing-cost", response_model=BOVMissingCostResponse)
 async def get_business_overview_shopify_missing_cost(
     preset: Optional[str] = None, date_from: Optional[str] = None, date_to: Optional[str] = None,
-    store_ids: Optional[str] = None,
+    store_ids: Optional[str] = None, cost_mode: str = "default",
     db: Session = Depends(get_db),
 ):
     """
     Shopify products sold in the period whose barcode does not resolve to a cost
-    (no barcode, barcode not in Items_tbl, or Items_tbl.UnitCost empty) — the
-    list behind "Shopify cost known for N%", exportable to hand off for fixing.
+    in the S2S store (no barcode, barcode not in Items_tbl, or the cost column —
+    UnitPriceC by default, UnitCost in S2S mode — empty) — the list behind
+    "Shopify cost known for N%", exportable to hand off for fixing.
     """
     cfg = _bov_config(db)
     period = _bov_period(cfg, preset, date_from, date_to)
     only = _bov_parse_store_ids(store_ids)
+    cost_field = _bov_shopify_cost_field(_bov_cost_mode(cost_mode))
     if not _bov_shopify_stores(db, cfg):
         return BOVMissingCostResponse(configured=False, period=BOVPeriod(**period.as_dict()))
     stores = _bov_shopify_stores(db, cfg, only)
@@ -10877,7 +10960,7 @@ async def get_business_overview_shopify_missing_cost(
         elif bc not in by_upc:
             reason = "not_in_items"
         else:
-            c = by_upc[bc].get("unit_cost")
+            c = by_upc[bc].get(cost_field)
             try:
                 has = c is not None and float(c) > 0
             except (TypeError, ValueError):
@@ -10891,7 +10974,7 @@ async def get_business_overview_shopify_missing_cost(
     rows.sort(key=lambda x: -(x.get("revenue") or 0))
     err_msg = None
     if conn is None:
-        err_msg = "No cost source configured (Item Tracker S2S or a sales store) — cannot check costs"
+        err_msg = "Item Tracker S2S store is not configured — cannot check costs"
     elif lookup_error:
         err_msg = f"Cost lookup failed: {lookup_error}"
     return BOVMissingCostResponse(
