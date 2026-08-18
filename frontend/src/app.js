@@ -20955,9 +20955,7 @@ function bovCustomerCell(name, sub) {
 }
 
 function bovFootHtml(widgetKey, total, shown, extraHtml) {
-  const expanded = !!bovState.expanded[widgetKey];
-  const more = total > BOV_ROWS_COLLAPSED;
-  return `<span class="bov-foot-left">${extraHtml || ""}</span><span class="bov-foot-right">${more ? `<button type="button" class="bov-link-btn" data-bov-show-all="${escapeHtml(widgetKey)}">${expanded ? "Show less" : `Show all (${bovInt(total)})`}</button>` : `${bovInt(shown)} of ${bovInt(total)}`}</span>`;
+  return `<span class="bov-foot-left">${extraHtml || ""}</span><span class="bov-foot-right">${bovInt(total)} row${total === 1 ? "" : "s"}</span>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -21069,7 +21067,7 @@ function bovRenderQuotationsTable() {
     return;
   }
   const sorted = bovSortRows(rows, bovState.sort.quotations);
-  const shown = bovState.expanded.quotations ? sorted : sorted.slice(0, BOV_ROWS_COLLAPSED);
+  const shown = sorted;  // every row is shown; the card body scrolls
   body.innerHTML = bovTableHtml("quotations", bovQuotationCols(), shown, { rowAttrs: bovQuotationRowAttrs });
   if (foot) foot.innerHTML = bovFootHtml("quotations", rows.length, shown.length, d.store_name ? `Source: ${escapeHtml(d.store_name)}` : "");
 }
@@ -21177,7 +21175,7 @@ function bovRenderInvoices() {
       return;
     }
     const sorted = bovSortRows(filtered, bovState.sort.invoicesOpen);
-    const shown = bovState.expanded.invoices ? sorted : sorted.slice(0, BOV_ROWS_COLLAPSED);
+    const shown = sorted;  // every row is shown; the card body scrolls
     body.innerHTML = filtered.length ? bovTableHtml("invoicesOpen", bovOpenInvoiceCols(multi), shown, { rowAttrs: bovInvoiceRowAttrs }) : bovEmptyHtml("No open invoices in this age band.");
     if (foot) foot.innerHTML = bovFootHtml("invoices", filtered.length, shown.length, `<span class="bov-aging-chips">${chips}</span>${rangeToggle}${partialNote}`);
     return;
@@ -21203,7 +21201,7 @@ function bovRenderInvoices() {
     return;
   }
   const sorted = bovSortRows(rows, bovState.sort.invoicesPeriod);
-  const shown = bovState.expanded.invoices ? sorted : sorted.slice(0, BOV_ROWS_COLLAPSED);
+  const shown = sorted;  // every row is shown; the card body scrolls
   body.innerHTML = bovTableHtml("invoicesPeriod", bovPeriodInvoiceCols(multi), shown, { rowAttrs: bovInvoiceRowAttrs });
   const left = (tab === "open" ? rangeToggle : "") + (d.truncated ? `Showing the first ${bovInt((d.invoices || []).length)} of ${bovInt(d.count)}` : srcNote) + partialNote;
   if (foot) foot.innerHTML = bovFootHtml("invoices", rows.length, shown.length, left);
@@ -21363,7 +21361,7 @@ function bovRenderPurchases() {
     cols = bovPoCols("received");
   }
   const sorted = bovSortRows(rows, bovState.sort[sortKey]);
-  const shown = bovState.expanded.purchases ? sorted : sorted.slice(0, BOV_ROWS_COLLAPSED);
+  const shown = sorted;  // every row is shown; the card body scrolls
   body.innerHTML = bovTableHtml(sortKey, cols, shown, { rowAttrs: bovPoRowAttrs });
   if (foot) foot.innerHTML = bovFootHtml("purchases", rows.length, shown.length, sourceFoot);
 }

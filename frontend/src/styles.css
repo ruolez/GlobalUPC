@@ -7341,10 +7341,11 @@ tr:hover > td .sacr-copy { opacity: 0.8; }
 .bov-card-body {
   flex: 1;
   min-height: 6rem;
-  max-height: 34rem;
-  overflow: auto;
+  overflow: visible;                 /* full list always shown; the page scrolls */
   border-radius: var(--radius-sm);
 }
+.bov-card-body .bov-table-scroll { overflow-x: auto; }
+.bov-card-body .bov-mini-table thead th { position: sticky; top: 0; z-index: 1; background: var(--bg-tertiary); }
 .bov-page .bov-card:has(.bov-card-body:empty) .bov-card-body { min-height: 0; }
 .bov-card-foot {
   display: flex;
