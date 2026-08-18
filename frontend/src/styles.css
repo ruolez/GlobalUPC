@@ -7904,3 +7904,146 @@ tr.bov-line-void td { opacity: 0.55; text-decoration: line-through; }
 @media (max-width: 900px) {
   .bov-card-toolbar .bov-list-search-input { margin-left: 0; max-width: none; flex-basis: 100%; }
 }
+
+/* ===== Business Overview — KPI cards (fixed anatomy) ===================== */
+.bov-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+.bov-kpi-card {
+  display: grid;
+  grid-template-rows: auto auto auto minmax(3.25rem, auto) auto;
+  gap: 0.5rem;
+  min-width: 0;
+  padding: 1rem 1.125rem 0.875rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+.bov-kpi-card[role="link"] { cursor: pointer; }
+.bov-kpi-card[role="link"]:hover,
+.bov-kpi-card[role="link"]:focus-visible {
+  border-color: color-mix(in srgb, var(--accent-primary) 45%, var(--border-color));
+  box-shadow: var(--shadow-md);
+  outline: none;
+}
+.bov-kpi-card[role="link"]:hover .bov-kpi-go { color: var(--accent-primary); transform: translateX(2px); }
+.bov-kpi-card.is-warn { border-color: color-mix(in srgb, var(--warning) 45%, var(--border-color)); }
+.bov-kpi-card.is-error { border-color: color-mix(in srgb, var(--danger) 40%, var(--border-color)); }
+.bov-kpi-card.is-muted { opacity: 0.85; }
+.bov-kpi-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; min-width: 0; }
+.bov-kpi-label {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bov-kpi-go { color: var(--text-tertiary); font-size: 1rem; line-height: 1; transition: color 0.12s ease, transform 0.12s ease; }
+.bov-kpi-main { display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; min-width: 0; }
+.bov-kpi-value {
+  font-size: 1.875rem;
+  font-weight: 650;
+  line-height: 1.05;
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+.bov-kpi-card.is-muted .bov-kpi-value,
+.bov-kpi-card.is-error .bov-kpi-value { color: var(--text-tertiary); }
+.bov-kpi-secondary { font-size: 0.9375rem; font-weight: 500; color: var(--text-secondary); }
+.bov-kpi-badge {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent-primary) 12%, var(--bg-tertiary));
+  color: var(--accent-primary);
+  white-space: nowrap;
+}
+.bov-kpi-delta-row { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; min-width: 0; }
+.bov-kpi-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  white-space: nowrap;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  border: 1px solid transparent;
+}
+.bov-kpi-chip.is-good { color: var(--success); background: color-mix(in srgb, var(--success) 12%, var(--bg-tertiary)); border-color: color-mix(in srgb, var(--success) 25%, transparent); }
+.bov-kpi-chip.is-bad { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, var(--bg-tertiary)); border-color: color-mix(in srgb, var(--danger) 25%, transparent); }
+.bov-kpi-chip.is-flat { color: var(--text-secondary); }
+.bov-kpi-delta-sub { font-size: 0.75rem; color: var(--text-tertiary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bov-kpi-trend { display: flex; flex-direction: column; justify-content: center; gap: 0.25rem; min-width: 0; }
+.bov-kpi-trend .bov-kpi-spark { display: block; width: 100%; height: 36px; max-width: none; }
+.bov-kpi-trend-cap, .bov-kpi-trend-empty { font-size: 0.6875rem; color: var(--text-tertiary); }
+.bov-kpi-trend-empty { padding: 0.35rem 0; }
+.bov-kpi-note { font-size: 0.75rem; color: var(--text-secondary); line-height: 1.35; }
+.bov-kpi-note.is-warn { color: var(--warning); }
+.bov-kpi-note.is-error { color: var(--danger); }
+.bov-kpi-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent);
+  min-width: 0;
+}
+.bov-kpi-fact { display: inline-flex; flex-direction: column; gap: 0.05rem; min-width: 0; }
+.bov-kpi-fact-v { font-size: 0.8125rem; font-weight: 600; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 16rem; }
+.bov-kpi-fact-k { font-size: 0.6875rem; color: var(--text-tertiary); white-space: nowrap; }
+.bov-kpi-fact.is-warn .bov-kpi-fact-v { color: var(--warning); }
+/* Aging bar (open invoices) */
+.bov-aging-bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: var(--bg-tertiary); gap: 2px; }
+.bov-aging-seg { display: block; height: 100%; }
+.bov-aging-seg.is-ok { background: var(--success); }
+.bov-aging-seg.is-warn { background: var(--warning); }
+.bov-aging-seg.is-fail { background: var(--danger); }
+.bov-aging-legend { display: flex; flex-wrap: wrap; gap: 0.25rem 0.875rem; font-size: 0.6875rem; color: var(--text-tertiary); }
+.bov-aging-key { display: inline-flex; align-items: center; gap: 0.3rem; }
+.bov-aging-key i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+.bov-aging-key i.is-ok { background: var(--success); }
+.bov-aging-key i.is-warn { background: var(--warning); }
+.bov-aging-key i.is-fail { background: var(--danger); }
+.bov-aging-key b { color: var(--text-primary); font-weight: 600; }
+/* Status split (quotations) */
+.bov-kpi-split { display: flex; flex-wrap: wrap; gap: 0.5rem 1.25rem; }
+.bov-kpi-split-item { display: inline-flex; flex-direction: column; font-size: 0.8125rem; color: var(--text-secondary); }
+.bov-kpi-split-item b { font-size: 1.0625rem; color: var(--text-primary); font-weight: 650; }
+.bov-kpi-split-item small { font-size: 0.6875rem; color: var(--text-tertiary); }
+/* Shopify order flow strip under the cards */
+.bov-flow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+  margin: 0 0 1.25rem;
+  padding: 0.625rem 0.875rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+}
+.bov-flow:hover { border-color: color-mix(in srgb, var(--accent-primary) 45%, var(--border-color)); }
+.bov-flow-label { font-size: 0.75rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-tertiary); margin-right: 0.25rem; }
+.bov-flow-label small { text-transform: none; letter-spacing: 0; font-weight: 500; margin-left: 0.35rem; }
+.bov-flow-pill { display: inline-flex; align-items: baseline; gap: 0.35rem; padding: 0.2rem 0.6rem; border-radius: 999px; background: var(--bg-tertiary); border: 1px solid var(--border-color); font-size: 0.75rem; color: var(--text-secondary); white-space: nowrap; }
+.bov-flow-pill b { font-size: 0.875rem; color: var(--text-primary); font-weight: 650; }
+.bov-flow-pill.is-warn { border-color: color-mix(in srgb, var(--warning) 45%, var(--border-color)); }
+.bov-flow-pill.is-warn b { color: var(--warning); }
+.bov-flow-go { margin-left: auto; color: var(--text-tertiary); font-size: 1.1rem; }
+.bov-kpi-skeleton { gap: 0.6rem; }
+@media (max-width: 1100px) { .bov-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 640px) { .bov-kpi-grid { grid-template-columns: minmax(0, 1fr); } }

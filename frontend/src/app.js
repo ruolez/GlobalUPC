@@ -19756,7 +19756,7 @@ function bovPaintSkeleton(key) {
   const el = bodyId && document.getElementById(bodyId);
   if (!el) return;
   if (key === "summary") {
-    el.innerHTML = Array.from({ length: 6 }, () => `<div class="sa-kpi bov-kpi bov-kpi-skeleton"><span class="dashboard-skeleton-row bov-skel-label"></span><span class="dashboard-skeleton-row bov-skel-value"></span><span class="dashboard-skeleton-row bov-skel-sub"></span></div>`).join("");
+    el.innerHTML = Array.from({ length: 6 }, () => `<div class="bov-kpi-card bov-kpi-skeleton"><span class="dashboard-skeleton-row bov-skel-label"></span><span class="dashboard-skeleton-row bov-skel-value"></span><span class="dashboard-skeleton-row bov-skel-sub"></span><span class="dashboard-skeleton-row bov-skel-sub"></span></div>`).join("");
     return;
   }
   if (key === "trend") {
@@ -19880,21 +19880,97 @@ function bovSparkline(cur, prev, w = 110, h = 28) {
 }
 
 function bovKpiTile(t) {
-  const cls = ["sa-kpi", "bov-kpi"];
+  // Fixed anatomy so every card reads the same way:
+  //   label → value (+ secondary / badge) → delta chip vs named comparison
+  //   → trend slot (sparkline | aging bar | note) → 2–3 structured facts.
+  const cls = ["bov-kpi-card"];
   if (t.state === "warn") cls.push("is-warn");
   if (t.state === "error") cls.push("is-error");
   if (t.state === "unconfigured") cls.push("is-muted");
-  const valueCls = t.money ? "sa-kpi-value sa-kpi-value-money" : "sa-kpi-value";
-  const scroll = t.scrollTo ? ` data-bov-section="${escapeHtml(BOV_CARD_SECTION[t.scrollTo] || "overview")}" data-bov-target="${escapeHtml(t.scrollTo)}" role="link" tabindex="0" title="Open ${escapeHtml((BOV_CARD_SECTION[t.scrollTo] || "overview"))}"` : "";
+  const section = t.section || (t.scrollTo ? (BOV_CARD_SECTION[t.scrollTo] || "overview") : null);
+  const nav = section
+    ? ` data-bov-section="${escapeHtml(section)}"${t.scrollTo ? ` data-bov-target="${escapeHtml(t.scrollTo)}"` : ""} role="link" tabindex="0" title="Open ${escapeHtml(section)}"`
+    : "";
+  const valueHtml = t.valueHtml != null ? t.valueHtml : escapeHtml(t.value ?? "—");
+  const secondary = t.secondary ? `<span class="bov-kpi-secondary">${escapeHtml(t.secondary)}</span>` : "";
+  const badge = t.badge ? `<span class="bov-kpi-badge${t.badgeTone ? ` is-${t.badgeTone}` : ""}">${escapeHtml(t.badge)}</span>` : "";
+  let deltaHtml = "";
+  if (t.delta) {
+    const d = t.delta;
+    deltaHtml = `<div class="bov-kpi-delta-row"><span class="bov-kpi-chip ${d.cls || "is-flat"}" title="${escapeHtml(d.title || "")}">${d.glyph || "•"} ${escapeHtml(d.text || "")}</span>${d.sub ? `<span class="bov-kpi-delta-sub">${escapeHtml(d.sub)}</span>` : ""}</div>`;
+  } else if (t.deltaHtml) {
+    deltaHtml = `<div class="bov-kpi-delta-row">${t.deltaHtml}</div>`;
+  }
+  let trendHtml = "";
+  if (t.trendHtml) trendHtml = t.trendHtml;
+  else if (t.note || t.noteHtml) trendHtml = `<div class="bov-kpi-note${t.noteTone ? ` is-${t.noteTone}` : ""}" title="${escapeHtml(t.noteTitle || "")}">${t.noteHtml != null ? t.noteHtml : escapeHtml(t.note)}</div>`;
+  const facts = (t.facts || []).filter((f) => f && f.v != null && f.v !== "");
+  const factsHtml = facts.length
+    ? `<div class="bov-kpi-facts">${facts.map((f) => `<span class="bov-kpi-fact${f.tone ? ` is-${f.tone}` : ""}" title="${escapeHtml(f.title || "")}"><span class="bov-kpi-fact-v">${f.vHtml != null ? f.vHtml : escapeHtml(String(f.v))}</span><span class="bov-kpi-fact-k">${escapeHtml(f.k || "")}</span></span>`).join("")}</div>`
+    : "";
   return (
-    `<div class="${cls.join(" ")}"${scroll}>` +
-    `<span class="sa-kpi-label">${escapeHtml(t.label)}</span>` +
-    `<span class="${valueCls}">${t.valueHtml != null ? t.valueHtml : escapeHtml(t.value ?? "—")}${t.badge ? ` <span class="sa-kpi-pct">${escapeHtml(t.badge)}</span>` : ""}</span>` +
-    (t.deltaHtml || "") +
-    (t.sparkHtml || "") +
-    `<span class="sa-kpi-sub" title="${escapeHtml(t.subTitle || t.subText || "")}">${t.subHtml != null ? t.subHtml : escapeHtml(t.subText || "")}</span>` +
+    `<div class="${cls.join(" ")}"${nav}>` +
+    `<div class="bov-kpi-head"><span class="bov-kpi-label">${escapeHtml(t.label)}</span>${section ? `<span class="bov-kpi-go" aria-hidden="true">›</span>` : ""}</div>` +
+    `<div class="bov-kpi-main"><span class="bov-kpi-value">${valueHtml}</span>${secondary}${badge}</div>` +
+    deltaHtml +
+    `<div class="bov-kpi-trend">${trendHtml}</div>` +
+    factsHtml +
     `</div>`
   );
+}
+
+// Delta descriptor for the chip: colour by goodness (direction × whether up is
+// good), glyph + sign in text, and the comparison named in the sub-line so a
+// huge % against a tiny base can still be judged ("vs $34.5K previous period").
+function bovDelta(cur, prev, opts = {}) {
+  const goodWhenUp = opts.goodWhenUp !== false;
+  const mode = opts.mode || "pct";
+  const fmtPrev = opts.fmtPrev || ((v) => bovCompactNum(v));
+  const label = opts.label || "previous period";
+  if (cur == null || prev == null || !isFinite(cur) || !isFinite(prev)) {
+    return { cls: "is-flat", glyph: "•", text: "no prior data", sub: "" };
+  }
+  if (mode === "pct" && !prev) {
+    return { cls: "is-flat", glyph: "•", text: "new", sub: `nothing in the ${label}` };
+  }
+  let diff;
+  let text;
+  if (mode === "pct") {
+    diff = ((cur - prev) / Math.abs(prev)) * 100;
+    text = `${Math.abs(diff) >= 1000 ? Math.round(Math.abs(diff)).toLocaleString() : Math.abs(diff).toFixed(1)}%`;
+  } else if (mode === "pt") {
+    diff = cur - prev;
+    text = `${Math.abs(diff).toFixed(1)} pt`;
+  } else {
+    diff = cur - prev;
+    text = opts.fmt ? opts.fmt(Math.abs(diff)) : bovCompactNum(Math.abs(diff));
+  }
+  const flat = Math.abs(diff) < (mode === "abs" ? 0.5 : 0.05);
+  const sub = `vs ${fmtPrev(prev)} ${label}`;
+  if (flat) return { cls: "is-flat", glyph: "•", text: "no change", sub };
+  const up = diff > 0;
+  const good = up === goodWhenUp;
+  return { cls: good ? "is-good" : "is-bad", glyph: up ? "▲" : "▼", text: `${up ? "+" : "−"}${text}`, sub, title: `${up ? "Up" : "Down"} ${text} ${sub}` };
+}
+
+function bovTrendSlot(cur, prev, opts = {}) {
+  const a = (cur || []).map(bovNum);
+  const n = a.length;
+  if (n >= 2) return `${bovSparkline(cur, prev, 260, 36)}<span class="bov-kpi-trend-cap">${escapeHtml(opts.caption || "trend over the period · dashed = previous")}</span>`;
+  return `<span class="bov-kpi-trend-empty">${escapeHtml(opts.empty || "Single-day period — pick a longer range to see the trend")}</span>`;
+}
+
+function bovAgingBar(aging, total) {
+  const seg = [["0-1", "ok", "≤1 day"], ["2-3", "warn", "2–3 days"], ["4+", "fail", "4+ days"]];
+  const t = total || seg.reduce((acc, [k]) => acc + (aging[k] || 0), 0);
+  if (!t) return `<span class="bov-kpi-trend-empty">Nothing waiting to ship</span>`;
+  const parts = seg.map(([k, cls, lab]) => {
+    const n = aging[k] || 0;
+    const w = (n / t) * 100;
+    return n ? `<span class="bov-aging-seg is-${cls}" style="width:${w.toFixed(2)}%" title="${escapeHtml(`${bovInt(n)} invoice${n === 1 ? "" : "s"} · ${lab}`)}"></span>` : "";
+  }).join("");
+  const legend = seg.map(([k, cls, lab]) => `<span class="bov-aging-key"><i class="is-${cls}"></i>${escapeHtml(lab)} <b>${bovInt(aging[k] || 0)}</b></span>`).join("");
+  return `<div class="bov-aging-bar" role="img" aria-label="Open invoices by age">${parts}</div><div class="bov-aging-legend">${legend}</div>`;
 }
 
 function bovKpiUnconfigured(label, detail, action, actionLabel) {
@@ -19902,17 +19978,17 @@ function bovKpiUnconfigured(label, detail, action, actionLabel) {
     label,
     value: "—",
     state: "unconfigured",
-    subHtml: `${escapeHtml(detail)} · <a href="#" class="bov-kpi-link" data-bov-action="${escapeHtml(action)}">${escapeHtml(actionLabel || "Configure")}</a>`,
+    noteHtml: `${escapeHtml(detail)} · <a href="#" class="bov-kpi-link" data-bov-action="${escapeHtml(action)}">${escapeHtml(actionLabel || "Configure")}</a>`,
+    note: detail,
   };
 }
 
-function bovKpiError(label, message) {
-  // Short text on the tile; the full backend error is in the title and in the card below.
-  return { label, value: "—", state: "error", subText: "Unavailable — open the section for details", subTitle: message || "Unavailable" };
+function bovKpiError(label, message, section) {
+  return { label, value: "—", state: "error", section, note: "Unavailable — open the section for details", noteTone: "error", noteTitle: message || "Unavailable" };
 }
 
 function bovKpiFilteredOut(label) {
-  return { label, value: "—", state: "unconfigured", subText: "not in store filter" };
+  return { label, value: "—", state: "unconfigured", note: "Not in the current store filter" };
 }
 
 function bovPartialSuffix(block) {
@@ -19920,11 +19996,15 @@ function bovPartialSuffix(block) {
   return failed.length ? ` · ${failed.join(", ")} unavailable` : "";
 }
 
+function bovPartialFact(block) {
+  const failed = ((block && block.stores) || []).filter((st) => st.error).map((st) => st.store_name);
+  return failed.length ? { k: "unavailable", v: failed.join(", "), tone: "warn", title: "These stores did not answer; figures exclude them" } : null;
+}
+
 function bovRenderKpis() {
   const strip = document.getElementById("bov-kpi-strip");
   if (!strip) return;
   const sw = bovState.widgets.summary;
-  const tw = bovState.widgets.trend;
   if (!sw.data && !sw.error) {
     if (sw.loading) return; // skeleton already painted
     bovPaintSkeleton("summary");
@@ -19935,8 +20015,8 @@ function bovRenderKpis() {
     return;
   }
   const s = sw.data;
-  const cfg = bovState.config || {};
   const tiles = [];
+  const money = (v) => bovCompactMoney(v || 0);
 
   // --- Revenue / profit (sales block) ---
   const sales = s.sales || {};
@@ -19950,60 +20030,62 @@ function bovRenderKpis() {
     const prevTot = (sales.previous_totals && sales.previous_totals.total) || {};
     const bo = (sales.totals && sales.totals.backoffice) || null;
     const sh = (sales.totals && sales.totals.shopify) || null;
-    const srcBits = [];
-    if (sales.sources && sales.sources.backoffice && sales.sources.backoffice.configured) {
-      const bs = sales.sources.backoffice;
+    const facts = [];
+    const bs = sales.sources && sales.sources.backoffice;
+    const ss = sales.sources && sales.sources.shopify;
+    if (bs && bs.configured) {
       const failed = (bs.failed_stores || []).map((f) => String(f).split(":")[0]);
-      if (!(bs.store_names || []).length && bovState.storeFilter.length) srcBits.push("BackOffice —");
-      else srcBits.push(bs.error
-        ? "BackOffice unavailable"
-        : `BackOffice ${bovCompactMoney(bo ? bo.revenue : 0)}${failed.length ? ` (${failed.join(", ")} unavailable)` : ""}`);
+      if (!(bs.store_names || []).length && bovState.storeFilter.length) facts.push({ k: "BackOffice", v: "—", title: "No BackOffice store in the current filter" });
+      else if (bs.error) facts.push({ k: "BackOffice", v: "unavailable", tone: "warn", title: bs.error });
+      else facts.push({ k: "BackOffice", v: money(bo ? bo.revenue : 0), tone: failed.length ? "warn" : "", title: failed.length ? `${failed.join(", ")} unavailable — excluded` : "" });
     }
-    if (sales.sources && sales.sources.shopify && sales.sources.shopify.configured) {
-      const ss = sales.sources.shopify;
-      if (!(ss.store_names || []).length && bovState.storeFilter.length) srcBits.push("Shopify —");
-      else srcBits.push(ss.error ? "Shopify unavailable" : `Shopify ${bovCompactMoney(sh ? sh.revenue : 0)}`);
+    if (ss && ss.configured) {
+      if (!(ss.store_names || []).length && bovState.storeFilter.length) facts.push({ k: "Shopify", v: "—", title: "No Shopify store in the current filter" });
+      else if (ss.error) facts.push({ k: "Shopify", v: "unavailable", tone: "warn", title: ss.error });
+      else facts.push({ k: "Shopify", v: money(sh ? sh.revenue : 0), title: (ss.skipped_stores || []).length ? `Not synced, skipped: ${ss.skipped_stores.join(", ")}` : "" });
     }
+    if (tot.orders) facts.push({ k: "orders", v: bovInt(tot.orders) });
     const anyErr = (sales.sources && Object.values(sales.sources).some((x) => x && x.configured && (x.error || (x.failed_stores || []).length))) || false;
     tiles.push({
       label: "Revenue",
-      value: bovCompactMoney(tot.revenue || 0),
-      money: true,
-      deltaHtml: bovDeltaHtml(tot.revenue || 0, prevTot.revenue, { goodWhenUp: true }),
-      sparkHtml: bovSparkline(spark.map((p) => p.values && p.values.revenue), sparkPrev.map((p) => p.values && p.values.revenue)),
-      subText: srcBits.join(" · ") || "no sales in range",
+      value: money(tot.revenue),
+      delta: bovDelta(tot.revenue || 0, prevTot.revenue, { goodWhenUp: true, fmtPrev: money }),
+      trendHtml: bovTrendSlot(spark.map((p) => p.values && p.values.revenue), sparkPrev.map((p) => p.values && p.values.revenue)),
+      facts,
       state: anyErr ? "warn" : "ok",
       scrollTo: "bov-trend-card",
     });
     const margin = tot.margin_pct;
     const prevMargin = prevTot.margin_pct;
-    // margin_pct is null with revenue > 0 only when no cost could be resolved
-    // (no cost source / lookup failed) — then "profit" would just echo revenue.
     const costUnknown = (tot.revenue || 0) > 0 && margin == null;
     if (costUnknown) {
       tiles.push({
         label: "Profit",
         value: "—",
-        deltaHtml: `<span class="bov-kpi-delta is-flat">• cost unavailable</span>`,
-        subText: "No cost source for these sales — set a sales store or Item Tracker S2S",
+        delta: { cls: "is-flat", glyph: "•", text: "cost unavailable" },
+        note: "No cost source for these sales — set a sales store or the Item Tracker S2S store",
+        noteTone: "warn",
         state: "warn",
         scrollTo: "bov-margin-card",
       });
     } else {
+      const coverage = sh && sh.cost_coverage != null && sh.units ? sh.cost_coverage : null;
+      const pf = [
+        { k: "cost", v: money(tot.cost) },
+        margin != null ? { k: "margin", v: `${bovNum(margin).toFixed(1)}%` } : null,
+        tot.returns ? { k: "returns", v: money(tot.returns) } : null,
+        coverage != null && coverage < 0.999 ? { k: "Shopify cost known", v: `${Math.round(coverage * 100)}%`, tone: "warn", title: "Share of Shopify units whose barcode resolved to an Items_tbl cost — margin is partial" } : null,
+      ].filter(Boolean);
       tiles.push({
         label: "Profit",
-        value: bovCompactMoney(tot.profit || 0),
-        money: true,
-        badge: margin != null ? `${bovNum(margin).toFixed(1)}%` : null,
-        deltaHtml:
-          margin != null && prevMargin != null
-            ? bovDeltaHtml(margin, prevMargin, { goodWhenUp: true, mode: "pt", suffix: "margin vs prev" })
-            : bovDeltaHtml(tot.profit || 0, prevTot.profit, { goodWhenUp: true }),
-        sparkHtml: bovSparkline(spark.map((p) => p.values && p.values.profit), sparkPrev.map((p) => p.values && p.values.profit)),
-        subText: sh && sh.cost_coverage != null && sh.cost_coverage < 0.999
-          ? `Shopify cost known for ${Math.round(sh.cost_coverage * 100)}% of units`
-          : `Cost ${bovCompactMoney(tot.cost || 0)}${tot.returns ? ` · returns ${bovCompactMoney(tot.returns)}` : ""}`,
-        state: sh && sh.cost_coverage != null && sh.cost_coverage < 0.999 ? "warn" : "ok",
+        value: money(tot.profit),
+        badge: margin != null ? `${bovNum(margin).toFixed(1)}% margin` : null,
+        delta: margin != null && prevMargin != null
+          ? bovDelta(margin, prevMargin, { goodWhenUp: true, mode: "pt", fmtPrev: (v) => `${bovNum(v).toFixed(1)}% margin`, label: "previous period" })
+          : bovDelta(tot.profit || 0, prevTot.profit, { goodWhenUp: true, fmtPrev: money }),
+        trendHtml: bovTrendSlot(spark.map((p) => p.values && p.values.profit), sparkPrev.map((p) => p.values && p.values.profit)),
+        facts: pf,
+        state: coverage != null && coverage < 0.999 ? "warn" : "ok",
         scrollTo: "bov-margin-card",
       });
     }
@@ -20011,64 +20093,68 @@ function bovRenderKpis() {
 
   // --- Invoices shipped ---
   const shp = s.invoices_shipped || {};
-  if (!shp.configured) {
-    tiles.push(bovKpiUnconfigured("Invoices shipped", "Sales source not set", "config"));
-  } else if (shp.filtered_out) {
-    tiles.push(bovKpiFilteredOut("Invoices shipped"));
-  } else if (shp.error) {
-    tiles.push(bovKpiError("Invoices shipped", shp.error));
-  } else {
+  if (!shp.configured) tiles.push(bovKpiUnconfigured("Invoices shipped", "Sales source not set", "config"));
+  else if (shp.filtered_out) tiles.push(bovKpiFilteredOut("Invoices shipped"));
+  else if (shp.error) tiles.push(bovKpiError("Invoices shipped", shp.error, "invoices"));
+  else {
     const c = (shp.totals && shp.totals.current) || {};
     const p = (shp.totals && shp.totals.previous) || {};
+    const series = (shp.series || []).map((pt) => pt.values && pt.values.invoices);
+    const prevSeries = (shp.previous_series || []).map((pt) => pt.values && pt.values.invoices);
     tiles.push({
       label: "Invoices shipped",
-      valueHtml: `${bovInt(c.invoices || 0)} <span class="bov-kpi-secondary">${escapeHtml(bovCompactMoney(c.total_amount || 0))}</span>`,
-      deltaHtml: bovDeltaHtml(c.invoices || 0, p.invoices, { goodWhenUp: true, mode: "abs", suffix: `vs ${bovInt(p.invoices || 0)} prev` }),
-      subText: `${bovInt(c.total_qty || 0)} units · ${bovInt(c.boxes || 0)} boxes${bovPartialSuffix(shp)}`,
-      state: bovPartialSuffix(shp) ? "warn" : "ok",
+      value: bovInt(c.invoices || 0),
+      secondary: money(c.total_amount),
+      delta: bovDelta(c.invoices || 0, p.invoices, { goodWhenUp: true, mode: "abs", fmt: (v) => bovInt(v), fmtPrev: (v) => `${bovInt(v)} shipped` }),
+      trendHtml: bovTrendSlot(series, prevSeries, { caption: "invoices shipped per day · dashed = previous" }),
+      facts: [{ k: "units", v: bovInt(c.total_qty || 0) }, { k: "boxes", v: bovInt(c.boxes || 0) }, bovPartialFact(shp)].filter(Boolean),
+      state: bovPartialFact(shp) ? "warn" : "ok",
       scrollTo: "bov-invoices-card",
     });
   }
 
   // --- Open invoices ---
   const op = s.invoices_open || {};
-  if (!op.configured) {
-    tiles.push(bovKpiUnconfigured("Open invoices", "Sales source not set", "config"));
-  } else if (op.filtered_out) {
-    tiles.push(bovKpiFilteredOut("Open invoices"));
-  } else if (op.error) {
-    tiles.push(bovKpiError("Open invoices", op.error));
-  } else {
+  if (!op.configured) tiles.push(bovKpiUnconfigured("Open invoices", "Sales source not set", "config"));
+  else if (op.filtered_out) tiles.push(bovKpiFilteredOut("Open invoices"));
+  else if (op.error) tiles.push(bovKpiError("Open invoices", op.error, "invoices"));
+  else {
     const oldest = op.oldest_age_days;
-    const warn = oldest != null && oldest >= 3;
+    const warn = oldest != null && oldest >= 3 && (op.count || 0) > 0;
     const aging = op.aging || {};
     tiles.push({
       label: "Open invoices",
-      valueHtml: `${bovInt(op.count || 0)} <span class="bov-kpi-secondary">${escapeHtml(bovCompactMoney(op.total_amount || 0))}</span>`,
-      deltaHtml: op.count
-        ? `<span class="bov-kpi-delta ${warn ? "is-bad" : "is-flat"}">${warn ? "⚠" : "•"} oldest ${oldest != null ? `${oldest}d` : "—"}</span>`
-        : `<span class="bov-kpi-delta is-good">✓ nothing waiting</span>`,
-      subText: (op.count ? `≤1d ${bovInt(aging["0-1"] || 0)} · 2–3d ${bovInt(aging["2-3"] || 0)} · 4d+ ${bovInt(aging["4+"] || 0)}` : (bovState.openInRange ? "nothing unshipped from this period" : "all invoices shipped")) + (bovState.openInRange ? " · invoiced in period" : " · all dates") + bovPartialSuffix(op),
-      state: warn || bovPartialSuffix(op) ? "warn" : "ok",
+      value: bovInt(op.count || 0),
+      secondary: money(op.total_amount),
+      delta: op.count
+        ? { cls: warn ? "is-bad" : "is-flat", glyph: warn ? "⚠" : "•", text: `oldest ${oldest != null ? `${oldest}d` : "—"}`, sub: bovState.openInRange ? "unshipped, invoiced in period" : "unshipped, all dates" }
+        : { cls: "is-good", glyph: "✓", text: "nothing waiting", sub: bovState.openInRange ? "everything invoiced in period has shipped" : "no unshipped invoices" },
+      trendHtml: bovAgingBar(aging, op.count || 0),
+      facts: [{ k: "units", v: bovInt(op.total_qty || 0) }, bovPartialFact(op)].filter(Boolean),
+      state: warn || bovPartialFact(op) ? "warn" : "ok",
       scrollTo: "bov-invoices-card",
     });
   }
 
   // --- Quotations in progress ---
   const q = s.quotations || {};
-  if (!q.configured) {
-    tiles.push(bovKpiUnconfigured("Quotes in progress", "Admin DB not set", "config", "Configure"));
-  } else if (q.filtered_out) {
-    tiles.push(bovKpiFilteredOut("Quotes in progress"));
-  } else if (q.error) {
-    tiles.push(bovKpiError("Quotes in progress", q.error));
-  } else {
+  if (!q.configured) tiles.push(bovKpiUnconfigured("Quotes in progress", "Admin DB not set", "config", "Configure"));
+  else if (q.filtered_out) tiles.push(bovKpiFilteredOut("Quotes in progress"));
+  else if (q.error) tiles.push(bovKpiError("Quotes in progress", q.error, "quotations"));
+  else {
     const byStatus = (q.by_status || []).filter((x) => x.count > 0);
     tiles.push({
       label: "Quotes in progress",
-      valueHtml: `${bovInt(q.count || 0)} <span class="bov-kpi-secondary">${escapeHtml(bovCompactMoney(q.total_amount || 0))}</span>`,
-      deltaHtml: `<span class="bov-kpi-delta is-flat">• ${bovInt(q.total_qty || 0)} units picking</span>`,
-      subText: byStatus.length ? byStatus.map((x) => `${bovInt(x.count)} ${x.status || "—"}`).join(" · ") : "nothing being picked right now",
+      value: bovInt(q.count || 0),
+      secondary: money(q.total_amount),
+      delta: q.count
+        ? { cls: "is-flat", glyph: "•", text: `${bovInt(q.total_qty || 0)} units`, sub: "being picked right now" }
+        : { cls: "is-good", glyph: "✓", text: "nothing in progress", sub: "" },
+      note: byStatus.length ? "" : "",
+      trendHtml: byStatus.length
+        ? `<div class="bov-kpi-split">${byStatus.map((x) => `<span class="bov-kpi-split-item"><b>${bovInt(x.count)}</b> ${escapeHtml(x.status || "—")}<small>${escapeHtml(money(x.total_amount))}</small></span>`).join("")}</div>`
+        : `<span class="bov-kpi-trend-empty">No quotations are being picked</span>`,
+      facts: (q.statuses || []).length ? [{ k: "counted statuses", v: q.statuses.join(", ") }] : [],
       state: "ok",
       scrollTo: "bov-quotations-card",
     });
@@ -20077,19 +20163,27 @@ function bovRenderKpis() {
   // --- Purchases incoming ---
   const pin = s.purchases_incoming || {};
   const prc = s.purchases_received || {};
-  if (!pin.configured) {
-    tiles.push(bovKpiUnconfigured("PO incoming", "Purchases source not set", "config"));
-  } else if (pin.filtered_out) {
-    tiles.push(bovKpiFilteredOut("PO incoming"));
-  } else if (pin.error) {
-    tiles.push(bovKpiError("PO incoming", pin.error));
-  } else {
+  const ppl = s.purchases_purchased || {};
+  if (!pin.configured) tiles.push(bovKpiUnconfigured("PO incoming", "Purchases source not set", "config"));
+  else if (pin.filtered_out) tiles.push(bovKpiFilteredOut("PO incoming"));
+  else if (pin.error) tiles.push(bovKpiError("PO incoming", pin.error, "purchasing"));
+  else {
     const rc = (prc.totals && prc.totals.current) || {};
+    const pc = (ppl.totals && ppl.totals.current) || {};
+    const rcSeries = (prc.series || []).map((pt) => pt.values && pt.values.value);
+    const rcPrev = (prc.previous_series || []).map((pt) => pt.values && pt.values.value);
     tiles.push({
       label: "PO incoming",
-      valueHtml: `${bovInt(pin.count || 0)} <span class="bov-kpi-secondary">${escapeHtml(bovCompactMoney(pin.outstanding_value || 0))}</span>`,
-      deltaHtml: `<span class="bov-kpi-delta is-flat">• ${bovInt(pin.qty_outstanding || 0)} units outstanding</span>`,
-      subText: prc.configured && !prc.error ? `received in period: ${bovInt(rc.purchase_orders || 0)} PO · ${bovCompactMoney(rc.value || 0)}` : "",
+      value: bovInt(pin.count || 0),
+      secondary: money(pin.outstanding_value),
+      delta: { cls: "is-flat", glyph: "•", text: `${bovInt(pin.qty_outstanding || 0)} units outstanding`, sub: pin.oldest_po_date ? `oldest placed ${bovDateShort(pin.oldest_po_date)}` : "" },
+      trendHtml: prc.configured && !prc.error
+        ? bovTrendSlot(rcSeries, rcPrev, { caption: "goods received per day · dashed = previous", empty: "Single-day period — receipts trend needs a longer range" })
+        : `<span class="bov-kpi-trend-empty">Receipts unavailable</span>`,
+      facts: [
+        prc.configured && !prc.error ? { k: "received in period", v: `${bovInt(rc.purchase_orders || 0)} PO · ${money(rc.value)}` } : null,
+        ppl.configured && !ppl.error ? { k: "placed in period", v: `${bovInt(pc.purchase_orders || 0)} PO · ${money(pc.total)}` } : null,
+      ].filter(Boolean),
       state: "ok",
       scrollTo: "bov-purchases-card",
     });
@@ -20107,38 +20201,41 @@ function bovRenderKpiFoot() {
   const so = s.shopify_open_orders || {};
   const ow = bovState.widgets.shopifyOrders;
   const od = ow && ow.data;
-  let foot = "";
+  const pill = (v, k, title, tone) => `<span class="bov-flow-pill${tone ? ` is-${tone}` : ""}" title="${escapeHtml(title || "")}"><b>${escapeHtml(v)}</b><span>${escapeHtml(k)}</span></span>`;
+  let html = "";
   if (od && od.configured && !od.filtered_out && !od.error && (od.per_store || []).length) {
-    // Richer line from the Shopify orders card once it has loaded.
     const t = od.totals || {};
-    const bits = [
-      `<strong>${bovInt(t.orders || 0)}</strong> orders in period`,
-      `${bovInt(t.fulfilled_in_period || 0)} fulfilled`,
-      `${bovInt(t.unfulfilled_from_period || 0)} unfulfilled`,
-      `${bovInt(t.on_hold || 0)} on hold`,
-      `${bovInt(t.to_fulfill || 0)} to fulfil`,
-    ];
-    const per = (od.per_store || []).length > 1
-      ? (od.per_store || []).map((x) => `${escapeHtml(x.store_name)} ${x.orders != null ? bovInt(x.orders) : "—"}${x.error || x.live_error ? " (error)" : ""}`).join(" · ")
-      : "";
-    foot = `Shopify: ${bits.join(" · ")}${per ? ` <span class="bov-kpi-foot-detail">${per}</span>` : ""}`;
+    const perTitle = (key) => (od.per_store || []).map((x) => `${x.store_name}: ${x[key] != null ? bovInt(x[key]) : "—"}`).join("\n");
+    html =
+      `<span class="bov-flow-label">Shopify orders <small>in period · live backlog</small></span>` +
+      pill(bovInt(t.orders || 0), "placed", perTitle("orders")) +
+      pill(bovInt(t.fulfilled_in_period || 0), "fulfilled", perTitle("fulfilled_in_period")) +
+      pill(bovInt(t.unfulfilled_from_period || 0), "still unfulfilled", perTitle("unfulfilled_from_period"), (t.unfulfilled_from_period || 0) ? "warn" : "") +
+      pill(bovInt(t.on_hold || 0), "on hold", perTitle("on_hold"), (t.on_hold || 0) ? "warn" : "") +
+      pill(bovInt(t.to_fulfill || 0), "to fulfil (all)", perTitle("to_fulfill")) +
+      pill(bovInt(t.open_orders || 0), "open (all)", perTitle("open_orders")) +
+      `<span class="bov-flow-go" aria-hidden="true">›</span>`;
   } else if (so.configured && !so.filtered_out) {
     if (so.error) {
-      foot = `Shopify open orders: unavailable (${escapeHtml(so.error)})`;
+      html = `<span class="bov-flow-label">Shopify orders</span><span class="bov-flow-pill is-warn"><b>—</b><span>unavailable</span></span>`;
     } else {
-      const per = (so.per_store || []).map((x) => `${escapeHtml(x.store_name)} ${x.count != null ? bovInt(x.count) : "—"}${x.error ? " (error)" : ""}`).join(" · ");
-      foot = `Shopify orders to ship: <strong>${bovInt(so.count || 0)}</strong>${so.open_value != null ? ` · ${escapeHtml(bovCompactMoney(so.open_value))}` : ""}${per ? ` <span class="bov-kpi-foot-detail">${per}</span>` : ""}`;
+      const per = (so.per_store || []).map((x) => `${x.store_name}: ${x.count != null ? bovInt(x.count) : "—"}`).join("\n");
+      html = `<span class="bov-flow-label">Shopify orders</span>` + pill(bovInt(so.count || 0), "to ship", per) + `<span class="bov-flow-go" aria-hidden="true">›</span>`;
     }
   }
   let footEl = document.getElementById("bov-kpi-foot");
   if (!footEl) {
     footEl = document.createElement("div");
     footEl.id = "bov-kpi-foot";
-    footEl.className = "bov-kpi-foot";
+    footEl.className = "bov-kpi-foot bov-flow";
+    footEl.setAttribute("role", "link");
+    footEl.setAttribute("tabindex", "0");
+    footEl.dataset.bovSection = "shopify";
+    footEl.title = "Open Shopify";
     strip.insertAdjacentElement("afterend", footEl);
   }
-  footEl.innerHTML = foot;
-  footEl.hidden = !foot;
+  footEl.innerHTML = html;
+  footEl.hidden = !html;
 }
 
 // ---------------------------------------------------------------------------
