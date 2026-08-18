@@ -357,7 +357,12 @@
                     <h3>Quotations in progress</h3>
                     <span class="dashboard-card-meta" id="bov-quotations-meta"></span>
                   </div>
-                  <button type="button" class="btn btn-secondary bov-btn-xs bov-card-link-btn" data-bov-action="list" data-bov-list="quotations">Full list ↗</button>
+                </div>
+                <div class="bov-list-toolbar bov-card-toolbar" id="bov-quotations-toolbar">
+                  <div class="sa-chip-group bov-list-types" id="bov-quotations-status" role="group" aria-label="Filter by status" hidden></div>
+                  <div class="sa-chip-group bov-list-stores" id="bov-quotations-stores" role="group" aria-label="Filter by store" hidden></div>
+                  <input type="search" class="dark-input bov-list-search-input" data-bov-kind="quotations" placeholder="Search quotations…" autocomplete="off" aria-label="Search quotations">
+                  <span class="bov-list-count" id="bov-quotations-count"></span>
                 </div>
                 <div class="bov-card-body" id="bov-quotations-body"></div>
                 <div class="bov-card-foot" id="bov-quotations-foot"></div>
@@ -372,14 +377,16 @@
                     <h3>Invoices</h3>
                     <span class="dashboard-card-meta" id="bov-invoices-meta"></span>
                   </div>
-                  <div class="bov-card-controls">
-                    <div class="sancm-mode-group" data-bov-tabgroup="invoices">
-                      <button type="button" class="sancm-mode-btn active" data-bov-tab="invoices" data-value="all" title="Every invoice dated in the selected period, flagged Shipped (tracking number present) or Open">All <span class="bov-tab-count" id="bov-tab-count-all"></span></button>
-                      <button type="button" class="sancm-mode-btn" data-bov-tab="invoices" data-value="open" title="Invoices without a tracking number (unshipped)">Open <span class="bov-tab-count" id="bov-tab-count-open"></span></button>
-                      <button type="button" class="sancm-mode-btn" data-bov-tab="invoices" data-value="shipped" title="Invoices with a tracking number">Shipped <span class="bov-tab-count" id="bov-tab-count-shipped"></span></button>
-                    </div>
-                    <button type="button" class="btn btn-secondary bov-btn-xs bov-card-link-btn" data-bov-action="list" data-bov-list="invoices">Full list ↗</button>
+                </div>
+                <div class="bov-list-toolbar bov-card-toolbar" id="bov-invoices-toolbar">
+                  <div class="sancm-mode-group" data-bov-tabgroup="invoices">
+                    <button type="button" class="sancm-mode-btn active" data-bov-tab="invoices" data-value="all" title="Every invoice dated in the selected period, flagged Shipped (tracking number present) or Open">All <span class="bov-tab-count" id="bov-tab-count-all"></span></button>
+                    <button type="button" class="sancm-mode-btn" data-bov-tab="invoices" data-value="open" title="Invoices without a tracking number (unshipped)">Open <span class="bov-tab-count" id="bov-tab-count-open"></span></button>
+                    <button type="button" class="sancm-mode-btn" data-bov-tab="invoices" data-value="shipped" title="Invoices with a tracking number">Shipped <span class="bov-tab-count" id="bov-tab-count-shipped"></span></button>
                   </div>
+                  <div class="sa-chip-group bov-list-stores" id="bov-invoices-stores" role="group" aria-label="Filter by store" hidden></div>
+                  <input type="search" class="dark-input bov-list-search-input" data-bov-kind="invoices" placeholder="Search invoices…" autocomplete="off" aria-label="Search invoices">
+                  <span class="bov-list-count" id="bov-invoices-count"></span>
                 </div>
                 <div class="bov-card-body" id="bov-invoices-body"></div>
                 <div class="bov-card-foot" id="bov-invoices-foot"></div>
@@ -394,14 +401,16 @@
                     <h3>Purchase orders</h3>
                     <span class="dashboard-card-meta" id="bov-purchases-meta"></span>
                   </div>
-                  <div class="bov-card-controls">
-                    <div class="sancm-mode-group" data-bov-tabgroup="purchases">
-                      <button type="button" class="sancm-mode-btn active" data-bov-tab="purchases" data-value="incoming" title="Open POs still waiting on goods (Status 0 with quantity outstanding), regardless of when they were placed">Incoming <span class="bov-tab-count" id="bov-tab-count-incoming"></span></button>
-                      <button type="button" class="sancm-mode-btn" data-bov-tab="purchases" data-value="purchased" title="POs placed (PO date) in the selected period — open or already received">Placed <span class="bov-tab-count" id="bov-tab-count-purchased"></span></button>
-                      <button type="button" class="sancm-mode-btn" data-bov-tab="purchases" data-value="received" title="POs with goods received (line DateReceived) in the selected period — a partially received PO also stays under Incoming">Received <span class="bov-tab-count" id="bov-tab-count-received"></span></button>
-                    </div>
-                    <button type="button" class="btn btn-secondary bov-btn-xs bov-card-link-btn" data-bov-action="list" data-bov-list="purchases">Full list ↗</button>
+                </div>
+                <div class="bov-list-toolbar bov-card-toolbar" id="bov-purchases-toolbar">
+                  <div class="sancm-mode-group" data-bov-tabgroup="purchases">
+                    <button type="button" class="sancm-mode-btn active" data-bov-tab="purchases" data-value="incoming" title="Open POs still waiting on goods (Status 0 with quantity outstanding), regardless of when they were placed">Incoming <span class="bov-tab-count" id="bov-tab-count-incoming"></span></button>
+                    <button type="button" class="sancm-mode-btn" data-bov-tab="purchases" data-value="purchased" title="POs placed (PO date) in the selected period — open or already received">Placed <span class="bov-tab-count" id="bov-tab-count-purchased"></span></button>
+                    <button type="button" class="sancm-mode-btn" data-bov-tab="purchases" data-value="received" title="POs with goods received (line DateReceived) in the selected period — a partially received PO also stays under Incoming">Received <span class="bov-tab-count" id="bov-tab-count-received"></span></button>
                   </div>
+                  <div class="sa-chip-group bov-list-stores" id="bov-purchases-stores" role="group" aria-label="Filter by store" hidden></div>
+                  <input type="search" class="dark-input bov-list-search-input" data-bov-kind="purchases" placeholder="Search purchase orders…" autocomplete="off" aria-label="Search purchase orders">
+                  <span class="bov-list-count" id="bov-purchases-count"></span>
                 </div>
                 <div class="bov-card-body" id="bov-purchases-body"></div>
                 <div class="bov-card-foot" id="bov-purchases-foot"></div>
@@ -5032,25 +5041,6 @@
     </div>
 
     <!-- Business Overview drill-ins -->
-    <div id="bov-list-modal" class="modal bov-modal">
-      <div class="modal-content bov-modal-content bov-list-modal-content" style="max-width: 1180px; width: 96%">
-        <div class="modal-header">
-          <div class="bov-list-modal-title-wrap">
-            <h3 id="bov-list-title">List</h3>
-            <span class="dashboard-card-meta" id="bov-list-meta"></span>
-          </div>
-          <button type="button" class="modal-close" data-bov-close="bov-list-modal" aria-label="Close">&times;</button>
-        </div>
-        <div class="modal-body bov-modal-body" id="bov-list-body-wrap">
-          <div class="bov-list-toolbar">
-            <input type="search" id="bov-list-search" class="dark-input" placeholder="Search…" autocomplete="off" aria-label="Search list">
-            <div class="sa-chip-group bov-list-stores" id="bov-list-stores" role="group" aria-label="Filter by store" hidden></div>
-            <span class="bov-list-count" id="bov-list-count"></span>
-          </div>
-          <div id="bov-list-body" class="bov-list-body"></div>
-        </div>
-      </div>
-    </div>
 
     <div id="bov-quotation-modal" class="modal bov-modal">
       <div class="modal-content" style="max-width: 940px; width: 95%">

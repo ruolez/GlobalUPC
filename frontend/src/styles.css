@@ -7871,3 +7871,36 @@ tr.bov-line-void td { opacity: 0.55; text-decoration: line-through; }
   .bov-page .bov-sticky, .bov-topbar-controls, .bov-subnav { display: none !important; }
   .bov-panel[hidden] { display: block !important; }
 }
+
+/* Business Overview — per-list toolbars (type tabs · store chips · search) */
+.bov-card-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+  margin: -0.25rem 0 0.75rem;
+  padding: 0.5rem 0.625rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-tertiary);
+}
+.bov-card-toolbar .sancm-mode-group { background: var(--bg-primary); }
+.bov-card-toolbar .sa-chip-group { background: var(--bg-primary); }
+.bov-card-toolbar .bov-list-search-input {
+  margin-left: auto;
+  min-width: 12rem;
+  max-width: 18rem;
+  flex: 1 1 12rem;
+  padding: 0.35rem 0.625rem;
+  font-size: 0.8125rem;
+}
+.bov-card-toolbar .bov-list-count { font-size: 0.75rem; color: var(--text-tertiary); white-space: nowrap; }
+.bov-card-toolbar .bov-list-stores .bov-store-chip-tag,
+.bov-card-toolbar .bov-list-types .bov-store-chip-tag {
+  border: 0; padding: 0; text-transform: none; letter-spacing: 0; font-size: 0.75rem;
+  color: var(--text-tertiary); font-variant-numeric: tabular-nums;
+}
+.bov-card-toolbar .sa-chip.active .bov-store-chip-tag { color: inherit; opacity: 0.7; }
+@media (max-width: 900px) {
+  .bov-card-toolbar .bov-list-search-input { margin-left: 0; max-width: none; flex-basis: 100%; }
+}

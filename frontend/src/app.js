@@ -18477,7 +18477,11 @@ const bovState = {
   collapsedCards: {},   // cardId -> true when the user collapsed it
   section: "overview",  // active section tab
   popover: null,        // id of the open topbar popover
-  listModal: null,      // {kind, widgetKey, search} while #bov-list-modal is open
+  cardFilters: {        // per-list toolbar filters (store chip, status chip, search)
+    quotations: { store: null, status: null, search: "" },
+    invoices: { store: null, search: "" },
+    purchases: { store: null, search: "" },
+  },
   seriesHidden: { cost: true },
   tabs: { invoices: "all", purchases: "incoming", top: "customer" },
   agingFilter: null,
@@ -19212,18 +19216,35 @@ function bovBindOnce() {
       bovOpenRow(row);
     }
   });
-  document.getElementById("bov-list-search")?.addEventListener("input", (e) => {
-    if (bovState.listModal) {
-      bovState.listModal.search = e.target.value || "";
-      bovRenderListModal();
+  // Per-list toolbars: store chips, status chips, search
+  page.addEventListener("click", (e) => {
+    const chip = e.target.closest("[data-bov-cardstore]");
+    if (chip) {
+      const kind = chip.dataset.bovKind;
+      const f = bovState.cardFilters[kind];
+      if (!f) return;
+      const v = chip.dataset.bovCardstore;
+      f.store = v === "" ? null : v;
+      bovRenderCard(kind);
+      return;
+    }
+    const st = e.target.closest("[data-bov-cardstatus]");
+    if (st) {
+      const kind = st.dataset.bovKind;
+      const f = bovState.cardFilters[kind];
+      if (!f) return;
+      const v = st.dataset.bovCardstatus;
+      f.status = v === "" ? null : v;
+      bovRenderCard(kind);
     }
   });
-  document.getElementById("bov-list-stores")?.addEventListener("click", (e) => {
-    const chip = e.target.closest("[data-bov-list-store]");
-    if (!chip || !bovState.listModal) return;
-    const v = chip.dataset.bovListStore;
-    bovState.listModal.store = v === "" ? null : v;
-    bovRenderListModal();
+  page.addEventListener("input", (e) => {
+    const inp = e.target.closest(".bov-list-search-input");
+    if (!inp) return;
+    const f = bovState.cardFilters[inp.dataset.bovKind];
+    if (!f) return;
+    f.search = inp.value || "";
+    bovRenderCard(inp.dataset.bovKind);
   });
   document.getElementById("bov-charts-toggle")?.addEventListener("click", () => {
     bovSetChartsOpen(!bovState.chartsOpen);
@@ -19714,7 +19735,6 @@ async function bovFetchWidget(key, seq, signal) {
   try {
     def.render();
     bovRenderNavBadges();
-    if (bovState.listModal && bovState.listModal.widgetKey === key) bovRenderListModal();
   } catch (e) {
     console.error(`[bov] render ${key} failed`, e);
   }
@@ -19778,8 +19798,6 @@ function bovHandleAction(action, el) {
     // Admin DB is edited in-page now (config form select).
     bovOpenConfigEdit();
     setTimeout(() => document.getElementById("bov-cfg-admin")?.focus(), 60);
-  } else if (action === "list") {
-    bovOpenListModal(el?.dataset.bovList || "quotations");
   } else if (action === "shopify-sync") {
     bovRefreshShopify({ maxAgeMinutes: 0 });
   } else if (action === "exclusions") {
@@ -20768,7 +20786,6 @@ function bovToggleSort(widgetKey, colKey) {
     s.dir = ["business_name", "quotation_number", "invoice_number", "po_number", "sales_rep", "status", "packer", "store_name"].includes(colKey) ? "asc" : "desc";
   }
   bovRenderCard(widgetKey);
-  if (bovState.listModal && bovState.listModal.widgetKey === widgetKey) bovRenderListModal();
 }
 
 function bovRenderCard(key) {
@@ -20850,6 +20867,70 @@ function bovFootHtml(widgetKey, total, shown, extraHtml) {
 // Ops card: quotations
 // ---------------------------------------------------------------------------
 
+function bovStatusOf(row) {
+  return (row && row.status ? String(row.status).trim() : "") || "—";
+}
+
+/**
+ * Apply the per-list toolbar filters (store chip, optional status chip, search)
+ * to `rows`, render the chip groups with counts and the "n of m" counter, and
+ * return the filtered rows. `storeOf(row)` yields the store label; `withStatus`
+ * enables the status chip group (quotations).
+ */
+function bovApplyCardFilters(kind, rows, { storeOf, searchFields, withStatus = false } = {}) {
+  const f = bovState.cardFilters[kind] || (bovState.cardFilters[kind] = { store: null, status: null, search: "" });
+  const all = rows || [];
+  const chipsHtml = (items, active, attr, extraCls) =>
+    `<button type="button" class="sa-chip${active == null ? " active" : ""}" ${attr}="" data-bov-kind="${kind}" aria-pressed="${active == null}">All <span class="bov-store-chip-tag">${bovInt(all.length)}</span></button>` +
+    items.map(([name, n]) => `<button type="button" class="sa-chip${active === name ? " active" : ""}" ${attr}="${escapeHtml(name)}" data-bov-kind="${kind}" aria-pressed="${active === name}">${escapeHtml(name)} <span class="bov-store-chip-tag">${bovInt(n)}</span></button>`).join("");
+  const groupCounts = (fn) => {
+    const m = new Map();
+    all.forEach((r) => { const k = fn(r) || "—"; m.set(k, (m.get(k) || 0) + 1); });
+    return Array.from(m.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+  };
+  // Store chips (only when the list spans more than one store)
+  const storesEl = document.getElementById(`bov-${kind}-stores`);
+  const storeItems = storeOf ? groupCounts(storeOf) : [];
+  if (storesEl) {
+    if (storeItems.length > 1) {
+      if (f.store != null && !storeItems.some(([n]) => n === f.store)) f.store = null;
+      storesEl.hidden = false;
+      storesEl.innerHTML = chipsHtml(storeItems, f.store, "data-bov-cardstore");
+    } else {
+      f.store = null;
+      storesEl.hidden = true;
+      storesEl.innerHTML = "";
+    }
+  }
+  // Status chips (quotations)
+  const statusEl = withStatus ? document.getElementById(`bov-${kind}-status`) : null;
+  const statusItems = withStatus ? groupCounts(bovStatusOf) : [];
+  if (statusEl) {
+    if (statusItems.length > 1) {
+      if (f.status != null && !statusItems.some(([n]) => n === f.status)) f.status = null;
+      statusEl.hidden = false;
+      statusEl.innerHTML = chipsHtml(statusItems, f.status, "data-bov-cardstatus");
+    } else {
+      f.status = null;
+      statusEl.hidden = true;
+      statusEl.innerHTML = "";
+    }
+  }
+  let out = all;
+  if (f.store != null && storeOf) out = out.filter((r) => (storeOf(r) || "—") === f.store);
+  if (f.status != null && withStatus) out = out.filter((r) => bovStatusOf(r) === f.status);
+  const q = (f.search || "").trim().toLowerCase();
+  if (q && searchFields) out = out.filter((r) => searchFields.some((k) => r[k] != null && String(r[k]).toLowerCase().includes(q)));
+  const countEl = document.getElementById(`bov-${kind}-count`);
+  if (countEl) countEl.textContent = out.length === all.length ? `${bovInt(all.length)} row${all.length === 1 ? "" : "s"}` : `${bovInt(out.length)} of ${bovInt(all.length)}`;
+  return out;
+}
+
+function bovCardFiltersActive(kind) {
+  const f = bovState.cardFilters[kind];
+  return !!(f && (f.store != null || f.status != null || (f.search || "").trim()));
+}
+
 function bovRenderQuotationsTable() {
   const body = document.getElementById("bov-quotations-body");
   const meta = document.getElementById("bov-quotations-meta");
@@ -20879,10 +20960,15 @@ function bovRenderQuotationsTable() {
     if (meta) meta.textContent = d.store_name ? `Source: ${d.store_name}` : "";
     return;
   }
-  const rows = d.quotations || [];
-  if (meta) meta.textContent = `${bovInt(d.count || rows.length)} · ${bovCompactMoney(d.total_amount || 0)}${d.statuses && d.statuses.length ? ` · ${d.statuses.join(", ")}` : ""}`;
+  const allRows = d.quotations || [];
+  if (meta) meta.textContent = `${bovInt(d.count || allRows.length)} · ${bovCompactMoney(d.total_amount || 0)}${d.statuses && d.statuses.length ? ` · ${d.statuses.join(", ")}` : ""}`;
+  const rows = bovApplyCardFilters("quotations", allRows, {
+    storeOf: (r) => bovSourceDbLabel(r.source_db),
+    searchFields: ["quotation_number", "business_name", "account_no", "sales_rep", "status", "packer", "checker", "source_db"],
+    withStatus: true,
+  });
   if (!rows.length) {
-    body.innerHTML = bovEmptyHtml("Nothing is being picked right now.");
+    body.innerHTML = bovEmptyHtml(allRows.length ? "No quotations match the filters." : "Nothing is being picked right now.");
     return;
   }
   const sorted = bovSortRows(rows, bovState.sort.quotations);
@@ -20976,8 +21062,9 @@ function bovRenderInvoices() {
   const srcNote = d.store_name ? `Source: ${escapeHtml(d.store_name)}` : "";
 
   // ---- Open · all dates (whole unshipped backlog) — served by /invoices/open
+  const invSearch = ["invoice_number", "business_name", "account_no", "sales_rep", "shipper", "tracking_no", "store_name", "po_number"];
   if (tab === "open" && !bovState.openInRange) {
-    const rows = d.invoices || [];
+    const rows = bovApplyCardFilters("invoices", d.invoices || [], { storeOf: (r) => r.store_name || d.store_name || "", searchFields: invSearch });
     const aging = d.aging || {};
     if (meta) meta.textContent = `${bovInt(d.count || 0)} unshipped · ${bovCompactMoney(d.total_amount || 0)}${d.oldest_age_days != null ? ` · oldest ${d.oldest_age_days}d` : ""} · all dates`;
     let filtered = rows;
@@ -20988,7 +21075,7 @@ function bovRenderInvoices() {
       return `<button type="button" class="dashboard-activity-status ${cls} bov-aging-chip${bovState.agingFilter === k ? " is-active" : ""}" data-bov-aging="${k}" aria-pressed="${bovState.agingFilter === k}" title="Show only invoices aged ${lab}">${lab} · ${bovInt(aging[k] || 0)}</button>`;
     }).join("");
     if (!rows.length) {
-      body.innerHTML = bovEmptyHtml("Every invoice has a tracking number — nothing unshipped.");
+      body.innerHTML = bovEmptyHtml(bovCardFiltersActive("invoices") ? "No invoices match the filters." : "Every invoice has a tracking number — nothing unshipped.");
       if (foot) foot.innerHTML = `<span class="bov-foot-left">${rangeToggle}${partialNote}</span>`;
       return;
     }
@@ -21000,7 +21087,7 @@ function bovRenderInvoices() {
   }
 
   // ---- Period dataset: All / Open / Shipped by InvoiceDate, status = tracking present
-  const rows = bovInvoicesTabRows(d);
+  const rows = bovApplyCardFilters("invoices", bovInvoicesTabRows(d), { storeOf: (r) => r.store_name || d.store_name || "", searchFields: invSearch });
   const openN = d.open_count || 0;
   const shipN = d.shipped_count || 0;
   if (meta) {
@@ -21011,7 +21098,8 @@ function bovRenderInvoices() {
   }
   if (!rows.length) {
     body.innerHTML = bovEmptyHtml(
-      tab === "open" ? "No unshipped invoices dated in this period — every invoice here has a tracking number."
+      bovCardFiltersActive("invoices") ? "No invoices match the filters."
+        : tab === "open" ? "No unshipped invoices dated in this period — every invoice here has a tracking number."
         : tab === "shipped" ? "No shipped invoices dated in this period."
           : "No invoices dated in this period.");
     if (foot) foot.innerHTML = `<span class="bov-foot-left">${tab === "open" ? rangeToggle : srcNote}${partialNote}</span>`;
@@ -21138,7 +21226,12 @@ function bovRenderPurchases() {
     if (meta) meta.textContent = d.store_name ? `Source: ${d.store_name}` : "";
     return;
   }
-  const rows = d.purchase_orders || [];
+  const allRows = d.purchase_orders || [];
+  const rows = bovApplyCardFilters("purchases", allRows, {
+    storeOf: (r) => r.store_name || d.store_name || "",
+    searchFields: ["po_number", "business_name", "account_no"],
+  });
+  const filtersOn = bovCardFiltersActive("purchases");
   const sourceFoot = d.store_name ? `Source: ${escapeHtml(d.store_name)}` : "";
   let cols;
   let sortKey;
@@ -21146,7 +21239,7 @@ function bovRenderPurchases() {
     sortKey = "purchasesIncoming";
     if (meta) meta.textContent = `${bovInt(d.count || 0)} open · ${bovCompactMoney(d.outstanding_value || 0)} outstanding · ${bovInt(d.qty_outstanding || 0)} units · still waiting on goods (any PO date)`;
     if (!rows.length) {
-      body.innerHTML = bovEmptyHtml("No open purchase orders.");
+      body.innerHTML = bovEmptyHtml(filtersOn ? "No purchase orders match the filters." : "No open purchase orders.");
       if (foot) foot.innerHTML = `<span class="bov-foot-left">${sourceFoot}</span>`;
       return;
     }
@@ -21157,7 +21250,7 @@ function bovRenderPurchases() {
     const prv = (d.totals && d.totals.previous) || {};
     if (meta) meta.textContent = `${bovInt(cur.purchase_orders || 0)} placed in period · ${bovCompactMoney(cur.total || 0)}${prv.purchase_orders != null ? ` · prev ${bovInt(prv.purchase_orders)} / ${bovCompactMoney(prv.total || 0)}` : ""} · open and received alike`;
     if (!rows.length) {
-      body.innerHTML = bovEmptyHtml("No purchase orders placed in this period.");
+      body.innerHTML = bovEmptyHtml(filtersOn ? "No purchase orders match the filters." : "No purchase orders placed in this period.");
       return;
     }
     cols = bovPoCols("purchased");
@@ -21167,7 +21260,7 @@ function bovRenderPurchases() {
     const prv = (d.totals && d.totals.previous) || {};
     if (meta) meta.textContent = `${bovInt(cur.purchase_orders || 0)} PO with goods received in period · ${bovInt(cur.qty || 0)} units · ${bovCompactMoney(cur.value || 0)}${prv.value != null ? ` · prev ${bovCompactMoney(prv.value || 0)}` : ""}`;
     if (!rows.length) {
-      body.innerHTML = bovEmptyHtml("Nothing received in this period.");
+      body.innerHTML = bovEmptyHtml(filtersOn ? "No purchase orders match the filters." : "Nothing received in this period.");
       return;
     }
     cols = bovPoCols("received");
@@ -21223,39 +21316,6 @@ function bovPoCols(tab) {
 // Full-list modal (shared by the three ops cards)
 // ---------------------------------------------------------------------------
 
-function bovListDef(kind) {
-  if (kind === "quotations") {
-    return { widgetKey: "quotations", title: "Quotations in progress", rowsOf: (d) => d.quotations || [], cols: () => bovQuotationCols(), rowAttrs: bovQuotationRowAttrs,
-      searchFields: ["quotation_number", "business_name", "account_no", "sales_rep", "status", "packer", "checker", "source_db"],
-      meta: (d) => `${bovInt(d.count || (d.quotations || []).length)} · ${bovCompactMoney(d.total_amount || 0)}${d.store_name ? ` · ${d.store_name}` : ""}` };
-  }
-  if (kind === "invoices") {
-    const key = bovActiveInvoicesKey();
-    if (key === "invoicesOpen") {
-      return { widgetKey: key, title: "Open invoices", rowsOf: (d) => d.invoices || [], cols: (d) => bovOpenInvoiceCols((d.stores || []).length > 1), rowAttrs: bovInvoiceRowAttrs,
-        searchFields: ["invoice_number", "business_name", "account_no", "sales_rep", "shipper", "store_name", "po_number"],
-        meta: (d) => `${bovInt(d.count || 0)} open · ${bovCompactMoney(d.total_amount || 0)} · ${bovState.openInRange ? "invoiced in period" : "all dates"}${d.store_name ? ` · ${d.store_name}` : ""}` };
-    }
-    const tab = bovState.tabs.invoices;
-    const titles = { all: "Invoices in period", open: "Open invoices in period", shipped: "Shipped invoices in period" };
-    return { widgetKey: key, title: titles[tab] || "Invoices", rowsOf: (d) => bovInvoicesTabRows(d), cols: (d) => bovPeriodInvoiceCols((d.stores || []).length > 1), rowAttrs: bovInvoiceRowAttrs,
-      searchFields: ["invoice_number", "business_name", "account_no", "sales_rep", "shipper", "tracking_no", "store_name", "po_number"],
-      meta: (d) => `${bovInt(d.count || 0)} invoiced · ${bovInt(d.shipped_count || 0)} shipped · ${bovInt(d.open_count || 0)} open${d.store_name ? ` · ${d.store_name}` : ""}` };
-  }
-  const key = bovActivePurchasesKey();
-  const tab = bovState.tabs.purchases;
-  const titles = { incoming: "Incoming purchase orders", purchased: "Purchase orders placed in period", received: "Purchase orders with goods received in period" };
-  return { widgetKey: key, title: titles[tab] || "Purchase orders", rowsOf: (d) => d.purchase_orders || [], cols: () => bovPoCols(tab), rowAttrs: bovPoRowAttrs,
-    searchFields: ["po_number", "business_name", "account_no"],
-    meta: (d) => {
-      if (tab === "incoming") return `${bovInt(d.count || 0)} open · ${bovCompactMoney(d.outstanding_value || 0)} outstanding${d.store_name ? ` · ${d.store_name}` : ""}`;
-      const c = (d.totals && d.totals.current) || {};
-      return tab === "purchased"
-        ? `${bovInt(c.purchase_orders || 0)} placed · ${bovCompactMoney(c.total || 0)}${d.store_name ? ` · ${d.store_name}` : ""}`
-        : `${bovInt(c.purchase_orders || 0)} PO received · ${bovCompactMoney(c.value || 0)}${d.store_name ? ` · ${d.store_name}` : ""}`;
-    } };
-}
-
 function bovSourceDbLabel(sourceDb) {
   const raw = (sourceDb || "").trim();
   if (!raw) return "";
@@ -21288,87 +21348,6 @@ function bovSetChartsOpen(open) {
   } else {
     bovSetTrendCollapsedSub();
   }
-}
-
-function bovOpenListModal(kind) {
-  const def = bovListDef(kind);
-  bovState.listModal = { kind, widgetKey: def.widgetKey, search: "", store: null };
-  const search = document.getElementById("bov-list-search");
-  if (search) search.value = "";
-  bovRenderListModal();
-  openModal("bov-list-modal");
-  setTimeout(() => search?.focus(), 30);
-}
-
-function bovRenderListModal() {
-  const lm = bovState.listModal;
-  const title = document.getElementById("bov-list-title");
-  const meta = document.getElementById("bov-list-meta");
-  const count = document.getElementById("bov-list-count");
-  const body = document.getElementById("bov-list-body");
-  if (!lm || !body) return;
-  const def = bovListDef(lm.kind);
-  lm.widgetKey = def.widgetKey;
-  if (title) title.textContent = def.title;
-  const w = bovState.widgets[def.widgetKey];
-  const d = w && w.data;
-  if (!d) {
-    body.innerHTML = w && w.error ? bovInlineErrorHtml(def.widgetKey, w.error, "Could not load") : bovSkeletonHtml(6);
-    if (meta) meta.textContent = "";
-    if (count) count.textContent = "";
-    return;
-  }
-  if (!d.configured) {
-    body.innerHTML = bovUnconfiguredHtml("Not configured", "Pick the data source under Data sources.", null);
-    if (meta) meta.textContent = "";
-    if (count) count.textContent = "";
-    return;
-  }
-  if (d.filtered_out) {
-    body.innerHTML = bovFilteredOutHtml();
-    if (meta) meta.textContent = "";
-    if (count) count.textContent = "";
-    return;
-  }
-  if (d.error) {
-    body.innerHTML = bovInlineErrorHtml(def.widgetKey, d.error, "Unavailable");
-    if (meta) meta.textContent = "";
-    if (count) count.textContent = "";
-    return;
-  }
-  const all = def.rowsOf(d);
-  if (meta) meta.textContent = def.meta(d);
-  // Store chips: group rows by their originating store (quotations carry the
-  // DB_ADMIN SourceDB, invoices/POs carry store_name); shown only when >1.
-  const storeOf = (r) => (lm.kind === "quotations" ? bovSourceDbLabel(r.source_db) : (r.store_name || ""));
-  const groups = new Map();
-  all.forEach((r) => { const k = storeOf(r) || "—"; groups.set(k, (groups.get(k) || 0) + 1); });
-  const chipsEl = document.getElementById("bov-list-stores");
-  if (chipsEl) {
-    if (groups.size > 1) {
-      if (lm.store != null && !groups.has(lm.store)) lm.store = null;
-      const names = Array.from(groups.keys()).sort((a, b) => a.localeCompare(b));
-      chipsEl.hidden = false;
-      chipsEl.innerHTML =
-        `<button type="button" class="sa-chip${lm.store == null ? " active" : ""}" data-bov-list-store="" aria-pressed="${lm.store == null}">All <span class="bov-store-chip-tag">${bovInt(all.length)}</span></button>` +
-        names.map((n) => `<button type="button" class="sa-chip${lm.store === n ? " active" : ""}" data-bov-list-store="${escapeHtml(n)}" aria-pressed="${lm.store === n}">${escapeHtml(n)} <span class="bov-store-chip-tag">${bovInt(groups.get(n))}</span></button>`).join("");
-    } else {
-      lm.store = null;
-      chipsEl.hidden = true;
-      chipsEl.innerHTML = "";
-    }
-  }
-  const byStore = lm.store == null ? all : all.filter((r) => (storeOf(r) || "—") === lm.store);
-  const q = (lm.search || "").trim().toLowerCase();
-  const rows = q
-    ? byStore.filter((r) => def.searchFields.some((f) => r[f] != null && String(r[f]).toLowerCase().includes(q)))
-    : byStore;
-  const sorted = bovSortRows(rows, bovState.sort[def.widgetKey] || { key: null, dir: "desc" });
-  const narrowed = q || lm.store != null;
-  if (count) count.textContent = narrowed ? `${bovInt(sorted.length)} of ${bovInt(all.length)}` : `${bovInt(all.length)} row${all.length === 1 ? "" : "s"}${d.truncated ? " (first page)" : ""}`;
-  body.innerHTML = sorted.length
-    ? bovTableHtml(def.widgetKey, def.cols(d), sorted, { rowAttrs: def.rowAttrs })
-    : bovEmptyHtml(q ? "No rows match your search." : "Nothing here.");
 }
 
 // ---------------------------------------------------------------------------
