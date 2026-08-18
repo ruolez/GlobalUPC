@@ -19012,6 +19012,11 @@ function bovBindOnce() {
     const sec = e.target.closest("[data-bov-section]");
     if (!sec || e.target.closest("a, [data-bov-action]")) return;
     e.preventDefault();
+    if (sec.dataset.bovTab) {
+      // e.g. Open invoices tile → invoices section with the Open tab active
+      const [group, value] = sec.dataset.bovTab.split(":");
+      if (group && value) bovSetTab(group, value);
+    }
     if (sec.dataset.bovTarget) bovJumpTo(sec.dataset.bovSection, sec.dataset.bovTarget);
     else bovSetSection(sec.dataset.bovSection);
   });
@@ -19889,7 +19894,7 @@ function bovKpiTile(t) {
   if (t.state === "unconfigured") cls.push("is-muted");
   const section = t.section || (t.scrollTo ? (BOV_CARD_SECTION[t.scrollTo] || "overview") : null);
   const nav = section
-    ? ` data-bov-section="${escapeHtml(section)}"${t.scrollTo ? ` data-bov-target="${escapeHtml(t.scrollTo)}"` : ""} role="link" tabindex="0" title="Open ${escapeHtml(section)}"`
+    ? ` data-bov-section="${escapeHtml(section)}"${t.scrollTo ? ` data-bov-target="${escapeHtml(t.scrollTo)}"` : ""}${t.tab ? ` data-bov-tab="${escapeHtml(t.tab)}"` : ""} role="link" tabindex="0" title="Open ${escapeHtml(section)}"`
     : "";
   const valueHtml = t.valueHtml != null ? t.valueHtml : escapeHtml(t.value ?? "—");
   const secondary = t.secondary ? `<span class="bov-kpi-secondary">${escapeHtml(t.secondary)}</span>` : "";
@@ -19908,6 +19913,7 @@ function bovKpiTile(t) {
   const factsHtml = facts.length
     ? `<div class="bov-kpi-facts">${facts.map((f) => `<span class="bov-kpi-fact${f.tone ? ` is-${f.tone}` : ""}" title="${escapeHtml(f.title || "")}"><span class="bov-kpi-fact-v">${f.vHtml != null ? f.vHtml : escapeHtml(String(f.v))}</span><span class="bov-kpi-fact-k">${escapeHtml(f.k || "")}</span></span>`).join("")}</div>`
     : "";
+  const storesHtml = bovKpiStoresHtml(t.stores, t.storesTitle);
   return (
     `<div class="${cls.join(" ")}"${nav}>` +
     `<div class="bov-kpi-head"><span class="bov-kpi-label">${escapeHtml(t.label)}</span>${section ? `<span class="bov-kpi-go" aria-hidden="true">›</span>` : ""}</div>` +
@@ -19915,8 +19921,30 @@ function bovKpiTile(t) {
     deltaHtml +
     `<div class="bov-kpi-trend">${trendHtml}</div>` +
     factsHtml +
+    storesHtml +
     `</div>`
   );
+}
+
+// Per-store breakdown: name · proportional bar · value (+ optional sub), sorted
+// by value. Bars are relative to the largest store so the mix reads at a glance.
+function bovKpiStoresHtml(stores, title) {
+  const rows = (stores || []).filter((x) => x && x.name);
+  if (rows.length < 2) return "";
+  const max = Math.max(...rows.map((x) => Math.abs(bovNum(x.value))), 0) || 1;
+  const sorted = rows.slice().sort((a, b) => bovNum(b.value) - bovNum(a.value));
+  return `<div class="bov-kpi-stores">` +
+    `<div class="bov-kpi-stores-title">${escapeHtml(title || "By store")}</div>` +
+    sorted.map((x) => {
+      const w = Math.max(0, Math.min(100, (Math.abs(bovNum(x.value)) / max) * 100));
+      const tone = x.tone ? ` is-${x.tone}` : "";
+      return `<div class="bov-kpi-store${tone}" title="${escapeHtml(x.title || "")}">` +
+        `<span class="bov-kpi-store-name">${escapeHtml(bovStoreShort(x.name))}${x.tag ? `<span class="bov-kpi-store-tag">${escapeHtml(x.tag)}</span>` : ""}</span>` +
+        `<span class="bov-kpi-store-bar"><i style="width:${w.toFixed(1)}%"></i></span>` +
+        `<span class="bov-kpi-store-val">${escapeHtml(x.display != null ? x.display : String(x.value))}${x.sub ? `<small>${escapeHtml(x.sub)}</small>` : ""}</span>` +
+        `</div>`;
+    }).join("") +
+    `</div>`;
 }
 
 // Delta descriptor for the chip: colour by goodness (direction × whether up is
@@ -20046,12 +20074,26 @@ function bovRenderKpis() {
     }
     if (tot.orders) facts.push({ k: "orders", v: bovInt(tot.orders) });
     const anyErr = (sales.sources && Object.values(sales.sources).some((x) => x && x.configured && (x.error || (x.failed_stores || []).length))) || false;
+    const perStore = sales.per_store || [];
+    const storeRows = (pick) => perStore.map((ps) => ({
+      name: ps.store_name,
+      tag: ps.source === "shopify" ? "Shopify" : "",
+      value: ps.error ? 0 : pick(ps),
+      display: ps.error ? "unavailable" : money(pick(ps)),
+      sub: ps.error ? "" : (ps.margin_pct != null && pick === pickProfit ? `${bovNum(ps.margin_pct).toFixed(1)}%` : ""),
+      tone: ps.error ? "warn" : "",
+      title: ps.error ? ps.error : `${ps.store_name}: ${money(ps.revenue)} revenue · ${money(ps.profit)} profit · ${bovInt(ps.orders)} orders`,
+    }));
+    const pickRevenue = (ps) => ps.revenue;
+    const pickProfit = (ps) => ps.profit;
     tiles.push({
       label: "Revenue",
       value: money(tot.revenue),
       delta: bovDelta(tot.revenue || 0, prevTot.revenue, { goodWhenUp: true, fmtPrev: money }),
       trendHtml: bovTrendSlot(spark.map((p) => p.values && p.values.revenue), sparkPrev.map((p) => p.values && p.values.revenue)),
       facts,
+      stores: storeRows(pickRevenue),
+      storesTitle: "Revenue by store",
       state: anyErr ? "warn" : "ok",
       scrollTo: "bov-trend-card",
     });
@@ -20085,6 +20127,8 @@ function bovRenderKpis() {
           : bovDelta(tot.profit || 0, prevTot.profit, { goodWhenUp: true, fmtPrev: money }),
         trendHtml: bovTrendSlot(spark.map((p) => p.values && p.values.profit), sparkPrev.map((p) => p.values && p.values.profit)),
         facts: pf,
+        stores: storeRows(pickProfit),
+        storesTitle: "Profit by store",
         state: coverage != null && coverage < 0.999 ? "warn" : "ok",
         scrollTo: "bov-margin-card",
       });
@@ -20108,6 +20152,9 @@ function bovRenderKpis() {
       delta: bovDelta(c.invoices || 0, p.invoices, { goodWhenUp: true, mode: "abs", fmt: (v) => bovInt(v), fmtPrev: (v) => `${bovInt(v)} shipped` }),
       trendHtml: bovTrendSlot(series, prevSeries, { caption: "invoices shipped per day · dashed = previous" }),
       facts: [{ k: "units", v: bovInt(c.total_qty || 0) }, { k: "boxes", v: bovInt(c.boxes || 0) }, bovPartialFact(shp)].filter(Boolean),
+      stores: (shp.stores || []).map((st) => ({ name: st.store_name, value: st.error ? 0 : (st.count || 0), display: st.error ? "unavailable" : bovInt(st.count || 0), sub: st.error ? "" : money(st.amount), tone: st.error ? "warn" : "", title: st.error || "" })),
+      storesTitle: "Shipped by store",
+      tab: "invoices:shipped",
       state: bovPartialFact(shp) ? "warn" : "ok",
       scrollTo: "bov-invoices-card",
     });
@@ -20131,6 +20178,9 @@ function bovRenderKpis() {
         : { cls: "is-good", glyph: "✓", text: "nothing waiting", sub: bovState.openInRange ? "everything invoiced in period has shipped" : "no unshipped invoices" },
       trendHtml: bovAgingBar(aging, op.count || 0),
       facts: [{ k: "units", v: bovInt(op.total_qty || 0) }, bovPartialFact(op)].filter(Boolean),
+      stores: (op.stores || []).map((st) => ({ name: st.store_name, value: st.error ? 0 : (st.count || 0), display: st.error ? "unavailable" : bovInt(st.count || 0), sub: st.error ? "" : money(st.amount), tone: st.error ? "warn" : "", title: st.error || "" })),
+      storesTitle: "Open by store",
+      tab: "invoices:open",
       state: warn || bovPartialFact(op) ? "warn" : "ok",
       scrollTo: "bov-invoices-card",
     });

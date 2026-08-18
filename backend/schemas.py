@@ -1099,6 +1099,8 @@ class BOVStoreStatus(BaseModel):
     store_id: int
     store_name: str
     error: Optional[str] = None
+    count: Optional[int] = None          # per-store contribution when the block fans out
+    amount: Optional[float] = None
 
 
 class BOVBlockStatus(BaseModel):
@@ -1420,6 +1422,20 @@ class BOVSalesSourceStatus(BaseModel):
     failed_stores: List[str] = []             # "Store: error" for partial failures
 
 
+class BOVSalesStoreTotals(BaseModel):
+    store_id: int
+    store_name: str
+    source: str                          # backoffice | shopify
+    revenue: float = 0.0
+    cost: float = 0.0
+    profit: float = 0.0
+    margin_pct: Optional[float] = None
+    orders: int = 0
+    units: float = 0.0
+    cost_coverage: Optional[float] = None
+    error: Optional[str] = None
+
+
 class BOVSalesTrendResponse(BaseModel):
     period: BOVPeriod
     bucket: str
@@ -1429,6 +1445,7 @@ class BOVSalesTrendResponse(BaseModel):
     totals: Dict[str, BOVSalesSourceTotals] = {}           # "backoffice", "shopify", "total"
     previous_totals: Dict[str, BOVSalesSourceTotals] = {}
     change_pct: Dict[str, Dict[str, Optional[float]]] = {} # per source: revenue/cost/profit/margin_pct/orders/units
+    per_store: List[BOVSalesStoreTotals] = []
     warnings: List[str] = []
     store_ids: List[int] = []                              # store filter applied (empty = all)
     generated_at: datetime
@@ -1475,6 +1492,7 @@ class BOVShopifyOpenOrdersBlock(BOVBlockStatus):
 
 class BOVSalesSummaryBlock(BaseModel):
     configured: bool = False
+    per_store: List[BOVSalesStoreTotals] = []
     sources: Dict[str, BOVSalesSourceStatus] = {}
     totals: Dict[str, BOVSalesSourceTotals] = {}
     previous_totals: Dict[str, BOVSalesSourceTotals] = {}

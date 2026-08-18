@@ -9516,9 +9516,22 @@ async def _bov_fanout(stores: List[Store], make_coro) -> List[Tuple[Store, bool,
     return out
 
 
-def _bov_store_statuses(results) -> List[Dict[str, Any]]:
-    return [{"store_id": st.id, "store_name": st.name, "error": (None if ok else (err or "failed"))}
-            for st, ok, err, _p in results]
+def _bov_store_statuses(results, count_of=None, amount_of=None) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for st, ok, err, p in results:
+        row: Dict[str, Any] = {"store_id": st.id, "store_name": st.name, "error": (None if ok else (err or "failed"))}
+        if ok and count_of is not None:
+            try:
+                row["count"] = int(count_of(p) or 0)
+            except Exception:
+                row["count"] = None
+        if ok and amount_of is not None:
+            try:
+                row["amount"] = round(float(amount_of(p) or 0), 2)
+            except Exception:
+                row["amount"] = None
+        out.append(row)
+    return out
 
 
 def _bov_merge_daily(dicts: List[Dict[Any, Dict[str, float]]]) -> Dict[Any, Dict[str, float]]:
@@ -9731,9 +9744,10 @@ def _bov_tag_rows(rows: List[Dict[str, Any]], store: Store) -> List[Dict[str, An
     return rows
 
 
-def _bov_multi_base(stores: List[Store], results, extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def _bov_multi_base(stores: List[Store], results, extra: Optional[Dict[str, Any]] = None,
+                    count_of=None, amount_of=None) -> Dict[str, Any]:
     """Common block header for fanned-out sales-store blocks."""
-    base: Dict[str, Any] = {"configured": True, "stores": _bov_store_statuses(results)}
+    base: Dict[str, Any] = {"configured": True, "stores": _bov_store_statuses(results, count_of, amount_of)}
     if len(stores) == 1:
         base["store_id"] = stores[0].id
         base["store_name"] = stores[0].name
@@ -9760,7 +9774,8 @@ async def _bov_open_invoices_block(db: Session, cfg, include_list: bool, date_fr
     results = await _bov_fanout(stores, lambda st: bov.open_invoices_async(
         **_bov_conn_kwargs(st), date_from=date_from, date_to_excl=date_to_excl,
         limit=limit, sort_by=sort_by, sort_order=sort_order, include_list=include_list, today=today))
-    base = _bov_multi_base(stores, results)
+    base = _bov_multi_base(stores, results, None,
+                           count_of=lambda p: p.get("count"), amount_of=lambda p: p.get("total_amount"))
     if base.get("error"):
         return base
     invoices: List[Dict[str, Any]] = []
@@ -9820,7 +9835,10 @@ async def _bov_shipped_block(db: Session, cfg, period: bov.Period, bucket: str, 
         date_from=period.start.isoformat(), date_to_excl=period.end_excl,
         series_from=period.prev_start.isoformat(),
         limit=limit, sort_by=sort_by, sort_order=sort_order, include_list=include_list))
-    base = _bov_multi_base(stores, results, {"period": period.as_dict(), "bucket": bucket})
+    def _cur_sum(p, field):
+        return bov.sum_daily(p.get("daily") or {}, period.start, period.end, [field])[field]
+    base = _bov_multi_base(stores, results, {"period": period.as_dict(), "bucket": bucket},
+                           count_of=lambda p: _cur_sum(p, "invoices"), amount_of=lambda p: _cur_sum(p, "total_amount"))
     if base.get("error"):
         return base
     daily = _bov_merge_daily([p.get("daily") or {} for _st, ok, _e, p in results if ok])
@@ -10003,16 +10021,30 @@ async def _bov_sales_trend(db: Session, cfg, period: bov.Period, bucket: str,
 
     empty = bov.empty_totals()
     per_source: Dict[str, Dict[str, Any]] = {}
+    per_store: List[Dict[str, Any]] = []
     bo_days: List[Dict[Any, Dict[str, float]]] = []
     bo_returns: List[Dict[Any, Dict[str, float]]] = []
     bo_ok = 0
+    sh_name_by_id = {st["id"]: st["name"] for st in shopify_stores}
+
+    def _store_row(name: str, sid: int, source: str, totals: Optional[Dict[str, Any]], error: Optional[str] = None) -> Dict[str, Any]:
+        t = totals or {}
+        return {"store_id": sid, "store_name": name, "source": source,
+                "revenue": round(float(t.get("revenue") or 0), 2), "cost": round(float(t.get("cost") or 0), 2),
+                "profit": round(float(t.get("profit") or 0), 2), "margin_pct": t.get("margin_pct"),
+                "orders": int(t.get("orders") or 0), "units": float(t.get("units") or 0),
+                "cost_coverage": t.get("cost_coverage"), "error": error}
+
     for k, res in zip(keys, results):
         name = k.split(":", 1)[0]
+        sid = int(k.split(":", 1)[1]) if ":" in k else 0
         if isinstance(res, Exception):
             if name == "backoffice":
                 src_status["backoffice"].setdefault("failed_stores", []).append(f"{bo_names_by_key.get(k, k)}: {res}")
+                per_store.append(_store_row(bo_names_by_key.get(k, k), sid, "backoffice", None, str(res)))
             else:
                 src_status.setdefault(name, {"configured": True})["error"] = str(res)
+                per_store.append(_store_row(sh_name_by_id.get(sid, k), sid, "shopify", None, str(res)))
             warnings.append(f"{bo_names_by_key.get(k, k)}: {res}")
             continue
         if name == "backoffice":
@@ -10020,11 +10052,15 @@ async def _bov_sales_trend(db: Session, cfg, period: bov.Period, bucket: str,
             if not ok:
                 src_status["backoffice"].setdefault("failed_stores", []).append(f"{bo_names_by_key.get(k, k)}: {err}")
                 warnings.append(f"{bo_names_by_key.get(k, k)}: {err}")
+                per_store.append(_store_row(bo_names_by_key.get(k, k), sid, "backoffice", None, err))
                 continue
             bo_ok += 1
             bo_days.append(payload.get("days") or {})
             bo_returns.append(payload.get("returns") or {})
+            per_store.append(_store_row(bo_names_by_key.get(k, k), sid, "backoffice",
+                                        bov.compute_backoffice_series(payload, period, bucket)["totals"]))
         else:
+            per_store.append(_store_row(sh_name_by_id.get(sid, k), sid, "shopify", res.get("totals")))
             sh = per_source.get("shopify")
             if sh is None:
                 per_source["shopify"] = {"current": res["current"], "previous": res["previous"],
@@ -10086,6 +10122,7 @@ async def _bov_sales_trend(db: Session, cfg, period: bov.Period, bucket: str,
         "warnings": warnings,
         "configured": any(v.get("configured") for v in src_status.values()),
         "store_ids": sorted(only_ids) if only_ids is not None else [],
+        "per_store": per_store,
     }
 
 
@@ -10173,6 +10210,7 @@ async def get_business_overview_summary(
     sales = _bov_result(sales, period)
     sales_block = {
         "configured": bool(sales.get("configured")),
+        "per_store": sales.get("per_store") or [],
         "sources": sales.get("sources") or {},
         "totals": sales.get("totals") or {},
         "previous_totals": sales.get("previous_totals") or {},
@@ -10258,7 +10296,8 @@ async def get_business_overview_invoices_period(
     results = await _bov_fanout(stores, lambda st: bov.invoices_in_period_async(
         **_bov_conn_kwargs(st), date_from=period.start.isoformat(), date_to_excl=period.end_excl,
         limit=limit, sort_by=sort_by, sort_order=sort_order, include_list=True, today=today))
-    base = _bov_multi_base(stores, results, {"period": period.as_dict()})
+    base = _bov_multi_base(stores, results, {"period": period.as_dict()},
+                           count_of=lambda p: p.get("count"), amount_of=lambda p: p.get("total_amount"))
     if base.get("error"):
         return BOVInvoicesPeriodResponse(**base)
     invoices: List[Dict[str, Any]] = []
@@ -10400,6 +10439,7 @@ async def get_business_overview_sales_trend(
         previous_totals={k: BOVSalesSourceTotals(**v) for k, v in res["previous_totals"].items()},
         change_pct=res["change_pct"],
         warnings=res["warnings"],
+        per_store=res.get("per_store") or [],
         store_ids=res.get("store_ids") or [],
         generated_at=datetime.utcnow(),
     )

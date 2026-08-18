@@ -7910,8 +7910,8 @@ tr.bov-line-void td { opacity: 0.55; text-decoration: line-through; }
 .bov-kpi-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 1rem;
-  margin-bottom: 0.75rem;
+  gap: 1.5rem;
+  margin: 0.25rem 0 1.5rem;
 }
 .bov-kpi-card {
   display: grid;
@@ -8048,3 +8048,29 @@ tr.bov-line-void td { opacity: 0.55; text-decoration: line-through; }
 .bov-kpi-skeleton { gap: 0.6rem; }
 @media (max-width: 1100px) { .bov-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 640px) { .bov-kpi-grid { grid-template-columns: minmax(0, 1fr); } }
+
+/* KPI per-store breakdown */
+.bov-kpi-stores {
+  display: grid;
+  gap: 0.35rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent);
+  min-width: 0;
+}
+.bov-kpi-stores-title { font-size: 0.6875rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-tertiary); margin-bottom: 0.1rem; }
+.bov-kpi-store { display: grid; grid-template-columns: minmax(0, 7.5rem) minmax(0, 1fr) auto; align-items: center; gap: 0.5rem; font-size: 0.75rem; min-width: 0; }
+.bov-kpi-store-name { color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: inline-flex; align-items: center; gap: 0.3rem; }
+.bov-kpi-store-tag { font-size: 0.5625rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-tertiary); border: 1px solid color-mix(in srgb, var(--border-color) 80%, transparent); border-radius: 999px; padding: 0 0.3rem; }
+.bov-kpi-store-bar { height: 6px; background: var(--bg-tertiary); border-radius: 3px; overflow: hidden; }
+.bov-kpi-store-bar i { display: block; height: 100%; background: var(--accent-primary); border-radius: 3px; }
+.bov-kpi-store.is-warn .bov-kpi-store-bar i { background: var(--warning); }
+.bov-kpi-store-val { font-weight: 600; color: var(--text-primary); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.bov-kpi-store-val small { margin-left: 0.35rem; font-weight: 500; color: var(--text-tertiary); }
+.bov-kpi-store.is-warn .bov-kpi-store-val { color: var(--warning); }
+/* Breathing room between the overview blocks */
+.bov-flow { margin-bottom: 1.5rem; }
+.bov-page .bov-grid-trend { margin-bottom: 1.5rem; }
+.bov-page .bov-grid-second { gap: 1.5rem; margin-bottom: 1.5rem; }
+.bov-page .bov-grid-ops { gap: 1.5rem; }
+.bov-panel { padding-top: 1.25rem; }
+@media (max-width: 1100px) { .bov-kpi-grid { gap: 1.25rem; } }
