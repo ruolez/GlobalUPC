@@ -20961,7 +20961,8 @@ function bovSortRows(rows, sort) {
 // columns: [{key,label,num,width,render(row)->html,sortKey}]
 function bovTableHtml(widgetKey, columns, rows, opts = {}) {
   const sort = bovState.sort[widgetKey] || {};
-  const head = columns
+  const numbered = opts.numbered !== false;   // running line number in the first column
+  const head = (numbered ? `<th class="bov-num bov-line-no" aria-label="Line">#</th>` : "") + columns
     .map((c) => {
       const sk = c.sortKey || c.key;
       const cls = ["qip-sortable"];
@@ -20971,9 +20972,9 @@ function bovTableHtml(widgetKey, columns, rows, opts = {}) {
     })
     .join("");
   const body = rows
-    .map((r) => {
+    .map((r, i) => {
       const attrs = opts.rowAttrs ? opts.rowAttrs(r) : "";
-      return `<tr class="bov-row-click" tabindex="0" ${attrs}>${columns.map((c) => `<td class="${c.num ? "bov-num" : ""}${c.cls ? ` ${c.cls}` : ""}">${c.render ? c.render(r) : escapeHtml(r[c.key] == null ? "—" : String(r[c.key]))}</td>`).join("")}</tr>`;
+      return `<tr class="bov-row-click" tabindex="0" ${attrs}>${numbered ? `<td class="bov-num bov-line-no">${i + 1}</td>` : ""}${columns.map((c) => `<td class="${c.num ? "bov-num" : ""}${c.cls ? ` ${c.cls}` : ""}">${c.render ? c.render(r) : escapeHtml(r[c.key] == null ? "—" : String(r[c.key]))}</td>`).join("")}</tr>`;
     })
     .join("");
   return `<div class="bov-table-scroll"><table class="data-table bov-mini-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;

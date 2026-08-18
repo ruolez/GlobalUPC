@@ -8074,3 +8074,16 @@ tr.bov-line-void td { opacity: 0.55; text-decoration: line-through; }
 .bov-page .bov-grid-ops { gap: 1.5rem; }
 .bov-panel { padding-top: 1.25rem; }
 @media (max-width: 1100px) { .bov-kpi-grid { gap: 1.25rem; } }
+
+/* Running line numbers in the Business Overview tables */
+.bov-mini-table th.bov-line-no,
+.bov-mini-table td.bov-line-no {
+  width: 2.75rem;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.75rem;
+  text-align: right;
+  padding-right: 0.5rem;
+  white-space: nowrap;
+}
+.bov-mini-table th.bov-line-no { cursor: default; }
