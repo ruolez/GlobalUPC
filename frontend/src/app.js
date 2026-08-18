@@ -20335,7 +20335,6 @@ function bovRenderKpis() {
       const boCoverage = bo && bo.cost_coverage != null && bo.units ? bo.cost_coverage : null;
       const pf = [
         { k: "cost", v: money(tot.cost), title: bovCostBasisLabel() },
-        { k: "basis", v: bovState.costMode === "s2s" ? "S2S UnitCost" : "local / S2S UnitPriceC", title: bovCostBasisLabel(), tone: bovState.costMode === "s2s" ? "accent" : undefined },
         margin != null ? { k: "margin", v: `${bovNum(margin).toFixed(1)}%` } : null,
         tot.returns ? { k: "returns", v: money(tot.returns) } : null,
         coverage != null && coverage < 0.999 ? { k: "Shopify cost known", v: `${Math.round(coverage * 100)}%`, vHtml: `<a href="#" class="bov-kpi-link" data-bov-action="missing-cost" title="View and export the products without cost">${Math.round(coverage * 100)}% · view</a>`, tone: "warn", title: "Share of Shopify units whose barcode resolved to a cost in the S2S Items_tbl — margin is partial. Click to see the products." } : null,
