@@ -19387,9 +19387,13 @@ async function bovRefreshShopify(opts = {}) {
     const never = results.filter((r) => r.status === "never_synced");
     const running = results.filter((r) => r.status === "running");
     if (result.synced_any) {
-      const detail = synced.map((r) => `${r.store_name}: ${bovInt(r.orders || 0)} order${r.orders === 1 ? "" : "s"} updated`).join(" · ");
-      bovSetSyncNote(`Shopify synced just now${synced.length === 1 ? ` · ${detail}` : ` · ${synced.length} stores`}`, "info", detail);
-      if (!silent) showToast(`✓ Shopify synced · ${detail}`, "success");
+      // Keep the toast and the header note to one short line; per-store
+      // numbers live in the note's tooltip.
+      const totalOrders = synced.reduce((acc, r) => acc + (r.orders || 0), 0);
+      const perStore = synced.map((r) => `${r.store_name}: ${bovInt(r.orders || 0)} order${r.orders === 1 ? "" : "s"} updated`).join("\n");
+      const summary = `${bovInt(totalOrders)} order${totalOrders === 1 ? "" : "s"} updated${synced.length > 1 ? ` across ${synced.length} stores` : synced.length === 1 ? ` · ${synced[0].store_name}` : ""}`;
+      bovSetSyncNote(`Shopify synced just now · ${summary}`, "info", perStore);
+      if (!silent) showToast(`✓ Shopify synced · ${summary}`, "success");
       const only = BOV_SHOPIFY_WIDGETS.slice();
       if (bovState.chartsOpen) only.push("trend");
       bovFetchAll({ only, silent: true });

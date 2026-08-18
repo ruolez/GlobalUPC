@@ -7640,9 +7640,8 @@ tr.bov-line-void td { opacity: 0.55; text-decoration: line-through; }
   margin: 0.2rem 0 0;
   font-size: 0.8125rem;
   color: var(--text-secondary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;               /* wrap instead of clipping the comparison */
+  line-height: 1.3;
   max-width: 100%;
 }
 .bov-topbar-controls {
@@ -7667,8 +7666,8 @@ tr.bov-line-void td { opacity: 0.55; text-decoration: line-through; }
   display: inline-flex;
   align-items: center;
   gap: 0.5rem;
-  height: 38px;
-  padding: 0 0.625rem 0 0.75rem;
+  min-height: 42px;
+  padding: 0.3rem 0.625rem 0.3rem 0.75rem;
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
   background: var(--bg-secondary);
@@ -7683,10 +7682,13 @@ tr.bov-line-void td { opacity: 0.55; text-decoration: line-through; }
 .bov-filter-trigger[aria-expanded="true"] { border-color: var(--accent-primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-primary) 18%, transparent); }
 .bov-filter-trigger.has-selection { border-color: color-mix(in srgb, var(--accent-primary) 45%, var(--border-color)); background: color-mix(in srgb, var(--accent-primary) 8%, var(--bg-secondary)); }
 .bov-filter-trigger > svg:first-child { color: var(--text-tertiary); flex: 0 0 auto; }
-.bov-filter-text { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; line-height: 1.15; }
-.bov-filter-key { font-size: 0.625rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-tertiary); }
-.bov-filter-value { font-size: 0.8125rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 16rem; }
-.bov-filter-sub { font-size: 0.6875rem; color: var(--text-secondary); white-space: nowrap; }
+.bov-filter-text { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; line-height: 1.2; gap: 0.05rem; }
+/* Two clean lines: value (bold) then the resolved detail; the icon says
+   what the control is, so the uppercase key label is only for screen readers. */
+.bov-filter-key { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.bov-filter-value { font-size: 0.875rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 16rem; }
+.bov-filter-sub { font-size: 0.6875rem; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 16rem; }
+.bov-filter-sub:empty { display: none; }
 .bov-filter-sub[hidden] { display: none; }
 .bov-filter-chevron { color: var(--text-tertiary); transition: transform 0.15s ease; flex: 0 0 auto; }
 .bov-filter-trigger[aria-expanded="true"] .bov-filter-chevron { transform: rotate(180deg); }
