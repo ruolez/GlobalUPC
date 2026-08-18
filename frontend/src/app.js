@@ -18487,7 +18487,6 @@ const bovState = {
   storeFilter: [],      // store ids; [] = all configured sources
   chartsOpen: false,    // revenue/margin charts collapsed by default
   costMode: "default",  // "default" (local UnitCost / S2S UnitPriceC) | "s2s" (S2S UnitCost everywhere)
-  highlight: null,      // {alertKey, title, match} — rows matching the last opened alert are tinted red
   collapsedCards: {},   // cardId -> true when the user collapsed it
   section: "overview",  // active section tab
   popover: null,        // id of the open topbar popover
@@ -19163,20 +19162,11 @@ function bovBindOnce() {
     if (a) bovApplyAlertAction(a);
   });
 
-  // Clear the alert row highlight
-  page.addEventListener("click", (e) => {
-    const btn = e.target.closest('[data-bov-action="clear-highlight"]');
-    if (!btn) return;
-    e.preventDefault();
-    bovClearHighlight();
-  });
-
   // Section switcher (subnav + KPI tiles)
   page.addEventListener("click", (e) => {
     const sec = e.target.closest("[data-bov-section]");
     if (!sec || e.target.closest("a, [data-bov-action]")) return;
     e.preventDefault();
-    if (sec.closest("#bov-subnav")) bovClearHighlight();
     if (sec.dataset.bovTab) {
       // e.g. Open invoices tile → invoices section with the Open tab active
       const [group, value] = sec.dataset.bovTab.split(":");
@@ -19796,7 +19786,10 @@ const BOV_WIDGET_DEFS = {
   summary: {
     card: "bov-kpi-strip",
     request: () => ["/summary", { ...bovRangeParams(), open_scope: bovState.openInRange ? "range" : "all", ...bovStoreParams(), ...bovCostParams() }],
-    render: () => bovRenderKpis(),
+    render: () => {
+      bovRenderKpis();
+      bovRenderInvoices();   // margin-floor alerts (from the summary) tint the invoice rows
+    },
   },
   trend: {
     card: "bov-trend-card",
@@ -19864,6 +19857,7 @@ const BOV_WIDGET_DEFS = {
       bovRenderAttention();
       bovRenderNavBadges();
       bovMarkKpiAlerts();
+      bovRerenderLists();
     },
   },
 };
@@ -20624,7 +20618,6 @@ function bovMarkKpiAlerts() {
 
 function bovApplyAlertAction(alert) {
   const act = (alert && alert.action) || {};
-  bovState.highlight = act.match ? { alertKey: alert.key, title: alert.title, match: act.match } : null;
   if (act.card_store !== undefined && act.section === "invoices") {
     const f = bovState.cardFilters.invoices || (bovState.cardFilters.invoices = { store: null, status: null, search: "" });
     f.store = act.card_store || null;
@@ -20661,10 +20654,16 @@ function bovRerenderLists() {
   bovRenderShopifyOrdersList();
 }
 
-function bovClearHighlight() {
-  if (!bovState.highlight) return;
-  bovState.highlight = null;
-  bovRerenderLists();
+// Rows that trigger any active alert are always tinted (not only after a click).
+function bovActiveMatches(widgetKey) {
+  const out = [];
+  let alerts = [];
+  try { alerts = bovAllAlerts(); } catch (e) { alerts = []; }
+  alerts.forEach((a) => {
+    const m = a && a.action && a.action.match;
+    if (m && (BOV_HIGHLIGHT_WIDGETS[m.kind] || []).includes(widgetKey)) out.push({ match: m, title: a.title || a.key });
+  });
+  return out;
 }
 
 // Widgets each alert `match` kind can tint rows in.
@@ -20682,11 +20681,13 @@ function bovNormDt(v) {
   return v ? String(v).replace("T", " ").slice(0, 16) : "";
 }
 
-function bovRowAlerted(widgetKey, r) {
-  const h = bovState.highlight;
-  if (!h || !h.match || !r) return false;
-  const m = h.match;
-  if (!(BOV_HIGHLIGHT_WIDGETS[m.kind] || []).includes(widgetKey)) return false;
+function bovRowAlerted(widgetKey, r, matches) {
+  const list = matches || bovActiveMatches(widgetKey);
+  if (!r || !list.length) return false;
+  return list.some((h) => bovRowMatches(h.match, r));
+}
+
+function bovRowMatches(m, r) {
   switch (m.kind) {
     case "invoice_open_before": {
       if (r.is_shipped) return false;
@@ -20716,12 +20717,13 @@ function bovRowAlerted(widgetKey, r) {
   }
 }
 
-function bovFlagBarHtml(widgetKey, rows) {
-  const h = bovState.highlight;
-  if (!h) return "";
-  const n = rows.reduce((a, r) => a + (bovRowAlerted(widgetKey, r) ? 1 : 0), 0);
-  if (!n) return "";
-  return `<div class="bov-flag-bar" role="status"><span class="bov-flag-dot" aria-hidden="true"></span><span>${bovInt(n)} row${n === 1 ? "" : "s"} flagged by <b>${escapeHtml(h.title || "the alert")}</b></span><button type="button" class="bov-flag-clear" data-bov-action="clear-highlight">Clear</button></div>`;
+function bovFlagBarHtml(widgetKey, rows, matches) {
+  const list = matches || bovActiveMatches(widgetKey);
+  if (!list.length) return "";
+  const hits = list.map((h) => ({ title: h.title, n: rows.reduce((a, r) => a + (bovRowMatches(h.match, r) ? 1 : 0), 0) })).filter((x) => x.n);
+  if (!hits.length) return "";
+  const n = rows.reduce((a, r) => a + (bovRowAlerted(widgetKey, r, list) ? 1 : 0), 0);
+  return `<div class="bov-flag-bar" role="status"><span class="bov-flag-dot" aria-hidden="true"></span><span>${bovInt(n)} row${n === 1 ? "" : "s"} flagged: ${hits.map((x) => `<b>${escapeHtml(x.title)}</b>`).join(" · ")}</span></div>`;
 }
 
 function bovRenderKpiFoot() {
@@ -21817,6 +21819,7 @@ function bovSortRows(rows, sort) {
 
 // columns: [{key,label,num,width,render(row)->html,sortKey}]
 function bovTableHtml(widgetKey, columns, rows, opts = {}) {
+  const alertMatches = bovActiveMatches(widgetKey);
   const sort = bovState.sort[widgetKey] || {};
   const numbered = opts.numbered !== false;   // running line number in the first column
   const head = (numbered ? `<th class="bov-num bov-line-no" aria-label="Line">#</th>` : "") + columns
@@ -21831,11 +21834,11 @@ function bovTableHtml(widgetKey, columns, rows, opts = {}) {
   const body = rows
     .map((r, i) => {
       const attrs = opts.rowAttrs ? opts.rowAttrs(r) : "";
-      const alerted = bovRowAlerted(widgetKey, r);
+      const alerted = bovRowAlerted(widgetKey, r, alertMatches);
       return `<tr class="bov-row-click${alerted ? " bov-row-alert" : ""}" tabindex="0"${alerted ? ' title="Flagged by the alert you opened"' : ""} ${attrs}>${numbered ? `<td class="bov-num bov-line-no">${i + 1}</td>` : ""}${columns.map((c) => `<td class="${c.num ? "bov-num" : ""}${c.cls ? ` ${c.cls}` : ""}">${c.render ? c.render(r) : escapeHtml(r[c.key] == null ? "—" : String(r[c.key]))}</td>`).join("")}</tr>`;
     })
     .join("");
-  return `${bovFlagBarHtml(widgetKey, rows)}<div class="bov-table-scroll"><table class="data-table bov-mini-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+  return `${bovFlagBarHtml(widgetKey, rows, alertMatches)}<div class="bov-table-scroll"><table class="data-table bov-mini-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
 function bovStatusChip(status) {
