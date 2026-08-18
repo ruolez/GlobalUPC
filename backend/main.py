@@ -16,7 +16,7 @@ import uuid
 import os
 
 from database import get_db, engine
-from models import Store, MSSQLConnection, ShopifyConnection, Setting, StoreType, StoreCategory, UPCUpdateHistory, UPCExclusion, ItemTrackerConfig, ItemTrackerExclusion, PriceUpdateHistory, StoreMirror, SalesConfig, SalesExclusion, BusinessOverviewConfig
+from models import Store, MSSQLConnection, ShopifyConnection, Setting, StoreType, StoreCategory, UPCUpdateHistory, UPCExclusion, ItemTrackerConfig, ItemTrackerExclusion, PriceUpdateHistory, StoreMirror, SalesConfig, SalesExclusion, BusinessOverviewConfig, BusinessOverviewShopifyExclusion
 from schemas import (
     MSSQLStoreCreate, ShopifyStoreCreate, ShipperStoreCreate, MSSQLStoreUpdate, ShopifyStoreUpdate, ShipperStoreUpdate, StoreResponse, StoreNameUpdate, StoreCategoryUpdate,
     SettingCreate, SettingUpdate, SettingResponse,
@@ -71,7 +71,7 @@ from schemas import (
     BOVPurchasesRangeBlock, BOVPurchasesRangeResponse,
     BOVPurchaseOrderLine, BOVPurchaseOrderHeader, BOVPurchaseOrderDetailResponse,
     BOVSalesSourceTotals, BOVSalesBucket, BOVSalesSourceStatus, BOVSalesTrendResponse,
-    BOVBreakdownRow, BOVSalesBreakdownResponse, BOVStoreStatus, BOVInvoicesPeriodResponse, BOVAlert, BOVAlertAction, BOVAlertsResponse, BOVShopifyOrderRow, BOVShopifyOrdersListResponse, BOVShopifyOrderLine, BOVShopifyOrderHeader, BOVShopifyOrderDetailResponse, BOVMissingCostRow, BOVMissingCostResponse, bov_merge_alert_rules, bov_validate_alert_rules, BOVShopifyStoreOrders, BOVShopifyOrdersResponse, BOVShopifyRefreshResult, BOVShopifyRefreshResponse,
+    BOVBreakdownRow, BOVSalesBreakdownResponse, BOVStoreStatus, BOVInvoicesPeriodResponse, BOVAlert, BOVAlertAction, BOVAlertsResponse, BOVShopifyOrderRow, BOVShopifyOrdersListResponse, BOVShopifyOrderLine, BOVShopifyOrderHeader, BOVShopifyOrderDetailResponse, BOVMissingCostRow, BOVMissingCostResponse, BOVShopifyExclusionCreate, BOVShopifyExclusion, BOVShopifyExclusionList, bov_merge_alert_rules, bov_validate_alert_rules, BOVShopifyStoreOrders, BOVShopifyOrdersResponse, BOVShopifyRefreshResult, BOVShopifyRefreshResponse,
     BOVShopifyStoreOpen, BOVShopifyOpenOrdersBlock, BOVSalesSummaryBlock,
     BusinessOverviewSummaryResponse,
 )
@@ -9572,6 +9572,13 @@ def _bov_excluded_names(db: Session) -> Tuple[List[str], List[str]]:
     return sales_names, return_names
 
 
+def _bov_shopify_exclusions(db: Session) -> List[Dict[str, Any]]:
+    """Excluded Shopify products (store_id None = every store) for the helper queries."""
+    return [{"id": e.id, "store_id": e.store_id, "variant_shopify_id": e.variant_shopify_id,
+             "product_shopify_id": e.product_shopify_id, "barcode": e.barcode}
+            for e in db.query(BusinessOverviewShopifyExclusion).all()]
+
+
 def _bov_tz(cfg: Optional[BusinessOverviewConfig]) -> str:
     return (cfg.timezone if cfg and cfg.timezone else "America/Chicago")
 
@@ -10033,6 +10040,7 @@ async def _bov_sales_trend(db: Session, cfg, period: bov.Period, bucket: str,
                 warnings.append("No MSSQL cost source for Shopify lines — Shopify cost/margin unavailable")
             usable: List[Dict[str, Any]] = []
             skipped: List[str] = []
+            sh_excl = _bov_shopify_exclusions(db)
             for st in shopify_stores:
                 info = synced.get(st["id"])
                 if not info:
@@ -10040,6 +10048,7 @@ async def _bov_sales_trend(db: Session, cfg, period: bov.Period, bucket: str,
                     warnings.append(f"{st['name']}: not synced — skipped (run Data Sync)")
                     continue
                 st["_tz"] = info.get("shop_timezone") or _bov_tz(cfg)
+                st["_exclusions"] = sh_excl
                 usable.append(st)
             src_status["shopify"] = {"configured": True, "store_ids": [s["id"] for s in shopify_stores],
                                      "store_names": [s["name"] for s in shopify_stores], "skipped_stores": skipped}
@@ -10584,7 +10593,8 @@ async def get_business_overview_sales_breakdown(
                         continue
                     try:
                         rows = await bov.shopify_top_products(st["id"], info.get("shop_timezone") or _bov_tz(cfg),
-                                                              period.start.isoformat(), period.end_excl, max(limit * 3, 50))
+                                                              period.start.isoformat(), period.end_excl, max(limit * 3, 50),
+                                                              _bov_shopify_exclusions(db))
                         sh_rows.extend(rows)
                     except Exception as e:
                         warnings.append(f"{st['name']}: {e}")
@@ -10604,7 +10614,7 @@ async def get_business_overview_sales_breakdown(
                         continue
                     try:
                         po = await bov.shopify_period_orders(st["id"], info.get("shop_timezone") or _bov_tz(cfg),
-                                                             period.start.isoformat(), period.end_excl)
+                                                             period.start.isoformat(), period.end_excl, _bov_shopify_exclusions(db))
                         total_rev += float(po.get("revenue") or 0.0)
                     except Exception:
                         pass
@@ -10661,6 +10671,7 @@ async def get_business_overview_shopify_orders(
     if not stores:
         return BOVShopifyOrdersResponse(configured=True, filtered_out=True, period=BOVPeriod(**period.as_dict()), live=live)
     synced = await asyncio.to_thread(shopify_sync.get_synced_stores)
+    sh_excl = _bov_shopify_exclusions(db)
 
     async def one(st: Dict[str, Any]) -> Dict[str, Any]:
         row: Dict[str, Any] = {"store_id": st["id"], "store_name": st["name"], "synced": st["id"] in synced}
@@ -10670,7 +10681,7 @@ async def get_business_overview_shopify_orders(
         tasks = []
         if row["synced"]:
             tasks.append(bov.shopify_period_orders(st["id"], info.get("shop_timezone") or _bov_tz(cfg),
-                                                   period.start.isoformat(), period.end_excl))
+                                                   period.start.isoformat(), period.end_excl, sh_excl))
         else:
             tasks.append(asyncio.sleep(0, result=None))
         if live:
@@ -10806,8 +10817,9 @@ async def get_business_overview_shopify_missing_cost(
     synced = await asyncio.to_thread(shopify_sync.get_synced_stores)
     usable = [st for st in stores if st["id"] in synced]
     skipped = [st["name"] for st in stores if st["id"] not in synced]
+    sh_excl = _bov_shopify_exclusions(db)
     results = await asyncio.gather(*[bov.shopify_products_sold(st["id"], (synced.get(st["id"]) or {}).get("shop_timezone") or _bov_tz(cfg),
-                                                                period.start.isoformat(), period.end_excl) for st in usable], return_exceptions=True)
+                                                                period.start.isoformat(), period.end_excl, sh_excl) for st in usable], return_exceptions=True)
     statuses: List[Dict[str, Any]] = []
     sold: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
     for st, res in zip(usable, results):
@@ -10866,6 +10878,52 @@ async def get_business_overview_shopify_missing_cost(
         products_checked=len(sold), stores=[BOVStoreStatus(**x) for x in statuses], skipped_stores=skipped,
         error=err_msg,
     )
+
+
+@app.get("/api/business-overview/shopify/exclusions", response_model=BOVShopifyExclusionList)
+def list_business_overview_shopify_exclusions(db: Session = Depends(get_db)):
+    rows = db.query(BusinessOverviewShopifyExclusion).order_by(BusinessOverviewShopifyExclusion.created_at.desc()).all()
+    out = []
+    for e in rows:
+        d = BOVShopifyExclusion.model_validate(e)
+        d.store_name = e.store.name if e.store else None
+        out.append(d)
+    return BOVShopifyExclusionList(exclusions=out, total=len(out))
+
+
+@app.post("/api/business-overview/shopify/exclusions", response_model=BOVShopifyExclusion)
+def add_business_overview_shopify_exclusion(data: BOVShopifyExclusionCreate, db: Session = Depends(get_db)):
+    bc = (data.barcode or "").strip() or None
+    if not bc and not data.variant_shopify_id and not data.product_shopify_id:
+        raise HTTPException(status_code=400, detail="An exclusion needs a barcode, a Shopify variant id or a product id")
+    if data.store_id is not None and not db.query(Store).filter(Store.id == data.store_id, Store.store_type == StoreType.shopify).first():
+        raise HTTPException(status_code=400, detail=f"Invalid Shopify store ID: {data.store_id}")
+    q = db.query(BusinessOverviewShopifyExclusion)
+    q = q.filter(BusinessOverviewShopifyExclusion.store_id.is_(None)) if data.store_id is None else q.filter(BusinessOverviewShopifyExclusion.store_id == data.store_id)
+    q = q.filter(BusinessOverviewShopifyExclusion.variant_shopify_id.is_(None)) if not data.variant_shopify_id else q.filter(BusinessOverviewShopifyExclusion.variant_shopify_id == data.variant_shopify_id)
+    q = q.filter(BusinessOverviewShopifyExclusion.product_shopify_id.is_(None)) if not data.product_shopify_id else q.filter(BusinessOverviewShopifyExclusion.product_shopify_id == data.product_shopify_id)
+    q = q.filter(BusinessOverviewShopifyExclusion.barcode.is_(None)) if bc is None else q.filter(BusinessOverviewShopifyExclusion.barcode == bc)
+    row = q.first()
+    if not row:
+        row = BusinessOverviewShopifyExclusion(store_id=data.store_id, variant_shopify_id=data.variant_shopify_id,
+                                               product_shopify_id=data.product_shopify_id, barcode=bc, sku=data.sku,
+                                               title=data.title, note=data.note)
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+    d = BOVShopifyExclusion.model_validate(row)
+    d.store_name = row.store.name if row.store else None
+    return d
+
+
+@app.delete("/api/business-overview/shopify/exclusions/{exclusion_id}")
+def delete_business_overview_shopify_exclusion(exclusion_id: int, db: Session = Depends(get_db)):
+    row = db.query(BusinessOverviewShopifyExclusion).filter(BusinessOverviewShopifyExclusion.id == exclusion_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Exclusion not found")
+    db.delete(row)
+    db.commit()
+    return {"deleted": exclusion_id}
 
 
 @app.post("/api/business-overview/shopify/refresh", response_model=BOVShopifyRefreshResponse)

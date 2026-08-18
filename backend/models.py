@@ -159,6 +159,21 @@ class BusinessOverviewConfig(Base):
     sales_store = relationship("Store", foreign_keys=[sales_store_id])
     purchases_store = relationship("Store", foreign_keys=[purchases_store_id])
 
+class BusinessOverviewShopifyExclusion(Base):
+    __tablename__ = "business_overview_shopify_exclusions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    store_id = Column(Integer, ForeignKey("stores.id", ondelete="CASCADE"), nullable=True)
+    variant_shopify_id = Column(BigInteger, nullable=True)
+    product_shopify_id = Column(BigInteger, nullable=True)
+    barcode = Column(Text, nullable=True)
+    sku = Column(Text, nullable=True)
+    title = Column(Text, nullable=True)
+    note = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    store = relationship("Store")
+
 class PriceUpdateHistory(Base):
     __tablename__ = "price_update_history"
 

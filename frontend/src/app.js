@@ -19329,6 +19329,11 @@ function bovBindOnce() {
   });
   document.getElementById("bov-missing-cost-export")?.addEventListener("click", bovExportMissingCost);
   document.getElementById("bov-missing-cost-body")?.addEventListener("click", (e) => {
+    const ex = e.target.closest("[data-bov-mc-exclude]");
+    if (ex) { e.preventDefault(); e.stopPropagation(); bovExcludeMissingCostRow(parseInt(ex.dataset.bovMcExclude, 10)); return; }
+    const inc = e.target.closest("[data-bov-mc-include]");
+    if (inc) { e.preventDefault(); e.stopPropagation(); bovIncludeShopifyExclusion(parseInt(inc.dataset.bovMcInclude, 10)); return; }
+    if (e.target.closest("summary, details")) return;
     const row = e.target.closest("tr[data-bov-href]");
     if (row && !e.target.closest("th")) window.open(row.dataset.bovHref, "_blank", "noopener");
   });
@@ -21322,12 +21327,79 @@ async function bovOpenMissingCostModal() {
   openModal("bov-missing-cost-modal");
   bovModalLoading(body, "Checking Shopify products against the items table…");
   try {
-    const data = await bovFetchJson("/shopify/missing-cost", { ...bovRangeParams(), ...bovStoreParams() });
+    const [data, excl] = await Promise.all([
+      bovFetchJson("/shopify/missing-cost", { ...bovRangeParams(), ...bovStoreParams() }),
+      bovFetchJson("/shopify/exclusions", {}).catch(() => ({ exclusions: [], total: 0 })),
+    ]);
     bovState.missingCost = data;
+    bovState.shopifyExclusions = excl.exclusions || [];
     bovRenderMissingCostModal(data);
   } catch (e) {
     bovModalError(body, `Could not load the list: ${e.message || e}`);
   }
+}
+
+async function bovReloadMissingCost() {
+  const body = document.getElementById("bov-missing-cost-body");
+  try {
+    const [data, excl] = await Promise.all([
+      bovFetchJson("/shopify/missing-cost", { ...bovRangeParams(), ...bovStoreParams() }),
+      bovFetchJson("/shopify/exclusions", {}).catch(() => ({ exclusions: [], total: 0 })),
+    ]);
+    bovState.missingCost = data;
+    bovState.shopifyExclusions = excl.exclusions || [];
+    bovRenderMissingCostModal(data);
+  } catch (e) {
+    if (body) bovModalError(body, `Could not reload the list: ${e.message || e}`);
+  }
+}
+
+async function bovExcludeMissingCostRow(idx) {
+  const d = bovState.missingCost;
+  const r = d && (d.rows || [])[idx];
+  if (!r) return;
+  // Barcode-level when the item has a barcode (matches every store selling it);
+  // otherwise product-level so every price/variant of the item is covered.
+  const payload = r.barcode
+    ? { barcode: r.barcode, product_shopify_id: r.product_shopify_id, sku: r.sku, title: r.title }
+    : { product_shopify_id: r.product_shopify_id, variant_shopify_id: r.product_shopify_id ? null : r.variant_shopify_id, sku: r.sku, title: r.title, store_id: r.product_shopify_id ? null : r.store_id };
+  try {
+    const resp = await fetch(`${API_BASE}/business-overview/shopify/exclusions`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+    });
+    if (!resp.ok) {
+      let detail = `HTTP ${resp.status}`;
+      try { const j = await resp.json(); if (j && j.detail) detail = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail); } catch (e) { /* keep */ }
+      throw new Error(detail);
+    }
+    showToast(`✓ Excluded “${r.title || r.sku || r.barcode}” from Shopify figures`, "success");
+    await bovReloadMissingCost();
+    bovFetchAll({ only: ["summary", "trend", "top", "shopifyOrders"], silent: true });
+  } catch (e) {
+    showToast(`✗ Could not exclude: ${e.message || e}`, "error");
+  }
+}
+
+async function bovIncludeShopifyExclusion(id) {
+  try {
+    const resp = await fetch(`${API_BASE}/business-overview/shopify/exclusions/${id}`, { method: "DELETE" });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    showToast("✓ Product included again", "success");
+    await bovReloadMissingCost();
+    bovFetchAll({ only: ["summary", "trend", "top", "shopifyOrders"], silent: true });
+  } catch (e) {
+    showToast(`✗ Could not remove the exclusion: ${e.message || e}`, "error");
+  }
+}
+
+function bovShopifyExclusionsHtml() {
+  const list = bovState.shopifyExclusions || [];
+  if (!list.length) return "";
+  const rows = list.map((e) => {
+    const scope = e.barcode ? `barcode ${e.barcode}` : e.variant_shopify_id ? `variant ${e.variant_shopify_id}` : e.product_shopify_id ? "whole product" : "";
+    return `<tr><td><span class="bov-cell-main">${escapeHtml(e.title || e.sku || e.barcode || "—")}</span><span class="bov-cell-sub">${escapeHtml([e.sku, scope, e.store_name || "all stores"].filter(Boolean).join(" · "))}</span></td><td class="bov-num"><button type="button" class="btn btn-secondary bov-btn-xs" data-bov-mc-include="${e.id}">Include again</button></td></tr>`;
+  }).join("");
+  return `<details class="bov-mc-excluded"><summary>Excluded from Shopify figures <span class="bov-store-chip-tag">${bovInt(list.length)}</span></summary><table class="data-table bov-mini-table"><tbody>${rows}</tbody></table></details>`;
 }
 
 function bovMissingCostReason(r) {
@@ -21348,7 +21420,7 @@ function bovRenderMissingCostModal(d) {
   if (meta) meta.textContent = bits.join(" · ");
   const errHtml = d.error ? `<div class="bov-inline-error" style="margin-bottom:0.75rem"><strong>${escapeHtml(d.error)}</strong><div class="bov-cell-sub">Only variants without a barcode can be listed until the cost source answers.</div></div>` : "";
   if (!rows.length) {
-    body.innerHTML = errHtml + bovEmptyHtml("Every Shopify product sold in this period has a cost. ✓");
+    body.innerHTML = errHtml + bovEmptyHtml("Every Shopify product sold in this period has a cost. ✓") + bovShopifyExclusionsHtml();
     if (exp) exp.disabled = true;
     return;
   }
@@ -21362,12 +21434,13 @@ function bovRenderMissingCostModal(d) {
     { key: "units", label: "Units", num: true, width: "7%", render: (r) => bovInt(r.units) },
     { key: "orders", label: "Orders", num: true, width: "7%", render: (r) => bovInt(r.orders) },
     { key: "revenue", label: "Revenue", num: true, width: "10%", render: (r) => bovMoney(r.revenue) },
+    { key: "_x", label: "", width: "9%", cls: "bov-mc-action", render: (r) => `<button type="button" class="btn btn-secondary bov-btn-xs" data-bov-mc-exclude="${rows.indexOf(r)}" title="${escapeHtml(r.barcode ? "Exclude this barcode from Shopify revenue, cost, units, top products and this report (all stores)" : "Exclude this product (all its variants) from Shopify figures and this report")}">Exclude</button>` },
   ];
   if (!bovState.sort.missingCost) bovState.sort.missingCost = { key: "revenue", dir: "desc" };
   const sorted = bovSortRows(rows, bovState.sort.missingCost);
   body.innerHTML = errHtml + bovTableHtml("missingCost", cols, sorted, {
     rowAttrs: (r) => (r.admin_url ? `data-bov-href="${escapeHtml(r.admin_url)}" title="Open in Shopify admin"` : ""),
-  }) + `<div class="bov-modal-totals"><span>${bovInt(rows.length)} product${rows.length === 1 ? "" : "s"}</span><span>${bovInt(d.units || 0)} units</span><span><strong>${escapeHtml(bovMoney(d.revenue))}</strong></span></div>`;
+  }) + `<div class="bov-modal-totals"><span>${bovInt(rows.length)} product${rows.length === 1 ? "" : "s"}</span><span>${bovInt(d.units || 0)} units</span><span><strong>${escapeHtml(bovMoney(d.revenue))}</strong></span></div>` + bovShopifyExclusionsHtml();
   if (exp) exp.disabled = false;
 }
 

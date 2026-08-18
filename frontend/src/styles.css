@@ -8232,3 +8232,12 @@ tr.bov-line-void td { opacity: 0.55; text-decoration: line-through; }
 .bov-reason::before { content: ""; width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; background: var(--text-tertiary); }
 .bov-reason.is-warn::before { background: var(--warning); }
 .bov-reason.is-info::before { background: var(--accent-primary); }
+
+/* Missing-cost modal: exclusions */
+.bov-mc-action { text-align: right; }
+.bov-mc-excluded { margin-top: 1rem; border-top: 1px solid var(--border-color); padding-top: 0.75rem; }
+.bov-mc-excluded summary { cursor: pointer; font-size: 0.8125rem; font-weight: 600; color: var(--text-secondary); display: flex; align-items: center; gap: 0.4rem; }
+.bov-mc-excluded summary::-webkit-details-marker { display: none; }
+.bov-mc-excluded summary::before { content: "▸"; font-size: 0.7rem; color: var(--text-tertiary); }
+.bov-mc-excluded[open] summary::before { content: "▾"; }
+.bov-mc-excluded table { margin-top: 0.5rem; }

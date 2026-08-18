@@ -1626,6 +1626,73 @@ def _check_bucket(bucket: str) -> str:
     return bucket
 
 
+def _shopify_excl_clause(store_id: int, exclusions: Optional[List[Dict[str, Any]]], alias: str = "li") -> Tuple[str, Dict[str, Any]]:
+    """
+    SQL predicate (with bound params) matching EXCLUDED line items for `store_id`:
+    exclusions apply store-wide (store_id None) or to that store; match on the
+    variant id or the barcode. Returns ("", {}) when nothing applies.
+    """
+    variants: List[int] = []
+    products: List[int] = []
+    barcodes: List[str] = []
+    for ex in exclusions or []:
+        sid = ex.get("store_id")
+        if sid is not None and int(sid) != int(store_id):
+            continue
+        bc = (ex.get("barcode") or "").strip()
+        if bc:
+            barcodes.append(bc)
+        elif ex.get("variant_shopify_id"):
+            variants.append(int(ex["variant_shopify_id"]))
+        elif ex.get("product_shopify_id"):
+            # product-level exclusion (all variants) — used for barcode-less
+            # items such as shipping protection with a variant per price
+            products.append(int(ex["product_shopify_id"]))
+    parts: List[str] = []
+    params: Dict[str, Any] = {}
+    if variants:
+        parts.append(f"{alias}.variant_shopify_id = ANY(:ex_variants)")
+        params["ex_variants"] = variants
+    if products:
+        parts.append(f"{alias}.product_shopify_id = ANY(:ex_products)")
+        params["ex_products"] = products
+    if barcodes:
+        parts.append(f"NULLIF(BTRIM({alias}.barcode), '') = ANY(:ex_barcodes)")
+        params["ex_barcodes"] = barcodes
+    if not parts:
+        return "", {}
+    return "(" + " OR ".join(parts) + ")", params
+
+
+def _shopify_excluded_revenue_by_bucket_sync(store_id: int, tz: str, date_from: str, date_to_excl: str, bucket: str,
+                                             exclusions: Optional[List[Dict[str, Any]]]) -> Dict[date, float]:
+    """Line revenue of excluded products per bucket — subtracted from order-level revenue."""
+    excl_sql, excl_params = _shopify_excl_clause(store_id, exclusions)
+    if not excl_sql:
+        return {}
+    bucket = _check_bucket(bucket)
+    tz = _safe_tz(tz)
+    sql = f"""
+        SELECT date_trunc('{bucket}', o.created_at AT TIME ZONE :tz)::date AS b,
+               SUM(COALESCE(li.discounted_total, 0)) AS revenue
+        FROM shopify_orders o
+        JOIN shopify_order_line_items li ON li.store_id = o.store_id AND li.order_shopify_id = o.shopify_id
+        WHERE o.store_id = :sid AND {_SHOPIFY_COMPLETED}
+          AND o.created_at >= (CAST(:start AS date)::timestamp AT TIME ZONE :tz)
+          AND o.created_at <  (CAST(:end_excl AS date)::timestamp AT TIME ZONE :tz)
+          AND {excl_sql}
+        GROUP BY 1
+    """
+    out: Dict[date, float] = {}
+    with engine.connect() as conn:
+        for r in conn.execute(text(sql), {"sid": store_id, "tz": tz, "start": date_from, "end_excl": date_to_excl, **excl_params}).mappings():
+            b = r["b"]
+            if isinstance(b, datetime):
+                b = b.date()
+            out[b] = _f(r["revenue"])
+    return out
+
+
 def _shopify_bucketed_orders_sync(store_id: int, tz: str, date_from: str, date_to_excl: str, bucket: str) -> Dict[date, Dict[str, float]]:
     bucket = _check_bucket(bucket)
     tz = _safe_tz(tz)
@@ -1656,9 +1723,12 @@ def _shopify_bucketed_orders_sync(store_id: int, tz: str, date_from: str, date_t
     return out
 
 
-def _shopify_bucketed_line_items_sync(store_id: int, tz: str, date_from: str, date_to_excl: str, bucket: str) -> List[Tuple[date, Optional[str], float, float]]:
+def _shopify_bucketed_line_items_sync(store_id: int, tz: str, date_from: str, date_to_excl: str, bucket: str,
+                                      exclusions: Optional[List[Dict[str, Any]]] = None) -> List[Tuple[date, Optional[str], float, float]]:
     bucket = _check_bucket(bucket)
     tz = _safe_tz(tz)
+    excl_sql, excl_params = _shopify_excl_clause(store_id, exclusions)
+    excl_where = f"AND NOT {excl_sql}" if excl_sql else ""
     sql = f"""
         SELECT date_trunc('{bucket}', o.created_at AT TIME ZONE :tz)::date AS b,
                NULLIF(BTRIM(li.barcode), '')                        AS barcode,
@@ -1671,10 +1741,11 @@ def _shopify_bucketed_line_items_sync(store_id: int, tz: str, date_from: str, da
           AND {_SHOPIFY_COMPLETED}
           AND o.created_at >= (CAST(:start AS date)::timestamp AT TIME ZONE :tz)
           AND o.created_at <  (CAST(:end_excl AS date)::timestamp AT TIME ZONE :tz)
+          {excl_where}
         GROUP BY 1, 2
     """
     with engine.connect() as conn:
-        rows = conn.execute(text(sql), {"sid": store_id, "tz": tz, "start": date_from, "end_excl": date_to_excl}).mappings().all()
+        rows = conn.execute(text(sql), {"sid": store_id, "tz": tz, "start": date_from, "end_excl": date_to_excl, **excl_params}).mappings().all()
     out: List[Tuple[date, Optional[str], float, float]] = []
     for r in rows:
         b = r["b"]
@@ -1688,7 +1759,8 @@ _SHOPIFY_UNFULFILLED = ("'UNFULFILLED','PARTIALLY_FULFILLED','IN_PROGRESS','ON_H
                         "'SCHEDULED','PENDING_FULFILLMENT','OPEN'")
 
 
-def _shopify_period_orders_sync(store_id: int, tz: str, date_from: str, date_to_excl: str) -> Dict[str, float]:
+def _shopify_period_orders_sync(store_id: int, tz: str, date_from: str, date_to_excl: str,
+                                exclusions: Optional[List[Dict[str, Any]]] = None) -> Dict[str, float]:
     """
     Order-flow counts for one store over [date_from, date_to_excl) in the shop's
     calendar: placed (non-cancelled), revenue, cancelled, still-unfulfilled among
@@ -1720,9 +1792,12 @@ def _shopify_period_orders_sync(store_id: int, tz: str, date_from: str, date_to_
               AND o.fulfilled_at >= (CAST(:start AS date)::timestamp AT TIME ZONE :tz)
               AND o.fulfilled_at <  (CAST(:end_excl AS date)::timestamp AT TIME ZONE :tz)
         """), {"sid": store_id, "start": date_from, "end_excl": date_to_excl, "tz": tz}).mappings().first()
+    ex_rev = 0.0
+    if exclusions:
+        ex_rev = sum(_shopify_excluded_revenue_by_bucket_sync(store_id, tz, date_from, date_to_excl, "month", exclusions).values())
     return {
         "orders": int(placed["orders"] or 0),
-        "revenue": round(_f(placed["revenue"]), 2),
+        "revenue": round(max(0.0, _f(placed["revenue"]) - ex_rev), 2),
         "cancelled": int(placed["cancelled"] or 0),
         "unfulfilled_from_period": int(placed["unfulfilled_from_period"] or 0),
         "fulfilled_from_period": int(placed["fulfilled_from_period"] or 0),
@@ -1731,8 +1806,9 @@ def _shopify_period_orders_sync(store_id: int, tz: str, date_from: str, date_to_
     }
 
 
-async def shopify_period_orders(store_id: int, tz: str, date_from: str, date_to_excl: str) -> Dict[str, float]:
-    return await asyncio.to_thread(_shopify_period_orders_sync, store_id, tz, date_from, date_to_excl)
+async def shopify_period_orders(store_id: int, tz: str, date_from: str, date_to_excl: str,
+                                exclusions: Optional[List[Dict[str, Any]]] = None) -> Dict[str, float]:
+    return await asyncio.to_thread(_shopify_period_orders_sync, store_id, tz, date_from, date_to_excl, exclusions)
 
 
 def _shopify_exception_counts_sync(store_id: int, unfulfilled_hours: float) -> Dict[str, Any]:
@@ -1854,12 +1930,15 @@ def _shopify_order_detail_sync(store_id: int, shopify_id: int) -> Dict[str, Any]
     } for l in lines]}
 
 
-def _shopify_products_sold_sync(store_id: int, tz: str, date_from: str, date_to_excl: str) -> List[Dict[str, Any]]:
-    """Every product sold in the period grouped by barcode (blank barcodes grouped by title)."""
+def _shopify_products_sold_sync(store_id: int, tz: str, date_from: str, date_to_excl: str,
+                                exclusions: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
+    """Every product sold in the period grouped by barcode (blank barcodes grouped by variant), minus exclusions."""
     tz = _safe_tz(tz)
+    excl_sql, excl_params = _shopify_excl_clause(store_id, exclusions)
+    excl_where = f"AND NOT {excl_sql}" if excl_sql else ""
     sql = f"""
         SELECT NULLIF(BTRIM(li.barcode),'') AS barcode,
-               COALESCE(NULLIF(BTRIM(li.barcode),''), 'title:' || COALESCE(li.product_title, li.title, '')) AS grp,
+               COALESCE(NULLIF(BTRIM(li.barcode),''), 'variant:' || COALESCE(li.variant_shopify_id::text, li.product_title, li.title, '')) AS grp,
                MAX(li.sku) AS sku, MAX(li.vendor) AS vendor,
                MAX(COALESCE(li.product_title, li.title)) AS title, MAX(li.variant_title) AS variant_title,
                MAX(li.product_shopify_id) AS product_shopify_id, MAX(li.variant_shopify_id) AS variant_shopify_id,
@@ -1871,19 +1950,21 @@ def _shopify_products_sold_sync(store_id: int, tz: str, date_from: str, date_to_
         WHERE o.store_id = :sid AND {_SHOPIFY_COMPLETED}
           AND o.created_at >= (CAST(:start AS date)::timestamp AT TIME ZONE :tz)
           AND o.created_at <  (CAST(:end_excl AS date)::timestamp AT TIME ZONE :tz)
+          {excl_where}
         GROUP BY 1, 2
         HAVING SUM(COALESCE(li.current_quantity, li.quantity, 0)) > 0
         ORDER BY revenue DESC
     """
     with engine.connect() as conn:
-        rows = conn.execute(text(sql), {"sid": store_id, "tz": tz, "start": date_from, "end_excl": date_to_excl}).mappings().all()
+        rows = conn.execute(text(sql), {"sid": store_id, "tz": tz, "start": date_from, "end_excl": date_to_excl, **excl_params}).mappings().all()
     return [{"barcode": r["barcode"], "sku": r["sku"], "vendor": r["vendor"], "title": r["title"], "variant_title": r["variant_title"],
              "product_shopify_id": _io(r["product_shopify_id"]), "variant_shopify_id": _io(r["variant_shopify_id"]),
              "orders": int(r["orders"] or 0), "revenue": round(_f(r["revenue"]), 2), "units": _f(r["units"])} for r in rows]
 
 
-async def shopify_products_sold(store_id: int, tz: str, date_from: str, date_to_excl: str) -> List[Dict[str, Any]]:
-    return await asyncio.to_thread(_shopify_products_sold_sync, store_id, tz, date_from, date_to_excl)
+async def shopify_products_sold(store_id: int, tz: str, date_from: str, date_to_excl: str,
+                                exclusions: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
+    return await asyncio.to_thread(_shopify_products_sold_sync, store_id, tz, date_from, date_to_excl, exclusions)
 
 
 async def shopify_orders_list(store_id: int, kind: str, older_than_hours: float = 0.0, limit: int = 500) -> List[Dict[str, Any]]:
@@ -1908,8 +1989,11 @@ def _shopify_open_orders_local_sync(store_id: int) -> Dict[str, float]:
     return {"open_orders": _f(r["open_orders"]) if r else 0.0, "open_value": _f(r["open_value"]) if r else 0.0}
 
 
-def _shopify_top_products_sync(store_id: int, tz: str, date_from: str, date_to_excl: str, limit: int = 10) -> List[Dict[str, Any]]:
+def _shopify_top_products_sync(store_id: int, tz: str, date_from: str, date_to_excl: str, limit: int = 10,
+                               exclusions: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
     tz = _safe_tz(tz)
+    excl_sql, excl_params = _shopify_excl_clause(store_id, exclusions)
+    excl_where = f"AND NOT {excl_sql}" if excl_sql else ""
     sql = f"""
         SELECT NULLIF(BTRIM(li.barcode),'') AS upc, MAX(li.sku) AS sku,
                MAX(COALESCE(li.product_title, li.title)) AS name,
@@ -1921,11 +2005,12 @@ def _shopify_top_products_sync(store_id: int, tz: str, date_from: str, date_to_e
         WHERE o.store_id = :sid AND {_SHOPIFY_COMPLETED}
           AND o.created_at >= (CAST(:start AS date)::timestamp AT TIME ZONE :tz)
           AND o.created_at <  (CAST(:end_excl AS date)::timestamp AT TIME ZONE :tz)
+          {excl_where}
         GROUP BY 1 ORDER BY revenue DESC LIMIT :limit
     """
     with engine.connect() as conn:
         rows = conn.execute(text(sql), {"sid": store_id, "tz": tz, "start": date_from,
-                                        "end_excl": date_to_excl, "limit": int(limit)}).mappings().all()
+                                        "end_excl": date_to_excl, "limit": int(limit), **excl_params}).mappings().all()
     return [{"key": r["upc"], "name": r["name"], "secondary": r["sku"], "orders": int(r["orders"] or 0),
              "revenue": round(_f(r["revenue"]), 2), "units": _f(r["units"])} for r in rows]
 
@@ -1936,20 +2021,25 @@ async def compute_shopify_series(
     period: Period,
     bucket: str,
     cost_lookup: Callable[[List[str]], Any],
+    exclusions: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """
     Per-store Shopify buckets for the current and previous ranges. Cost via
     `cost_lookup(barcodes) -> {barcode: unit_cost}` (async, memoised by caller).
+    Excluded products (see _shopify_excl_clause) drop out of units/cost and their
+    line revenue is subtracted from the order-level revenue.
     Returns {"current": [...], "previous": [...], "totals": {...}, "previous_totals": {...}}.
     """
     sid = int(store["id"])
     tz = _safe_tz(tz)
+    exclusions = exclusions if exclusions is not None else store.get("_exclusions")
 
     async def _range(start: date, end: date) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         s, e_excl = start.isoformat(), upper_bound(end)
-        orders_by_b, lines = await asyncio.gather(
+        orders_by_b, lines, ex_rev = await asyncio.gather(
             asyncio.to_thread(_shopify_bucketed_orders_sync, sid, tz, s, e_excl, bucket),
-            asyncio.to_thread(_shopify_bucketed_line_items_sync, sid, tz, s, e_excl, bucket),
+            asyncio.to_thread(_shopify_bucketed_line_items_sync, sid, tz, s, e_excl, bucket, exclusions),
+            asyncio.to_thread(_shopify_excluded_revenue_by_bucket_sync, sid, tz, s, e_excl, bucket, exclusions),
         )
         barcodes = sorted({b for (_, b, _, _) in lines if b})
         costs: Dict[str, float] = {}
@@ -1973,7 +2063,7 @@ async def compute_shopify_series(
         agg_orders = 0
         for k, cs, ce in iter_buckets(start, end, bucket):
             o = orders_by_b.get(k) or {}
-            rev = _f(o.get("revenue"))
+            rev = max(0.0, _f(o.get("revenue")) - _f(ex_rev.get(k)))
             ret = _f(o.get("refunded"))
             orders = int(_f(o.get("orders")))
             cost = cost_by_b.get(k, 0.0)
@@ -2071,8 +2161,9 @@ async def shopify_open_orders_local(store_id: int) -> Dict[str, float]:
     return await asyncio.to_thread(_shopify_open_orders_local_sync, store_id)
 
 
-async def shopify_top_products(store_id: int, tz: str, date_from: str, date_to_excl: str, limit: int = 10) -> List[Dict[str, Any]]:
-    return await asyncio.to_thread(_shopify_top_products_sync, store_id, tz, date_from, date_to_excl, limit)
+async def shopify_top_products(store_id: int, tz: str, date_from: str, date_to_excl: str, limit: int = 10,
+                               exclusions: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
+    return await asyncio.to_thread(_shopify_top_products_sync, store_id, tz, date_from, date_to_excl, limit, exclusions)
 
 
 def shutdown_bov_executor():

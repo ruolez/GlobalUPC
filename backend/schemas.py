@@ -1755,6 +1755,28 @@ class BOVMissingCostResponse(BOVBlockStatus):
     skipped_stores: List[str] = []
 
 
+class BOVShopifyExclusionCreate(BaseModel):
+    store_id: Optional[int] = None            # None = all stores
+    variant_shopify_id: Optional[int] = None
+    product_shopify_id: Optional[int] = None
+    barcode: Optional[str] = None
+    sku: Optional[str] = None
+    title: Optional[str] = None
+    note: Optional[str] = None
+
+
+class BOVShopifyExclusion(BOVShopifyExclusionCreate):
+    id: int
+    store_name: Optional[str] = None
+    created_at: Optional[datetime] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+class BOVShopifyExclusionList(BaseModel):
+    exclusions: List[BOVShopifyExclusion] = []
+    total: int = 0
+
+
 class BOVShopifyRefreshResult(BaseModel):
     store_id: int
     store_name: str

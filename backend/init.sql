@@ -366,6 +366,21 @@ CREATE TRIGGER update_business_overview_config_updated_at
     BEFORE UPDATE ON business_overview_config
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+-- Business Overview — Shopify product exclusions (migration 022)
+CREATE TABLE IF NOT EXISTS business_overview_shopify_exclusions (
+    id SERIAL PRIMARY KEY,
+    store_id INTEGER REFERENCES stores(id) ON DELETE CASCADE,
+    variant_shopify_id BIGINT,
+    product_shopify_id BIGINT,
+    barcode TEXT,
+    sku TEXT,
+    title TEXT,
+    note TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_bov_shopify_excl_unique
+    ON business_overview_shopify_exclusions (COALESCE(store_id, 0), COALESCE(variant_shopify_id, 0), COALESCE(product_shopify_id, 0), COALESCE(barcode, ''));
+
 -- Insert default settings
 INSERT INTO settings (key, value, description) VALUES
     ('app_name', 'Global UPC', 'Application name'),
