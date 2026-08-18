@@ -20483,12 +20483,20 @@ function bovMoneyAlerts(summaryData, rules) {
   const mf = rules.margin_floor || {};
   if (mf.enabled !== false && mf.pct != null) {
     const floor = bovNum(mf.pct);
+    // Low-margin alerts open the Invoices list sorted by margin with the offending
+    // invoices highlighted (and the card's store chip set for a per-store alert).
+    const invoicesAction = (pct, storeName, storeId) => ({
+      section: "invoices", tab: "invoices:all", target: "bov-invoices-card",
+      sort: { widget: "invoicesPeriod", key: "margin_pct", dir: "asc" },
+      card_store: storeName || null,
+      match: { kind: "invoice_margin_below", pct, store_id: storeId != null ? storeId : null },
+    });
     if ((tot.revenue || 0) > 0 && tot.margin_pct != null && bovNum(tot.margin_pct) < floor) {
       out.push({
         key: "margin_floor", severity: "warn", count: null, amount: null,
         title: `Margin ${bovNum(tot.margin_pct).toFixed(1)}% is below the ${floor}% floor`,
         detail: `${bovCompactMoney(tot.profit || 0)} profit on ${bovCompactMoney(tot.revenue || 0)}`,
-        stores: [], action: { section: "overview", target: "bov-trend-card" },
+        stores: [], action: invoicesAction(floor, null, null),
       });
     }
     if (mf.per_store) {
@@ -20503,7 +20511,10 @@ function bovMoneyAlerts(summaryData, rules) {
             key: `margin_floor:${ps.store_id}`, severity: "warn", count: null, amount: null,
             title: `${bovStoreShort(ps.store_name)} margin ${bovNum(ps.margin_pct).toFixed(1)}% below the ${storeFloor}% floor`,
             detail: `${bovCompactMoney(ps.profit || 0)} profit on ${bovCompactMoney(ps.revenue || 0)}${ps.source === "shopify" ? " · Shopify" : ""}`,
-            stores: [ps.store_name], action: { section: "overview", target: "bov-trend-card" },
+            stores: [ps.store_name],
+            action: ps.source === "shopify"
+              ? { section: "overview", target: "bov-trend-card" }
+              : invoicesAction(storeFloor, ps.store_name, ps.store_id),
           });
         }
       });
@@ -20614,6 +20625,10 @@ function bovMarkKpiAlerts() {
 function bovApplyAlertAction(alert) {
   const act = (alert && alert.action) || {};
   bovState.highlight = act.match ? { alertKey: alert.key, title: alert.title, match: act.match } : null;
+  if (act.card_store !== undefined && act.section === "invoices") {
+    const f = bovState.cardFilters.invoices || (bovState.cardFilters.invoices = { store: null, status: null, search: "" });
+    f.store = act.card_store || null;
+  }
   bovRerenderLists();
   if (act.tab) {
     const [group, value] = String(act.tab).split(":");
@@ -20655,6 +20670,7 @@ function bovClearHighlight() {
 // Widgets each alert `match` kind can tint rows in.
 const BOV_HIGHLIGHT_WIDGETS = {
   invoice_open_before: ["invoicesOpen", "invoicesPeriod"],
+  invoice_margin_below: ["invoicesOpen", "invoicesPeriod"],
   quotation_started_before: ["quotations"],
   po_placed_before: ["purchasesIncoming"],
   shopify_on_hold: ["shopifyOrders_list"],
@@ -20679,6 +20695,9 @@ function bovRowAlerted(widgetKey, r) {
       const b = before.length === 10 ? `${before} 00:00` : bovNormDt(before);
       return !!r.invoice_date && bovNormDt(r.invoice_date) < b;
     }
+    case "invoice_margin_below":
+      if (m.store_id != null && String(r.store_id) !== String(m.store_id)) return false;
+      return r.margin_pct != null && bovNum(r.margin_pct) < bovNum(m.pct);
     case "quotation_started_before":
       return !!r.start_date && bovNormDt(r.start_date) < bovNormDt(m.before);
     case "po_placed_before":
