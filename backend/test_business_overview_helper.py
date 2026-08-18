@@ -123,7 +123,7 @@ def test_totals_math_and_unknown_cost():
 def test_aging_bucket_and_excl_clause():
     assert [bov.aging_bucket(d) for d in (0, 1, 2, 3, 4, 40, None)] == ["0-1", "0-1", "2-3", "2-3", "4+", "4+", None]
     sql, params = bov._excl_clause(["ACME", " ", None, "Beta"])
-    assert sql == " AND (h.BusinessName IS NULL OR (h.BusinessName NOT IN (?,?)))" and params == ["ACME", "Beta"]
+    assert sql == " AND (h.BusinessName IS NULL OR (LTRIM(RTRIM(h.BusinessName)) NOT IN (?,?)))" and params == ["ACME", "Beta"]
     assert bov._excl_clause([]) == ("", [])
 
 
