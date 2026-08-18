@@ -18875,7 +18875,62 @@ function bovRenderDateTrigger() {
   }
 }
 
+const BOV_UNLOCK_KEY = "bov_unlocked";
+
+function bovIsUnlocked() {
+  try { return sessionStorage.getItem(BOV_UNLOCK_KEY) === "1"; } catch (e) { return false; }
+}
+
+function bovShowLock(locked) {
+  const lock = document.getElementById("bov-lock");
+  const guarded = document.getElementById("bov-guarded");
+  if (lock) lock.hidden = !locked;
+  if (guarded) guarded.hidden = locked;
+  document.getElementById("bov-nav-lock")?.classList.toggle("is-open", !locked);
+  if (locked) setTimeout(() => document.getElementById("bov-lock-password")?.focus(), 50);
+}
+
+function bovBindLockOnce() {
+  const form = document.getElementById("bov-lock-form");
+  if (!form || form.dataset.bound === "1") return;
+  form.dataset.bound = "1";
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const input = document.getElementById("bov-lock-password");
+    const err = document.getElementById("bov-lock-error");
+    const btn = document.getElementById("bov-lock-submit");
+    const pw = input ? input.value : "";
+    if (err) err.hidden = true;
+    if (btn) btn.disabled = true;
+    try {
+      const resp = await fetch(`${API_BASE}/business-overview/unlock`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password: pw }),
+      });
+      if (!resp.ok) {
+        if (err) { err.textContent = resp.status === 401 ? "Incorrect password." : `Could not verify (${resp.status}).`; err.hidden = false; }
+        if (input) { input.value = ""; input.focus(); }
+        return;
+      }
+      try { sessionStorage.setItem(BOV_UNLOCK_KEY, "1"); } catch (e2) { /* ignore */ }
+      if (input) input.value = "";
+      bovShowLock(false);
+      loadBusinessOverviewPage();
+    } catch (e3) {
+      if (err) { err.textContent = `Could not verify: ${e3.message || e3}`; err.hidden = false; }
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  });
+}
+
 async function loadBusinessOverviewPage() {
+  bovBindLockOnce();
+  if (!bovIsUnlocked()) {
+    stopBovAutoRefresh();
+    bovShowLock(true);
+    return;
+  }
+  bovShowLock(false);
   bovBindOnce();
   bovLoadPrefs();
   BOV_COLLAPSIBLE_CARDS.forEach(bovApplyCollapsed);

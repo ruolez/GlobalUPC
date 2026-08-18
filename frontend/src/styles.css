@@ -8241,3 +8241,25 @@ tr.bov-line-void td { opacity: 0.55; text-decoration: line-through; }
 .bov-mc-excluded summary::before { content: "▸"; font-size: 0.7rem; color: var(--text-tertiary); }
 .bov-mc-excluded[open] summary::before { content: "▾"; }
 .bov-mc-excluded table { margin-top: 0.5rem; }
+
+/* Business Overview — password gate + nav lock */
+.nav-item .nav-lock { margin-left: auto; color: var(--text-tertiary); flex: 0 0 auto; }
+.nav-item .nav-lock.is-open { opacity: 0.45; }
+.bov-lock { display: flex; justify-content: center; padding: 4rem 1rem; }
+.bov-lock[hidden] { display: none; }
+.bov-lock-card {
+  width: min(28rem, 100%);
+  padding: 2rem 2rem 1.75rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  text-align: center;
+}
+.bov-lock-icon { width: 56px; height: 56px; margin: 0 auto 0.875rem; display: grid; place-items: center; border-radius: 50%; background: color-mix(in srgb, var(--accent-primary) 12%, var(--bg-tertiary)); color: var(--accent-primary); }
+.bov-lock-card h2 { margin: 0 0 0.35rem; font-size: 1.125rem; }
+.bov-lock-help { margin: 0 0 1rem; font-size: 0.8125rem; color: var(--text-secondary); }
+.bov-lock-row { display: flex; gap: 0.5rem; }
+.bov-lock-row .dark-input { flex: 1; }
+.bov-lock-error { margin: 0.625rem 0 0; font-size: 0.8125rem; color: var(--danger); }
+.bov-lock-error[hidden] { display: none; }

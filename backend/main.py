@@ -10648,6 +10648,31 @@ async def get_business_overview_sales_breakdown(
     return BOVSalesBreakdownResponse(**resp)
 
 
+# ---- Access gate: the Overview is password protected ------------------------
+
+BOV_PASSWORD_SETTING_KEY = "business_overview_password"
+BOV_DEFAULT_PASSWORD = "admin1972"
+
+
+class BOVUnlockRequest(BaseModel):
+    password: str
+
+
+@app.post("/api/business-overview/unlock")
+def business_overview_unlock(data: BOVUnlockRequest, db: Session = Depends(get_db)):
+    """
+    Check the Overview password. The password lives in settings
+    (`business_overview_password`; default admin1972) so it can be changed
+    without a deploy. Returns 401 on mismatch; the client keeps a session flag.
+    """
+    row = db.query(Setting).filter(Setting.key == BOV_PASSWORD_SETTING_KEY).first()
+    expected = (row.value if row and row.value else BOV_DEFAULT_PASSWORD)
+    import hmac
+    if not hmac.compare_digest(str(data.password or ""), str(expected)):
+        raise HTTPException(status_code=401, detail="Incorrect password")
+    return {"ok": True}
+
+
 # ---- Shopify: order flow + catch-up sync ------------------------------------
 
 @app.get("/api/business-overview/shopify/orders", response_model=BOVShopifyOrdersResponse)
