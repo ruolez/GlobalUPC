@@ -7887,8 +7887,29 @@ tr.bov-line-void td { opacity: 0.55; text-decoration: line-through; }
   border-radius: var(--radius-md);
   background: var(--bg-tertiary);
 }
-.bov-card-toolbar .sancm-mode-group { background: var(--bg-primary); }
-.bov-card-toolbar .sa-chip-group { background: var(--bg-primary); }
+/* Type tabs / chips inside the list toolbars: stronger contrast (the toolbar
+   itself is already a tinted surface, so the segmented group needs a real
+   border and a clearly filled active segment). */
+.bov-card-toolbar .sancm-mode-group,
+.bov-card-toolbar .sa-chip-group {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  padding: 0.1875rem;
+}
+.bov-card-toolbar .sancm-mode-btn,
+.bov-card-toolbar .sa-chip { color: var(--text-secondary); font-size: 0.8125rem; padding: 0.3rem 0.75rem; }
+.bov-card-toolbar .sancm-mode-btn:hover,
+.bov-card-toolbar .sa-chip:hover { color: var(--text-primary); background: var(--bg-hover); }
+.bov-card-toolbar .sancm-mode-btn.active,
+.bov-card-toolbar .sa-chip.active {
+  background: color-mix(in srgb, var(--accent-primary) 18%, var(--bg-primary));
+  color: var(--text-primary);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-primary) 55%, transparent);
+  font-weight: 600;
+}
+.bov-card-toolbar .sancm-mode-btn.active .bov-tab-count,
+.bov-card-toolbar .sa-chip.active .bov-store-chip-tag { color: var(--accent-primary); opacity: 1; }
+.bov-card-toolbar .bov-tab-count { color: var(--text-tertiary); font-weight: 500; margin-left: 0.25rem; }
 .bov-card-toolbar .bov-list-search-input {
   margin-left: auto;
   min-width: 12rem;

@@ -18686,7 +18686,10 @@ function bovLoadPrefs() {
     if (p && Array.isArray(p.storeIds)) bovState.storeFilter = p.storeIds.map(Number).filter((n) => !isNaN(n));
     if (p && typeof p.charts === "boolean") bovState.chartsOpen = p.charts;
     if (p && typeof p.openInRange === "boolean") bovState.openInRange = p.openInRange;
-    if (p && p.collapsed && typeof p.collapsed === "object") bovState.collapsedCards = { ...p.collapsed };
+    if (p && p.collapsed && typeof p.collapsed === "object") {
+      bovState.collapsedCards = {};
+      Object.keys(p.collapsed).forEach((k) => { if (BOV_COLLAPSIBLE_CARDS.includes(k) && p.collapsed[k]) bovState.collapsedCards[k] = true; });
+    }
     if (p && BOV_SECTIONS.includes(p.section)) bovState.section = p.section;
   } catch (e) {
     /* ignore */
@@ -18954,7 +18957,7 @@ function bovToggleStoreChip(value) {
   bovFetchAll();
 }
 
-const BOV_COLLAPSIBLE_CARDS = ["bov-top-card", "bov-quotations-card", "bov-invoices-card", "bov-purchases-card", "bov-shopify-card"];
+const BOV_COLLAPSIBLE_CARDS = ["bov-top-card", "bov-shopify-card"];   // list sections are always open
 
 function bovInstallCollapsers() {
   BOV_COLLAPSIBLE_CARDS.forEach((cardId) => {
