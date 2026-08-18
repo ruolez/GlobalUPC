@@ -18431,11 +18431,11 @@ const BOV_SHOPIFY_WIDGETS = ["summary", "top", "shopifyOrders", "alerts"];
 const BOV_ALERT_RULE_FIELDS = {
   unshipped_cutoff: ["cutoff"],
   open_invoice_age: ["days"],
-  quotation_stuck: ["hours"],
+  quotation_stuck: ["days"],
   po_overdue: ["days"],
   shopify_on_hold: [],
-  shopify_unfulfilled_age: ["hours"],
-  shopify_sync_stale: ["hours"],
+  shopify_unfulfilled_age: ["days"],
+  shopify_sync_stale: ["days"],
   margin_floor: ["pct", "per_store"],
   revenue_drop: ["pct"],
 };

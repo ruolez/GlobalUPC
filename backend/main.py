@@ -10753,6 +10753,16 @@ async def business_overview_shopify_refresh(
 
 # ---- Attention strip: operational alerts against configurable thresholds ----
 
+def _bov_days_label(v) -> str:
+    try:
+        d = float(v)
+    except (TypeError, ValueError):
+        return f"{v} days"
+    if d == int(d):
+        return f"{int(d)} day{'s' if int(d) != 1 else ''}"
+    return f"{d:g} days"
+
+
 @app.get("/api/business-overview/alerts", response_model=BOVAlertsResponse)
 async def get_business_overview_alerts(
     preset: Optional[str] = None, date_from: Optional[str] = None, date_to: Optional[str] = None,
@@ -10829,7 +10839,7 @@ async def get_business_overview_alerts(
             skipped.append("quotation_stuck: no BackOffice store in filter")
         else:
             keys.append("quotation_stuck")
-            started_before = (now_tz - timedelta(hours=float(r.get("hours", 4)))).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
+            started_before = (now_tz - timedelta(days=float(r.get("days", 1)))).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
             statuses = list((cfg.quotation_statuses if cfg else BOV_DEFAULT_QUOTATION_STATUSES) or [])
             tasks.append(bov.quotations_in_progress_async(
                 **_bov_conn_kwargs(admin_store), statuses=statuses, limit=1, include_list=False,
@@ -10850,7 +10860,7 @@ async def get_business_overview_alerts(
     sh_synced_stores = [st for st in shopify_stores if st["id"] in synced]
     if sh_rules_on and sh_synced_stores:
         keys.append("shopify_exceptions")
-        hours = float(rules["shopify_unfulfilled_age"].get("hours", 48))
+        hours = float(rules["shopify_unfulfilled_age"].get("days", 2)) * 24.0
 
         async def _sh_all():
             res = await asyncio.gather(*[bov.shopify_exception_counts(st["id"], hours) for st in sh_synced_stores], return_exceptions=True)
@@ -10900,7 +10910,7 @@ async def get_business_overview_alerts(
                     rr = rules["quotation_stuck"]
                     by = ", ".join(f"{x.get('status') or '—'} {bovInt(x.get('count') or 0)}" for x in (payload.get("by_status") or []) if x.get("count"))
                     alerts.append({"key": key, "severity": "warn", "count": count, "amount": payload.get("total_amount"), "stores": [],
-                                   "title": f"{bovInt(count)} quotation{'s' if count != 1 else ''} in progress for more than {rr.get('hours')} h",
+                                   "title": f"{bovInt(count)} quotation{'s' if count != 1 else ''} in progress for more than {_bov_days_label(rr.get('days', 1))}",
                                    "detail": by or None,
                                    "action": {"section": "quotations", "sort": {"widget": "quotations", "key": "start_date", "dir": "asc"}, "target": "bov-quotations-card"}})
             elif key == "po_overdue":
@@ -10933,7 +10943,7 @@ async def get_business_overview_alerts(
                 if rules["shopify_unfulfilled_age"].get("enabled") and unf > 0:
                     rr = rules["shopify_unfulfilled_age"]
                     alerts.append({"key": "shopify_unfulfilled_age", "severity": "warn", "count": unf, "amount": round(unf_v, 2), "stores": [n.rsplit(" ", 1)[0] for n in unf_names],
-                                   "title": f"{bovInt(unf)} Shopify order{'s' if unf != 1 else ''} unfulfilled for more than {int(float(rr.get('hours', 48)))} h", "detail": ", ".join(unf_names),
+                                   "title": f"{bovInt(unf)} Shopify order{'s' if unf != 1 else ''} unfulfilled for more than {_bov_days_label(rr.get('days', 2))}", "detail": ", ".join(unf_names),
                                    "action": {"section": "shopify", "target": "bov-shopify-card"}})
         except Exception as e:  # never let a rule take the strip down
             errors.append(f"{key}: {e}")
@@ -10944,7 +10954,7 @@ async def get_business_overview_alerts(
         checked.append("shopify_sync_stale")
         try:
             states = {st["store_id"]: st for st in await asyncio.to_thread(shopify_sync.get_sync_states)}
-            hours = float(r.get("hours", 6))
+            hours = float(r.get("days", 1)) * 24.0
             now_utc = datetime.now(timezone.utc)
             bad: List[str] = []
             for st in shopify_stores:
@@ -10961,7 +10971,7 @@ async def get_business_overview_alerts(
                     bad.append(f"{st['name']}: last sync failed")
                 elif (now_utc - last).total_seconds() > hours * 3600:
                     age_h = (now_utc - last).total_seconds() / 3600
-                    bad.append(f"{st['name']}: synced {age_h:.0f} h ago")
+                    bad.append(f"{st['name']}: synced {age_h / 24:.1f} days ago" if age_h >= 48 else f"{st['name']}: synced {age_h:.0f} h ago")
             if bad:
                 alerts.append({"key": "shopify_sync_stale", "severity": "warn", "count": len(bad), "stores": [b.split(":")[0] for b in bad],
                                "title": f"Shopify data stale for {len(bad)} store{'s' if len(bad) != 1 else ''}", "detail": "; ".join(bad),

@@ -1038,11 +1038,11 @@ BOV_DEFAULT_QUOTATION_STATUSES = ["In Progress", "Locked"]
 BOV_DEFAULT_ALERT_RULES: Dict[str, Dict] = {
     "unshipped_cutoff":        {"enabled": True, "cutoff": "14:00"},
     "open_invoice_age":        {"enabled": True, "days": 2},
-    "quotation_stuck":         {"enabled": True, "hours": 4},
+    "quotation_stuck":         {"enabled": True, "days": 1},
     "po_overdue":              {"enabled": True, "days": 14},
     "shopify_on_hold":         {"enabled": True},
-    "shopify_unfulfilled_age": {"enabled": True, "hours": 48},
-    "shopify_sync_stale":      {"enabled": True, "hours": 6},
+    "shopify_unfulfilled_age": {"enabled": True, "days": 2},
+    "shopify_sync_stale":      {"enabled": True, "days": 1},
     "margin_floor":            {"enabled": True, "pct": 15, "per_store": True},
     "revenue_drop":            {"enabled": True, "pct": 20},
 }
