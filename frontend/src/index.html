@@ -5010,11 +5010,13 @@
                     <div class="bov-rule-row" data-rule="unshipped_cutoff">
                       <label class="bov-rule-main"><input type="checkbox" id="bov-rule-unshipped_cutoff-enabled"> <span>Unshipped past cutoff</span></label>
                       <span class="bov-rule-ctl">after <input type="time" id="bov-rule-unshipped_cutoff-cutoff" class="dark-input" step="60"></span>
-                      <small class="bov-rule-help">Invoices with no tracking number once today's cutoff has passed — critical.</small>
+                      <small class="bov-rule-help">Invoices with no tracking number once today's cutoff has passed — critical. Per store: untick a store that does not use tracking numbers, or give it its own cutoff.</small>
+                      <div class="bov-rule-stores" id="bov-rule-unshipped_cutoff-stores"></div>
                     </div>
                     <div class="bov-rule-row" data-rule="open_invoice_age">
                       <label class="bov-rule-main"><input type="checkbox" id="bov-rule-open_invoice_age-enabled"> <span>Open invoices too old</span></label>
                       <span class="bov-rule-ctl">older than <input type="number" id="bov-rule-open_invoice_age-days" class="dark-input" min="0" max="365" step="1"> days</span>
+                      <div class="bov-rule-stores" id="bov-rule-open_invoice_age-stores"></div>
                       <small class="bov-rule-help">Unshipped invoices invoiced this many days ago or more (any date).</small>
                     </div>
                     <div class="bov-rule-row" data-rule="quotation_stuck">

@@ -8209,3 +8209,14 @@ tr.bov-line-void td { opacity: 0.55; text-decoration: line-through; }
   .bov-rule-row { grid-template-columns: 1fr; }
   .bov-alert-detail { display: none; }
 }
+
+/* Alert rules — per-store overrides */
+.bov-rule-stores { grid-column: 1 / -1; display: grid; gap: 0.3rem; margin: 0.25rem 0 0.25rem 1.6rem; padding: 0.5rem 0.75rem; border-left: 2px solid color-mix(in srgb, var(--border-color) 80%, transparent); }
+.bov-rule-stores[hidden] { display: none; }
+.bov-rule-stores-title { font-size: 0.6875rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-tertiary); }
+.bov-rule-stores-title small { text-transform: none; letter-spacing: 0; }
+.bov-rule-store { display: grid; grid-template-columns: auto minmax(0, 12rem) auto auto; align-items: center; gap: 0.5rem; font-size: 0.8125rem; color: var(--text-primary); }
+.bov-rule-store.is-off { opacity: 0.6; }
+.bov-rule-store-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bov-rule-store .dark-input { width: 7.5rem; padding: 0.2rem 0.4rem; font-size: 0.8125rem; }
+.bov-rule-store-unit { font-size: 0.75rem; color: var(--text-tertiary); }

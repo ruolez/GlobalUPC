@@ -19160,6 +19160,15 @@ function bovBindOnce() {
       bovAddStatusPill();
     }
   });
+  // Per-store override lists follow the sales-store pills; opting a store out dims its row.
+  document.getElementById("bov-cfg-sales")?.addEventListener("change", () => {
+    const rules = (bovState.config && bovState.config.alert_rules) || {};
+    Object.entries(BOV_PER_STORE_RULES).forEach(([key, field]) => bovPopulateRuleStores(key, field, rules[key] || {}));
+  });
+  document.getElementById("bov-cfg-rules")?.addEventListener("change", (e) => {
+    const cb = e.target.closest(".bov-rule-store-en");
+    if (cb) cb.closest(".bov-rule-store")?.classList.toggle("is-off", !cb.checked);
+  });
   document.getElementById("bov-cfg-statuses")?.addEventListener("click", (e) => {
     const rm = e.target.closest("[data-bov-remove-status]");
     if (rm) {
@@ -22057,6 +22066,15 @@ function bovAlertRulesSummary(rules) {
   if (rules.unshipped_cutoff && rules.unshipped_cutoff.enabled !== false && rules.unshipped_cutoff.cutoff) bits.push(`cutoff ${bovFmtClock(rules.unshipped_cutoff.cutoff)}`);
   if (rules.margin_floor && rules.margin_floor.enabled !== false && rules.margin_floor.pct != null) bits.push(`margin floor ${rules.margin_floor.pct}%`);
   if (rules.revenue_drop && rules.revenue_drop.enabled !== false && rules.revenue_drop.pct != null) bits.push(`revenue drop ${rules.revenue_drop.pct}%`);
+  const optOut = new Set();
+  Object.keys(BOV_PER_STORE_RULES).forEach((k) => Object.entries((rules[k] && rules[k].stores) || {}).forEach(([sid, o]) => { if (o && o.enabled === false) optOut.add(sid); }));
+  if (optOut.size) {
+    const cfg = bovState.config || {};
+    const ids = bovSalesStoreIds(cfg).map(String);
+    const names = (cfg.sales_store_names || []);
+    const lab = Array.from(optOut).map((sid) => names[ids.indexOf(sid)] || `store ${sid}`);
+    bits.push(`invoice rules off for ${lab.join(", ")}`);
+  }
   return bits.join(" · ");
 }
 
@@ -22068,6 +22086,9 @@ function bovFmtClock(hhmm) {
   const h12 = h % 12 === 0 ? 12 : h % 12;
   return `${h12}:${m[2]} ${ap}`;
 }
+
+// Rules that can be tuned per sales store (stores without tracking numbers opt out).
+const BOV_PER_STORE_RULES = { unshipped_cutoff: "cutoff", open_invoice_age: "days" };
 
 function bovPopulateAlertRules(rules) {
   rules = rules || {};
@@ -22081,7 +22102,38 @@ function bovPopulateAlertRules(rules) {
       if (el.type === "checkbox") el.checked = !!r[f];
       else el.value = r[f] != null ? r[f] : "";
     });
+    if (BOV_PER_STORE_RULES[key]) bovPopulateRuleStores(key, BOV_PER_STORE_RULES[key], r);
   });
+}
+
+function bovPopulateRuleStores(key, field, rule) {
+  const wrap = document.getElementById(`bov-rule-${key}-stores`);
+  if (!wrap) return;
+  const cfg = bovState.config || {};
+  const ids = bovSalesStoreIds(cfg);
+  const names = (cfg.sales_store_names && cfg.sales_store_names.length) ? cfg.sales_store_names : (cfg.sales_store_name ? [cfg.sales_store_name] : []);
+  // The form may be editing a not-yet-saved store selection: read the checked sales pills when present.
+  const pills = Array.from(document.querySelectorAll(".bov-cfg-sales-cb"));
+  let stores = ids.map((id, i) => ({ id, name: names[i] || `Store ${id}` }));
+  if (pills.length) {
+    const opts = (bovState.options && bovState.options.mssql_stores) || [];
+    stores = pills.filter((p) => p.checked).map((p) => ({ id: parseInt(p.value, 10), name: (opts.find((o) => String(o.id) === p.value) || {}).name || `Store ${p.value}` }));
+  }
+  if (stores.length < 2) { wrap.hidden = true; wrap.innerHTML = ""; return; }
+  const ov = (rule && rule.stores) || {};
+  const isTime = field === "cutoff";
+  wrap.hidden = false;
+  wrap.innerHTML =
+    `<div class="bov-rule-stores-title">Per store <small>(blank = use the value above)</small></div>` +
+    stores.map((s) => {
+      const o = ov[String(s.id)] || {};
+      const en = o.enabled !== false;
+      const val = o[field] != null ? o[field] : "";
+      const input = isTime
+        ? `<input type="time" class="dark-input bov-rule-store-val" data-rule="${key}" data-store="${s.id}" data-field="${field}" step="60" value="${escapeHtml(String(val))}">`
+        : `<input type="number" class="dark-input bov-rule-store-val" data-rule="${key}" data-store="${s.id}" data-field="${field}" min="0" step="0.5" placeholder="default" value="${escapeHtml(String(val))}">`;
+      return `<label class="bov-rule-store${en ? "" : " is-off"}"><input type="checkbox" class="bov-rule-store-en" data-rule="${key}" data-store="${s.id}"${en ? " checked" : ""}> <span class="bov-rule-store-name">${escapeHtml(s.name)}</span> ${input}<span class="bov-rule-store-unit">${isTime ? "" : "days"}</span></label>`;
+    }).join("");
 }
 
 function bovCollectAlertRules() {
@@ -22097,6 +22149,19 @@ function bovCollectAlertRules() {
       else if (el.type === "time") { if (el.value) r[f] = el.value; }
       else if (el.value !== "") r[f] = Number(el.value);
     });
+    if (BOV_PER_STORE_RULES[key]) {
+      const field = BOV_PER_STORE_RULES[key];
+      const stores = {};
+      document.querySelectorAll(`.bov-rule-store-en[data-rule="${key}"]`).forEach((cb) => {
+        const sid = cb.dataset.store;
+        const valEl = document.querySelector(`.bov-rule-store-val[data-rule="${key}"][data-store="${sid}"]`);
+        const entry = {};
+        if (!cb.checked) entry.enabled = false;
+        if (valEl && valEl.value !== "") entry[field] = valEl.type === "time" ? valEl.value : Number(valEl.value);
+        if (Object.keys(entry).length) stores[sid] = entry;
+      });
+      r.stores = stores;   // {} clears overrides server-side
+    }
     out[key] = r;
   });
   return out;

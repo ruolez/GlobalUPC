@@ -1,5 +1,5 @@
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from typing import Optional, Literal, List, Dict
+from typing import Optional, Literal, List, Dict, Tuple
 from datetime import datetime, date
 
 # Store Schemas
@@ -1048,6 +1048,15 @@ BOV_DEFAULT_ALERT_RULES: Dict[str, Dict] = {
 }
 
 
+# Rules that accept per-store overrides ({"stores": {"<store_id>": {enabled, <field>}}}):
+# stores that never enter tracking numbers must be able to opt out of the
+# open-invoice rules, or set their own cutoff / age.
+BOV_PER_STORE_RULES: Dict[str, Tuple[str, ...]] = {
+    "unshipped_cutoff": ("cutoff",),
+    "open_invoice_age": ("days",),
+}
+
+
 def bov_merge_alert_rules(stored: Optional[Dict]) -> Dict[str, Dict]:
     """Defaults overlaid with whatever is stored (unknown keys are dropped)."""
     out: Dict[str, Dict] = {}
@@ -1059,12 +1068,62 @@ def bov_merge_alert_rules(stored: Optional[Dict]) -> Dict[str, Dict]:
             for k, v in val.items():
                 if k in defaults:
                     merged[k] = v
+            if key in BOV_PER_STORE_RULES and isinstance(val.get("stores"), dict):
+                allowed = ("enabled",) + BOV_PER_STORE_RULES[key]
+                clean: Dict[str, Dict] = {}
+                for sid, ov in val["stores"].items():
+                    if not isinstance(ov, dict):
+                        continue
+                    entry = {k: v for k, v in ov.items() if k in allowed}
+                    if entry:
+                        clean[str(sid)] = entry
+                if clean:
+                    merged["stores"] = clean
         out[key] = merged
     return out
 
 
+def _bov_validate_rule_fields(key: str, r: Dict) -> Optional[str]:
+    import re
+    if "enabled" in r and not isinstance(r.get("enabled"), bool):
+        return f"{key}: enabled must be true/false"
+    if "cutoff" in r:
+        if not isinstance(r["cutoff"], str) or not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", r["cutoff"]):
+            return f"{key}: cutoff must be HH:MM (24h)"
+    for num in ("days", "hours"):
+        if num in r:
+            try:
+                v = float(r[num])
+            except (TypeError, ValueError):
+                return f"{key}: {num} must be a number"
+            if v < 0 or v > 10000:
+                return f"{key}: {num} out of range"
+    if "pct" in r:
+        try:
+            v = float(r["pct"])
+        except (TypeError, ValueError):
+            return f"{key}: pct must be a number"
+        if v < 0 or v > 100:
+            return f"{key}: pct must be between 0 and 100"
+    if "per_store" in r and not isinstance(r["per_store"], bool):
+        return f"{key}: per_store must be true/false"
+    return None
+
+
 def bov_validate_alert_rules(rules: Dict[str, Dict]) -> Optional[str]:
     """Return an error message for the first invalid threshold, else None."""
+    for key, r in rules.items():
+        err = _bov_validate_rule_fields(key, r)
+        if err:
+            return err
+        for sid, ov in (r.get("stores") or {}).items():
+            err = _bov_validate_rule_fields(f"{key} (store {sid})", ov)
+            if err:
+                return err
+    return None
+
+
+def _bov_validate_alert_rules_legacy(rules: Dict[str, Dict]) -> Optional[str]:
     import re
     for key, r in rules.items():
         if not isinstance(r.get("enabled", True), bool):

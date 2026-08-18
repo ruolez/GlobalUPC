@@ -9666,8 +9666,17 @@ def save_business_overview_config(data: BusinessOverviewConfigCreate, db: Sessio
         for k, v in (data.alert_rules or {}).items():
             if k in base_rules and isinstance(v, dict):
                 for kk, vv in v.items():
+                    if kk == "stores":
+                        continue
                     if kk in base_rules[k]:
                         base_rules[k][kk] = vv
+                if "stores" in v:
+                    # per-store overrides replace the stored set for that rule
+                    if isinstance(v["stores"], dict) and v["stores"]:
+                        base_rules[k]["stores"] = v["stores"]
+                    else:
+                        base_rules[k].pop("stores", None)
+        base_rules = bov_merge_alert_rules(base_rules)
         err = bov_validate_alert_rules(base_rules)
         if err:
             raise HTTPException(status_code=400, detail=f"Invalid alert rules — {err}")
@@ -10810,25 +10819,57 @@ async def get_business_overview_alerts(
     tasks: List[Any] = []
     keys: List[str] = []
 
-    # --- invoices: past cutoff / too old
+    # --- invoices: past cutoff / too old (per-store overrides: a store that
+    #     never enters tracking numbers can opt out or use its own threshold)
+    def _store_rule(rule: Dict[str, Any], st) -> Optional[Dict[str, Any]]:
+        ov = (rule.get("stores") or {}).get(str(st.id)) or {}
+        if ov.get("enabled") is False:
+            return None
+        eff = {k: v for k, v in rule.items() if k != "stores"}
+        eff.update({k: v for k, v in ov.items() if k != "enabled"})
+        return eff
+
     r = rules["unshipped_cutoff"]
     if r.get("enabled") and sales_stores:
-        hh, mm = [int(x) for x in str(r.get("cutoff", "14:00")).split(":")]
-        cutoff_dt = now_tz.replace(hour=hh, minute=mm, second=0, microsecond=0)
-        if now_tz >= cutoff_dt:
+        per_store_cut: List[Tuple[Any, str]] = []
+        opted_out: List[str] = []
+        for st in sales_stores:
+            eff = _store_rule(r, st)
+            if eff is None:
+                opted_out.append(st.name)
+                continue
+            hh, mm = [int(x) for x in str(eff.get("cutoff", "14:00")).split(":")]
+            cutoff_dt = now_tz.replace(hour=hh, minute=mm, second=0, microsecond=0)
+            if now_tz >= cutoff_dt:
+                per_store_cut.append((st, cutoff_dt.strftime("%Y-%m-%d %H:%M")))
+        if opted_out:
+            skipped.append(f"unshipped_cutoff: not applied to {', '.join(opted_out)}")
+        if per_store_cut:
             keys.append("unshipped_cutoff")
-            tasks.append(_bov_fanout(sales_stores, lambda st, d=cutoff_dt.strftime("%Y-%m-%d %H:%M"): bov.open_invoices_count_async(
-                **_bov_conn_kwargs(st), dated_before=d, excluded_names=excl_names)))
-        else:
-            skipped.append(f"unshipped_cutoff: cutoff {r.get('cutoff')} not reached yet")
+            cut_by_id = {st.id: d for st, d in per_store_cut}
+            tasks.append(_bov_fanout([st for st, _d in per_store_cut], lambda st: bov.open_invoices_count_async(
+                **_bov_conn_kwargs(st), dated_before=cut_by_id[st.id], excluded_names=excl_names)))
+        elif len(opted_out) < len(sales_stores):
+            skipped.append("unshipped_cutoff: cutoff not reached yet")
     elif not r.get("enabled"):
         skipped.append("unshipped_cutoff: disabled")
     r = rules["open_invoice_age"]
     if r.get("enabled") and sales_stores:
-        keys.append("open_invoice_age")
-        before = (today - timedelta(days=int(float(r.get("days", 2))))).isoformat()
-        tasks.append(_bov_fanout(sales_stores, lambda st, d=before: bov.open_invoices_count_async(
-            **_bov_conn_kwargs(st), dated_before=d, excluded_names=excl_names)))
+        per_store_age: List[Tuple[Any, str]] = []
+        opted_out = []
+        for st in sales_stores:
+            eff = _store_rule(r, st)
+            if eff is None:
+                opted_out.append(st.name)
+                continue
+            per_store_age.append((st, (today - timedelta(days=float(eff.get("days", 2)))).isoformat()))
+        if opted_out:
+            skipped.append(f"open_invoice_age: not applied to {', '.join(opted_out)}")
+        if per_store_age:
+            keys.append("open_invoice_age")
+            age_by_id = {st.id: d for st, d in per_store_age}
+            tasks.append(_bov_fanout([st for st, _d in per_store_age], lambda st: bov.open_invoices_count_async(
+                **_bov_conn_kwargs(st), dated_before=age_by_id[st.id], excluded_names=excl_names)))
     elif not r.get("enabled"):
         skipped.append("open_invoice_age: disabled")
     # --- quotations stuck
@@ -10888,15 +10929,19 @@ async def get_business_overview_alerts(
                     names, detail = _store_bits(fan)
                     if key == "unshipped_cutoff":
                         rr = rules["unshipped_cutoff"]
+                        cutoffs = {(rr.get("stores") or {}).get(str(st.id), {}).get("cutoff", rr.get("cutoff")) for st, ok, _e, _p in fan if ok}
+                        cut_label = f"the {rr.get('cutoff')} cutoff" if len(cutoffs) <= 1 else "today's cutoff"
                         alerts.append({"key": key, "severity": "critical", "count": count, "amount": amount, "stores": names,
-                                       "title": f"{bovInt(count)} unshipped invoice{'s' if count != 1 else ''} past the {rr.get('cutoff')} cutoff",
+                                       "title": f"{bovInt(count)} unshipped invoice{'s' if count != 1 else ''} past {cut_label}",
                                        "detail": f"No tracking number yet · {detail}",
                                        "action": {"section": "invoices", "tab": "invoices:open", "open_all_dates": True,
                                                   "sort": {"widget": "invoicesOpen", "key": "age_days", "dir": "desc"}, "target": "bov-invoices-card"}})
                     else:
                         rr = rules["open_invoice_age"]
+                        ages = {(rr.get("stores") or {}).get(str(st.id), {}).get("days", rr.get("days")) for st, ok, _e, _p in fan if ok}
+                        age_label = _bov_days_label(rr.get("days", 2)) if len(ages) <= 1 else "its store's limit"
                         alerts.append({"key": key, "severity": "warn", "count": count, "amount": amount, "stores": names,
-                                       "title": f"{bovInt(count)} open invoice{'s' if count != 1 else ''} older than {int(float(rr.get('days', 2)))} day{'s' if float(rr.get('days', 2)) != 1 else ''}",
+                                       "title": f"{bovInt(count)} open invoice{'s' if count != 1 else ''} older than {age_label}",
                                        "detail": f"Still unshipped · {detail}",
                                        "action": {"section": "invoices", "tab": "invoices:open", "open_all_dates": True,
                                                   "sort": {"widget": "invoicesOpen", "key": "age_days", "dir": "desc"}, "target": "bov-invoices-card"}})
