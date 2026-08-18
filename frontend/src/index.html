@@ -433,6 +433,7 @@
                     <span class="dashboard-card-meta" id="bov-shopify-meta"></span>
                   </div>
                   <div class="bov-card-controls">
+                    <button type="button" class="btn btn-secondary bov-btn-xs bov-card-link-btn" data-bov-action="missing-cost" title="Shopify products sold in the period whose barcode has no cost in the items table — view and export">Products without cost</button>
                     <button type="button" class="btn btn-secondary bov-btn-xs bov-card-link-btn" data-bov-action="shopify-sync" title="Pull the latest orders from Shopify into the local mirror now">Sync now</button>
                   </div>
                 </div>
@@ -5139,6 +5140,21 @@
           <button type="button" class="modal-close" data-bov-close="bov-invoice-modal" aria-label="Close">&times;</button>
         </div>
         <div class="modal-body bov-modal-body" id="bov-invoice-body"></div>
+      </div>
+    </div>
+    <div id="bov-missing-cost-modal" class="modal bov-modal">
+      <div class="modal-content bov-modal-content" style="max-width: 1100px; width: 96%">
+        <div class="modal-header">
+          <div class="bov-list-modal-title-wrap">
+            <h3 id="bov-missing-cost-title">Shopify products without cost</h3>
+            <span class="dashboard-card-meta" id="bov-missing-cost-meta"></span>
+          </div>
+          <div class="bov-modal-head-actions">
+            <button type="button" class="btn btn-primary bov-btn-xs" id="bov-missing-cost-export" disabled>Export to Excel</button>
+            <button type="button" class="modal-close" data-bov-close="bov-missing-cost-modal" aria-label="Close">&times;</button>
+          </div>
+        </div>
+        <div class="modal-body bov-modal-body" id="bov-missing-cost-body"></div>
       </div>
     </div>
     <div id="bov-shopify-order-modal" class="modal bov-modal">

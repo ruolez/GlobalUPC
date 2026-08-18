@@ -1854,6 +1854,38 @@ def _shopify_order_detail_sync(store_id: int, shopify_id: int) -> Dict[str, Any]
     } for l in lines]}
 
 
+def _shopify_products_sold_sync(store_id: int, tz: str, date_from: str, date_to_excl: str) -> List[Dict[str, Any]]:
+    """Every product sold in the period grouped by barcode (blank barcodes grouped by title)."""
+    tz = _safe_tz(tz)
+    sql = f"""
+        SELECT NULLIF(BTRIM(li.barcode),'') AS barcode,
+               COALESCE(NULLIF(BTRIM(li.barcode),''), 'title:' || COALESCE(li.product_title, li.title, '')) AS grp,
+               MAX(li.sku) AS sku, MAX(li.vendor) AS vendor,
+               MAX(COALESCE(li.product_title, li.title)) AS title, MAX(li.variant_title) AS variant_title,
+               MAX(li.product_shopify_id) AS product_shopify_id, MAX(li.variant_shopify_id) AS variant_shopify_id,
+               COUNT(DISTINCT o.shopify_id) AS orders,
+               SUM(COALESCE(li.discounted_total,0)) AS revenue,
+               SUM(COALESCE(li.current_quantity, li.quantity, 0)) AS units
+        FROM shopify_orders o
+        JOIN shopify_order_line_items li ON li.store_id = o.store_id AND li.order_shopify_id = o.shopify_id
+        WHERE o.store_id = :sid AND {_SHOPIFY_COMPLETED}
+          AND o.created_at >= (CAST(:start AS date)::timestamp AT TIME ZONE :tz)
+          AND o.created_at <  (CAST(:end_excl AS date)::timestamp AT TIME ZONE :tz)
+        GROUP BY 1, 2
+        HAVING SUM(COALESCE(li.current_quantity, li.quantity, 0)) > 0
+        ORDER BY revenue DESC
+    """
+    with engine.connect() as conn:
+        rows = conn.execute(text(sql), {"sid": store_id, "tz": tz, "start": date_from, "end_excl": date_to_excl}).mappings().all()
+    return [{"barcode": r["barcode"], "sku": r["sku"], "vendor": r["vendor"], "title": r["title"], "variant_title": r["variant_title"],
+             "product_shopify_id": _io(r["product_shopify_id"]), "variant_shopify_id": _io(r["variant_shopify_id"]),
+             "orders": int(r["orders"] or 0), "revenue": round(_f(r["revenue"]), 2), "units": _f(r["units"])} for r in rows]
+
+
+async def shopify_products_sold(store_id: int, tz: str, date_from: str, date_to_excl: str) -> List[Dict[str, Any]]:
+    return await asyncio.to_thread(_shopify_products_sold_sync, store_id, tz, date_from, date_to_excl)
+
+
 async def shopify_orders_list(store_id: int, kind: str, older_than_hours: float = 0.0, limit: int = 500) -> List[Dict[str, Any]]:
     return await asyncio.to_thread(_shopify_orders_list_sync, store_id, kind, older_than_hours, limit)
 

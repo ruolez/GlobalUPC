@@ -71,7 +71,7 @@ from schemas import (
     BOVPurchasesRangeBlock, BOVPurchasesRangeResponse,
     BOVPurchaseOrderLine, BOVPurchaseOrderHeader, BOVPurchaseOrderDetailResponse,
     BOVSalesSourceTotals, BOVSalesBucket, BOVSalesSourceStatus, BOVSalesTrendResponse,
-    BOVBreakdownRow, BOVSalesBreakdownResponse, BOVStoreStatus, BOVInvoicesPeriodResponse, BOVAlert, BOVAlertAction, BOVAlertsResponse, BOVShopifyOrderRow, BOVShopifyOrdersListResponse, BOVShopifyOrderLine, BOVShopifyOrderHeader, BOVShopifyOrderDetailResponse, bov_merge_alert_rules, bov_validate_alert_rules, BOVShopifyStoreOrders, BOVShopifyOrdersResponse, BOVShopifyRefreshResult, BOVShopifyRefreshResponse,
+    BOVBreakdownRow, BOVSalesBreakdownResponse, BOVStoreStatus, BOVInvoicesPeriodResponse, BOVAlert, BOVAlertAction, BOVAlertsResponse, BOVShopifyOrderRow, BOVShopifyOrdersListResponse, BOVShopifyOrderLine, BOVShopifyOrderHeader, BOVShopifyOrderDetailResponse, BOVMissingCostRow, BOVMissingCostResponse, bov_merge_alert_rules, bov_validate_alert_rules, BOVShopifyStoreOrders, BOVShopifyOrdersResponse, BOVShopifyRefreshResult, BOVShopifyRefreshResponse,
     BOVShopifyStoreOpen, BOVShopifyOpenOrdersBlock, BOVSalesSummaryBlock,
     BusinessOverviewSummaryResponse,
 )
@@ -10782,6 +10782,90 @@ async def get_business_overview_shopify_order_detail(store_id: int, shopify_id: 
     return BOVShopifyOrderDetailResponse(header=BOVShopifyOrderHeader(**header),
                                          lines=[BOVShopifyOrderLine(**l) for l in payload.get("lines") or []],
                                          store_name=store["name"], admin_url=admin_url)
+
+
+@app.get("/api/business-overview/shopify/missing-cost", response_model=BOVMissingCostResponse)
+async def get_business_overview_shopify_missing_cost(
+    preset: Optional[str] = None, date_from: Optional[str] = None, date_to: Optional[str] = None,
+    store_ids: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Shopify products sold in the period whose barcode does not resolve to a cost
+    (no barcode, barcode not in Items_tbl, or Items_tbl.UnitCost empty) — the
+    list behind "Shopify cost known for N%", exportable to hand off for fixing.
+    """
+    cfg = _bov_config(db)
+    period = _bov_period(cfg, preset, date_from, date_to)
+    only = _bov_parse_store_ids(store_ids)
+    if not _bov_shopify_stores(db, cfg):
+        return BOVMissingCostResponse(configured=False, period=BOVPeriod(**period.as_dict()))
+    stores = _bov_shopify_stores(db, cfg, only)
+    if not stores:
+        return BOVMissingCostResponse(configured=True, filtered_out=True, period=BOVPeriod(**period.as_dict()))
+    synced = await asyncio.to_thread(shopify_sync.get_synced_stores)
+    usable = [st for st in stores if st["id"] in synced]
+    skipped = [st["name"] for st in stores if st["id"] not in synced]
+    results = await asyncio.gather(*[bov.shopify_products_sold(st["id"], (synced.get(st["id"]) or {}).get("shop_timezone") or _bov_tz(cfg),
+                                                                period.start.isoformat(), period.end_excl) for st in usable], return_exceptions=True)
+    statuses: List[Dict[str, Any]] = []
+    sold: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
+    for st, res in zip(usable, results):
+        if isinstance(res, Exception):
+            statuses.append({"store_id": st["id"], "store_name": st["name"], "error": str(res)})
+            continue
+        statuses.append({"store_id": st["id"], "store_name": st["name"], "count": len(res)})
+        for r in res:
+            sold.append((st, r))
+    conn = _bov_cost_conn(db, cfg)
+    cost_store = db.query(Store).filter(Store.id == conn.store_id).first() if conn else None
+    barcodes = sorted({(r.get("barcode") or "").strip() for _st, r in sold if (r.get("barcode") or "").strip()})
+    by_upc: Dict[str, Any] = {}
+    lookup_error: Optional[str] = None
+    if conn is not None and barcodes:
+        ok, err, found = await get_item_prices_batch_async(host=conn.host, port=conn.port, database=conn.database_name,
+                                                          username=conn.username, password=conn.password,
+                                                          upcs=barcodes, include_discontinued=True)
+        if ok and isinstance(found, dict):
+            by_upc = found
+        else:
+            lookup_error = err or "cost lookup failed"
+    rows: List[Dict[str, Any]] = []
+    for st, r in sold:
+        bc = (r.get("barcode") or "").strip()
+        if not bc:
+            reason = "no_barcode"
+        elif conn is None or lookup_error:
+            continue   # cannot judge without a cost source
+        elif bc not in by_upc:
+            reason = "not_in_items"
+        else:
+            c = by_upc[bc].get("unit_cost")
+            try:
+                has = c is not None and float(c) > 0
+            except (TypeError, ValueError):
+                has = False
+            if has:
+                continue
+            reason = "no_cost"
+        domain = (st.get("shop_domain") or "").replace("https://", "").replace("http://", "").strip("/")
+        admin_url = f"https://{domain}/admin/products/{r['product_shopify_id']}" if domain and r.get("product_shopify_id") else None
+        rows.append({**r, "store_id": st["id"], "store_name": st["name"], "reason": reason, "admin_url": admin_url})
+    rows.sort(key=lambda x: -(x.get("revenue") or 0))
+    err_msg = None
+    if conn is None:
+        err_msg = "No cost source configured (Item Tracker S2S or a sales store) — cannot check costs"
+    elif lookup_error:
+        err_msg = f"Cost lookup failed: {lookup_error}"
+    return BOVMissingCostResponse(
+        configured=True, period=BOVPeriod(**period.as_dict()),
+        cost_store_name=(cost_store.name if cost_store else None),
+        rows=[BOVMissingCostRow(**x) for x in rows], count=len(rows),
+        units=round(sum(float(x.get("units") or 0) for x in rows), 2),
+        revenue=round(sum(float(x.get("revenue") or 0) for x in rows), 2),
+        products_checked=len(sold), stores=[BOVStoreStatus(**x) for x in statuses], skipped_stores=skipped,
+        error=err_msg,
+    )
 
 
 @app.post("/api/business-overview/shopify/refresh", response_model=BOVShopifyRefreshResponse)

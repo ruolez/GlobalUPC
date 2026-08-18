@@ -1727,6 +1727,34 @@ class BOVShopifyOrderDetailResponse(BaseModel):
     admin_url: Optional[str] = None
 
 
+class BOVMissingCostRow(BaseModel):
+    store_id: int
+    store_name: str
+    barcode: Optional[str] = None
+    sku: Optional[str] = None
+    vendor: Optional[str] = None
+    title: Optional[str] = None
+    variant_title: Optional[str] = None
+    product_shopify_id: Optional[int] = None
+    variant_shopify_id: Optional[int] = None
+    orders: int = 0
+    units: float = 0.0
+    revenue: float = 0.0
+    reason: str                               # no_barcode | not_in_items | no_cost
+    admin_url: Optional[str] = None
+
+
+class BOVMissingCostResponse(BOVBlockStatus):
+    period: Optional[BOVPeriod] = None
+    cost_store_name: Optional[str] = None
+    rows: List[BOVMissingCostRow] = []
+    count: int = 0
+    units: float = 0.0
+    revenue: float = 0.0
+    products_checked: int = 0
+    skipped_stores: List[str] = []
+
+
 class BOVShopifyRefreshResult(BaseModel):
     store_id: int
     store_name: str

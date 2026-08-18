@@ -19327,6 +19327,11 @@ function bovBindOnce() {
     f.search = inp.value || "";
     bovRenderCard(inp.dataset.bovKind);
   });
+  document.getElementById("bov-missing-cost-export")?.addEventListener("click", bovExportMissingCost);
+  document.getElementById("bov-missing-cost-body")?.addEventListener("click", (e) => {
+    const row = e.target.closest("tr[data-bov-href]");
+    if (row && !e.target.closest("th")) window.open(row.dataset.bovHref, "_blank", "noopener");
+  });
   document.getElementById("bov-charts-toggle")?.addEventListener("click", () => {
     bovSetChartsOpen(!bovState.chartsOpen);
   });
@@ -19906,6 +19911,8 @@ function bovHandleAction(action, el) {
     // Admin DB is edited in-page now (config form select).
     bovOpenConfigEdit();
     setTimeout(() => document.getElementById("bov-cfg-admin")?.focus(), 60);
+  } else if (action === "missing-cost") {
+    bovOpenMissingCostModal();
   } else if (action === "shopify-sync") {
     bovRefreshShopify({ maxAgeMinutes: 0 });
   } else if (action === "exclusions") {
@@ -20219,7 +20226,7 @@ function bovRenderKpis() {
         { k: "cost", v: money(tot.cost) },
         margin != null ? { k: "margin", v: `${bovNum(margin).toFixed(1)}%` } : null,
         tot.returns ? { k: "returns", v: money(tot.returns) } : null,
-        coverage != null && coverage < 0.999 ? { k: "Shopify cost known", v: `${Math.round(coverage * 100)}%`, tone: "warn", title: "Share of Shopify units whose barcode resolved to an Items_tbl cost — margin is partial" } : null,
+        coverage != null && coverage < 0.999 ? { k: "Shopify cost known", v: `${Math.round(coverage * 100)}%`, vHtml: `<a href="#" class="bov-kpi-link" data-bov-action="missing-cost" title="View and export the products without cost">${Math.round(coverage * 100)}% · view</a>`, tone: "warn", title: "Share of Shopify units whose barcode resolved to an Items_tbl cost — margin is partial. Click to see the products." } : null,
       ].filter(Boolean);
       tiles.push({
         label: "Profit",
@@ -21302,6 +21309,96 @@ function bovRenderShopifyOrdersList() {
   if (foot) foot.innerHTML = bovFootHtml("shopifyorders", rows.length, sorted.length, left);
 }
 
+// ---- Shopify products without cost (view + Excel export) ------------------
+
+async function bovOpenMissingCostModal() {
+  const body = document.getElementById("bov-missing-cost-body");
+  const meta = document.getElementById("bov-missing-cost-meta");
+  const exp = document.getElementById("bov-missing-cost-export");
+  if (!body) return;
+  bovState.missingCost = null;
+  if (exp) exp.disabled = true;
+  if (meta) meta.textContent = bovState.period ? `${bovFmtRangeLabel(bovState.period.start, bovState.period.end)}` : "";
+  openModal("bov-missing-cost-modal");
+  bovModalLoading(body, "Checking Shopify products against the items table…");
+  try {
+    const data = await bovFetchJson("/shopify/missing-cost", { ...bovRangeParams(), ...bovStoreParams() });
+    bovState.missingCost = data;
+    bovRenderMissingCostModal(data);
+  } catch (e) {
+    bovModalError(body, `Could not load the list: ${e.message || e}`);
+  }
+}
+
+function bovMissingCostReason(r) {
+  return { no_barcode: "No barcode on the variant", not_in_items: "Barcode not in items table", no_cost: "Item has no cost" }[r] || r || "—";
+}
+
+function bovRenderMissingCostModal(d) {
+  const body = document.getElementById("bov-missing-cost-body");
+  const meta = document.getElementById("bov-missing-cost-meta");
+  const exp = document.getElementById("bov-missing-cost-export");
+  if (!body) return;
+  if (!d.configured) { body.innerHTML = bovUnconfiguredHtml("No Shopify store configured", "Pick Shopify stores under Data sources.", "config"); return; }
+  if (d.filtered_out) { body.innerHTML = bovFilteredOutHtml(); return; }
+  const rows = d.rows || [];
+  const bits = [`${bovInt(d.products_checked || 0)} products sold in period`, `${bovInt(d.count || 0)} without cost`, `${bovInt(d.units || 0)} units · ${bovCompactMoney(d.revenue || 0)}`];
+  if (d.cost_store_name) bits.push(`checked against ${d.cost_store_name}`);
+  if ((d.skipped_stores || []).length) bits.push(`not synced: ${d.skipped_stores.join(", ")}`);
+  if (meta) meta.textContent = bits.join(" · ");
+  const errHtml = d.error ? `<div class="bov-inline-error" style="margin-bottom:0.75rem"><strong>${escapeHtml(d.error)}</strong><div class="bov-cell-sub">Only variants without a barcode can be listed until the cost source answers.</div></div>` : "";
+  if (!rows.length) {
+    body.innerHTML = errHtml + bovEmptyHtml("Every Shopify product sold in this period has a cost. ✓");
+    if (exp) exp.disabled = true;
+    return;
+  }
+  const multi = new Set(rows.map((r) => r.store_name)).size > 1;
+  const cols = [
+    { key: "title", label: "Product", width: multi ? "28%" : "34%", render: (r) => `<span class="bov-cell-main">${escapeHtml(r.title || "—")}</span><span class="bov-cell-sub">${escapeHtml([r.variant_title, r.vendor].filter(Boolean).join(" · "))}</span>` },
+    ...(multi ? [{ key: "store_name", label: "Store", width: "10%", render: (r) => `<span class="bov-cell-store">${escapeHtml(bovStoreShort(r.store_name))}</span>` }] : []),
+    { key: "sku", label: "SKU", width: "12%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.sku || "—")}</span>` },
+    { key: "barcode", label: "Barcode", width: "12%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.barcode || "—")}</span>` },
+    { key: "reason", label: "Why", width: "18%", render: (r) => `<span class="bov-reason ${r.reason === "no_barcode" ? "is-warn" : "is-info"}">${escapeHtml(bovMissingCostReason(r.reason))}</span>` },
+    { key: "units", label: "Units", num: true, width: "7%", render: (r) => bovInt(r.units) },
+    { key: "orders", label: "Orders", num: true, width: "7%", render: (r) => bovInt(r.orders) },
+    { key: "revenue", label: "Revenue", num: true, width: "10%", render: (r) => bovMoney(r.revenue) },
+  ];
+  if (!bovState.sort.missingCost) bovState.sort.missingCost = { key: "revenue", dir: "desc" };
+  const sorted = bovSortRows(rows, bovState.sort.missingCost);
+  body.innerHTML = errHtml + bovTableHtml("missingCost", cols, sorted, {
+    rowAttrs: (r) => (r.admin_url ? `data-bov-href="${escapeHtml(r.admin_url)}" title="Open in Shopify admin"` : ""),
+  }) + `<div class="bov-modal-totals"><span>${bovInt(rows.length)} product${rows.length === 1 ? "" : "s"}</span><span>${bovInt(d.units || 0)} units</span><span><strong>${escapeHtml(bovMoney(d.revenue))}</strong></span></div>`;
+  if (exp) exp.disabled = false;
+}
+
+function bovExportMissingCost() {
+  const d = bovState.missingCost;
+  if (!d || !(d.rows || []).length) return;
+  const rows = bovSortRows(d.rows, bovState.sort.missingCost || { key: "revenue", dir: "desc" });
+  const header = ["Store", "Product", "Variant", "Vendor", "SKU", "Barcode", "Reason", "Units sold", "Orders", "Revenue", "Shopify admin URL"];
+  const data = rows.map((r) => [r.store_name, r.title || "", r.variant_title || "", r.vendor || "", r.sku || "", r.barcode || "",
+    bovMissingCostReason(r.reason), r.units, r.orders, r.revenue, r.admin_url || ""]);
+  const p = d.period || bovState.period || {};
+  const fname = `shopify-products-without-cost-${p.start || "start"}-to-${p.end || "end"}`;
+  if (typeof XLSX !== "undefined" && XLSX.utils) {
+    const ws = XLSX.utils.aoa_to_sheet([header, ...data]);
+    ws["!cols"] = [14, 44, 18, 16, 16, 16, 26, 10, 8, 12, 50].map((w) => ({ wch: w }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Missing cost");
+    XLSX.writeFile(wb, `${fname}.xlsx`);
+    return;
+  }
+  // Offline fallback: CSV
+  const csv = [header, ...data].map((row) => row.map((v) => `"${String(v == null ? "" : v).replace(/"/g, '""')}"`).join(",")).join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `${fname}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+}
+
 async function bovOpenShopifyOrderModal(storeId, shopifyId) {
   const title = document.getElementById("bov-shopify-order-title");
   const metaEl = document.getElementById("bov-shopify-order-meta");
@@ -21423,6 +21520,7 @@ function bovToggleSort(widgetKey, colKey) {
 }
 
 function bovRenderCard(key) {
+  if (key === "missingCost") { if (bovState.missingCost) bovRenderMissingCostModal(bovState.missingCost); return; }
   if (key === "quotations") bovRenderQuotationsTable();
   else if (key === "invoices" || key.startsWith("invoices")) bovRenderInvoices();
   else if (key === "purchases" || key.startsWith("purchases")) bovRenderPurchases();
