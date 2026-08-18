@@ -9763,7 +9763,7 @@ async def get_business_overview_config_options(db: Session = Depends(get_db)):
 
 async def _bov_quotations_block(db: Session, cfg, include_list: bool, limit: int = 500,
                                 sort_by: str = "start_date", sort_order: str = "desc",
-                                only_ids: Optional[Set[int]] = None) -> Dict[str, Any]:
+                                only_ids: Optional[Set[int]] = None, cost_mode: str = "default") -> Dict[str, Any]:
     admin_store = _resolve_admin_store_soft(db)
     statuses = list((cfg.quotation_statuses if cfg else BOV_DEFAULT_QUOTATION_STATUSES) or [])
     if admin_store is None:
@@ -9778,12 +9778,75 @@ async def _bov_quotations_block(db: Session, cfg, include_list: bool, limit: int
     ok, err, payload = await bov.quotations_in_progress_async(
         **_bov_conn_kwargs(admin_store), statuses=statuses, limit=limit,
         sort_by=sort_by, sort_order=sort_order, include_list=include_list, source_dbs=source_dbs,
-        excluded_names=excl_names)
+        excluded_names=excl_names, include_units=include_list)
     if not ok:
         base["error"] = err
         return base
+    if include_list:
+        try:
+            await _bov_cost_quotations(db, cfg, payload.get("quotations") or [], payload.get("units_by_upc") or {}, cost_mode)
+        except Exception as e:
+            print(f"[BOV] quotation costing failed: {e}")
+    payload.pop("units_by_upc", None)
     base.update(payload)
     return base
+
+
+async def _bov_recost_invoice_results(db: Session, cfg, results) -> None:
+    """S2S-cost every listed invoice across fanned-out store payloads (one S2S lookup)."""
+    lookup = _bov_make_cost_lookup(db, cfg, "unit_cost")
+    upcs: Set[str] = set()
+    for _st, ok, _err, p in results:
+        if ok:
+            for lines in (p.get("units_by_upc") or {}).values():
+                upcs.update(u for (u, _n) in lines if u)
+    unit_costs = await lookup(sorted(upcs)) if (upcs and getattr(lookup, "configured", False)) else {}
+    for _st, ok, _err, p in results:
+        if ok:
+            bov.recost_rows_s2s(list(p.get("invoices") or []), p.get("units_by_upc") or {}, "invoice_id", unit_costs)
+
+
+async def _bov_recost_list_s2s(db: Session, cfg, rows: List[Dict[str, Any]],
+                               units_by_key: Dict[Any, List[Tuple[str, float]]], key_field: str) -> None:
+    """S2S cost mode for list rows: Σ units × S2S Items_tbl.UnitCost by UPC."""
+    lookup = _bov_make_cost_lookup(db, cfg, "unit_cost")
+    upcs = sorted({u for lines in units_by_key.values() for (u, _n) in lines if u})
+    unit_costs = await lookup(upcs) if (upcs and getattr(lookup, "configured", False)) else {}
+    bov.recost_rows_s2s(rows, units_by_key, key_field, unit_costs)
+
+
+async def _bov_cost_quotations(db: Session, cfg, quotations: List[Dict[str, Any]],
+                               units_by_qn: Dict[str, List[Tuple[str, float]]], cost_mode: str) -> None:
+    """
+    Quotation cost: default = the originating store's own Items_tbl.UnitCost
+    (SourceDB → sales store by database_name); s2s = S2S Items_tbl.UnitCost.
+    Revenue = QuotationTotal.
+    """
+    if not quotations:
+        return
+    if cost_mode == "s2s":
+        await _bov_recost_list_s2s(db, cfg, quotations, units_by_qn, "quotation_number")
+        return
+    by_db: Dict[str, Any] = {}
+    for st in db.query(Store).filter(Store.store_type == StoreType.mssql, Store.is_active == True).all():
+        if st.mssql_connection and st.mssql_connection.database_name:
+            by_db[st.mssql_connection.database_name.strip().lower()] = st.mssql_connection
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    for q in quotations:
+        groups.setdefault((q.get("source_db") or "").strip().lower(), []).append(q)
+
+    async def _one(src: str, rows: List[Dict[str, Any]]):
+        conn = by_db.get(src)
+        sub_units = {r["quotation_number"]: units_by_qn.get(r["quotation_number"], []) for r in rows}
+        if conn is None:
+            bov.recost_rows_s2s(rows, sub_units, "quotation_number", {})
+            return
+        lookup = _bov_make_conn_cost_lookup(conn, "unit_cost")
+        upcs = sorted({u for lines in sub_units.values() for (u, _n) in lines if u})
+        unit_costs = await lookup(upcs) if upcs else {}
+        bov.recost_rows_s2s(rows, sub_units, "quotation_number", unit_costs)
+
+    await asyncio.gather(*[_one(src, rows) for src, rows in groups.items()], return_exceptions=True)
 
 
 def _bov_tag_rows(rows: List[Dict[str, Any]], store: Store) -> List[Dict[str, Any]]:
@@ -9812,7 +9875,7 @@ def _bov_multi_base(stores: List[Store], results, extra: Optional[Dict[str, Any]
 
 async def _bov_open_invoices_block(db: Session, cfg, include_list: bool, date_from=None, date_to=None,
                                    limit: int = 500, sort_by: str = "invoice_date", sort_order: str = "desc",
-                                   only_ids: Optional[Set[int]] = None) -> Dict[str, Any]:
+                                   only_ids: Optional[Set[int]] = None, cost_mode: str = "default") -> Dict[str, Any]:
     if not _bov_sales_stores(db, cfg):
         return {"configured": False}
     stores = _bov_sales_stores(db, cfg, only_ids)
@@ -9824,11 +9887,13 @@ async def _bov_open_invoices_block(db: Session, cfg, include_list: bool, date_fr
     results = await _bov_fanout(stores, lambda st: bov.open_invoices_async(
         **_bov_conn_kwargs(st), date_from=date_from, date_to_excl=date_to_excl,
         limit=limit, sort_by=sort_by, sort_order=sort_order, include_list=include_list, today=today,
-        excluded_names=excl_names))
+        excluded_names=excl_names, cost_mode=cost_mode))
     base = _bov_multi_base(stores, results, None,
                            count_of=lambda p: p.get("count"), amount_of=lambda p: p.get("total_amount"))
     if base.get("error"):
         return base
+    if include_list and cost_mode == "s2s":
+        await _bov_recost_invoice_results(db, cfg, results)
     invoices: List[Dict[str, Any]] = []
     count = 0
     total_amount = 0.0
@@ -9874,7 +9939,7 @@ def _bov_range_block_from_daily(daily: Dict[Any, Dict[str, float]], period: bov.
 
 async def _bov_shipped_block(db: Session, cfg, period: bov.Period, bucket: str, include_list: bool,
                              limit: int = 500, sort_by: str = "ship_date", sort_order: str = "desc",
-                             only_ids: Optional[Set[int]] = None) -> Dict[str, Any]:
+                             only_ids: Optional[Set[int]] = None, cost_mode: str = "default") -> Dict[str, Any]:
     if not _bov_sales_stores(db, cfg):
         return {"configured": False, "period": period.as_dict()}
     stores = _bov_sales_stores(db, cfg, only_ids)
@@ -9887,7 +9952,9 @@ async def _bov_shipped_block(db: Session, cfg, period: bov.Period, bucket: str, 
         date_from=period.start.isoformat(), date_to_excl=period.end_excl,
         series_from=period.prev_start.isoformat(),
         limit=limit, sort_by=sort_by, sort_order=sort_order, include_list=include_list,
-        excluded_names=excl_names))
+        excluded_names=excl_names, cost_mode=cost_mode))
+    if include_list and cost_mode == "s2s":
+        await _bov_recost_invoice_results(db, cfg, results)
     def _cur_sum(p, field):
         return bov.sum_daily(p.get("daily") or {}, period.start, period.end, [field])[field]
     base = _bov_multi_base(stores, results, {"period": period.as_dict(), "bucket": bucket},
@@ -9989,7 +10056,11 @@ def _bov_make_cost_lookup(db: Session, cfg, field: str = "unit_delivery_b"):
     `field` picks the Items_tbl column: 'unit_delivery_b' = UnitPriceC (Shopify default),
     'unit_cost' = UnitCost (S2S cost mode).
     """
-    conn = _bov_cost_conn(db, cfg)
+    return _bov_make_conn_cost_lookup(_bov_cost_conn(db, cfg), field)
+
+
+def _bov_make_conn_cost_lookup(conn, field: str = "unit_cost"):
+    """Memoised async UPC -> Items_tbl.<field> lookup against one MSSQL connection (None = unconfigured)."""
     cache: Dict[str, Optional[float]] = {}
 
     async def lookup(barcodes: List[str]) -> Dict[str, float]:
@@ -10329,12 +10400,12 @@ async def get_business_overview_summary(
 @app.get("/api/business-overview/quotations", response_model=BOVQuotationsResponse)
 async def get_business_overview_quotations(
     limit: int = 500, sort_by: str = "start_date", sort_order: str = "desc",
-    store_ids: Optional[str] = None,
+    store_ids: Optional[str] = None, cost_mode: str = "default",
     db: Session = Depends(get_db),
 ):
     cfg = _bov_config(db)
     block = await _bov_quotations_block(db, cfg, include_list=True, limit=limit, sort_by=sort_by, sort_order=sort_order,
-                                        only_ids=_bov_parse_store_ids(store_ids))
+                                        only_ids=_bov_parse_store_ids(store_ids), cost_mode=_bov_cost_mode(cost_mode))
     return BOVQuotationsResponse(**block)
 
 
@@ -10342,7 +10413,7 @@ async def get_business_overview_quotations(
 async def get_business_overview_open_invoices(
     date_from: Optional[str] = None, date_to: Optional[str] = None,
     limit: int = 500, sort_by: str = "invoice_date", sort_order: str = "desc",
-    store_ids: Optional[str] = None,
+    store_ids: Optional[str] = None, cost_mode: str = "default",
     db: Session = Depends(get_db),
 ):
     if (date_from and not date_to) or (date_to and not date_from):
@@ -10355,7 +10426,7 @@ async def get_business_overview_open_invoices(
     cfg = _bov_config(db)
     block = await _bov_open_invoices_block(db, cfg, include_list=True, date_from=date_from, date_to=date_to,
                                           limit=limit, sort_by=sort_by, sort_order=sort_order,
-                                          only_ids=_bov_parse_store_ids(store_ids))
+                                          only_ids=_bov_parse_store_ids(store_ids), cost_mode=_bov_cost_mode(cost_mode))
     return BOVOpenInvoicesResponse(**block)
 
 
@@ -10363,7 +10434,7 @@ async def get_business_overview_open_invoices(
 async def get_business_overview_invoices_period(
     preset: Optional[str] = None, date_from: Optional[str] = None, date_to: Optional[str] = None,
     limit: int = 500, sort_by: str = "invoice_date", sort_order: str = "desc",
-    store_ids: Optional[str] = None,
+    store_ids: Optional[str] = None, cost_mode: str = "default",
     db: Session = Depends(get_db),
 ):
     """
@@ -10380,14 +10451,17 @@ async def get_business_overview_invoices_period(
         return BOVInvoicesPeriodResponse(configured=True, filtered_out=True, period=BOVPeriod(**period.as_dict()))
     today = bov.today_in_tz(_bov_tz(cfg))
     excl_names, _ = _bov_excluded_names(db)
+    cmode = _bov_cost_mode(cost_mode)
     results = await _bov_fanout(stores, lambda st: bov.invoices_in_period_async(
         **_bov_conn_kwargs(st), date_from=period.start.isoformat(), date_to_excl=period.end_excl,
         limit=limit, sort_by=sort_by, sort_order=sort_order, include_list=True, today=today,
-        excluded_names=excl_names))
+        excluded_names=excl_names, cost_mode=cmode))
     base = _bov_multi_base(stores, results, {"period": period.as_dict()},
                            count_of=lambda p: p.get("count"), amount_of=lambda p: p.get("total_amount"))
     if base.get("error"):
         return BOVInvoicesPeriodResponse(**base)
+    if cmode == "s2s":
+        await _bov_recost_invoice_results(db, cfg, results)
     invoices: List[Dict[str, Any]] = []
     sums = {"count": 0, "open_count": 0, "shipped_count": 0, "total_amount": 0.0,
             "open_amount": 0.0, "shipped_amount": 0.0, "total_qty": 0.0}
@@ -10410,14 +10484,14 @@ async def get_business_overview_invoices_period(
 async def get_business_overview_shipped_invoices(
     preset: Optional[str] = None, date_from: Optional[str] = None, date_to: Optional[str] = None,
     bucket: str = "day", limit: int = 500, sort_by: str = "ship_date", sort_order: str = "desc",
-    store_ids: Optional[str] = None,
+    store_ids: Optional[str] = None, cost_mode: str = "default",
     db: Session = Depends(get_db),
 ):
     cfg = _bov_config(db)
     period = _bov_period(cfg, preset, date_from, date_to)
     b = _bov_check_bucket(bucket)
     block = await _bov_shipped_block(db, cfg, period, b, include_list=True, limit=limit, sort_by=sort_by, sort_order=sort_order,
-                                     only_ids=_bov_parse_store_ids(store_ids))
+                                     only_ids=_bov_parse_store_ids(store_ids), cost_mode=_bov_cost_mode(cost_mode))
     return BOVShippedInvoicesResponse(**block)
 
 
@@ -11166,6 +11240,7 @@ async def get_business_overview_alerts(
             return str(v)
 
     tasks: List[Any] = []
+    match_by_key: Dict[str, Dict[str, Any]] = {}
     keys: List[str] = []
 
     # --- invoices: past cutoff / too old (per-store overrides: a store that
@@ -11196,6 +11271,7 @@ async def get_business_overview_alerts(
         if per_store_cut:
             keys.append("unshipped_cutoff")
             cut_by_id = {st.id: d for st, d in per_store_cut}
+            match_by_key["unshipped_cutoff"] = {"kind": "invoice_open_before", "before_by_store": {str(k): v for k, v in cut_by_id.items()}}
             tasks.append(_bov_fanout([st for st, _d in per_store_cut], lambda st: bov.open_invoices_count_async(
                 **_bov_conn_kwargs(st), dated_before=cut_by_id[st.id], excluded_names=excl_names)))
         elif len(opted_out) < len(sales_stores):
@@ -11217,6 +11293,7 @@ async def get_business_overview_alerts(
         if per_store_age:
             keys.append("open_invoice_age")
             age_by_id = {st.id: d for st, d in per_store_age}
+            match_by_key["open_invoice_age"] = {"kind": "invoice_open_before", "before_by_store": {str(k): v for k, v in age_by_id.items()}}
             tasks.append(_bov_fanout([st for st, _d in per_store_age], lambda st: bov.open_invoices_count_async(
                 **_bov_conn_kwargs(st), dated_before=age_by_id[st.id], excluded_names=excl_names)))
     elif not r.get("enabled"):
@@ -11230,6 +11307,7 @@ async def get_business_overview_alerts(
         else:
             keys.append("quotation_stuck")
             started_before = (now_tz - timedelta(days=float(r.get("days", 1)))).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
+            match_by_key["quotation_stuck"] = {"kind": "quotation_started_before", "before": started_before}
             statuses = list((cfg.quotation_statuses if cfg else BOV_DEFAULT_QUOTATION_STATUSES) or [])
             tasks.append(bov.quotations_in_progress_async(
                 **_bov_conn_kwargs(admin_store), statuses=statuses, limit=1, include_list=False,
@@ -11241,6 +11319,7 @@ async def get_business_overview_alerts(
     if r.get("enabled") and purchases_store is not None and not purch_filtered_out:
         keys.append("po_overdue")
         before = (today - timedelta(days=int(float(r.get("days", 14))))).isoformat()
+        match_by_key["po_overdue"] = {"kind": "po_placed_before", "before": before}
         tasks.append(bov.incoming_purchases_async(**_bov_conn_kwargs(purchases_store), limit=1, include_list=False, placed_before=before))
     elif not r.get("enabled"):
         skipped.append("po_overdue: disabled")
@@ -11251,6 +11330,9 @@ async def get_business_overview_alerts(
     if sh_rules_on and sh_synced_stores:
         keys.append("shopify_exceptions")
         hours = float(rules["shopify_unfulfilled_age"].get("days", 2)) * 24.0
+        match_by_key["shopify_on_hold"] = {"kind": "shopify_on_hold"}
+        match_by_key["shopify_unfulfilled_age"] = {"kind": "shopify_unfulfilled_before",
+                                                   "before": (now_tz - timedelta(hours=hours)).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
 
         async def _sh_all():
             res = await asyncio.gather(*[bov.shopify_exception_counts(st["id"], hours) for st in sh_synced_stores], return_exceptions=True)
@@ -11284,7 +11366,8 @@ async def get_business_overview_alerts(
                                        "title": f"{bovInt(count)} unshipped invoice{'s' if count != 1 else ''} past {cut_label}",
                                        "detail": f"No tracking number yet · {detail}",
                                        "action": {"section": "invoices", "tab": "invoices:open", "open_all_dates": True,
-                                                  "sort": {"widget": "invoicesOpen", "key": "age_days", "dir": "desc"}, "target": "bov-invoices-card"}})
+                                                  "sort": {"widget": "invoicesOpen", "key": "age_days", "dir": "desc"}, "target": "bov-invoices-card",
+                                                  "match": match_by_key.get("unshipped_cutoff")}})
                     else:
                         rr = rules["open_invoice_age"]
                         ages = {(rr.get("stores") or {}).get(str(st.id), {}).get("days", rr.get("days")) for st, ok, _e, _p in fan if ok}
@@ -11293,7 +11376,8 @@ async def get_business_overview_alerts(
                                        "title": f"{bovInt(count)} open invoice{'s' if count != 1 else ''} older than {age_label}",
                                        "detail": f"Still unshipped · {detail}",
                                        "action": {"section": "invoices", "tab": "invoices:open", "open_all_dates": True,
-                                                  "sort": {"widget": "invoicesOpen", "key": "age_days", "dir": "desc"}, "target": "bov-invoices-card"}})
+                                                  "sort": {"widget": "invoicesOpen", "key": "age_days", "dir": "desc"}, "target": "bov-invoices-card",
+                                                  "match": match_by_key.get("open_invoice_age")}})
             elif key == "quotation_stuck":
                 ok, err, payload = res
                 if not ok:
@@ -11306,7 +11390,8 @@ async def get_business_overview_alerts(
                     alerts.append({"key": key, "severity": "warn", "count": count, "amount": payload.get("total_amount"), "stores": [],
                                    "title": f"{bovInt(count)} quotation{'s' if count != 1 else ''} in progress for more than {_bov_days_label(rr.get('days', 1))}",
                                    "detail": by or None,
-                                   "action": {"section": "quotations", "sort": {"widget": "quotations", "key": "start_date", "dir": "asc"}, "target": "bov-quotations-card"}})
+                                   "action": {"section": "quotations", "sort": {"widget": "quotations", "key": "start_date", "dir": "asc"}, "target": "bov-quotations-card",
+                                              "match": match_by_key.get("quotation_stuck")}})
             elif key == "po_overdue":
                 ok, err, payload = res
                 if not ok:
@@ -11318,7 +11403,8 @@ async def get_business_overview_alerts(
                     alerts.append({"key": key, "severity": "warn", "count": count, "amount": payload.get("outstanding_value"), "stores": [purchases_store.name],
                                    "title": f"{bovInt(count)} purchase order{'s' if count != 1 else ''} outstanding for more than {int(float(rr.get('days', 14)))} days",
                                    "detail": f"{bovInt(payload.get('qty_outstanding') or 0)} units still expected",
-                                   "action": {"section": "purchasing", "tab": "purchases:incoming", "sort": {"widget": "purchasesIncoming", "key": "po_date", "dir": "asc"}, "target": "bov-purchases-card"}})
+                                   "action": {"section": "purchasing", "tab": "purchases:incoming", "sort": {"widget": "purchasesIncoming", "key": "po_date", "dir": "asc"}, "target": "bov-purchases-card",
+                                              "match": match_by_key.get("po_overdue")}})
             elif key == "shopify_exceptions":
                 on_hold = 0; on_hold_v = 0.0; unf = 0; unf_v = 0.0
                 hold_names: List[str] = []; unf_names: List[str] = []
@@ -11333,12 +11419,12 @@ async def get_business_overview_alerts(
                 if rules["shopify_on_hold"].get("enabled") and on_hold > 0:
                     alerts.append({"key": "shopify_on_hold", "severity": "warn", "count": on_hold, "amount": round(on_hold_v, 2), "stores": [n.rsplit(" ", 1)[0] for n in hold_names],
                                    "title": f"{bovInt(on_hold)} Shopify order{'s' if on_hold != 1 else ''} on hold", "detail": ", ".join(hold_names),
-                                   "action": {"section": "shopify", "tab": "shopifyorders:on_hold", "target": "bov-shopify-orders-card"}})
+                                   "action": {"section": "shopify", "tab": "shopifyorders:on_hold", "target": "bov-shopify-orders-card", "match": match_by_key.get("shopify_on_hold")}})
                 if rules["shopify_unfulfilled_age"].get("enabled") and unf > 0:
                     rr = rules["shopify_unfulfilled_age"]
                     alerts.append({"key": "shopify_unfulfilled_age", "severity": "warn", "count": unf, "amount": round(unf_v, 2), "stores": [n.rsplit(" ", 1)[0] for n in unf_names],
                                    "title": f"{bovInt(unf)} Shopify order{'s' if unf != 1 else ''} unfulfilled for more than {_bov_days_label(rr.get('days', 2))}", "detail": ", ".join(unf_names),
-                                   "action": {"section": "shopify", "tab": "shopifyorders:unfulfilled_aged", "target": "bov-shopify-orders-card"}})
+                                   "action": {"section": "shopify", "tab": "shopifyorders:unfulfilled_aged", "target": "bov-shopify-orders-card", "match": match_by_key.get("shopify_unfulfilled_age")}})
         except Exception as e:  # never let a rule take the strip down
             errors.append(f"{key}: {e}")
 

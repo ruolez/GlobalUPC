@@ -18487,6 +18487,7 @@ const bovState = {
   storeFilter: [],      // store ids; [] = all configured sources
   chartsOpen: false,    // revenue/margin charts collapsed by default
   costMode: "default",  // "default" (local UnitCost / S2S UnitPriceC) | "s2s" (S2S UnitCost everywhere)
+  highlight: null,      // {alertKey, title, match} — rows matching the last opened alert are tinted red
   collapsedCards: {},   // cardId -> true when the user collapsed it
   section: "overview",  // active section tab
   popover: null,        // id of the open topbar popover
@@ -19012,7 +19013,7 @@ function bovCostParams() {
 }
 
 // Widgets whose figures depend on the cost basis (S2S Cost toggle).
-const BOV_COST_WIDGETS = ["summary", "trend", "top"];
+const BOV_COST_WIDGETS = ["summary", "trend", "top", "quotations", "invoicesPeriod", "invoicesOpen"];
 
 function bovSyncCostToggle() {
   const cb = document.getElementById("bov-cost-s2s");
@@ -19162,11 +19163,20 @@ function bovBindOnce() {
     if (a) bovApplyAlertAction(a);
   });
 
+  // Clear the alert row highlight
+  page.addEventListener("click", (e) => {
+    const btn = e.target.closest('[data-bov-action="clear-highlight"]');
+    if (!btn) return;
+    e.preventDefault();
+    bovClearHighlight();
+  });
+
   // Section switcher (subnav + KPI tiles)
   page.addEventListener("click", (e) => {
     const sec = e.target.closest("[data-bov-section]");
     if (!sec || e.target.closest("a, [data-bov-action]")) return;
     e.preventDefault();
+    if (sec.closest("#bov-subnav")) bovClearHighlight();
     if (sec.dataset.bovTab) {
       // e.g. Open invoices tile → invoices section with the Open tab active
       const [group, value] = sec.dataset.bovTab.split(":");
@@ -19804,19 +19814,19 @@ const BOV_WIDGET_DEFS = {
   },
   quotations: {
     card: "bov-quotations-card",
-    request: () => ["/quotations", { limit: BOV_LIST_LIMIT, ...bovStoreParams() }],
+    request: () => ["/quotations", { limit: BOV_LIST_LIMIT, ...bovStoreParams(), ...bovCostParams() }],
     render: () => bovRenderQuotationsTable(),
   },
   invoicesPeriod: {
     card: "bov-invoices-card",
-    request: () => ["/invoices/period", { ...bovRangeParams(), limit: BOV_LIST_LIMIT, ...bovStoreParams() }],
+    request: () => ["/invoices/period", { ...bovRangeParams(), limit: BOV_LIST_LIMIT, ...bovStoreParams(), ...bovCostParams() }],
     render: () => bovRenderInvoices(),
   },
   invoicesOpen: {
     // Whole unshipped backlog (any date) — only fetched when the Open tab is
     // switched to "all dates"; the in-period view comes from invoicesPeriod.
     card: "bov-invoices-card",
-    request: () => (bovState.openInRange ? null : ["/invoices/open", { limit: BOV_LIST_LIMIT, ...bovStoreParams() }]),
+    request: () => (bovState.openInRange ? null : ["/invoices/open", { limit: BOV_LIST_LIMIT, ...bovStoreParams(), ...bovCostParams() }]),
     render: () => bovRenderInvoices(),
   },
   purchasesIncoming: {
@@ -20483,12 +20493,16 @@ function bovMoneyAlerts(summaryData, rules) {
       });
     }
     if (mf.per_store) {
+      const overrides = mf.stores || {};
       (sales.per_store || []).forEach((ps) => {
         if (ps.error || !(ps.revenue > 0) || ps.margin_pct == null) return;
-        if (bovNum(ps.margin_pct) < floor) {
+        const ov = overrides[String(ps.store_id)] || {};
+        if (ov.enabled === false) return;
+        const storeFloor = ov.pct != null ? bovNum(ov.pct) : floor;
+        if (bovNum(ps.margin_pct) < storeFloor) {
           out.push({
             key: `margin_floor:${ps.store_id}`, severity: "warn", count: null, amount: null,
-            title: `${bovStoreShort(ps.store_name)} margin ${bovNum(ps.margin_pct).toFixed(1)}% below the ${floor}% floor`,
+            title: `${bovStoreShort(ps.store_name)} margin ${bovNum(ps.margin_pct).toFixed(1)}% below the ${storeFloor}% floor`,
             detail: `${bovCompactMoney(ps.profit || 0)} profit on ${bovCompactMoney(ps.revenue || 0)}${ps.source === "shopify" ? " · Shopify" : ""}`,
             stores: [ps.store_name], action: { section: "overview", target: "bov-trend-card" },
           });
@@ -20600,6 +20614,8 @@ function bovMarkKpiAlerts() {
 
 function bovApplyAlertAction(alert) {
   const act = (alert && alert.action) || {};
+  bovState.highlight = act.match ? { alertKey: alert.key, title: alert.title, match: act.match } : null;
+  bovRerenderLists();
   if (act.tab) {
     const [group, value] = String(act.tab).split(":");
     if (group && value) bovSetTab(group, value);
@@ -20622,6 +20638,72 @@ function bovApplyAlertAction(alert) {
     target.classList.add("is-flash");
     setTimeout(() => target.classList.remove("is-flash"), 1400);
   }
+}
+
+function bovRerenderLists() {
+  bovRenderQuotationsTable();
+  bovRenderInvoices();
+  bovRenderPurchases();
+  bovRenderShopifyOrdersList();
+}
+
+function bovClearHighlight() {
+  if (!bovState.highlight) return;
+  bovState.highlight = null;
+  bovRerenderLists();
+}
+
+// Widgets each alert `match` kind can tint rows in.
+const BOV_HIGHLIGHT_WIDGETS = {
+  invoice_open_before: ["invoicesOpen", "invoicesPeriod"],
+  quotation_started_before: ["quotations"],
+  po_placed_before: ["purchasesIncoming"],
+  shopify_on_hold: ["shopifyOrders_list"],
+  shopify_unfulfilled_before: ["shopifyOrders_list"],
+};
+
+function bovNormDt(v) {
+  // MSSQL naive ISO ("2026-08-18T09:15:00") → "2026-08-18 09:15" for string comparison
+  return v ? String(v).replace("T", " ").slice(0, 16) : "";
+}
+
+function bovRowAlerted(widgetKey, r) {
+  const h = bovState.highlight;
+  if (!h || !h.match || !r) return false;
+  const m = h.match;
+  if (!(BOV_HIGHLIGHT_WIDGETS[m.kind] || []).includes(widgetKey)) return false;
+  switch (m.kind) {
+    case "invoice_open_before": {
+      if (r.is_shipped) return false;
+      const before = (m.before_by_store && m.before_by_store[String(r.store_id)]) || m.before;
+      if (!before) return false;
+      const b = before.length === 10 ? `${before} 00:00` : bovNormDt(before);
+      return !!r.invoice_date && bovNormDt(r.invoice_date) < b;
+    }
+    case "quotation_started_before":
+      return !!r.start_date && bovNormDt(r.start_date) < bovNormDt(m.before);
+    case "po_placed_before":
+      return !!r.po_date && String(r.po_date).slice(0, 10) < String(m.before).slice(0, 10);
+    case "shopify_on_hold":
+      return String(r.fulfillment_status || "").toUpperCase() === "ON_HOLD";
+    case "shopify_unfulfilled_before": {
+      const fs = String(r.fulfillment_status || "").toUpperCase();
+      if (fs === "FULFILLED" || r.cancelled_at) return false;
+      const t = Date.parse(r.created_at || "");
+      const b = Date.parse(m.before || "");
+      return !isNaN(t) && !isNaN(b) && t < b;
+    }
+    default:
+      return false;
+  }
+}
+
+function bovFlagBarHtml(widgetKey, rows) {
+  const h = bovState.highlight;
+  if (!h) return "";
+  const n = rows.reduce((a, r) => a + (bovRowAlerted(widgetKey, r) ? 1 : 0), 0);
+  if (!n) return "";
+  return `<div class="bov-flag-bar" role="status"><span class="bov-flag-dot" aria-hidden="true"></span><span>${bovInt(n)} row${n === 1 ? "" : "s"} flagged by <b>${escapeHtml(h.title || "the alert")}</b></span><button type="button" class="bov-flag-clear" data-bov-action="clear-highlight">Clear</button></div>`;
 }
 
 function bovRenderKpiFoot() {
@@ -21731,10 +21813,11 @@ function bovTableHtml(widgetKey, columns, rows, opts = {}) {
   const body = rows
     .map((r, i) => {
       const attrs = opts.rowAttrs ? opts.rowAttrs(r) : "";
-      return `<tr class="bov-row-click" tabindex="0" ${attrs}>${numbered ? `<td class="bov-num bov-line-no">${i + 1}</td>` : ""}${columns.map((c) => `<td class="${c.num ? "bov-num" : ""}${c.cls ? ` ${c.cls}` : ""}">${c.render ? c.render(r) : escapeHtml(r[c.key] == null ? "—" : String(r[c.key]))}</td>`).join("")}</tr>`;
+      const alerted = bovRowAlerted(widgetKey, r);
+      return `<tr class="bov-row-click${alerted ? " bov-row-alert" : ""}" tabindex="0"${alerted ? ' title="Flagged by the alert you opened"' : ""} ${attrs}>${numbered ? `<td class="bov-num bov-line-no">${i + 1}</td>` : ""}${columns.map((c) => `<td class="${c.num ? "bov-num" : ""}${c.cls ? ` ${c.cls}` : ""}">${c.render ? c.render(r) : escapeHtml(r[c.key] == null ? "—" : String(r[c.key]))}</td>`).join("")}</tr>`;
     })
     .join("");
-  return `<div class="bov-table-scroll"><table class="data-table bov-mini-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+  return `${bovFlagBarHtml(widgetKey, rows)}<div class="bov-table-scroll"><table class="data-table bov-mini-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
 function bovStatusChip(status) {
@@ -21880,20 +21963,32 @@ function bovRenderQuotationsTable() {
   if (foot) foot.innerHTML = bovFootHtml("quotations", rows.length, shown.length, d.store_name ? `Source: ${escapeHtml(d.store_name)}` : "");
 }
 
+function bovMarginCell(r) {
+  if (r == null || r.margin_pct == null) {
+    const why = r && r.revenue != null && r.cost == null ? "Cost unknown for this row (items not found in the cost source)" : "";
+    return `<span class="bov-cell-muted" title="${escapeHtml(why)}">—</span>`;
+  }
+  const m = bovNum(r.margin_pct);
+  const tone = m < 0 ? " is-neg" : (m < 15 ? " is-low" : "");
+  const cov = r.cost_coverage != null && r.cost_coverage < 0.999 ? ` · cost known for ${Math.round(r.cost_coverage * 100)}% of units` : "";
+  return `<span class="bov-margin${tone}" title="${escapeHtml(`Profit ${bovMoney(r.profit)} on ${bovMoney(r.revenue)}${cov}`)}">${escapeHtml(bovPct(m))}</span><span class="bov-cell-sub">${escapeHtml(bovMoney(r.profit))}</span>`;
+}
+
 function bovQuotationRowAttrs(r) {
   return `data-bov-open="quotation" data-bov-id="${escapeHtml(r.quotation_number)}"`;
 }
 
 function bovQuotationCols() {
   return [
-    { key: "quotation_number", label: "Quote #", width: "14%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.quotation_number)}</span>${r.source_db ? `<span class="bov-cell-sub">${escapeHtml(bovSourceDbLabel(r.source_db))}</span>` : ""}` },
-    { key: "start_date", label: "Started", width: "12%", render: (r) => `${escapeHtml(bovDateMdy(r.start_date))}${bovTimeHm(r.start_date) ? `<span class="bov-cell-sub">${escapeHtml(bovTimeHm(r.start_date))}</span>` : ""}` },
-    { key: "business_name", label: "Customer", width: "24%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
-    { key: "sales_rep", label: "Rep", width: "11%", render: (r) => escapeHtml(r.sales_rep || "—") },
-    { key: "packer", label: "Packer", width: "11%", render: (r) => `${escapeHtml(r.packer || "—")}${r.checker ? `<span class="bov-cell-sub">chk ${escapeHtml(r.checker)}</span>` : ""}` },
-    { key: "status", label: "Status", width: "11%", render: (r) => bovStatusChip(r.status) },
-    { key: "total_qty", label: "Qty", num: true, width: "7%", render: (r) => bovInt(r.total_qty) },
+    { key: "quotation_number", label: "Quote #", width: "13%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.quotation_number)}</span>${r.source_db ? `<span class="bov-cell-sub">${escapeHtml(bovSourceDbLabel(r.source_db))}</span>` : ""}` },
+    { key: "start_date", label: "Started", width: "11%", render: (r) => `${escapeHtml(bovDateMdy(r.start_date))}${bovTimeHm(r.start_date) ? `<span class="bov-cell-sub">${escapeHtml(bovTimeHm(r.start_date))}</span>` : ""}` },
+    { key: "business_name", label: "Customer", width: "21%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
+    { key: "sales_rep", label: "Rep", width: "10%", render: (r) => escapeHtml(r.sales_rep || "—") },
+    { key: "packer", label: "Packer", width: "10%", render: (r) => `${escapeHtml(r.packer || "—")}${r.checker ? `<span class="bov-cell-sub">chk ${escapeHtml(r.checker)}</span>` : ""}` },
+    { key: "status", label: "Status", width: "10%", render: (r) => bovStatusChip(r.status) },
+    { key: "total_qty", label: "Qty", num: true, width: "6%", render: (r) => bovInt(r.total_qty) },
     { key: "quotation_total", label: "Total", num: true, width: "10%", render: (r) => bovMoney(r.quotation_total) },
+    { key: "margin_pct", label: "Margin", num: true, width: "9%", render: bovMarginCell },
   ];
 }
 
@@ -22025,12 +22120,13 @@ function bovPeriodInvoiceCols(multi) {
   ];
   if (multi) cols.push({ key: "store_name", label: "Store", width: "11%", render: (r) => `<span class="bov-cell-store">${escapeHtml(bovStoreShort(r.store_name))}</span>` });
   cols.push(
-    { key: "business_name", label: "Customer", width: multi ? "22%" : "27%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
-    { key: "sales_rep", label: "Rep", width: "10%", render: (r) => escapeHtml(r.sales_rep || "—") },
-    { key: "is_shipped", label: "Status", width: "16%", render: status },
-    { key: "shipper", label: "Shipper", width: "11%", render: (r) => escapeHtml(r.shipper || "—") },
+    { key: "business_name", label: "Customer", width: multi ? "19%" : "23%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
+    { key: "sales_rep", label: "Rep", width: "9%", render: (r) => escapeHtml(r.sales_rep || "—") },
+    { key: "is_shipped", label: "Status", width: "15%", render: status },
+    { key: "shipper", label: "Shipper", width: "10%", render: (r) => escapeHtml(r.shipper || "—") },
     { key: "no_lines", label: "Lines", num: true, width: "6%", render: (r) => r.no_lines == null ? "—" : bovInt(r.no_lines) },
-    { key: "invoice_total", label: "Total", num: true, width: "11%", render: (r) => bovMoney(r.invoice_total) },
+    { key: "invoice_total", label: "Total", num: true, width: "10%", render: (r) => bovMoney(r.invoice_total) },
+    { key: "margin_pct", label: "Margin", num: true, width: "8%", render: bovMarginCell },
   );
   return cols;
 }
@@ -22043,18 +22139,20 @@ function bovOpenInvoiceCols(multi) {
   return multi ? [
     { key: "invoice_number", label: "Invoice #", width: "15%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.invoice_number || String(r.invoice_id))}</span><span class="bov-cell-sub">${escapeHtml(bovDateMdy(r.invoice_date))}</span>` },
     { key: "store_name", label: "Store", width: "13%", render: (r) => `<span class="bov-cell-store">${escapeHtml(bovStoreShort(r.store_name))}</span>` },
+    { key: "business_name", label: "Customer", width: "22%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
+    { key: "sales_rep", label: "Rep", width: "11%", render: (r) => escapeHtml(r.sales_rep || "—") },
+    { key: "age_days", label: "Age", width: "10%", render: (r) => bovAgeChip(r.age_days) },
+    { key: "no_lines", label: "Lines", num: true, width: "7%", render: (r) => r.no_lines == null ? "—" : bovInt(r.no_lines) },
+    { key: "invoice_total", label: "Total", num: true, width: "12%", render: (r) => bovMoney(r.invoice_total) },
+    { key: "margin_pct", label: "Margin", num: true, width: "10%", render: bovMarginCell },
+  ] : [
+    { key: "invoice_number", label: "Invoice #", width: "16%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.invoice_number || String(r.invoice_id))}</span><span class="bov-cell-sub">${escapeHtml(bovDateMdy(r.invoice_date))}</span>` },
     { key: "business_name", label: "Customer", width: "26%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
     { key: "sales_rep", label: "Rep", width: "12%", render: (r) => escapeHtml(r.sales_rep || "—") },
     { key: "age_days", label: "Age", width: "11%", render: (r) => bovAgeChip(r.age_days) },
-    { key: "no_lines", label: "Lines", num: true, width: "9%", render: (r) => r.no_lines == null ? "—" : bovInt(r.no_lines) },
-    { key: "invoice_total", label: "Total", num: true, width: "14%", render: (r) => bovMoney(r.invoice_total) },
-  ] : [
-    { key: "invoice_number", label: "Invoice #", width: "16%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.invoice_number || String(r.invoice_id))}</span><span class="bov-cell-sub">${escapeHtml(bovDateMdy(r.invoice_date))}</span>` },
-    { key: "business_name", label: "Customer", width: "30%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
-    { key: "sales_rep", label: "Rep", width: "14%", render: (r) => escapeHtml(r.sales_rep || "—") },
-    { key: "age_days", label: "Age", width: "12%", render: (r) => bovAgeChip(r.age_days) },
-    { key: "no_lines", label: "Lines", num: true, width: "10%", render: (r) => r.no_lines == null ? "—" : bovInt(r.no_lines) },
-    { key: "invoice_total", label: "Total", num: true, width: "14%", render: (r) => bovMoney(r.invoice_total) },
+    { key: "no_lines", label: "Lines", num: true, width: "8%", render: (r) => r.no_lines == null ? "—" : bovInt(r.no_lines) },
+    { key: "invoice_total", label: "Total", num: true, width: "13%", render: (r) => bovMoney(r.invoice_total) },
+    { key: "margin_pct", label: "Margin", num: true, width: "10%", render: bovMarginCell },
   ];
 }
 
@@ -22065,15 +22163,17 @@ function bovShippedInvoiceCols(multi) {
     { key: "ship_date", label: "Shipped", width: "12%", render: (r) => escapeHtml(bovDateMdy(r.ship_date || r.invoice_date)) },
     { key: "business_name", label: "Customer", width: "24%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
     { key: "sales_rep", label: "Rep", width: "10%", render: (r) => escapeHtml(r.sales_rep || "—") },
-    { key: "shipper", label: "Shipper", width: "15%", render: (r) => `${escapeHtml(r.shipper || "—")}${r.tracking_no ? `<span class="bov-cell-sub bov-cell-mono">${escapeHtml(r.tracking_no)}</span>` : ""}` },
-    { key: "invoice_total", label: "Total", num: true, width: "13%", render: (r) => bovMoney(r.invoice_total) },
+    { key: "shipper", label: "Shipper", width: "13%", render: (r) => `${escapeHtml(r.shipper || "—")}${r.tracking_no ? `<span class="bov-cell-sub bov-cell-mono">${escapeHtml(r.tracking_no)}</span>` : ""}` },
+    { key: "invoice_total", label: "Total", num: true, width: "11%", render: (r) => bovMoney(r.invoice_total) },
+    { key: "margin_pct", label: "Margin", num: true, width: "8%", render: bovMarginCell },
   ] : [
     { key: "invoice_number", label: "Invoice #", width: "16%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.invoice_number || String(r.invoice_id))}</span>` },
     { key: "ship_date", label: "Shipped", width: "13%", render: (r) => escapeHtml(bovDateMdy(r.ship_date || r.invoice_date)) },
     { key: "business_name", label: "Customer", width: "27%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
     { key: "sales_rep", label: "Rep", width: "12%", render: (r) => escapeHtml(r.sales_rep || "—") },
-    { key: "shipper", label: "Shipper", width: "18%", render: (r) => `${escapeHtml(r.shipper || "—")}${r.tracking_no ? `<span class="bov-cell-sub bov-cell-mono">${escapeHtml(r.tracking_no)}</span>` : ""}` },
-    { key: "invoice_total", label: "Total", num: true, width: "14%", render: (r) => bovMoney(r.invoice_total) },
+    { key: "shipper", label: "Shipper", width: "16%", render: (r) => `${escapeHtml(r.shipper || "—")}${r.tracking_no ? `<span class="bov-cell-sub bov-cell-mono">${escapeHtml(r.tracking_no)}</span>` : ""}` },
+    { key: "invoice_total", label: "Total", num: true, width: "12%", render: (r) => bovMoney(r.invoice_total) },
+    { key: "margin_pct", label: "Margin", num: true, width: "10%", render: bovMarginCell },
   ];
 }
 
@@ -22606,7 +22706,9 @@ function bovFmtClock(hhmm) {
 }
 
 // Rules that can be tuned per sales store (stores without tracking numbers opt out).
-const BOV_PER_STORE_RULES = { unshipped_cutoff: "cutoff", open_invoice_age: "days" };
+const BOV_PER_STORE_RULES = { unshipped_cutoff: "cutoff", open_invoice_age: "days", margin_floor: "pct" };
+// Rules whose per-store overrides also apply to Shopify stores (margin is computed per store for both).
+const BOV_PER_STORE_INCLUDES_SHOPIFY = { margin_floor: true };
 
 function bovPopulateAlertRules(rules) {
   rules = rules || {};
@@ -22637,20 +22739,31 @@ function bovPopulateRuleStores(key, field, rule) {
     const opts = (bovState.options && bovState.options.mssql_stores) || [];
     stores = pills.filter((p) => p.checked).map((p) => ({ id: parseInt(p.value, 10), name: (opts.find((o) => String(o.id) === p.value) || {}).name || `Store ${p.value}` }));
   }
-  if (stores.length < 2) { wrap.hidden = true; wrap.innerHTML = ""; return; }
+  if (BOV_PER_STORE_INCLUDES_SHOPIFY[key]) {
+    const shopPills = Array.from(document.querySelectorAll(".bov-cfg-shopify-cb"));
+    const shopOpts = (bovState.options && bovState.options.shopify_stores) || [];
+    const shops = shopPills.length
+      ? shopPills.filter((p) => p.checked).map((p) => ({ id: parseInt(p.value, 10), name: (shopOpts.find((o) => String(o.id) === p.value) || {}).name || `Store ${p.value}`, shopify: true }))
+      : (cfg.shopify_store_ids || []).map((id, i) => ({ id, name: (cfg.shopify_store_names || [])[i] || `Store ${id}`, shopify: true }));
+    stores = stores.concat(shops);
+  }
+  const minStores = BOV_PER_STORE_INCLUDES_SHOPIFY[key] ? 1 : 2;
+  if (stores.length < minStores) { wrap.hidden = true; wrap.innerHTML = ""; return; }
   const ov = (rule && rule.stores) || {};
   const isTime = field === "cutoff";
+  const unit = isTime ? "" : (field === "pct" ? "%" : "days");
+  const max = field === "pct" ? ' max="100"' : "";
   wrap.hidden = false;
   wrap.innerHTML =
-    `<div class="bov-rule-stores-title">Per store <small>(blank = use the value above)</small></div>` +
+    `<div class="bov-rule-stores-title">Per store <small>(blank = use the value above; untick to skip that store)</small></div>` +
     stores.map((s) => {
       const o = ov[String(s.id)] || {};
       const en = o.enabled !== false;
       const val = o[field] != null ? o[field] : "";
       const input = isTime
         ? `<input type="time" class="dark-input bov-rule-store-val" data-rule="${key}" data-store="${s.id}" data-field="${field}" step="60" value="${escapeHtml(String(val))}">`
-        : `<input type="number" class="dark-input bov-rule-store-val" data-rule="${key}" data-store="${s.id}" data-field="${field}" min="0" step="0.5" placeholder="default" value="${escapeHtml(String(val))}">`;
-      return `<label class="bov-rule-store${en ? "" : " is-off"}"><input type="checkbox" class="bov-rule-store-en" data-rule="${key}" data-store="${s.id}"${en ? " checked" : ""}> <span class="bov-rule-store-name">${escapeHtml(s.name)}</span> ${input}<span class="bov-rule-store-unit">${isTime ? "" : "days"}</span></label>`;
+        : `<input type="number" class="dark-input bov-rule-store-val" data-rule="${key}" data-store="${s.id}" data-field="${field}" min="0"${max} step="0.5" placeholder="default" value="${escapeHtml(String(val))}">`;
+      return `<label class="bov-rule-store${en ? "" : " is-off"}"><input type="checkbox" class="bov-rule-store-en" data-rule="${key}" data-store="${s.id}"${en ? " checked" : ""}> <span class="bov-rule-store-name">${escapeHtml(s.name)}${s.shopify && !/shopify/i.test(s.name) ? ` <span class="bov-cell-store">Shopify</span>` : ""}</span> ${input}<span class="bov-rule-store-unit">${unit}</span></label>`;
     }).join("");
 }
 

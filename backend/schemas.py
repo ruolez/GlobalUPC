@@ -1054,6 +1054,7 @@ BOV_DEFAULT_ALERT_RULES: Dict[str, Dict] = {
 BOV_PER_STORE_RULES: Dict[str, Tuple[str, ...]] = {
     "unshipped_cutoff": ("cutoff",),
     "open_invoice_age": ("days",),
+    "margin_floor": ("pct",),          # per store (BackOffice or Shopify): own floor or opt out
 }
 
 
@@ -1266,6 +1267,11 @@ class BOVQuotationRow(BaseModel):
     dop2: Optional[str] = None
     dop3: Optional[str] = None
     invoice_number: Optional[str] = None
+    revenue: Optional[float] = None
+    cost: Optional[float] = None
+    profit: Optional[float] = None
+    margin_pct: Optional[float] = None
+    cost_coverage: Optional[float] = None
 
 
 class BOVQuotationStatusCount(BaseModel):
@@ -1320,6 +1326,11 @@ class BOVInvoiceRow(BaseModel):
     notes: Optional[str] = None
     age_days: Optional[int] = None
     is_shipped: Optional[bool] = None
+    revenue: Optional[float] = None
+    cost: Optional[float] = None
+    profit: Optional[float] = None
+    margin_pct: Optional[float] = None
+    cost_coverage: Optional[float] = None
 
 
 class BOVInvoicesPeriodResponse(BOVBlockStatus):
@@ -1805,6 +1816,7 @@ class BOVAlertAction(BaseModel):
     sort: Optional[Dict[str, str]] = None     # {"widget": "invoicesOpen", "key": "age_days", "dir": "desc"}
     open_all_dates: Optional[bool] = None     # invoices Open tab: whole backlog
     target: Optional[str] = None              # element id to scroll to / flash
+    match: Optional[Dict[str, Any]] = None    # row predicate so the list can highlight the alerted rows
 
 
 class BOVAlert(BaseModel):

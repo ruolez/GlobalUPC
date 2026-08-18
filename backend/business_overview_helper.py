@@ -372,6 +372,16 @@ def _tables_present(cursor, names: List[str]) -> Dict[str, bool]:
     return {n: (n in found) for n in names}
 
 
+# BackOffice unit cost: the store's own Items_tbl.UnitCost by UPC (current cost),
+# falling back to the cost stamped on the invoice line when the item is missing.
+_LOCAL_COST_APPLY = """
+    OUTER APPLY (SELECT TOP 1 i.UnitCost AS ItemUnitCost
+                 FROM Items_tbl i
+                 WHERE i.ProductUPC = d.ProductUPC AND d.ProductUPC IS NOT NULL AND LTRIM(RTRIM(d.ProductUPC)) <> '') ic
+"""
+_LOCAL_COST_EXPR = "ISNULL(d.QtyShipped, 0) * ISNULL(ic.ItemUnitCost, ISNULL(d.UnitCost, 0))"
+
+
 def _invoice_joins(present: Dict[str, bool]) -> Dict[str, str]:
     j: Dict[str, str] = {}
     if present.get("Employees_tbl"):
@@ -394,6 +404,15 @@ def _invoice_joins(present: Dict[str, bool]) -> Dict[str, str]:
     else:
         j["term_join"] = ""
         j["term_expr"] = "CAST(NULL AS nvarchar(50))"
+    if present.get("InvoicesDetails_tbl"):
+        j["revenue_expr"] = "(SELECT SUM(ISNULL(d.ExtendedPrice,0)) FROM InvoicesDetails_tbl d WHERE d.InvoiceID = h.InvoiceID)"
+        if present.get("Items_tbl"):
+            j["cost_expr"] = f"(SELECT SUM({_LOCAL_COST_EXPR}) FROM InvoicesDetails_tbl d {_LOCAL_COST_APPLY} WHERE d.InvoiceID = h.InvoiceID)"
+        else:
+            j["cost_expr"] = "(SELECT SUM(ISNULL(d.QtyShipped,0)*ISNULL(d.UnitCost,0)) FROM InvoicesDetails_tbl d WHERE d.InvoiceID = h.InvoiceID)"
+    else:
+        j["revenue_expr"] = "CAST(NULL AS money)"
+        j["cost_expr"] = "CAST(NULL AS money)"
     if present.get("Suppliers_tbl"):
         j["sup_join"] = "LEFT JOIN Suppliers_tbl s ON s.SupplierID = h.SupplierID"
         j["sup_contact_expr"] = "s.Contactname"
@@ -488,6 +507,23 @@ def _quotation_status_options_sync(host, port, database, username, password) -> 
         return False, str(e), []
 
 
+def _quotation_units_by_upc(cur, numbers: List[str]) -> Dict[str, List[Tuple[str, float]]]:
+    """(UPC, Qty) per quotation from QuotationsInProgress; chunked IN (...)."""
+    out: Dict[str, List[Tuple[str, float]]] = {}
+    for i in range(0, len(numbers), 1000):
+        chunk = numbers[i:i + 1000]
+        ph = ",".join("?" * len(chunk))
+        cur.execute(f"""
+            SELECT qip.QuotationNumber AS qn, LTRIM(RTRIM(qip.ProductUPC)) AS upc, SUM(ISNULL(qip.Qty,0)) AS units
+            FROM QuotationsInProgress qip
+            WHERE qip.QuotationNumber IN ({ph})
+            GROUP BY qip.QuotationNumber, LTRIM(RTRIM(qip.ProductUPC))
+        """, chunk)
+        for r in _rows(cur):
+            out.setdefault(str(r.get("qn")), []).append(((r.get("upc") or "").strip(), _f(r.get("units"))))
+    return out
+
+
 def _quotations_in_progress_sync(
     host, port, database, username, password,
     statuses: List[str],
@@ -498,8 +534,11 @@ def _quotations_in_progress_sync(
     source_dbs: Optional[List[str]] = None,
     excluded_names: Optional[List[str]] = None,
     started_before: Optional[str] = None,
+    include_units: bool = False,
 ) -> Tuple[bool, Optional[str], Dict[str, Any]]:
+    """include_units: also return (UPC, qty) per listed quotation so the caller can cost it."""
     limit = _clamp_limit(limit)
+    units_by_upc: Dict[str, List[Tuple[str, float]]] = {}
     clean_statuses = [s.strip() for s in (statuses or []) if s and s.strip()]
     having_parts: List[str] = []
     having_params: List[Any] = []
@@ -636,9 +675,14 @@ def _quotations_in_progress_sync(
                         "dop2": _s(d.get("dop2")),
                         "dop3": _s(d.get("dop3")),
                         "invoice_number": _s(d.get("invoice_number")),
+                        "revenue": _fo(d.get("quotation_total")),
+                        "cost": None, "profit": None, "margin_pct": None, "cost_coverage": None,
                     })
+                if include_units and quotations:
+                    units_by_upc = _quotation_units_by_upc(cur, [q["quotation_number"] for q in quotations])
         return True, None, {
             "quotations": quotations,
+            "units_by_upc": units_by_upc,
             "count": count,
             "total_amount": round(total_amount, 2),
             "total_qty": total_qty,
@@ -674,7 +718,8 @@ _INVOICE_SELECT = """
     h.ShipperID,  {shipper_expr} AS shipper,
     h.TrackingNo,
     h.TotQtyOrd, h.TotQtyShp, h.NoLines, h.NoBoxes,
-    h.InvoiceSubtotal, h.TotalTaxes, h.ShippingCost, h.InvoiceTotal, h.Notes
+    h.InvoiceSubtotal, h.TotalTaxes, h.ShippingCost, h.InvoiceTotal, h.Notes,
+    {revenue_expr} AS line_revenue, {cost_expr} AS line_cost
 """
 
 # "Shipped" = a real tracking number. BackOffice writes "0" (and blanks) for
@@ -724,7 +769,60 @@ def _invoice_row(d: Dict[str, Any], today: Optional[date] = None) -> Dict[str, A
         "invoice_total": _fo(d.get("InvoiceTotal")),
         "notes": _s(d.get("Notes")),
         "age_days": age_days,
+        **_margin_fields(_fo(d.get("line_revenue")), _fo(d.get("line_cost"))),
     }
+
+
+def _margin_fields(revenue: Optional[float], cost: Optional[float],
+                   coverage: Optional[float] = None) -> Dict[str, Any]:
+    """revenue/cost/profit/margin_pct for a list row; margin unknown when cost is."""
+    if revenue is None or cost is None:
+        return {"revenue": revenue, "cost": None, "profit": None, "margin_pct": None, "cost_coverage": coverage}
+    return {"revenue": round(revenue, 2), "cost": round(cost, 2), "profit": round(revenue - cost, 2),
+            "margin_pct": margin_pct(revenue, cost) if revenue else None, "cost_coverage": coverage}
+
+
+def _invoice_units_by_upc(cur, invoice_ids: List[int]) -> Dict[int, List[Tuple[str, float]]]:
+    """(UPC, QtyShipped) per invoice for S2S re-costing of a list; chunked IN (...)."""
+    out: Dict[int, List[Tuple[str, float]]] = {}
+    ids = [int(i) for i in invoice_ids]
+    for i in range(0, len(ids), 1000):
+        chunk = ids[i:i + 1000]
+        ph = ",".join("?" * len(chunk))
+        cur.execute(f"""
+            SELECT d.InvoiceID, LTRIM(RTRIM(d.ProductUPC)) AS upc, SUM(ISNULL(d.QtyShipped,0)) AS units
+            FROM InvoicesDetails_tbl d
+            WHERE d.InvoiceID IN ({ph})
+            GROUP BY d.InvoiceID, LTRIM(RTRIM(d.ProductUPC))
+        """, chunk)
+        for r in _rows(cur):
+            out.setdefault(int(r["InvoiceID"]), []).append(((r.get("upc") or "").strip(), _f(r.get("units"))))
+    return out
+
+
+def recost_rows_s2s(rows: List[Dict[str, Any]], units_by_key: Dict[Any, List[Tuple[str, float]]],
+                    key_field: str, unit_costs: Dict[str, float]) -> None:
+    """S2S mode: replace each row's cost/profit/margin from Σ units × S2S unit cost."""
+    for r in rows:
+        lines = units_by_key.get(r.get(key_field))
+        rev = r.get("revenue")
+        if lines is None or rev is None:
+            r.update(_margin_fields(rev, None))
+            continue
+        cost = 0.0
+        units = 0.0
+        known = 0.0
+        for upc, n in lines:
+            units += n
+            c = unit_costs.get(upc) if upc else None
+            if c is not None:
+                cost += n * float(c)
+                known += n
+        cov = (round(known / units, 4) if units else None)
+        if units and not known:
+            r.update(_margin_fields(rev, None, cov))
+        else:
+            r.update(_margin_fields(rev, cost, cov))
 
 
 def _open_invoices_sync(
@@ -737,9 +835,11 @@ def _open_invoices_sync(
     include_list: bool = True,
     today: Optional[date] = None,
     excluded_names: Optional[List[str]] = None,
+    cost_mode: str = "default",
 ) -> Tuple[bool, Optional[str], Dict[str, Any]]:
     limit = _clamp_limit(limit)
     today = today or date.today()
+    units_by_upc: Dict[int, List[Tuple[str, float]]] = {}
     where = _UNSHIPPED_WHERE
     params: List[Any] = []
     if date_from:
@@ -754,7 +854,7 @@ def _open_invoices_sync(
     try:
         with _connect(host, port, database, username, password) as conn:
             cur = conn.cursor()
-            present = _tables_present(cur, ["Invoices_tbl", "Employees_tbl", "Shippers_tbl"])
+            present = _tables_present(cur, ["Invoices_tbl", "InvoicesDetails_tbl", "Items_tbl", "Employees_tbl", "Shippers_tbl"])
             if not present.get("Invoices_tbl"):
                 return False, "Table Invoices_tbl not found on this store", {}
             j = _invoice_joins(present)
@@ -793,6 +893,8 @@ def _open_invoices_sync(
                     ORDER BY {sort_expr}
                 """, [limit] + params)
                 invoices = [_invoice_row(d, today) for d in _rows(cur)]
+                if cost_mode == "s2s" and invoices and present.get("InvoicesDetails_tbl"):
+                    units_by_upc = _invoice_units_by_upc(cur, [r["invoice_id"] for r in invoices])
         oldest = agg.get("oldest_invoice_date")
         oldest_age = None
         if isinstance(oldest, (datetime, date)):
@@ -809,6 +911,7 @@ def _open_invoices_sync(
             "aging": aging,
             "limit": limit,
             "truncated": include_list and count > len(invoices),
+            "units_by_upc": units_by_upc,
         }
     except Exception as e:
         return False, str(e), {}
@@ -851,14 +954,16 @@ def _shipped_invoices_sync(
     sort_order: str = "desc",
     include_list: bool = True,
     excluded_names: Optional[List[str]] = None,
+    cost_mode: str = "default",
 ) -> Tuple[bool, Optional[str], Dict[str, Any]]:
     """List = shipped in [date_from, date_to_excl); daily = [series_from, date_to_excl)."""
     limit = _clamp_limit(limit)
+    units_by_upc: Dict[int, List[Tuple[str, float]]] = {}
     excl_sql, excl_params = _excl_clause(excluded_names or [])
     try:
         with _connect(host, port, database, username, password) as conn:
             cur = conn.cursor()
-            present = _tables_present(cur, ["Invoices_tbl", "Employees_tbl", "Shippers_tbl"])
+            present = _tables_present(cur, ["Invoices_tbl", "InvoicesDetails_tbl", "Items_tbl", "Employees_tbl", "Shippers_tbl"])
             if not present.get("Invoices_tbl"):
                 return False, "Table Invoices_tbl not found on this store", {}
             j = _invoice_joins(present)
@@ -903,7 +1008,9 @@ def _shipped_invoices_sync(
                     ORDER BY {sort_expr}
                 """, [limit, date_from, date_to_excl] + excl_params)
                 invoices = [_invoice_row(d) for d in _rows(cur)]
-        return True, None, {"invoices": invoices, "daily": daily, "limit": limit}
+                if cost_mode == "s2s" and invoices and present.get("InvoicesDetails_tbl"):
+                    units_by_upc = _invoice_units_by_upc(cur, [r["invoice_id"] for r in invoices])
+        return True, None, {"invoices": invoices, "daily": daily, "limit": limit, "units_by_upc": units_by_upc}
     except Exception as e:
         return False, str(e), {}
 
@@ -918,11 +1025,13 @@ def _invoices_in_period_sync(
     include_list: bool = True,
     today: Optional[date] = None,
     excluded_names: Optional[List[str]] = None,
+    cost_mode: str = "default",
 ) -> Tuple[bool, Optional[str], Dict[str, Any]]:
     """
     Every non-void invoice dated (InvoiceDate) in [date_from, date_to_excl),
     each flagged is_shipped = TrackingNo present. Aggregates split the same way.
     """
+    units_by_upc: Dict[int, List[Tuple[str, float]]] = {}
     limit = _clamp_limit(limit)
     tracking_blank = _TRACKING_BLANK
     where = "ISNULL(h.Void, 0) = 0 AND h.InvoiceDate >= ? AND h.InvoiceDate < ?"
@@ -933,7 +1042,7 @@ def _invoices_in_period_sync(
     try:
         with _connect(host, port, database, username, password) as conn:
             cur = conn.cursor()
-            present = _tables_present(cur, ["Invoices_tbl", "Employees_tbl", "Shippers_tbl"])
+            present = _tables_present(cur, ["Invoices_tbl", "InvoicesDetails_tbl", "Items_tbl", "Employees_tbl", "Shippers_tbl"])
             if not present.get("Invoices_tbl"):
                 return False, "Table Invoices_tbl not found on this store", {}
             j = _invoice_joins(present)
@@ -964,6 +1073,8 @@ def _invoices_in_period_sync(
                     row = _invoice_row(d, today)
                     row["is_shipped"] = has_tracking(d.get("TrackingNo"))
                     invoices.append(row)
+                if cost_mode == "s2s" and invoices and present.get("InvoicesDetails_tbl"):
+                    units_by_upc = _invoice_units_by_upc(cur, [r["invoice_id"] for r in invoices])
         count = int(agg.get("invoices") or 0)
         return True, None, {
             "invoices": invoices,
@@ -976,6 +1087,7 @@ def _invoices_in_period_sync(
             "total_qty": _f(agg.get("total_qty")),
             "limit": limit,
             "truncated": include_list and count > len(invoices),
+            "units_by_upc": units_by_upc,
         }
     except Exception as e:
         return False, str(e), {}
@@ -1382,14 +1494,6 @@ def _purchase_order_detail_sync(host, port, database, username, password, po_id:
 # BackOffice sales (revenue / cost / returns) and breakdown
 # ============================================================================
 
-# BackOffice unit cost: the store's own Items_tbl.UnitCost by UPC (current cost),
-# falling back to the cost stamped on the invoice line when the item is missing.
-_LOCAL_COST_APPLY = """
-    OUTER APPLY (SELECT TOP 1 i.UnitCost AS ItemUnitCost
-                 FROM Items_tbl i
-                 WHERE i.ProductUPC = d.ProductUPC AND d.ProductUPC IS NOT NULL AND LTRIM(RTRIM(d.ProductUPC)) <> '') ic
-"""
-_LOCAL_COST_EXPR = "ISNULL(d.QtyShipped, 0) * ISNULL(ic.ItemUnitCost, ISNULL(d.UnitCost, 0))"
 
 
 def _backoffice_daily_sales_sync(
