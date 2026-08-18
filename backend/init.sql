@@ -354,6 +354,7 @@ CREATE TABLE IF NOT EXISTS business_overview_config (
     shopify_store_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
     quotation_statuses JSONB NOT NULL DEFAULT '["In Progress","Locked"]'::jsonb,
     timezone VARCHAR(64) NOT NULL DEFAULT 'America/Chicago',
+    alert_rules JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );

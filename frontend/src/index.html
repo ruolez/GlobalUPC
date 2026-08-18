@@ -257,7 +257,7 @@
             <nav class="bov-subnav" id="bov-subnav" role="tablist" aria-label="Overview sections">
               <button type="button" class="bov-subnav-item active" role="tab" aria-selected="true" data-bov-section="overview">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                <span>Overview</span>
+                <span>Overview</span><span class="bov-subnav-badge" id="bov-nav-count-overview" hidden></span>
               </button>
               <button type="button" class="bov-subnav-item" role="tab" aria-selected="false" data-bov-section="quotations">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M8 4h8l4 4v12H4V4h4z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M8 12h8M8 16h5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
@@ -291,6 +291,13 @@
             <!-- Overview section -->
             <section class="bov-panel" data-bov-panel="overview">
               <!-- KPI strip -->
+              <section class="bov-attention" id="bov-attention" aria-label="Attention" aria-live="polite">
+                <div class="bov-attention-head">
+                  <span class="bov-attention-title">Attention</span>
+                  <span class="bov-attention-cap" id="bov-attention-cap"></span>
+                </div>
+                <div class="bov-attention-body" id="bov-attention-body"></div>
+              </section>
               <section class="bov-kpi-grid" id="bov-kpi-strip" aria-label="Key figures"></section>
 
             <!-- Trend row (full width) -->
@@ -4996,6 +5003,57 @@
                     <button type="button" class="btn btn-secondary bov-btn-sm" id="bov-cfg-status-add-btn">Add</button>
                   </div>
                 </div>
+                <fieldset class="bov-field bov-rules" id="bov-cfg-rules">
+                  <legend class="bov-field-label">Alerts &amp; thresholds</legend>
+                  <small class="bov-field-help">Rules feed the “Attention” strip on the Overview. Untick a rule to silence it; thresholds use the business timezone.</small>
+                  <div class="bov-rule-rows">
+                    <div class="bov-rule-row" data-rule="unshipped_cutoff">
+                      <label class="bov-rule-main"><input type="checkbox" id="bov-rule-unshipped_cutoff-enabled"> <span>Unshipped past cutoff</span></label>
+                      <span class="bov-rule-ctl">after <input type="time" id="bov-rule-unshipped_cutoff-cutoff" class="dark-input" step="60"></span>
+                      <small class="bov-rule-help">Invoices with no tracking number once today's cutoff has passed — critical.</small>
+                    </div>
+                    <div class="bov-rule-row" data-rule="open_invoice_age">
+                      <label class="bov-rule-main"><input type="checkbox" id="bov-rule-open_invoice_age-enabled"> <span>Open invoices too old</span></label>
+                      <span class="bov-rule-ctl">older than <input type="number" id="bov-rule-open_invoice_age-days" class="dark-input" min="0" max="365" step="1"> days</span>
+                      <small class="bov-rule-help">Unshipped invoices invoiced this many days ago or more (any date).</small>
+                    </div>
+                    <div class="bov-rule-row" data-rule="quotation_stuck">
+                      <label class="bov-rule-main"><input type="checkbox" id="bov-rule-quotation_stuck-enabled"> <span>Quotations stuck</span></label>
+                      <span class="bov-rule-ctl">longer than <input type="number" id="bov-rule-quotation_stuck-hours" class="dark-input" min="0" max="720" step="0.5"> h</span>
+                      <small class="bov-rule-help">Quotations in the counted statuses whose picking started this long ago.</small>
+                    </div>
+                    <div class="bov-rule-row" data-rule="po_overdue">
+                      <label class="bov-rule-main"><input type="checkbox" id="bov-rule-po_overdue-enabled"> <span>Purchase orders overdue</span></label>
+                      <span class="bov-rule-ctl">placed over <input type="number" id="bov-rule-po_overdue-days" class="dark-input" min="0" max="365" step="1"> days ago</span>
+                      <small class="bov-rule-help">Incoming POs (Status 0, quantity outstanding) older than this.</small>
+                    </div>
+                    <div class="bov-rule-row" data-rule="shopify_on_hold">
+                      <label class="bov-rule-main"><input type="checkbox" id="bov-rule-shopify_on_hold-enabled"> <span>Shopify orders on hold</span></label>
+                      <span class="bov-rule-ctl">any</span>
+                      <small class="bov-rule-help">Open orders whose fulfillment is on hold (from the mirror).</small>
+                    </div>
+                    <div class="bov-rule-row" data-rule="shopify_unfulfilled_age">
+                      <label class="bov-rule-main"><input type="checkbox" id="bov-rule-shopify_unfulfilled_age-enabled"> <span>Shopify unfulfilled too long</span></label>
+                      <span class="bov-rule-ctl">older than <input type="number" id="bov-rule-shopify_unfulfilled_age-hours" class="dark-input" min="0" max="2000" step="1"> h</span>
+                      <small class="bov-rule-help">Open, unfulfilled orders created this many hours ago or more.</small>
+                    </div>
+                    <div class="bov-rule-row" data-rule="shopify_sync_stale">
+                      <label class="bov-rule-main"><input type="checkbox" id="bov-rule-shopify_sync_stale-enabled"> <span>Shopify data stale</span></label>
+                      <span class="bov-rule-ctl">older than <input type="number" id="bov-rule-shopify_sync_stale-hours" class="dark-input" min="0" max="2000" step="1"> h</span>
+                      <small class="bov-rule-help">A store never synced, whose last sync failed, or whose mirror is older than this.</small>
+                    </div>
+                    <div class="bov-rule-row" data-rule="margin_floor">
+                      <label class="bov-rule-main"><input type="checkbox" id="bov-rule-margin_floor-enabled"> <span>Margin below floor</span></label>
+                      <span class="bov-rule-ctl">below <input type="number" id="bov-rule-margin_floor-pct" class="dark-input" min="0" max="100" step="0.5"> % <label class="bov-rule-sub"><input type="checkbox" id="bov-rule-margin_floor-per_store"> per store too</label></span>
+                      <small class="bov-rule-help">Period margin % under the floor — overall, and per store when ticked.</small>
+                    </div>
+                    <div class="bov-rule-row" data-rule="revenue_drop">
+                      <label class="bov-rule-main"><input type="checkbox" id="bov-rule-revenue_drop-enabled"> <span>Revenue drop</span></label>
+                      <span class="bov-rule-ctl">more than <input type="number" id="bov-rule-revenue_drop-pct" class="dark-input" min="0" max="100" step="1"> % vs previous</span>
+                      <small class="bov-rule-help">Period revenue down more than this against the previous period.</small>
+                    </div>
+                  </div>
+                </fieldset>
                 <div class="bov-field">
                   <label class="bov-field-label" for="bov-cfg-tz">Business timezone</label>
                   <input type="text" id="bov-cfg-tz" class="dark-input" list="bov-tz-list" placeholder="America/Chicago" autocomplete="off">

@@ -127,6 +127,17 @@ def test_aging_bucket_and_excl_clause():
     assert bov._excl_clause([]) == ("", [])
 
 
+def test_alert_rules_merge_and_validate():
+    import schemas
+    merged = schemas.bov_merge_alert_rules({"unshipped_cutoff": {"cutoff": "13:30", "junk": 1}, "unknown": {"x": 1}})
+    assert merged["unshipped_cutoff"] == {"enabled": True, "cutoff": "13:30"}
+    assert "unknown" not in merged and merged["margin_floor"]["pct"] == 15
+    assert schemas.bov_validate_alert_rules(merged) is None
+    assert "HH:MM" in schemas.bov_validate_alert_rules({"unshipped_cutoff": {"cutoff": "25:99"}})
+    assert "pct" in schemas.bov_validate_alert_rules({"margin_floor": {"pct": 150}})
+    assert "hours" in schemas.bov_validate_alert_rules({"quotation_stuck": {"hours": "abc"}})
+
+
 if __name__ == "__main__":
     import sys
     mod = sys.modules[__name__]

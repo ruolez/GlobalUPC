@@ -71,7 +71,7 @@ from schemas import (
     BOVPurchasesRangeBlock, BOVPurchasesRangeResponse,
     BOVPurchaseOrderLine, BOVPurchaseOrderHeader, BOVPurchaseOrderDetailResponse,
     BOVSalesSourceTotals, BOVSalesBucket, BOVSalesSourceStatus, BOVSalesTrendResponse,
-    BOVBreakdownRow, BOVSalesBreakdownResponse, BOVStoreStatus, BOVInvoicesPeriodResponse, BOVShopifyStoreOrders, BOVShopifyOrdersResponse, BOVShopifyRefreshResult, BOVShopifyRefreshResponse,
+    BOVBreakdownRow, BOVSalesBreakdownResponse, BOVStoreStatus, BOVInvoicesPeriodResponse, BOVAlert, BOVAlertAction, BOVAlertsResponse, bov_merge_alert_rules, bov_validate_alert_rules, BOVShopifyStoreOrders, BOVShopifyOrdersResponse, BOVShopifyRefreshResult, BOVShopifyRefreshResponse,
     BOVShopifyStoreOpen, BOVShopifyOpenOrdersBlock, BOVSalesSummaryBlock,
     BusinessOverviewSummaryResponse,
 )
@@ -9620,6 +9620,7 @@ def _bov_config_response(db: Session, cfg: Optional[BusinessOverviewConfig]) -> 
         shopify_store_names=shopify_names,
         quotation_statuses=list((cfg.quotation_statuses if cfg else BOV_DEFAULT_QUOTATION_STATUSES) or []),
         timezone=_bov_tz(cfg),
+        alert_rules=bov_merge_alert_rules(cfg.alert_rules if cfg else None),
         admin_store_id=admin_store.id if admin_store else None,
         admin_store_name=admin_store.name if admin_store else None,
         cost_store_id=cost_store.id if cost_store else None,
@@ -9657,8 +9658,23 @@ def save_business_overview_config(data: BusinessOverviewConfigCreate, db: Sessio
         s2 = (s or "").strip()
         if s2 and s2.lower() not in {x.lower() for x in statuses}:
             statuses.append(s2)
-
     cfg = _bov_config(db)
+    # Alert rules: partial overrides are merged over the current (or default)
+    # rules, validated, and stored merged so the row is always complete.
+    if data.alert_rules is not None:
+        base_rules = bov_merge_alert_rules(cfg.alert_rules if cfg else None)
+        for k, v in (data.alert_rules or {}).items():
+            if k in base_rules and isinstance(v, dict):
+                for kk, vv in v.items():
+                    if kk in base_rules[k]:
+                        base_rules[k][kk] = vv
+        err = bov_validate_alert_rules(base_rules)
+        if err:
+            raise HTTPException(status_code=400, detail=f"Invalid alert rules — {err}")
+        new_rules = base_rules
+    else:
+        new_rules = None
+
     if cfg:
         cfg.sales_store_ids = sales_ids
         cfg.sales_store_id = sales_ids[0] if sales_ids else None
@@ -9666,6 +9682,8 @@ def save_business_overview_config(data: BusinessOverviewConfigCreate, db: Sessio
         cfg.shopify_store_ids = list(dict.fromkeys(data.shopify_store_ids))
         cfg.quotation_statuses = statuses
         cfg.timezone = tz
+        if new_rules is not None:
+            cfg.alert_rules = new_rules
     else:
         cfg = BusinessOverviewConfig(
             sales_store_ids=sales_ids,
@@ -9674,6 +9692,7 @@ def save_business_overview_config(data: BusinessOverviewConfigCreate, db: Sessio
             shopify_store_ids=list(dict.fromkeys(data.shopify_store_ids)),
             quotation_statuses=statuses,
             timezone=tz,
+            alert_rules=new_rules or {},
         )
         db.add(cfg)
     db.commit()
@@ -10729,6 +10748,235 @@ async def business_overview_shopify_refresh(
         results=[BOVShopifyRefreshResult(**r) for r in out],
         synced_any=any(r.get("status") == "synced" for r in out),
         seconds=round(asyncio.get_running_loop().time() - started, 1),
+    )
+
+
+# ---- Attention strip: operational alerts against configurable thresholds ----
+
+@app.get("/api/business-overview/alerts", response_model=BOVAlertsResponse)
+async def get_business_overview_alerts(
+    preset: Optional[str] = None, date_from: Optional[str] = None, date_to: Optional[str] = None,
+    store_ids: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Evaluate the operational alert rules (unshipped past cutoff, open-invoice
+    age, stuck quotations, overdue POs, Shopify on-hold / unfulfilled aging /
+    stale sync). Money rules (margin floor, revenue drop) are evaluated on the
+    client from the summary it already holds, using the same merged rules
+    returned here. A failing rule lands in `errors`, never a 500.
+    """
+    cfg = _bov_config(db)
+    period = _bov_period(cfg, preset, date_from, date_to)
+    only = _bov_parse_store_ids(store_ids)
+    rules = bov_merge_alert_rules(cfg.alert_rules if cfg else None)
+    tz_name = _bov_tz(cfg)
+    try:
+        now_tz = datetime.now(_BovZoneInfo(tz_name))
+    except Exception:
+        now_tz = datetime.now(timezone.utc)
+    today = now_tz.date()
+    alerts: List[Dict[str, Any]] = []
+    checked: List[str] = []
+    skipped: List[str] = []
+    errors: List[str] = []
+    excl_names, _ = _bov_excluded_names(db)
+    sales_stores = _bov_sales_stores(db, cfg, only)
+    purchases_store, purch_filtered_out = _bov_purchases_store(db, cfg, only)
+    admin_store = _resolve_admin_store_soft(db)
+    shopify_stores = _bov_shopify_stores(db, cfg, only)
+
+    def _store_bits(results, key="count") -> Tuple[List[str], str]:
+        names = [st.name for st, ok, _e, p in results if ok and (p.get(key) or 0) > 0]
+        detail = ", ".join(f"{st.name} {bovInt(p.get(key) or 0)}" for st, ok, _e, p in results if ok and (p.get(key) or 0) > 0)
+        return names, detail
+
+    def bovInt(v):
+        try:
+            return f"{int(v):,}"
+        except (TypeError, ValueError):
+            return str(v)
+
+    tasks: List[Any] = []
+    keys: List[str] = []
+
+    # --- invoices: past cutoff / too old
+    r = rules["unshipped_cutoff"]
+    if r.get("enabled") and sales_stores:
+        hh, mm = [int(x) for x in str(r.get("cutoff", "14:00")).split(":")]
+        cutoff_dt = now_tz.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        if now_tz >= cutoff_dt:
+            keys.append("unshipped_cutoff")
+            tasks.append(_bov_fanout(sales_stores, lambda st, d=cutoff_dt.strftime("%Y-%m-%d %H:%M"): bov.open_invoices_count_async(
+                **_bov_conn_kwargs(st), dated_before=d, excluded_names=excl_names)))
+        else:
+            skipped.append(f"unshipped_cutoff: cutoff {r.get('cutoff')} not reached yet")
+    elif not r.get("enabled"):
+        skipped.append("unshipped_cutoff: disabled")
+    r = rules["open_invoice_age"]
+    if r.get("enabled") and sales_stores:
+        keys.append("open_invoice_age")
+        before = (today - timedelta(days=int(float(r.get("days", 2))))).isoformat()
+        tasks.append(_bov_fanout(sales_stores, lambda st, d=before: bov.open_invoices_count_async(
+            **_bov_conn_kwargs(st), dated_before=d, excluded_names=excl_names)))
+    elif not r.get("enabled"):
+        skipped.append("open_invoice_age: disabled")
+    # --- quotations stuck
+    r = rules["quotation_stuck"]
+    if r.get("enabled") and admin_store is not None:
+        source_dbs = _bov_quotation_source_dbs(db, only)
+        if source_dbs is not None and not source_dbs:
+            skipped.append("quotation_stuck: no BackOffice store in filter")
+        else:
+            keys.append("quotation_stuck")
+            started_before = (now_tz - timedelta(hours=float(r.get("hours", 4)))).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
+            statuses = list((cfg.quotation_statuses if cfg else BOV_DEFAULT_QUOTATION_STATUSES) or [])
+            tasks.append(bov.quotations_in_progress_async(
+                **_bov_conn_kwargs(admin_store), statuses=statuses, limit=1, include_list=False,
+                source_dbs=source_dbs, excluded_names=excl_names, started_before=started_before))
+    elif not r.get("enabled"):
+        skipped.append("quotation_stuck: disabled")
+    # --- POs overdue
+    r = rules["po_overdue"]
+    if r.get("enabled") and purchases_store is not None and not purch_filtered_out:
+        keys.append("po_overdue")
+        before = (today - timedelta(days=int(float(r.get("days", 14))))).isoformat()
+        tasks.append(bov.incoming_purchases_async(**_bov_conn_kwargs(purchases_store), limit=1, include_list=False, placed_before=before))
+    elif not r.get("enabled"):
+        skipped.append("po_overdue: disabled")
+    # --- Shopify mirror exceptions
+    synced = await asyncio.to_thread(shopify_sync.get_synced_stores) if shopify_stores else {}
+    sh_rules_on = rules["shopify_on_hold"].get("enabled") or rules["shopify_unfulfilled_age"].get("enabled")
+    sh_synced_stores = [st for st in shopify_stores if st["id"] in synced]
+    if sh_rules_on and sh_synced_stores:
+        keys.append("shopify_exceptions")
+        hours = float(rules["shopify_unfulfilled_age"].get("hours", 48))
+
+        async def _sh_all():
+            res = await asyncio.gather(*[bov.shopify_exception_counts(st["id"], hours) for st in sh_synced_stores], return_exceptions=True)
+            return list(zip(sh_synced_stores, res))
+        tasks.append(_sh_all())
+
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    for key, res in zip(keys, results):
+        checked.append(key)
+        if isinstance(res, Exception):
+            errors.append(f"{key}: {res}")
+            continue
+        try:
+            if key in ("unshipped_cutoff", "open_invoice_age"):
+                fan = res
+                fails = [f"{st.name}: {err}" for st, ok, err, _p in fan if not ok]
+                if fails and len(fails) == len(fan):
+                    errors.append(f"{key}: {'; '.join(fails)}")
+                    continue
+                if fails:
+                    errors.append(f"{key} (partial): {'; '.join(fails)}")
+                count = sum(int(p.get("count") or 0) for _st, ok, _e, p in fan if ok)
+                amount = round(sum(float(p.get("total_amount") or 0) for _st, ok, _e, p in fan if ok), 2)
+                if count > 0:
+                    names, detail = _store_bits(fan)
+                    if key == "unshipped_cutoff":
+                        rr = rules["unshipped_cutoff"]
+                        alerts.append({"key": key, "severity": "critical", "count": count, "amount": amount, "stores": names,
+                                       "title": f"{bovInt(count)} unshipped invoice{'s' if count != 1 else ''} past the {rr.get('cutoff')} cutoff",
+                                       "detail": f"No tracking number yet · {detail}",
+                                       "action": {"section": "invoices", "tab": "invoices:open", "open_all_dates": True,
+                                                  "sort": {"widget": "invoicesOpen", "key": "age_days", "dir": "desc"}, "target": "bov-invoices-card"}})
+                    else:
+                        rr = rules["open_invoice_age"]
+                        alerts.append({"key": key, "severity": "warn", "count": count, "amount": amount, "stores": names,
+                                       "title": f"{bovInt(count)} open invoice{'s' if count != 1 else ''} older than {int(float(rr.get('days', 2)))} day{'s' if float(rr.get('days', 2)) != 1 else ''}",
+                                       "detail": f"Still unshipped · {detail}",
+                                       "action": {"section": "invoices", "tab": "invoices:open", "open_all_dates": True,
+                                                  "sort": {"widget": "invoicesOpen", "key": "age_days", "dir": "desc"}, "target": "bov-invoices-card"}})
+            elif key == "quotation_stuck":
+                ok, err, payload = res
+                if not ok:
+                    errors.append(f"{key}: {err}")
+                    continue
+                count = int(payload.get("count") or 0)
+                if count > 0:
+                    rr = rules["quotation_stuck"]
+                    by = ", ".join(f"{x.get('status') or '—'} {bovInt(x.get('count') or 0)}" for x in (payload.get("by_status") or []) if x.get("count"))
+                    alerts.append({"key": key, "severity": "warn", "count": count, "amount": payload.get("total_amount"), "stores": [],
+                                   "title": f"{bovInt(count)} quotation{'s' if count != 1 else ''} in progress for more than {rr.get('hours')} h",
+                                   "detail": by or None,
+                                   "action": {"section": "quotations", "sort": {"widget": "quotations", "key": "start_date", "dir": "asc"}, "target": "bov-quotations-card"}})
+            elif key == "po_overdue":
+                ok, err, payload = res
+                if not ok:
+                    errors.append(f"{key}: {err}")
+                    continue
+                count = int(payload.get("count") or 0)
+                if count > 0:
+                    rr = rules["po_overdue"]
+                    alerts.append({"key": key, "severity": "warn", "count": count, "amount": payload.get("outstanding_value"), "stores": [purchases_store.name],
+                                   "title": f"{bovInt(count)} purchase order{'s' if count != 1 else ''} outstanding for more than {int(float(rr.get('days', 14)))} days",
+                                   "detail": f"{bovInt(payload.get('qty_outstanding') or 0)} units still expected",
+                                   "action": {"section": "purchasing", "tab": "purchases:incoming", "sort": {"widget": "purchasesIncoming", "key": "po_date", "dir": "asc"}, "target": "bov-purchases-card"}})
+            elif key == "shopify_exceptions":
+                on_hold = 0; on_hold_v = 0.0; unf = 0; unf_v = 0.0
+                hold_names: List[str] = []; unf_names: List[str] = []
+                for st, cnt in res:
+                    if isinstance(cnt, Exception):
+                        errors.append(f"shopify ({st['name']}): {cnt}")
+                        continue
+                    if cnt.get("on_hold"):
+                        on_hold += cnt["on_hold"]; on_hold_v += cnt.get("on_hold_value") or 0; hold_names.append(f"{st['name']} {bovInt(cnt['on_hold'])}")
+                    if cnt.get("unfulfilled_old"):
+                        unf += cnt["unfulfilled_old"]; unf_v += cnt.get("unfulfilled_old_value") or 0; unf_names.append(f"{st['name']} {bovInt(cnt['unfulfilled_old'])}")
+                if rules["shopify_on_hold"].get("enabled") and on_hold > 0:
+                    alerts.append({"key": "shopify_on_hold", "severity": "warn", "count": on_hold, "amount": round(on_hold_v, 2), "stores": [n.rsplit(" ", 1)[0] for n in hold_names],
+                                   "title": f"{bovInt(on_hold)} Shopify order{'s' if on_hold != 1 else ''} on hold", "detail": ", ".join(hold_names),
+                                   "action": {"section": "shopify", "target": "bov-shopify-card"}})
+                if rules["shopify_unfulfilled_age"].get("enabled") and unf > 0:
+                    rr = rules["shopify_unfulfilled_age"]
+                    alerts.append({"key": "shopify_unfulfilled_age", "severity": "warn", "count": unf, "amount": round(unf_v, 2), "stores": [n.rsplit(" ", 1)[0] for n in unf_names],
+                                   "title": f"{bovInt(unf)} Shopify order{'s' if unf != 1 else ''} unfulfilled for more than {int(float(rr.get('hours', 48)))} h", "detail": ", ".join(unf_names),
+                                   "action": {"section": "shopify", "target": "bov-shopify-card"}})
+        except Exception as e:  # never let a rule take the strip down
+            errors.append(f"{key}: {e}")
+
+    # --- Shopify sync stale / failed / never synced (no query beyond state)
+    r = rules["shopify_sync_stale"]
+    if r.get("enabled") and shopify_stores:
+        checked.append("shopify_sync_stale")
+        try:
+            states = {st["store_id"]: st for st in await asyncio.to_thread(shopify_sync.get_sync_states)}
+            hours = float(r.get("hours", 6))
+            now_utc = datetime.now(timezone.utc)
+            bad: List[str] = []
+            for st in shopify_stores:
+                row = states.get(st["id"])
+                last = None
+                if row and row.get("last_completed_at"):
+                    try:
+                        last = datetime.fromisoformat(str(row["last_completed_at"]).replace("Z", "+00:00"))
+                    except ValueError:
+                        last = None
+                if not row or last is None:
+                    bad.append(f"{st['name']}: never synced")
+                elif row.get("status") == "error":
+                    bad.append(f"{st['name']}: last sync failed")
+                elif (now_utc - last).total_seconds() > hours * 3600:
+                    age_h = (now_utc - last).total_seconds() / 3600
+                    bad.append(f"{st['name']}: synced {age_h:.0f} h ago")
+            if bad:
+                alerts.append({"key": "shopify_sync_stale", "severity": "warn", "count": len(bad), "stores": [b.split(":")[0] for b in bad],
+                               "title": f"Shopify data stale for {len(bad)} store{'s' if len(bad) != 1 else ''}", "detail": "; ".join(bad),
+                               "action": {"section": "shopify", "target": "bov-shopify-card"}})
+        except Exception as e:
+            errors.append(f"shopify_sync_stale: {e}")
+    elif not r.get("enabled"):
+        skipped.append("shopify_sync_stale: disabled")
+
+    sev_rank = {"critical": 0, "warn": 1}
+    alerts.sort(key=lambda a: (sev_rank.get(a["severity"], 9), -(a.get("count") or 0)))
+    return BOVAlertsResponse(
+        period=BOVPeriod(**period.as_dict()), rules=rules,
+        alerts=[BOVAlert(**{**a, "action": BOVAlertAction(**a["action"]) if a.get("action") else None}) for a in alerts],
+        checked=checked, skipped=skipped, errors=errors, generated_at=datetime.utcnow(),
     )
 
 

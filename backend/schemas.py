@@ -1032,6 +1032,65 @@ class ShopifySyncRequest(BaseModel):
 # ============================================================================
 BOV_DEFAULT_QUOTATION_STATUSES = ["In Progress", "Locked"]
 
+# Alert rules for the Overview "Attention" strip. Stored per-rule settings are
+# merged over these defaults (see bov_merge_alert_rules) so new rules show up
+# without a migration. Thresholds are validated in the config endpoint.
+BOV_DEFAULT_ALERT_RULES: Dict[str, Dict] = {
+    "unshipped_cutoff":        {"enabled": True, "cutoff": "14:00"},
+    "open_invoice_age":        {"enabled": True, "days": 2},
+    "quotation_stuck":         {"enabled": True, "hours": 4},
+    "po_overdue":              {"enabled": True, "days": 14},
+    "shopify_on_hold":         {"enabled": True},
+    "shopify_unfulfilled_age": {"enabled": True, "hours": 48},
+    "shopify_sync_stale":      {"enabled": True, "hours": 6},
+    "margin_floor":            {"enabled": True, "pct": 15, "per_store": True},
+    "revenue_drop":            {"enabled": True, "pct": 20},
+}
+
+
+def bov_merge_alert_rules(stored: Optional[Dict]) -> Dict[str, Dict]:
+    """Defaults overlaid with whatever is stored (unknown keys are dropped)."""
+    out: Dict[str, Dict] = {}
+    stored = stored if isinstance(stored, dict) else {}
+    for key, defaults in BOV_DEFAULT_ALERT_RULES.items():
+        merged = dict(defaults)
+        val = stored.get(key)
+        if isinstance(val, dict):
+            for k, v in val.items():
+                if k in defaults:
+                    merged[k] = v
+        out[key] = merged
+    return out
+
+
+def bov_validate_alert_rules(rules: Dict[str, Dict]) -> Optional[str]:
+    """Return an error message for the first invalid threshold, else None."""
+    import re
+    for key, r in rules.items():
+        if not isinstance(r.get("enabled", True), bool):
+            return f"{key}: enabled must be true/false"
+        if "cutoff" in r:
+            if not isinstance(r["cutoff"], str) or not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", r["cutoff"]):
+                return f"{key}: cutoff must be HH:MM (24h)"
+        for num in ("days", "hours"):
+            if num in r:
+                try:
+                    v = float(r[num])
+                except (TypeError, ValueError):
+                    return f"{key}: {num} must be a number"
+                if v < 0 or v > 10000:
+                    return f"{key}: {num} out of range"
+        if "pct" in r:
+            try:
+                v = float(r["pct"])
+            except (TypeError, ValueError):
+                return f"{key}: pct must be a number"
+            if v < 0 or v > 100:
+                return f"{key}: pct must be between 0 and 100"
+        if "per_store" in r and not isinstance(r["per_store"], bool):
+            return f"{key}: per_store must be true/false"
+    return None
+
 
 class BusinessOverviewConfigCreate(BaseModel):
     sales_store_ids: List[int] = []
@@ -1040,6 +1099,7 @@ class BusinessOverviewConfigCreate(BaseModel):
     shopify_store_ids: List[int] = []
     quotation_statuses: List[str] = list(BOV_DEFAULT_QUOTATION_STATUSES)
     timezone: str = "America/Chicago"
+    alert_rules: Optional[Dict[str, Dict]] = None    # partial per-rule overrides; merged over defaults
 
 
 class BusinessOverviewConfigResponse(BaseModel):
@@ -1055,6 +1115,7 @@ class BusinessOverviewConfigResponse(BaseModel):
     shopify_store_names: List[str] = []
     quotation_statuses: List[str] = []
     timezone: str = "America/Chicago"
+    alert_rules: Dict[str, Dict] = {}
     # Resolved read-only context (not stored on this table)
     admin_store_id: Optional[int] = None
     admin_store_name: Optional[str] = None
@@ -1549,6 +1610,35 @@ class BOVShopifyRefreshResponse(BaseModel):
     results: List[BOVShopifyRefreshResult] = []
     synced_any: bool = False
     seconds: float = 0.0
+
+
+class BOVAlertAction(BaseModel):
+    section: str                              # overview | quotations | invoices | purchasing | shopify
+    tab: Optional[str] = None                 # e.g. "invoices:open", "purchases:incoming"
+    sort: Optional[Dict[str, str]] = None     # {"widget": "invoicesOpen", "key": "age_days", "dir": "desc"}
+    open_all_dates: Optional[bool] = None     # invoices Open tab: whole backlog
+    target: Optional[str] = None              # element id to scroll to / flash
+
+
+class BOVAlert(BaseModel):
+    key: str
+    severity: str                             # critical | warn
+    title: str
+    detail: Optional[str] = None
+    count: Optional[int] = None
+    amount: Optional[float] = None
+    stores: List[str] = []
+    action: Optional[BOVAlertAction] = None
+
+
+class BOVAlertsResponse(BaseModel):
+    period: BOVPeriod
+    rules: Dict[str, Dict] = {}
+    alerts: List[BOVAlert] = []
+    checked: List[str] = []
+    skipped: List[str] = []                   # disabled or not applicable (e.g. cutoff not reached)
+    errors: List[str] = []
+    generated_at: datetime
 
 
 class BusinessOverviewSummaryResponse(BaseModel):

@@ -497,11 +497,16 @@ def _quotations_in_progress_sync(
     include_list: bool = True,
     source_dbs: Optional[List[str]] = None,
     excluded_names: Optional[List[str]] = None,
+    started_before: Optional[str] = None,
 ) -> Tuple[bool, Optional[str], Dict[str, Any]]:
     limit = _clamp_limit(limit)
     clean_statuses = [s.strip() for s in (statuses or []) if s and s.strip()]
     having_parts: List[str] = []
     having_params: List[Any] = []
+    if started_before:
+        # "stuck" quotations: the earliest pick started before this instant
+        having_parts.append("MIN(qip.StartDate) < ?")
+        having_params.append(started_before)
     if clean_statuses:
         ph = ",".join(["?"] * len(clean_statuses))
         having_parts.append(f"(MAX(qs.Status) IN ({ph}) OR MAX(qip.Status) IN ({ph}))")
@@ -809,6 +814,33 @@ def _open_invoices_sync(
         return False, str(e), {}
 
 
+def _open_invoices_count_sync(
+    host, port, database, username, password,
+    dated_before: str,
+    excluded_names: Optional[List[str]] = None,
+) -> Tuple[bool, Optional[str], Dict[str, Any]]:
+    """Unshipped (no tracking) invoices dated before `dated_before` ('YYYY-MM-DD[ HH:MM]'), any age."""
+    excl_sql, excl_params = _excl_clause(excluded_names or [])
+    try:
+        with _connect(host, port, database, username, password) as conn:
+            cur = conn.cursor()
+            present = _tables_present(cur, ["Invoices_tbl"])
+            if not present.get("Invoices_tbl"):
+                return False, "Table Invoices_tbl not found on this store", {}
+            cur.execute(f"""
+                SELECT COUNT(*) AS invoices, SUM(ISNULL(h.InvoiceTotal,0)) AS total_amount,
+                       MIN(h.InvoiceDate) AS oldest_invoice_date
+                FROM Invoices_tbl h
+                WHERE {_UNSHIPPED_WHERE} AND h.InvoiceDate < ? {excl_sql}
+            """, [dated_before] + excl_params)
+            agg = _rows(cur)[0]
+        return True, None, {"count": int(agg.get("invoices") or 0),
+                            "total_amount": round(_f(agg.get("total_amount")), 2),
+                            "oldest_invoice_date": _iso(agg.get("oldest_invoice_date"))}
+    except Exception as e:
+        return False, str(e), {}
+
+
 def _shipped_invoices_sync(
     host, port, database, username, password,
     date_from: str,
@@ -1105,8 +1137,11 @@ def _incoming_purchases_sync(
     sort_by: str = "po_date",
     sort_order: str = "desc",
     include_list: bool = True,
+    placed_before: Optional[str] = None,
 ) -> Tuple[bool, Optional[str], Dict[str, Any]]:
     limit = _clamp_limit(limit)
+    where = _INCOMING_WHERE + (" AND h.PoDate < ?" if placed_before else "")
+    wparams: List[Any] = [placed_before] if placed_before else []
     try:
         with _connect(host, port, database, username, password) as conn:
             cur = conn.cursor()
@@ -1121,8 +1156,8 @@ def _incoming_purchases_sync(
                        SUM(ov.outstanding_value) AS outstanding_value
                 FROM PurchaseOrders_tbl h
                 {_OUTSTANDING_APPLY}
-                WHERE {_INCOMING_WHERE}
-            """)
+                WHERE {where}
+            """, wparams)
             agg = _rows(cur)[0]
             pos: List[Dict[str, Any]] = []
             if include_list:
@@ -1135,9 +1170,9 @@ def _incoming_purchases_sync(
                         ov.outstanding_value
                     FROM PurchaseOrders_tbl h
                     {_OUTSTANDING_APPLY}
-                    WHERE {_INCOMING_WHERE}
+                    WHERE {where}
                     ORDER BY {sort_expr}
-                """, [limit])
+                """, [limit] + wparams)
                 pos = [_po_row(d) for d in _rows(cur)]
         count = int(agg.get("purchase_orders") or 0)
         return True, None, {
@@ -1700,6 +1735,33 @@ async def shopify_period_orders(store_id: int, tz: str, date_from: str, date_to_
     return await asyncio.to_thread(_shopify_period_orders_sync, store_id, tz, date_from, date_to_excl)
 
 
+def _shopify_exception_counts_sync(store_id: int, unfulfilled_hours: float) -> Dict[str, Any]:
+    """On-hold orders and orders still unfulfilled older than N hours (mirror)."""
+    with engine.connect() as conn:
+        row = conn.execute(text(f"""
+            SELECT COUNT(*) FILTER (WHERE o.fulfillment_status = 'ON_HOLD')                          AS on_hold,
+                   COALESCE(SUM(o.total_price) FILTER (WHERE o.fulfillment_status = 'ON_HOLD'), 0)   AS on_hold_value,
+                   COUNT(*) FILTER (WHERE o.fulfillment_status IN ({_SHOPIFY_UNFULFILLED})
+                                      AND o.created_at < now() - (CAST(:h AS double precision) * interval '1 hour'))         AS unfulfilled_old,
+                   COALESCE(SUM(o.total_price) FILTER (WHERE o.fulfillment_status IN ({_SHOPIFY_UNFULFILLED})
+                                      AND o.created_at < now() - (CAST(:h AS double precision) * interval '1 hour')), 0)     AS unfulfilled_old_value,
+                   MIN(o.created_at) FILTER (WHERE o.fulfillment_status IN ({_SHOPIFY_UNFULFILLED}))  AS oldest_unfulfilled
+            FROM shopify_orders o
+            WHERE o.store_id = :sid AND o.cancelled_at IS NULL AND o.closed_at IS NULL
+        """), {"sid": store_id, "h": float(unfulfilled_hours)}).mappings().first()
+    return {
+        "on_hold": int(row["on_hold"] or 0),
+        "on_hold_value": round(_f(row["on_hold_value"]), 2),
+        "unfulfilled_old": int(row["unfulfilled_old"] or 0),
+        "unfulfilled_old_value": round(_f(row["unfulfilled_old_value"]), 2),
+        "oldest_unfulfilled": _iso(row["oldest_unfulfilled"]),
+    }
+
+
+async def shopify_exception_counts(store_id: int, unfulfilled_hours: float) -> Dict[str, Any]:
+    return await asyncio.to_thread(_shopify_exception_counts_sync, store_id, unfulfilled_hours)
+
+
 def _shopify_open_orders_local_sync(store_id: int) -> Dict[str, float]:
     sql = """
         SELECT COUNT(*) AS open_orders, COALESCE(SUM(o.total_price),0) AS open_value
@@ -1827,6 +1889,10 @@ async def quotation_status_options_async(**kw):
 
 async def quotations_in_progress_async(**kw):
     return await _run(_quotations_in_progress_sync, **kw)
+
+
+async def open_invoices_count_async(**kw):
+    return await _run(_open_invoices_count_sync, **kw)
 
 
 async def open_invoices_async(**kw):

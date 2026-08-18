@@ -18425,8 +18425,20 @@ async function sacrUpdateDataSourceNote() {
 // offline-capable and theme-aware.
 
 const BOV_AUTOREFRESH_MS = 60000;
-const BOV_LIVE_WIDGETS = ["summary", "quotations", "invoicesPeriod", "invoicesOpen", "purchasesIncoming", "shopifyOrders"];
-const BOV_SHOPIFY_WIDGETS = ["summary", "top", "shopifyOrders"];
+const BOV_LIVE_WIDGETS = ["summary", "quotations", "invoicesPeriod", "invoicesOpen", "purchasesIncoming", "shopifyOrders", "alerts"];
+const BOV_SHOPIFY_WIDGETS = ["summary", "top", "shopifyOrders", "alerts"];
+// Rule keys with the form fields they carry (mirror of BOV_DEFAULT_ALERT_RULES).
+const BOV_ALERT_RULE_FIELDS = {
+  unshipped_cutoff: ["cutoff"],
+  open_invoice_age: ["days"],
+  quotation_stuck: ["hours"],
+  po_overdue: ["days"],
+  shopify_on_hold: [],
+  shopify_unfulfilled_age: ["hours"],
+  shopify_sync_stale: ["hours"],
+  margin_floor: ["pct", "per_store"],
+  revenue_drop: ["pct"],
+};
 const BOV_SHOPIFY_AUTO_REFRESH_MS = 15 * 60 * 1000;
 const BOV_PREFS_KEY = "bov_prefs";
 const BOV_ROWS_COLLAPSED = 12;
@@ -18506,6 +18518,7 @@ const bovState = {
     purchasesPurchased: bovEmptyWidget(),
     purchasesReceived: bovEmptyWidget(),
     shopifyOrders: bovEmptyWidget(),
+    alerts: bovEmptyWidget(),
   },
   seq: 0,
   shopifyRefreshing: false,
@@ -18777,6 +18790,18 @@ function bovRenderNavBadges() {
   set("purchasing", po ? (po.count || 0) : null);
   const sh = okData(bovState.widgets.shopifyOrders);
   set("shopify", sh && sh.totals ? (sh.totals.orders || 0) : null);
+  // Overview badge = number of active alerts (server rules + client money rules)
+  const all = bovAllAlerts();
+  const ov = document.getElementById("bov-nav-count-overview");
+  if (ov) {
+    if (!all.length) { ov.hidden = true; ov.textContent = ""; ov.classList.remove("is-critical"); }
+    else {
+      ov.hidden = false;
+      ov.textContent = bovInt(all.length);
+      ov.classList.toggle("is-critical", all.some((a) => a.severity === "critical"));
+      ov.title = `${all.length} alert${all.length === 1 ? "" : "s"} need attention`;
+    }
+  }
 }
 
 // ----- Topbar popovers (Period / Stores) -----
@@ -19008,6 +19033,24 @@ function bovBindOnce() {
     if (!t) return;
     e.preventDefault();
     bovToggleCardCollapsed(t.dataset.bovCollapse);
+  });
+
+  // Attention pills → deep link
+  const alertFromEl = (el) => (bovState.alertsCache || bovAllAlerts()).find((a) => a.key === el.dataset.bovAlert);
+  page.addEventListener("click", (e) => {
+    const pill = e.target.closest("[data-bov-alert]");
+    if (!pill) return;
+    e.preventDefault();
+    const a = alertFromEl(pill);
+    if (a) bovApplyAlertAction(a);
+  });
+  page.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    const pill = e.target.closest("[data-bov-alert]");
+    if (!pill) return;
+    e.preventDefault();
+    const a = alertFromEl(pill);
+    if (a) bovApplyAlertAction(a);
   });
 
   // Section switcher (subnav + KPI tiles)
@@ -19666,6 +19709,15 @@ const BOV_WIDGET_DEFS = {
       bovRenderKpiFoot();
     },
   },
+  alerts: {
+    card: "bov-attention",
+    request: () => ["/alerts", { ...bovRangeParams(), ...bovStoreParams() }],
+    render: () => {
+      bovRenderAttention();
+      bovRenderNavBadges();
+      bovMarkKpiAlerts();
+    },
+  },
 };
 
 async function bovFetchAll(opts = {}) {
@@ -19767,9 +19819,14 @@ function bovPaintSkeleton(key) {
     purchasesPurchased: "bov-purchases-body",
     purchasesReceived: "bov-purchases-body",
     shopifyOrders: "bov-shopify-body",
+    alerts: "bov-attention-body",
   }[key];
   const el = bodyId && document.getElementById(bodyId);
   if (!el) return;
+  if (key === "alerts") {
+    el.innerHTML = `<span class="bov-alert is-checking"><span class="bov-alert-dot"></span>Checking…</span>`;
+    return;
+  }
   if (key === "summary") {
     el.innerHTML = Array.from({ length: 6 }, () => `<div class="bov-kpi-card bov-kpi-skeleton"><span class="dashboard-skeleton-row bov-skel-label"></span><span class="dashboard-skeleton-row bov-skel-value"></span><span class="dashboard-skeleton-row bov-skel-sub"></span><span class="dashboard-skeleton-row bov-skel-sub"></span></div>`).join("");
     return;
@@ -20251,6 +20308,174 @@ function bovRenderKpis() {
 
   strip.innerHTML = tiles.map(bovKpiTile).join("");
   bovRenderKpiFoot();
+  bovMarkKpiAlerts();
+  // Money alerts derive from this summary — keep the strip and badge in step.
+  bovRenderAttention();
+  bovRenderNavBadges();
+}
+
+// ---------------------------------------------------------------------------
+// Attention strip: server-side operational alerts + client-side money rules
+// ---------------------------------------------------------------------------
+
+function bovMoneyAlerts(summaryData, rules) {
+  const out = [];
+  const sales = summaryData && summaryData.sales;
+  rules = rules || (bovState.config && bovState.config.alert_rules) || {};
+  if (!sales || !sales.configured) return out;
+  const tot = (sales.totals && sales.totals.total) || {};
+  const prev = (sales.previous_totals && sales.previous_totals.total) || {};
+  const mf = rules.margin_floor || {};
+  if (mf.enabled !== false && mf.pct != null) {
+    const floor = bovNum(mf.pct);
+    if ((tot.revenue || 0) > 0 && tot.margin_pct != null && bovNum(tot.margin_pct) < floor) {
+      out.push({
+        key: "margin_floor", severity: "warn", count: null, amount: null,
+        title: `Margin ${bovNum(tot.margin_pct).toFixed(1)}% is below the ${floor}% floor`,
+        detail: `${bovCompactMoney(tot.profit || 0)} profit on ${bovCompactMoney(tot.revenue || 0)}`,
+        stores: [], action: { section: "overview", target: "bov-trend-card" },
+      });
+    }
+    if (mf.per_store) {
+      (sales.per_store || []).forEach((ps) => {
+        if (ps.error || !(ps.revenue > 0) || ps.margin_pct == null) return;
+        if (bovNum(ps.margin_pct) < floor) {
+          out.push({
+            key: `margin_floor:${ps.store_id}`, severity: "warn", count: null, amount: null,
+            title: `${bovStoreShort(ps.store_name)} margin ${bovNum(ps.margin_pct).toFixed(1)}% below the ${floor}% floor`,
+            detail: `${bovCompactMoney(ps.profit || 0)} profit on ${bovCompactMoney(ps.revenue || 0)}${ps.source === "shopify" ? " · Shopify" : ""}`,
+            stores: [ps.store_name], action: { section: "overview", target: "bov-trend-card" },
+          });
+        }
+      });
+    }
+  }
+  const rd = rules.revenue_drop || {};
+  if (rd.enabled !== false && rd.pct != null) {
+    const p = bovNum(prev.revenue);
+    const c = bovNum(tot.revenue);
+    if (p >= 500 && c < p * (1 - bovNum(rd.pct) / 100)) {
+      const drop = ((p - c) / p) * 100;
+      out.push({
+        key: "revenue_drop", severity: "warn", count: null, amount: null,
+        title: `Revenue down ${drop.toFixed(0)}% vs previous period`,
+        detail: `${bovCompactMoney(c)} vs ${bovCompactMoney(p)}`,
+        stores: [], action: { section: "overview", target: "bov-trend-card" },
+      });
+    }
+  }
+  return out;
+}
+
+function bovAllAlerts() {
+  const aw = bovState.widgets.alerts;
+  const server = (aw && aw.data && Array.isArray(aw.data.alerts)) ? aw.data.alerts : [];
+  const sw = bovState.widgets.summary;
+  const money = sw && sw.data ? bovMoneyAlerts(sw.data, (aw && aw.data && aw.data.rules) || null) : [];
+  const rank = { critical: 0, warn: 1 };
+  return server.concat(money).sort((a, b) => (rank[a.severity] ?? 9) - (rank[b.severity] ?? 9) || (b.count || 0) - (a.count || 0));
+}
+
+function bovAlertPillHtml(a) {
+  const sev = a.severity === "critical" ? "is-critical" : "is-warn";
+  const val = a.count != null ? bovInt(a.count) : (a.amount != null ? bovCompactMoney(a.amount) : "");
+  const title = a.title || "";
+  // Strip a leading count from the title when we already show it as the value.
+  const label = a.count != null && title.startsWith(bovInt(a.count)) ? title.slice(bovInt(a.count).length).trim() : title;
+  return `<span class="bov-alert ${sev}" role="button" tabindex="0" data-bov-alert="${escapeHtml(a.key)}" title="${escapeHtml([a.title, a.detail].filter(Boolean).join(" — "))}">` +
+    `<span class="bov-alert-dot" aria-hidden="true"></span>` +
+    (val ? `<b class="bov-alert-val">${escapeHtml(val)}</b>` : "") +
+    `<span class="bov-alert-title">${escapeHtml(label)}</span>` +
+    (a.detail ? `<span class="bov-alert-detail">${escapeHtml(a.detail)}</span>` : "") +
+    `<span class="bov-alert-go" aria-hidden="true">›</span>` +
+    `</span>`;
+}
+
+function bovRenderAttention() {
+  const body = document.getElementById("bov-attention-body");
+  const cap = document.getElementById("bov-attention-cap");
+  const wrap = document.getElementById("bov-attention");
+  if (!body || !wrap) return;
+  const w = bovState.widgets.alerts;
+  if (!w.data && !w.error) {
+    if (!w.loading) bovPaintSkeleton("alerts");
+    if (cap) cap.textContent = "";
+    return;
+  }
+  if (w.error && !w.data) {
+    body.innerHTML = bovInlineErrorHtml("alerts", w.error, "Alerts could not be checked");
+    if (cap) cap.textContent = "";
+    wrap.classList.remove("is-clear");
+    return;
+  }
+  const d = w.data;
+  const alerts = bovAllAlerts();
+  const errors = d.errors || [];
+  const checked = (d.checked || []).length + 2; // + client money rules
+  const bits = [`checked ${bovInt(checked)} rule${checked === 1 ? "" : "s"}`];
+  if (d.skipped && d.skipped.length) bits.push(`${bovInt(d.skipped.length)} skipped`);
+  if (errors.length) bits.push(`${bovInt(errors.length)} couldn't be checked`);
+  if (cap) {
+    cap.textContent = bits.join(" · ");
+    cap.title = [...(d.skipped || []), ...errors].join("\n");
+    cap.classList.toggle("is-warn", errors.length > 0);
+  }
+  bovState.alertsCache = alerts;
+  if (!alerts.length) {
+    wrap.classList.add("is-clear");
+    body.innerHTML = `<span class="bov-alert is-ok"><span class="bov-alert-dot" aria-hidden="true"></span><span class="bov-alert-title">All clear — nothing needs attention</span>${errors.length ? `<span class="bov-alert-detail">${bovInt(errors.length)} rule${errors.length === 1 ? "" : "s"} couldn't be checked</span>` : ""}</span>`;
+    return;
+  }
+  wrap.classList.remove("is-clear");
+  body.innerHTML = alerts.map(bovAlertPillHtml).join("");
+}
+
+function bovMarkKpiAlerts() {
+  const strip = document.getElementById("bov-kpi-strip");
+  if (!strip) return;
+  const alerts = bovAllAlerts();
+  const byLabel = {
+    "Open invoices": ["unshipped_cutoff", "open_invoice_age"],
+    "Quotes in progress": ["quotation_stuck"],
+    "PO incoming": ["po_overdue"],
+    "Revenue": ["revenue_drop"],
+    "Profit": ["margin_floor"],
+  };
+  strip.querySelectorAll(".bov-kpi-card").forEach((card) => {
+    const label = card.querySelector(".bov-kpi-label")?.textContent.trim();
+    const keys = byLabel[label] || [];
+    const hits = alerts.filter((a) => keys.some((k) => a.key === k || a.key.startsWith(`${k}:`)));
+    card.classList.toggle("has-alert", hits.length > 0);
+    card.classList.toggle("has-alert-critical", hits.some((a) => a.severity === "critical"));
+    if (hits.length) card.dataset.alertTitle = hits.map((a) => a.title).join(" · ");
+    else delete card.dataset.alertTitle;
+  });
+}
+
+function bovApplyAlertAction(alert) {
+  const act = (alert && alert.action) || {};
+  if (act.tab) {
+    const [group, value] = String(act.tab).split(":");
+    if (group && value) bovSetTab(group, value);
+  }
+  if (act.open_all_dates && bovState.openInRange) {
+    bovState.openInRange = false;
+    bovSavePrefs();
+    bovFetchAll({ only: ["invoicesOpen", "invoicesPeriod", "summary"] });
+  }
+  if (act.sort && act.sort.widget && bovState.sort[act.sort.widget]) {
+    bovState.sort[act.sort.widget] = { key: act.sort.key, dir: act.sort.dir || "desc" };
+    bovRenderCard(act.sort.widget);
+  }
+  const section = act.section || "overview";
+  bovJumpTo(section, act.target);
+  const target = act.target && document.getElementById(act.target);
+  if (target) {
+    target.classList.remove("is-flash");
+    void target.offsetWidth;
+    target.classList.add("is-flash");
+    setTimeout(() => target.classList.remove("is-flash"), 1400);
+  }
 }
 
 function bovRenderKpiFoot() {
@@ -21815,12 +22040,66 @@ function bovRenderConfigBar() {
     ["Quotation statuses", (cfg.quotation_statuses || []).join(", ") || "All statuses", true],
     ["Admin DB (quotations)", cfg.admin_store_name || "Not set — pick it under Edit sources", !!cfg.admin_store_id],
     ["Cost source for Shopify", cfg.cost_store_name || "Not resolved (Item Tracker S2S or first sales store)", !!cfg.cost_store_id],
+    ["Alerts", bovAlertRulesSummary(cfg.alert_rules), true],
     ["Timezone", cfg.timezone || "America/Chicago", true],
     ["Excluded customers", `${bovInt(cfg.sales_exclusions_count || 0)} account${cfg.sales_exclusions_count === 1 ? "" : "s"} removed from BackOffice sales totals`, true],
   ];
   details.innerHTML =
     `<div class="bov-config-rows">${rows.map(([k, v, ok]) => `<div class="bov-config-row${ok ? "" : " is-warn"}">${bovConfigDot(ok, !ok)}<span class="bov-config-row-key">${escapeHtml(k)}</span><span class="bov-config-row-val">${escapeHtml(v)}</span></div>`).join("")}</div>` +
     `<div class="bov-config-links"><a href="#" data-bov-action="config">Edit sources</a><a href="#" data-bov-action="exclusions">Manage exclusions</a><a href="#" data-bov-action="settings-roles">Admin DB</a></div>`;
+}
+
+function bovAlertRulesSummary(rules) {
+  rules = rules || {};
+  const keys = Object.keys(BOV_ALERT_RULE_FIELDS);
+  const on = keys.filter((k) => rules[k] && rules[k].enabled !== false).length;
+  const bits = [`${on} of ${keys.length} rules on`];
+  if (rules.unshipped_cutoff && rules.unshipped_cutoff.enabled !== false && rules.unshipped_cutoff.cutoff) bits.push(`cutoff ${bovFmtClock(rules.unshipped_cutoff.cutoff)}`);
+  if (rules.margin_floor && rules.margin_floor.enabled !== false && rules.margin_floor.pct != null) bits.push(`margin floor ${rules.margin_floor.pct}%`);
+  if (rules.revenue_drop && rules.revenue_drop.enabled !== false && rules.revenue_drop.pct != null) bits.push(`revenue drop ${rules.revenue_drop.pct}%`);
+  return bits.join(" · ");
+}
+
+function bovFmtClock(hhmm) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(hhmm || ""));
+  if (!m) return String(hhmm || "");
+  const h = parseInt(m[1], 10);
+  const ap = h >= 12 ? "pm" : "am";
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${h12}:${m[2]} ${ap}`;
+}
+
+function bovPopulateAlertRules(rules) {
+  rules = rules || {};
+  Object.entries(BOV_ALERT_RULE_FIELDS).forEach(([key, fields]) => {
+    const r = rules[key] || {};
+    const en = document.getElementById(`bov-rule-${key}-enabled`);
+    if (en) en.checked = r.enabled !== false;
+    fields.forEach((f) => {
+      const el = document.getElementById(`bov-rule-${key}-${f}`);
+      if (!el) return;
+      if (el.type === "checkbox") el.checked = !!r[f];
+      else el.value = r[f] != null ? r[f] : "";
+    });
+  });
+}
+
+function bovCollectAlertRules() {
+  const out = {};
+  Object.entries(BOV_ALERT_RULE_FIELDS).forEach(([key, fields]) => {
+    const en = document.getElementById(`bov-rule-${key}-enabled`);
+    if (!en) return;
+    const r = { enabled: !!en.checked };
+    fields.forEach((f) => {
+      const el = document.getElementById(`bov-rule-${key}-${f}`);
+      if (!el) return;
+      if (el.type === "checkbox") r[f] = !!el.checked;
+      else if (el.type === "time") { if (el.value) r[f] = el.value; }
+      else if (el.value !== "") r[f] = Number(el.value);
+    });
+    out[key] = r;
+  });
+  return out;
 }
 
 function bovToggleConfigDetails() {
@@ -21912,6 +22191,7 @@ function bovPopulateConfigForm(cfg, opts = {}) {
   }
   const tz = document.getElementById("bov-cfg-tz");
   if (tz) tz.value = cfg.timezone || "America/Chicago";
+  bovPopulateAlertRules(cfg.alert_rules);
 
   const ro = document.getElementById("bov-config-ro");
   if (ro) {
@@ -21965,6 +22245,7 @@ async function bovSaveConfig() {
     shopify_store_ids: shopIds,
     quotation_statuses: statuses,
     timezone: tz,
+    alert_rules: bovCollectAlertRules(),
   };
   if (btn) btn.disabled = true;
   try {

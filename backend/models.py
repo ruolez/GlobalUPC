@@ -152,6 +152,7 @@ class BusinessOverviewConfig(Base):
     shopify_store_ids = Column(JSONB, default=[])
     quotation_statuses = Column(JSONB, default=["In Progress", "Locked"])
     timezone = Column(String(64), nullable=False, server_default="America/Chicago")
+    alert_rules = Column(JSONB, default={})
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
