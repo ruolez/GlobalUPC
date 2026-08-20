@@ -18306,7 +18306,7 @@ function renderSyncStores() {
           <button type="button" class="btn btn-primary sync-btn" data-sync-action="sync" data-store-id="${s.store_id}" ${busy ? "disabled" : ""}>
             ${s.last_completed_at ? "Sync" : "Sync now"}
           </button>
-          <button type="button" class="btn btn-secondary sync-btn" data-sync-action="full" data-store-id="${s.store_id}" ${busy || !s.last_completed_at ? "disabled" : ""}>
+          <button type="button" class="btn btn-secondary sync-btn" data-sync-action="full" data-store-id="${s.store_id}" ${busy || !s.last_completed_at ? "disabled" : ""}${!s.last_completed_at ? ' title="The first sync is always a full download - use Sync now. Full resync becomes available after it completes."' : ""}>
             Full resync
           </button>`;
       return `
