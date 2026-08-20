@@ -2,7 +2,7 @@ from fastapi import FastAPI, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from typing import List, Union, AsyncGenerator, Optional, Dict, Any, Tuple, Set
+from typing import List, Union, AsyncGenerator, Optional, Dict, Any, Tuple, Set, Literal
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
 from datetime import datetime, date, timedelta, timezone
@@ -16,6 +16,7 @@ import uuid
 import os
 
 from database import get_db, engine
+from shopify_oauth_helper import fetch_client_credentials_token, apply_token
 from models import Store, MSSQLConnection, ShopifyConnection, Setting, StoreType, StoreCategory, UPCUpdateHistory, UPCExclusion, ItemTrackerConfig, ItemTrackerExclusion, PriceUpdateHistory, StoreMirror, SalesConfig, SalesExclusion, BusinessOverviewConfig, BusinessOverviewShopifyExclusion
 from schemas import (
     MSSQLStoreCreate, ShopifyStoreCreate, ShipperStoreCreate, MSSQLStoreUpdate, ShopifyStoreUpdate, ShipperStoreUpdate, StoreResponse, StoreNameUpdate, StoreCategoryUpdate,
@@ -127,7 +128,11 @@ from checked_orders_helper import (
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from shopify_oauth_helper import token_refresh_loop
+    oauth_refresh_task = asyncio.create_task(token_refresh_loop())
     yield
+    print("[SHUTDOWN] Cancelling Shopify OAuth token refresh loop...")
+    oauth_refresh_task.cancel()
     print("[SHUTDOWN] Disposing database connections...")
     engine.dispose()
     print("[SHUTDOWN] Shutting down MSSQL thread pool...")
@@ -204,8 +209,12 @@ class MSSQLConnectionTest(BaseModel):
 
 class ShopifyConnectionTest(BaseModel):
     shop_domain: str
-    admin_api_key: str
+    auth_method: Literal["token", "client_credentials"] = "token"
+    admin_api_key: Optional[str] = None
+    client_id: Optional[str] = None
+    client_secret: Optional[str] = None
     api_version: str = "2025-01"
+    store_id: Optional[int] = None  # edit mode: fall back to stored credentials
 
 # Connection test endpoints
 @app.post("/api/test/mssql")
@@ -232,18 +241,41 @@ def test_mssql(connection: MSSQLConnectionTest):
         }
 
 @app.post("/api/test/shopify")
-def test_shopify(connection: ShopifyConnectionTest):
-    """Test Shopify store connection"""
+def test_shopify(connection: ShopifyConnectionTest, db: Session = Depends(get_db)):
+    """Test Shopify store connection (Admin API token or OAuth client credentials)"""
+    stored = None
+    if connection.store_id is not None:
+        store = db.query(Store).filter(Store.id == connection.store_id).first()
+        stored = store.shopify_connection if store else None
+
+    if connection.auth_method == "client_credentials":
+        client_id = connection.client_id or (stored.client_id if stored else None)
+        client_secret = connection.client_secret or (stored.client_secret if stored else None)
+        if not client_id or not client_secret:
+            return {"success": False, "message": "Client ID and client secret are required"}
+        ok, error, token_data = fetch_client_credentials_token(
+            connection.shop_domain, client_id, client_secret
+        )
+        if not ok:
+            return {"success": False, "message": error or "OAuth token request failed"}
+        access_token = token_data["access_token"]
+        suffix = " OAuth token issued (valid ~24h)."
+    else:
+        access_token = connection.admin_api_key or (stored.admin_api_key if stored else None)
+        if not access_token:
+            return {"success": False, "message": "Admin API key is required"}
+        suffix = ""
+
     success, error, shop_info = test_shopify_connection(
         shop_domain=connection.shop_domain,
-        admin_api_key=connection.admin_api_key,
+        admin_api_key=access_token,
         api_version=connection.api_version
     )
 
     if success:
         return {
             "success": True,
-            "message": f"Connection successful! Connected to: {shop_info.get('name', 'Unknown')}",
+            "message": f"Connection successful! Connected to: {shop_info.get('name', 'Unknown')}.{suffix}",
             "shop_info": shop_info
         }
     else:
@@ -1128,6 +1160,17 @@ def create_shopify_store(store_data: ShopifyStoreCreate, db: Session = Depends(g
     if existing:
         raise HTTPException(status_code=400, detail="Shop domain already exists")
 
+    # OAuth mode: validate credentials by fetching a token up front
+    token_data = None
+    if store_data.connection.auth_method == "client_credentials":
+        ok, error, token_data = fetch_client_credentials_token(
+            store_data.connection.shop_domain,
+            store_data.connection.client_id,
+            store_data.connection.client_secret,
+        )
+        if not ok:
+            raise HTTPException(status_code=400, detail=f"OAuth token request failed: {error}")
+
     # Create store
     store = Store(
         name=store_data.name,
@@ -1142,10 +1185,15 @@ def create_shopify_store(store_data: ShopifyStoreCreate, db: Session = Depends(g
     connection = ShopifyConnection(
         store_id=store.id,
         shop_domain=store_data.connection.shop_domain,
+        auth_method=store_data.connection.auth_method,
         admin_api_key=store_data.connection.admin_api_key,
+        client_id=store_data.connection.client_id,
+        client_secret=store_data.connection.client_secret,
         api_version=store_data.connection.api_version,
         update_sku_with_barcode=store_data.connection.update_sku_with_barcode
     )
+    if token_data:
+        apply_token(connection, token_data)
     db.add(connection)
     db.commit()
     db.refresh(store)
@@ -1218,11 +1266,33 @@ def update_shopify_store(store_id: int, store_data: ShopifyStoreUpdate, db: Sess
     store.store_category = store_data.store_category
 
     conn = store.shopify_connection
+    prev_auth_method = conn.auth_method
     conn.shop_domain = store_data.connection.shop_domain
     conn.api_version = store_data.connection.api_version
     conn.update_sku_with_barcode = store_data.connection.update_sku_with_barcode
-    if store_data.connection.admin_api_key:  # only overwrite when provided
-        conn.admin_api_key = store_data.connection.admin_api_key
+    conn.auth_method = store_data.connection.auth_method
+
+    if store_data.connection.auth_method == "client_credentials":
+        conn.client_id = store_data.connection.client_id
+        if store_data.connection.client_secret:  # only overwrite when provided
+            conn.client_secret = store_data.connection.client_secret
+        if not conn.client_secret:
+            raise HTTPException(status_code=400, detail="Client secret is required")
+        ok, error, token_data = fetch_client_credentials_token(
+            conn.shop_domain, conn.client_id, conn.client_secret
+        )
+        if not ok:
+            raise HTTPException(status_code=400, detail=f"OAuth token request failed: {error}")
+        apply_token(conn, token_data)  # ignore any admin_api_key in the payload: it's the cache
+    else:
+        if store_data.connection.admin_api_key:  # only overwrite when provided
+            conn.admin_api_key = store_data.connection.admin_api_key
+        elif prev_auth_method == "client_credentials":
+            # blank key would silently keep the cached 24h OAuth token
+            raise HTTPException(status_code=400, detail="Admin API key is required when switching to token auth")
+        conn.client_id = None
+        conn.client_secret = None
+        conn.token_expires_at = None
 
     db.commit()
     db.refresh(store)
@@ -1388,7 +1458,10 @@ def export_configuration(db: Session = Depends(get_db)):
                 store_category=store.store_category.value if store.store_category else "retail",
                 connection={
                     "shop_domain": store.shopify_connection.shop_domain,
+                    "auth_method": store.shopify_connection.auth_method,
                     "admin_api_key": store.shopify_connection.admin_api_key,
+                    "client_id": store.shopify_connection.client_id,
+                    "client_secret": store.shopify_connection.client_secret,
                     "api_version": store.shopify_connection.api_version,
                     "update_sku_with_barcode": store.shopify_connection.update_sku_with_barcode
                 }
@@ -1503,10 +1576,21 @@ def import_configuration(config: ConfigImportRequest, db: Session = Depends(get_
             connection = ShopifyConnection(
                 store_id=store.id,
                 shop_domain=store_data.connection["shop_domain"],
-                admin_api_key=store_data.connection["admin_api_key"],
+                auth_method=store_data.connection.get("auth_method", "token"),
+                admin_api_key=store_data.connection.get("admin_api_key"),
+                client_id=store_data.connection.get("client_id"),
+                client_secret=store_data.connection.get("client_secret"),
                 api_version=store_data.connection.get("api_version", "2025-01"),
                 update_sku_with_barcode=store_data.connection.get("update_sku_with_barcode", False)
             )
+            # OAuth: best-effort token fetch now; the background refresh loop
+            # picks up any failure (token_expires_at stays NULL => due).
+            if connection.auth_method == "client_credentials" and connection.client_id and connection.client_secret:
+                ok, _err, token_data = fetch_client_credentials_token(
+                    connection.shop_domain, connection.client_id, connection.client_secret
+                )
+                if ok:
+                    apply_token(connection, token_data)
             db.add(connection)
             db.commit()
 

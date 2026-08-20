@@ -1279,6 +1279,10 @@ function createStoreCard(store, index) {
                         <span class="store-detail-value">${connection.api_version}</span>
                     </div>
                     <div class="store-detail">
+                        <span class="store-detail-label">Auth</span>
+                        <span class="store-detail-value">${connection.auth_method === "client_credentials" ? "OAuth (client credentials)" : "Admin token"}</span>
+                    </div>
+                    <div class="store-detail">
                         <span class="store-detail-label">Update SKU with Barcode</span>
                         <span class="store-detail-value">${connection.update_sku_with_barcode ? "Enabled" : "Disabled"}</span>
                     </div>
@@ -1398,6 +1402,22 @@ let mssqlEditId = null;
 let shopifyEditId = null;
 let shipperEditId = null;
 
+// Show token or OAuth credential fields per the selected auth method
+function updateShopifyAuthFields() {
+  const method = document.getElementById("shopify-auth-method").value;
+  const isEdit = shopifyEditId != null;
+  const oauth = method === "client_credentials";
+  document.getElementById("shopify-token-fields").style.display = oauth
+    ? "none"
+    : "";
+  document.getElementById("shopify-oauth-fields").style.display = oauth
+    ? ""
+    : "none";
+  document.getElementById("shopify-api-key").required = !oauth && !isEdit;
+  document.getElementById("shopify-client-id").required = oauth;
+  document.getElementById("shopify-client-secret").required = oauth && !isEdit;
+}
+
 // Swap modal title/submit-button/secret-field between create and edit modes
 function setStoreModalMode(type, isEdit) {
   if (type === "mssql") {
@@ -1416,8 +1436,10 @@ function setStoreModalMode(type, isEdit) {
     document.querySelector("#shopify-form button[type=submit]").textContent =
       isEdit ? "Save Changes" : "Add Store";
     const key = document.getElementById("shopify-api-key");
-    key.required = !isEdit;
     key.placeholder = isEdit ? "Leave blank to keep current" : "shpat_...";
+    const secret = document.getElementById("shopify-client-secret");
+    secret.placeholder = isEdit ? "Leave blank to keep current" : "shpss_...";
+    updateShopifyAuthFields();
   }
   if (type === "shipper") {
     document.querySelector("#shipper-modal .modal-header h3").textContent = isEdit
@@ -1467,7 +1489,11 @@ function openEditStoreModal(store) {
     document.getElementById("shopify-category").value =
       store.store_category || "retail";
     document.getElementById("shopify-domain").value = c.shop_domain;
+    document.getElementById("shopify-auth-method").value =
+      c.auth_method || "token";
     document.getElementById("shopify-api-key").value = "";
+    document.getElementById("shopify-client-id").value = c.client_id || "";
+    document.getElementById("shopify-client-secret").value = "";
     document.getElementById("shopify-version").value = c.api_version;
     const skuCheckbox = document.querySelector(
       "#shopify-form input[name=update_sku_with_barcode]",
@@ -1638,9 +1664,17 @@ async function testShopifyConnection() {
 
   const testData = {
     shop_domain: formData.get("shop_domain"),
+    auth_method: formData.get("auth_method") || "token",
     admin_api_key: formData.get("admin_api_key"),
+    client_id: formData.get("client_id"),
+    client_secret: formData.get("client_secret"),
     api_version: formData.get("api_version"),
   };
+  // edit mode: blank credentials fall back to the stored ones
+  if (shopifyEditId != null) testData.store_id = shopifyEditId;
+  if (!testData.admin_api_key) delete testData.admin_api_key;
+  if (!testData.client_id) delete testData.client_id;
+  if (!testData.client_secret) delete testData.client_secret;
 
   // Show loading state
   statusEl.className = "test-status loading";
@@ -1672,6 +1706,7 @@ async function testShopifyConnection() {
 document.getElementById("add-shopify-btn").addEventListener("click", () => {
   shopifyEditId = null;
   document.getElementById("shopify-form").reset();
+  document.getElementById("shopify-auth-method").value = "token";
   setStoreModalMode("shopify", false);
   openModal("shopify-modal");
   // Clear test status when opening modal
@@ -1684,11 +1719,16 @@ document
   .addEventListener("click", testShopifyConnection);
 
 document
+  .getElementById("shopify-auth-method")
+  .addEventListener("change", updateShopifyAuthFields);
+
+document
   .getElementById("shopify-form")
   .addEventListener("submit", async (e) => {
     e.preventDefault();
     const formData = new FormData(e.target);
 
+    const authMethod = formData.get("auth_method") || "token";
     const data = {
       name: formData.get("name"),
       store_type: "shopify",
@@ -1696,16 +1736,23 @@ document
       store_category: formData.get("store_category"),
       connection: {
         shop_domain: formData.get("shop_domain"),
-        admin_api_key: formData.get("admin_api_key"),
+        auth_method: authMethod,
         api_version: formData.get("api_version"),
         update_sku_with_barcode:
           formData.get("update_sku_with_barcode") === "on",
       },
     };
+    if (authMethod === "client_credentials") {
+      data.connection.client_id = formData.get("client_id");
+      data.connection.client_secret = formData.get("client_secret");
+    } else {
+      data.connection.admin_api_key = formData.get("admin_api_key");
+    }
 
     if (shopifyEditId != null) {
-      // omit api key when blank so backend keeps the current one
+      // omit credentials when blank so backend keeps the current ones
       if (!data.connection.admin_api_key) delete data.connection.admin_api_key;
+      if (!data.connection.client_secret) delete data.connection.client_secret;
       await apiRequest(`/stores/${shopifyEditId}/shopify`, {
         method: "PUT",
         body: JSON.stringify(data),

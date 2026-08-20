@@ -31,12 +31,19 @@ CREATE TABLE mssql_connections (
     UNIQUE(store_id)
 );
 
--- Shopify store connections (using Admin API key)
+-- Shopify store connections (Admin API token or OAuth client credentials).
+-- admin_api_key holds the current access token in both modes: the permanent
+-- shpat_ token (auth_method = 'token') or the cached 24h OAuth token
+-- (auth_method = 'client_credentials', refreshed by the backend).
 CREATE TABLE shopify_connections (
     id SERIAL PRIMARY KEY,
     store_id INTEGER NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
     shop_domain VARCHAR(255) NOT NULL,
-    admin_api_key VARCHAR(512) NOT NULL,
+    admin_api_key VARCHAR(512),
+    auth_method VARCHAR(30) NOT NULL DEFAULT 'token',
+    client_id VARCHAR(255),
+    client_secret VARCHAR(255),
+    token_expires_at TIMESTAMPTZ,
     api_version VARCHAR(50) DEFAULT '2025-01',
     update_sku_with_barcode BOOLEAN DEFAULT false,
     first_order_tag VARCHAR(100) NOT NULL DEFAULT 'First order',

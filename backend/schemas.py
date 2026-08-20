@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing import Optional, Literal, List, Dict, Tuple, Any
 from datetime import datetime, date
 
@@ -17,10 +17,23 @@ class MSSQLConnectionBase(BaseModel):
 
 class ShopifyConnectionBase(BaseModel):
     shop_domain: str
-    admin_api_key: str
+    auth_method: Literal["token", "client_credentials"] = "token"
+    admin_api_key: Optional[str] = None
+    client_id: Optional[str] = None
+    client_secret: Optional[str] = None
     api_version: str = "2025-01"
     update_sku_with_barcode: bool = False
     first_order_tag: str = "First order"
+
+    @model_validator(mode="after")
+    def _require_mode_credentials(self):
+        if self.auth_method == "token":
+            if not self.admin_api_key:
+                raise ValueError("admin_api_key is required for token auth")
+        else:
+            if not self.client_id or not self.client_secret:
+                raise ValueError("client_id and client_secret are required for OAuth client credentials auth")
+        return self
 
 class MSSQLStoreCreate(StoreBase):
     store_type: Literal["mssql"] = "mssql"
@@ -49,9 +62,18 @@ class ShipperStoreUpdate(StoreBase):
 
 class ShopifyConnectionUpdate(BaseModel):
     shop_domain: str
+    auth_method: Literal["token", "client_credentials"] = "token"
     admin_api_key: Optional[str] = None  # blank/None => keep current
+    client_id: Optional[str] = None
+    client_secret: Optional[str] = None  # blank/None => keep current
     api_version: str = "2025-01"
     update_sku_with_barcode: bool = False
+
+    @model_validator(mode="after")
+    def _require_mode_credentials(self):
+        if self.auth_method == "client_credentials" and not self.client_id:
+            raise ValueError("client_id is required for OAuth client credentials auth")
+        return self
 
 class ShopifyStoreUpdate(StoreBase):
     connection: ShopifyConnectionUpdate
@@ -65,9 +87,19 @@ class MSSQLConnectionResponse(MSSQLConnectionBase):
     class Config:
         from_attributes = True
 
-class ShopifyConnectionResponse(ShopifyConnectionBase):
+# Standalone (does NOT inherit ShopifyConnectionBase) so client_secret is
+# never serialized into API responses.
+class ShopifyConnectionResponse(BaseModel):
     id: int
     store_id: int
+    shop_domain: str
+    auth_method: str = "token"
+    admin_api_key: Optional[str] = None
+    client_id: Optional[str] = None
+    token_expires_at: Optional[datetime] = None
+    api_version: str = "2025-01"
+    update_sku_with_barcode: bool = False
+    first_order_tag: str = "First order"
     created_at: datetime
     updated_at: datetime
 

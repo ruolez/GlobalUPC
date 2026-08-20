@@ -5614,14 +5614,56 @@
             />
           </div>
           <div class="form-group">
-            <label for="shopify-api-key">Admin API Key</label>
-            <input
-              type="password"
-              id="shopify-api-key"
-              name="admin_api_key"
-              required
-              placeholder="shpat_..."
-            />
+            <label for="shopify-auth-method">Authentication</label>
+            <select id="shopify-auth-method" name="auth_method">
+              <option value="token" selected>Admin API token (legacy)</option>
+              <option value="client_credentials">
+                OAuth client credentials
+              </option>
+            </select>
+            <small
+              style="
+                color: var(--text-tertiary);
+                font-size: 0.75rem;
+                margin-top: 0.25rem;
+                display: block;
+              "
+              >New stores can no longer use permanent admin tokens. Create an
+              app in the Shopify Dev Dashboard, install it on the store, then
+              use its Client ID and Client secret here.</small
+            >
+          </div>
+          <div id="shopify-token-fields">
+            <div class="form-group">
+              <label for="shopify-api-key">Admin API Key</label>
+              <input
+                type="password"
+                id="shopify-api-key"
+                name="admin_api_key"
+                required
+                placeholder="shpat_..."
+              />
+            </div>
+          </div>
+          <div id="shopify-oauth-fields" style="display: none">
+            <div class="form-group">
+              <label for="shopify-client-id">Client ID</label>
+              <input
+                type="text"
+                id="shopify-client-id"
+                name="client_id"
+                placeholder="From the app's settings in the Dev Dashboard"
+              />
+            </div>
+            <div class="form-group">
+              <label for="shopify-client-secret">Client Secret</label>
+              <input
+                type="password"
+                id="shopify-client-secret"
+                name="client_secret"
+                placeholder="shpss_..."
+              />
+            </div>
           </div>
           <div class="form-group">
             <label for="shopify-version">API Version</label>

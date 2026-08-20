@@ -49,7 +49,13 @@ class ShopifyConnection(Base):
     id = Column(Integer, primary_key=True, index=True)
     store_id = Column(Integer, ForeignKey("stores.id", ondelete="CASCADE"), nullable=False, unique=True)
     shop_domain = Column(String(255), nullable=False, unique=True)
-    admin_api_key = Column(String(512), nullable=False)
+    # Current access token: permanent shpat_ (auth_method='token') or cached
+    # 24h OAuth token (auth_method='client_credentials').
+    admin_api_key = Column(String(512), nullable=True)
+    auth_method = Column(String(30), nullable=False, server_default="token")
+    client_id = Column(String(255), nullable=True)
+    client_secret = Column(String(255), nullable=True)
+    token_expires_at = Column(DateTime(timezone=True), nullable=True)
     api_version = Column(String(50), default="2025-01")
     update_sku_with_barcode = Column(Boolean, default=False)
     first_order_tag = Column(String(100), nullable=False, server_default="First order")
