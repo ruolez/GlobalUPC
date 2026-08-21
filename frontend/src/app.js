@@ -19958,6 +19958,12 @@ async function bovFetchAll(opts = {}) {
   bovState.seq += 1;
   const seq = bovState.seq;
   if (!silent) bovSetRefreshSpinner(true);
+  // Month End shares the topbar period: a full refetch invalidates it too —
+  // reload now if its tab is open, otherwise lazily on the next tab open.
+  if (!opts.only && monthEndState.initialized) {
+    monthEndState.data = null;
+    if (bovState.section === "month-end") fetchMonthEnd();
+  }
 
   const promises = keys.map((key) => {
     const def = BOV_WIDGET_DEFS[key];
@@ -23587,6 +23593,7 @@ const monthEndState = {
   data: null,
   filters: { type: "all", stores: new Set(), search: "" }, // empty stores set = all
   abort: null,
+  progressLog: [],
 };
 
 function meShow(id, visible, text) {
@@ -23594,10 +23601,6 @@ function meShow(id, visible, text) {
   if (!el) return;
   el.style.display = visible ? "" : "none";
   if (text !== undefined) el.textContent = text;
-}
-
-function meYmd(d) {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
 function meLoadPrefs() {
@@ -23614,59 +23617,18 @@ function meSavePrefs() {
   } catch (e) { /* storage full/blocked — non-fatal */ }
 }
 
-function mePopulatePeriodSelect() {
-  const sel = document.getElementById("me-period-select");
-  if (!sel) return;
-  const now = new Date();
-  const opts = [`<option value="this">This month</option>`];
-  for (let i = 1; i <= 12; i++) {
-    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    const val = `m:${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-    const label = d.toLocaleDateString(undefined, { month: "short", year: "numeric" });
-    opts.push(`<option value="${val}"${i === 1 ? " selected" : ""}>${escapeHtml(label)}</option>`);
-  }
-  opts.push(`<option value="custom">Custom range…</option>`);
-  sel.innerHTML = opts.join("");
-}
-
+// Month End follows the period selected in the Business Overview topbar.
 function monthEndPeriodParams() {
-  const sel = document.getElementById("me-period-select");
-  const v = sel ? sel.value : "";
-  if (v === "custom") {
-    const f = document.getElementById("me-date-from")?.value;
-    const t = document.getElementById("me-date-to")?.value;
-    if (!f || !t) return null;
-    return { date_from: f, date_to: t };
-  }
-  const now = new Date();
-  if (v === "this") {
-    return { date_from: meYmd(new Date(now.getFullYear(), now.getMonth(), 1)),
-             date_to: meYmd(new Date(now.getFullYear(), now.getMonth() + 1, 0)) };
-  }
-  const m = /^m:(\d{4})-(\d{2})$/.exec(v || "");
-  if (m) {
-    const y = parseInt(m[1], 10);
-    const mo = parseInt(m[2], 10) - 1;
-    return { date_from: meYmd(new Date(y, mo, 1)), date_to: meYmd(new Date(y, mo + 1, 0)) };
-  }
-  return {}; // backend defaults to last calendar month
+  return bovRangeParams();
 }
 
 function loadMonthEndPage() {
   if (!monthEndState.initialized) {
     monthEndState.initialized = true;
     meLoadPrefs();
-    mePopulatePeriodSelect();
     document.querySelectorAll('#me-type-chips [data-me-type]').forEach((b) =>
       b.classList.toggle("is-active", b.dataset.meType === monthEndState.filters.type));
 
-    document.getElementById("me-period-select")?.addEventListener("change", (e) => {
-      const custom = e.target.value === "custom";
-      const el = document.getElementById("me-custom");
-      if (el) el.style.display = custom ? "flex" : "none";
-      if (!custom) fetchMonthEnd();
-    });
-    document.getElementById("me-apply")?.addEventListener("click", () => fetchMonthEnd());
     document.getElementById("me-refresh")?.addEventListener("click", () => fetchMonthEnd());
 
     document.getElementById("me-type-chips")?.addEventListener("click", (e) => {
@@ -23702,34 +23664,98 @@ function loadMonthEndPage() {
   if (!monthEndState.data && !monthEndState.loading) fetchMonthEnd();
 }
 
+function meSetProgress(message) {
+  const el = document.getElementById("me-loading");
+  if (!el) return;
+  if (message == null) { monthEndState.progressLog = []; return; }
+  const log = monthEndState.progressLog;
+  log.push(message);
+  while (log.length > 6) log.shift();
+  el.innerHTML =
+    `<div class="me-progress">` +
+    log.map((m, i) => `<div class="me-progress-line${i === log.length - 1 ? " is-current" : " is-done"}">` +
+      `<span class="me-progress-dot"></span>${escapeHtml(m)}</div>`).join("") +
+    `</div>`;
+}
+
+function meFail(message) {
+  const el = document.getElementById("me-error");
+  if (el) { el.textContent = `Could not load Month End: ${message}`; el.style.display = ""; }
+  meShow("me-loading", false);
+}
+
 async function fetchMonthEnd() {
   const params = monthEndPeriodParams();
-  if (!params) return; // custom range incomplete
   if (monthEndState.abort) monthEndState.abort.abort();
   const ctl = new AbortController();
   monthEndState.abort = ctl;
   monthEndState.loading = true;
   meShow("me-error", false);
+  meSetProgress(null);
+  meSetProgress("Starting…");
   meShow("me-loading", true);
   if (!monthEndState.data) {
     meShow("me-summary", false);
     meShow("me-table-card", false);
     meShow("me-empty", false);
   }
-  try {
-    const data = await bovFetchJson("/month-end", params, ctl.signal);
-    if (ctl.signal.aborted) return;
-    monthEndState.data = data;
-    renderMonthEnd();
-  } catch (e) {
-    if (e.name === "AbortError") return;
-    const el = document.getElementById("me-error");
-    if (el) { el.textContent = `Could not load Month End: ${e.message || e}`; el.style.display = ""; }
-  } finally {
+  const finish = () => {
     if (monthEndState.abort === ctl) {
       monthEndState.loading = false;
       meShow("me-loading", false);
     }
+  };
+  try {
+    // SSE: progress events while the backend computes, then one `result` event.
+    const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== ""));
+    const resp = await fetch(`${API_BASE}/business-overview/month-end/stream?${qs}`, { signal: ctl.signal });
+    if (!resp.ok || !resp.body) throw new Error(`HTTP ${resp.status}`);
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let gotResult = false;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const chunks = buffer.split("\n\n");
+      buffer = chunks.pop();
+      for (const chunk of chunks) {
+        const m = chunk.match(/event: (\w+)\ndata: (.+)/s);
+        if (!m) continue;
+        const [, ev, dataStr] = m;
+        if (ev === "progress") {
+          try { meSetProgress(JSON.parse(dataStr).message); } catch (e) { /* malformed frame */ }
+        } else if (ev === "result") {
+          monthEndState.data = JSON.parse(dataStr);
+          gotResult = true;
+          finish();
+          renderMonthEnd();
+        } else if (ev === "error") {
+          let msg = "server error";
+          try { msg = JSON.parse(dataStr).message || msg; } catch (e) { /* keep default */ }
+          throw new Error(msg);
+        }
+      }
+    }
+    if (!gotResult) throw new Error("stream ended without a result");
+  } catch (e) {
+    if (e.name === "AbortError" || ctl.signal.aborted) return;
+    // Stream failed — fall back to the plain JSON endpoint once.
+    try {
+      meSetProgress("Retrying without progress stream…");
+      const data = await bovFetchJson("/month-end", params, ctl.signal);
+      if (ctl.signal.aborted) return;
+      monthEndState.data = data;
+      finish();
+      renderMonthEnd();
+    } catch (e2) {
+      if (e2.name === "AbortError" || ctl.signal.aborted) return;
+      meFail(e2.message || e2);
+      finish();
+    }
+  } finally {
+    finish();
   }
 }
 
@@ -23881,6 +23907,11 @@ function renderMonthEnd() {
   }
   meShow("me-not-configured", !configured);
   meShow("me-toolbar", configured);
+  const rangeEl = document.getElementById("me-range-label");
+  if (rangeEl) {
+    const p = d.period || {};
+    rangeEl.textContent = p.start ? `${bovDateMdy(p.start)} – ${bovDateMdy(p.end)}` : "";
+  }
   if (!configured) {
     meShow("me-summary", false);
     meShow("me-table-card", false);

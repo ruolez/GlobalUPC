@@ -2581,6 +2581,42 @@ def shopify_order_costing(lines: List[Tuple[Optional[str], float, float]],
             "product_profit": round(revenue - cost, 2), "cost_coverage": cov}
 
 
+def _parcel_costs_window_sync(host, port, database, username, password,
+                              date_from: str, date_to_excl: str,
+                              ) -> Tuple[bool, Optional[str], Dict[str, Dict[str, float]]]:
+    """
+    All shipper parcels created in [date_from, date_to_excl) grouped by
+    order_number, keyed by normalized order number. One date-bounded aggregate
+    instead of thousands of IN(...) parameters — parcels ship within days of the
+    order, so a padded window covers a period's orders; the caller sweeps any
+    stragglers with _parcel_costs_sync over just the unmatched names.
+    """
+    try:
+        with _connect(host, port, database, username, password) as conn:
+            cur = conn.cursor()
+            if not _tables_present(cur, ["parcels"]).get("parcels"):
+                return False, "Table parcels not found on the shipper store", {}
+            cur.execute("""
+                SELECT order_number, SUM(ISNULL(cost, 0)) AS cost, COUNT(*) AS parcels
+                FROM parcels
+                WHERE created_at >= ? AND created_at < ?
+                GROUP BY order_number
+            """, [date_from, date_to_excl])
+            out: Dict[str, Dict[str, float]] = {}
+            for r in _rows(cur):
+                key = normalize_order_number(r.get("order_number"))
+                if not key:
+                    continue
+                slot = out.setdefault(key, {"cost": 0.0, "parcels": 0})
+                slot["cost"] += _f(r.get("cost"))
+                slot["parcels"] += int(r.get("parcels") or 0)
+        for slot in out.values():
+            slot["cost"] = round(slot["cost"], 2)
+        return True, None, out
+    except Exception as e:
+        return False, str(e), {}
+
+
 def _parcel_costs_sync(host, port, database, username, password,
                        order_numbers: List[str]) -> Tuple[bool, Optional[str], Dict[str, Dict[str, float]]]:
     """SUM(parcels.cost) + box count per order_number on the shipper store, keyed by
@@ -2711,6 +2747,10 @@ async def month_end_shopify_lines(store_id: int, tz: str, date_from: str, date_t
 
 async def parcel_costs_async(**kw):
     return await _run(_parcel_costs_sync, **kw)
+
+
+async def parcel_costs_window_async(**kw):
+    return await _run(_parcel_costs_window_sync, **kw)
 
 
 def shutdown_bov_executor():

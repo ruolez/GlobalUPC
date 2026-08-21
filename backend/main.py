@@ -11816,9 +11816,18 @@ def _month_end_totals(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     return t
 
 
-@app.get("/api/business-overview/month-end", response_model=MonthEndResponse)
-async def get_month_end(date_from: Optional[str] = None, date_to: Optional[str] = None,
-                        limit: int = bov.MAX_LIST_LIMIT, db: Session = Depends(get_db)):
+# How far past the period a parcel may still belong to one of its orders: the
+# window query covers [start, end + pad); later shipments are swept by the
+# exact IN(...) fallback over just the unmatched order names.
+_MONTH_END_PARCEL_PAD_DAYS = 45
+
+
+async def _month_end_payload(db: Session, date_from: Optional[str], date_to: Optional[str],
+                             limit: int, progress=None) -> Dict[str, Any]:
+    async def note(msg: str):
+        if progress:
+            await progress(msg)
+
     cfg = _bov_config(db)
     tz = _bov_tz(cfg)
     if not date_from and not date_to:
@@ -11829,7 +11838,7 @@ async def get_month_end(date_from: Optional[str] = None, date_to: Optional[str] 
     sales_stores = _bov_sales_stores(db, cfg)
     shopify_stores = _bov_shopify_stores(db, cfg)
     if not sales_stores and not shopify_stores:
-        return MonthEndResponse(configured=False, period=BOVPeriod(**period.as_dict()), limit=limit)
+        return {"configured": False, "period": period.as_dict(), "limit": limit}
 
     warnings: List[str] = []
     synced = await asyncio.to_thread(shopify_sync.get_synced_stores) if shopify_stores else {}
@@ -11852,14 +11861,17 @@ async def get_month_end(date_from: Optional[str] = None, date_to: Optional[str] 
             today=period.today, excluded_names=excl_sales, cost_mode="default")
 
     async def _sh(st: Dict[str, Any]):
-        ok, err, payload = await bov.month_end_shopify_orders(
-            st["id"], st["_tz"], period.start.isoformat(), period.end_excl, limit)
+        (ok, err, payload), lines = await asyncio.gather(
+            bov.month_end_shopify_orders(st["id"], st["_tz"], period.start.isoformat(), period.end_excl, limit),
+            bov.month_end_shopify_lines(st["id"], st["_tz"], period.start.isoformat(), period.end_excl, sh_excl),
+        )
         if not ok:
             return ok, err, payload
-        payload["lines"] = await bov.month_end_shopify_lines(
-            st["id"], st["_tz"], period.start.isoformat(), period.end_excl, sh_excl)
+        payload["lines"] = lines
         return True, None, payload
 
+    await note(f"Loading orders from {len(sales_stores)} BackOffice store(s) and "
+               f"{len(usable_shopify)} synced Shopify store(s)…")
     timings: Dict[str, float] = {}
     t_fetch = time.monotonic()
     bo_results, sh_results = await asyncio.gather(
@@ -11925,6 +11937,9 @@ async def get_month_end(date_from: Optional[str] = None, date_to: Optional[str] 
                                "store_name": shipper_store.name if shipper_store else None,
                                "matched": 0, "unmatched": 0, "error": None}
     all_names = [o.get("name") for _st, p in sh_ok for o in (p.get("orders") or []) if o.get("name")]
+    bo_count = sum(int(s.get("count") or 0) for s in stores_status if s["source"] == "backoffice" and not s.get("error"))
+    await note(f"Fetched {bo_count:,} invoices and {len(all_names):,} Shopify orders "
+               f"({timings['fetch']}s) — resolving product and shipping costs…")
 
     async def _cost_lookup() -> Dict[str, float]:
         t = time.monotonic()
@@ -11939,9 +11954,12 @@ async def get_month_end(date_from: Optional[str] = None, date_to: Optional[str] 
                 return {}
             if not barcodes:
                 return {}
+            await note(f"Looking up product cost for {len(barcodes):,} barcodes on the S2S store…")
             costs = await lookup(barcodes)
             if getattr(lookup, "failed", None):
                 warnings.append(f"Shopify cost lookup failed — profit unavailable: {lookup.failed}")
+            else:
+                await note(f"Product costs resolved ({round(time.monotonic() - t, 1)}s)")
             return costs
         finally:
             timings["cost_lookup"] = round(time.monotonic() - t, 2)
@@ -11955,17 +11973,33 @@ async def get_month_end(date_from: Optional[str] = None, date_to: Optional[str] 
                 return {}
             if not all_names:
                 return {}
-            ok, err, pmap = await bov.parcel_costs_async(
-                **_bov_conn_kwargs(shipper_store), order_numbers=all_names)
+            await note(f"Summing shipper parcel costs for {len(all_names):,} orders…")
+            # One date-bounded aggregate covers a period's parcels; only names it
+            # missed (late shipments) fall back to the exact IN(...) lookup.
+            pad_end = (period.end + timedelta(days=_MONTH_END_PARCEL_PAD_DAYS + 1)).isoformat()
+            ok, err, pmap = await bov.parcel_costs_window_async(
+                **_bov_conn_kwargs(shipper_store),
+                date_from=period.start.isoformat(), date_to_excl=pad_end)
             if not ok:
                 shipper["error"] = err
                 warnings.append(f"Shipper parcels lookup failed — Shopify shipping cost unavailable: {err}")
                 return {}
+            leftover = sorted({n for n in all_names if bov.normalize_order_number(n) not in pmap})
+            if leftover:
+                await note(f"Checking {len(leftover):,} orders without a parcel in the shipping window…")
+                ok2, err2, extra = await bov.parcel_costs_async(
+                    **_bov_conn_kwargs(shipper_store), order_numbers=leftover)
+                if ok2:
+                    pmap.update(extra)
+                else:
+                    warnings.append(f"Shipper parcels fallback lookup failed: {err2}")
+            await note(f"Shipping costs matched ({round(time.monotonic() - t, 1)}s)")
             return pmap
         finally:
             timings["parcels"] = round(time.monotonic() - t, 2)
 
     unit_costs, parcel_map = await asyncio.gather(_cost_lookup(), _parcels())
+    await note("Building the combined list…")
 
     parcels_usable = bool(shipper_store) and not shipper["error"]
 
@@ -12003,19 +12037,71 @@ async def get_month_end(date_from: Optional[str] = None, date_to: Optional[str] 
     rows.sort(key=lambda r: (r.get("date") or ""), reverse=True)
     by_source = {src: _month_end_totals([r for r in rows if r["source"] == src])
                  for src in ("backoffice", "shopify") if any(r["source"] == src for r in rows)}
-    return MonthEndResponse(
-        configured=True,
-        period=BOVPeriod(**period.as_dict()),
-        stores=[MonthEndStoreStatus(**s) for s in stores_status],
-        rows=[MonthEndRow(**r) for r in rows],
-        totals=MonthEndTotals(**_month_end_totals(rows)),
-        by_source={k: MonthEndTotals(**v) for k, v in by_source.items()},
-        shipper=MonthEndShipperStatus(**shipper),
-        warnings=warnings,
-        limit=limit,
-        truncated=truncated,
-        timings=timings,
-    )
+    return {
+        "configured": True,
+        "period": period.as_dict(),
+        "stores": stores_status,
+        "rows": rows,
+        "totals": _month_end_totals(rows),
+        "by_source": by_source,
+        "shipper": shipper,
+        "warnings": warnings,
+        "limit": limit,
+        "truncated": truncated,
+        "timings": timings,
+    }
+
+
+@app.get("/api/business-overview/month-end", response_model=MonthEndResponse)
+async def get_month_end(date_from: Optional[str] = None, date_to: Optional[str] = None,
+                        limit: int = bov.MAX_LIST_LIMIT, db: Session = Depends(get_db)):
+    payload = await _month_end_payload(db, date_from, date_to, limit)
+    return MonthEndResponse(**payload)
+
+
+@app.get("/api/business-overview/month-end/stream")
+async def stream_month_end(date_from: Optional[str] = None, date_to: Optional[str] = None,
+                           limit: int = bov.MAX_LIST_LIMIT, db: Session = Depends(get_db)):
+    """SSE twin of /month-end: progress events while the report is computed,
+    then one `result` event carrying the full payload."""
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def progress(msg: str):
+        await queue.put(("progress", {"message": msg}))
+
+    async def runner():
+        try:
+            payload = await _month_end_payload(db, date_from, date_to, limit, progress=progress)
+            await queue.put(("result", payload))
+        except HTTPException as e:
+            await queue.put(("error", {"message": str(e.detail)}))
+        except Exception as e:
+            await queue.put(("error", {"message": str(e)}))
+        await queue.put(None)
+
+    async def gen():
+        task = asyncio.create_task(runner())
+        try:
+            while True:
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=15)
+                except asyncio.TimeoutError:
+                    yield "event: heartbeat\ndata: {}\n\n"
+                    continue
+                if item is None:
+                    break
+                ev, data = item
+                yield f"event: {ev}\ndata: {json.dumps(data)}\n\n"
+        except GeneratorExit:
+            task.cancel()
+            raise
+        finally:
+            if not task.done():
+                task.cancel()
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "Connection": "keep-alive",
+                                      "X-Accel-Buffering": "no"})
 
 
 if __name__ == "__main__":
