@@ -1528,6 +1528,8 @@ class BOVPurchaseOrderLine(BaseModel):
     unit_cost: Optional[float] = None
     extended_cost: Optional[float] = None
     date_received: Optional[str] = None
+    excluded: bool = False
+    exclusion_id: Optional[int] = None
 
 
 class BOVPurchaseOrderHeader(BOVPurchaseOrderRow):
@@ -1553,6 +1555,7 @@ class BOVPurchaseOrderDetailResponse(BaseModel):
     header: BOVPurchaseOrderHeader
     lines: List[BOVPurchaseOrderLine] = []
     store_name: Optional[str] = None
+    excluded_lines: int = 0
 
 
 # ---- Sales / margin ---------------------------------------------------------
@@ -1822,6 +1825,27 @@ class BOVShopifyExclusion(BOVShopifyExclusionCreate):
 
 class BOVShopifyExclusionList(BaseModel):
     exclusions: List[BOVShopifyExclusion] = []
+    total: int = 0
+
+
+class BOVPoExclusionCreate(BaseModel):
+    product_id: int                            # PurchaseOrdersDetails_tbl.ProductID
+    product_sku: Optional[str] = None
+    product_upc: Optional[str] = None
+    description: Optional[str] = None
+    note: Optional[str] = None
+
+
+class BOVPoExclusion(BOVPoExclusionCreate):
+    id: int
+    store_id: int
+    store_name: Optional[str] = None
+    created_at: Optional[datetime] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+class BOVPoExclusionList(BaseModel):
+    exclusions: List[BOVPoExclusion] = []
     total: int = 0
 
 

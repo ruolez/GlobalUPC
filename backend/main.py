@@ -17,7 +17,7 @@ import os
 
 from database import get_db, engine
 from shopify_oauth_helper import fetch_client_credentials_token, apply_token
-from models import Store, MSSQLConnection, ShopifyConnection, Setting, StoreType, StoreCategory, UPCUpdateHistory, UPCExclusion, ItemTrackerConfig, ItemTrackerExclusion, PriceUpdateHistory, StoreMirror, SalesConfig, SalesExclusion, BusinessOverviewConfig, BusinessOverviewShopifyExclusion
+from models import Store, MSSQLConnection, ShopifyConnection, Setting, StoreType, StoreCategory, UPCUpdateHistory, UPCExclusion, ItemTrackerConfig, ItemTrackerExclusion, PriceUpdateHistory, StoreMirror, SalesConfig, SalesExclusion, BusinessOverviewConfig, BusinessOverviewShopifyExclusion, BusinessOverviewPoProductExclusion
 from schemas import (
     MSSQLStoreCreate, ShopifyStoreCreate, ShipperStoreCreate, MSSQLStoreUpdate, ShopifyStoreUpdate, ShipperStoreUpdate, StoreResponse, StoreNameUpdate, StoreCategoryUpdate,
     SettingCreate, SettingUpdate, SettingResponse,
@@ -72,7 +72,7 @@ from schemas import (
     BOVPurchasesRangeBlock, BOVPurchasesRangeResponse,
     BOVPurchaseOrderLine, BOVPurchaseOrderHeader, BOVPurchaseOrderDetailResponse,
     BOVSalesSourceTotals, BOVSalesBucket, BOVSalesSourceStatus, BOVSalesTrendResponse,
-    BOVBreakdownRow, BOVSalesBreakdownResponse, BOVStoreStatus, BOVInvoicesPeriodResponse, BOVAlert, BOVAlertAction, BOVAlertsResponse, BOVShopifyOrderRow, BOVShopifyOrdersListResponse, BOVShopifyOrderLine, BOVShopifyOrderHeader, BOVShopifyOrderDetailResponse, BOVMissingCostRow, BOVMissingCostResponse, BOVShopifyExclusionCreate, BOVShopifyExclusion, BOVShopifyExclusionList, bov_merge_alert_rules, bov_validate_alert_rules, BOVShopifyStoreOrders, BOVShopifyOrdersResponse, BOVShopifyRefreshResult, BOVShopifyRefreshResponse,
+    BOVBreakdownRow, BOVSalesBreakdownResponse, BOVStoreStatus, BOVInvoicesPeriodResponse, BOVAlert, BOVAlertAction, BOVAlertsResponse, BOVShopifyOrderRow, BOVShopifyOrdersListResponse, BOVShopifyOrderLine, BOVShopifyOrderHeader, BOVShopifyOrderDetailResponse, BOVMissingCostRow, BOVMissingCostResponse, BOVShopifyExclusionCreate, BOVShopifyExclusion, BOVShopifyExclusionList, BOVPoExclusionCreate, BOVPoExclusion, BOVPoExclusionList, bov_merge_alert_rules, bov_validate_alert_rules, BOVShopifyStoreOrders, BOVShopifyOrdersResponse, BOVShopifyRefreshResult, BOVShopifyRefreshResponse,
     BOVShopifyStoreOpen, BOVShopifyOpenOrdersBlock, BOVSalesSummaryBlock,
     BusinessOverviewSummaryResponse,
 )
@@ -9675,6 +9675,16 @@ def _bov_shopify_exclusions(db: Session) -> List[Dict[str, Any]]:
             for e in db.query(BusinessOverviewShopifyExclusion).all()]
 
 
+def _bov_po_exclusions(db: Session, store_id: int) -> List[BusinessOverviewPoProductExclusion]:
+    """Excluded PO products (non-merchandise lines like shipping/discounts) for one purchases store."""
+    return db.query(BusinessOverviewPoProductExclusion).filter(
+        BusinessOverviewPoProductExclusion.store_id == store_id).all()
+
+
+def _bov_po_exclusion_ids(db: Session, store_id: int) -> List[int]:
+    return [e.product_id for e in _bov_po_exclusions(db, store_id)]
+
+
 def _bov_tz(cfg: Optional[BusinessOverviewConfig]) -> str:
     return (cfg.timezone if cfg and cfg.timezone else "America/Chicago")
 
@@ -10072,7 +10082,8 @@ async def _bov_incoming_block(db: Session, cfg, include_list: bool, limit: int =
         return {"configured": True, "filtered_out": True, "store_id": store.id, "store_name": store.name,
                 "purchase_orders": [], "limit": limit}
     ok, err, payload = await bov.incoming_purchases_async(
-        **_bov_conn_kwargs(store), limit=limit, sort_by=sort_by, sort_order=sort_order, include_list=include_list)
+        **_bov_conn_kwargs(store), limit=limit, sort_by=sort_by, sort_order=sort_order, include_list=include_list,
+        excluded_product_ids=_bov_po_exclusion_ids(db, store.id) or None)
     base = {"configured": True, "store_id": store.id, "store_name": store.name}
     if not ok:
         base["error"] = err
@@ -10094,7 +10105,8 @@ async def _bov_purchased_block(db: Session, cfg, period: bov.Period, bucket: str
         **_bov_conn_kwargs(store),
         date_from=period.start.isoformat(), date_to_excl=period.end_excl,
         series_from=period.prev_start.isoformat(),
-        limit=limit, sort_by=sort_by, sort_order=sort_order, include_list=include_list)
+        limit=limit, sort_by=sort_by, sort_order=sort_order, include_list=include_list,
+        excluded_product_ids=_bov_po_exclusion_ids(db, store.id) or None)
     base = {"configured": True, "store_id": store.id, "store_name": store.name, "period": period.as_dict(), "bucket": bucket}
     if not ok:
         base["error"] = err
@@ -10120,7 +10132,8 @@ async def _bov_received_block(db: Session, cfg, period: bov.Period, bucket: str,
         **_bov_conn_kwargs(store),
         date_from=period.start.isoformat(), date_to_excl=period.end_excl,
         series_from=period.prev_start.isoformat(),
-        limit=limit, include_list=include_list)
+        limit=limit, include_list=include_list,
+        excluded_product_ids=_bov_po_exclusion_ids(db, store.id) or None)
     base = {"configured": True, "store_id": store.id, "store_name": store.name, "period": period.as_dict(), "bucket": bucket}
     if not ok:
         base["error"] = err
@@ -10667,20 +10680,73 @@ async def get_business_overview_received(
     return BOVPurchasesRangeResponse(**block)
 
 
+# NOTE: the /purchases/exclusions routes must stay declared before /purchases/{po_id},
+# otherwise the int path parameter swallows them with a 422.
+@app.get("/api/business-overview/purchases/exclusions", response_model=BOVPoExclusionList)
+def list_business_overview_po_exclusions(db: Session = Depends(get_db)):
+    rows = db.query(BusinessOverviewPoProductExclusion).order_by(BusinessOverviewPoProductExclusion.created_at.desc()).all()
+    out = []
+    for e in rows:
+        d = BOVPoExclusion.model_validate(e)
+        d.store_name = e.store.name if e.store else None
+        out.append(d)
+    return BOVPoExclusionList(exclusions=out, total=len(out))
+
+
+@app.post("/api/business-overview/purchases/exclusions", response_model=BOVPoExclusion)
+def add_business_overview_po_exclusion(data: BOVPoExclusionCreate, db: Session = Depends(get_db)):
+    cfg = _bov_config(db)
+    store = _bov_mssql_store(db, cfg.purchases_store_id if cfg else None)
+    if store is None:
+        raise HTTPException(status_code=400, detail="Business Overview purchases store is not configured.")
+    row = db.query(BusinessOverviewPoProductExclusion).filter(
+        BusinessOverviewPoProductExclusion.store_id == store.id,
+        BusinessOverviewPoProductExclusion.product_id == data.product_id).first()
+    if not row:
+        row = BusinessOverviewPoProductExclusion(store_id=store.id, product_id=data.product_id,
+                                                 product_sku=data.product_sku, product_upc=data.product_upc,
+                                                 description=data.description, note=data.note)
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+    d = BOVPoExclusion.model_validate(row)
+    d.store_name = row.store.name if row.store else None
+    return d
+
+
+@app.delete("/api/business-overview/purchases/exclusions/{exclusion_id}")
+def delete_business_overview_po_exclusion(exclusion_id: int, db: Session = Depends(get_db)):
+    row = db.query(BusinessOverviewPoProductExclusion).filter(BusinessOverviewPoProductExclusion.id == exclusion_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Exclusion not found")
+    db.delete(row)
+    db.commit()
+    return {"deleted": exclusion_id}
+
+
 @app.get("/api/business-overview/purchases/{po_id}", response_model=BOVPurchaseOrderDetailResponse)
 async def get_business_overview_purchase_order_detail(po_id: int, db: Session = Depends(get_db)):
     cfg = _bov_config(db)
     store = _bov_mssql_store(db, cfg.purchases_store_id if cfg else None)
     if store is None:
         raise HTTPException(status_code=400, detail="Business Overview purchases store is not configured.")
-    ok, err, payload = await bov.purchase_order_detail_async(**_bov_conn_kwargs(store), po_id=po_id)
+    excl_rows = _bov_po_exclusions(db, store.id)
+    excl_id_by_product = {e.product_id: e.id for e in excl_rows}
+    ok, err, payload = await bov.purchase_order_detail_async(
+        **_bov_conn_kwargs(store), po_id=po_id,
+        excluded_product_ids=list(excl_id_by_product.keys()) or None)
     if not ok:
         raise HTTPException(status_code=502, detail=err or "Purchase order lookup failed")
     if not payload.get("header"):
         raise HTTPException(status_code=404, detail=f"Purchase order {po_id} not found")
+    lines = payload.get("lines") or []
+    for l in lines:
+        if l.get("excluded"):
+            l["exclusion_id"] = excl_id_by_product.get(l.get("product_id"))
     return BOVPurchaseOrderDetailResponse(header=BOVPurchaseOrderHeader(**payload["header"]),
-                                          lines=[BOVPurchaseOrderLine(**l) for l in payload.get("lines") or []],
-                                          store_name=store.name)
+                                          lines=[BOVPurchaseOrderLine(**l) for l in lines],
+                                          store_name=store.name,
+                                          excluded_lines=sum(1 for l in lines if l.get("excluded")))
 
 
 @app.get("/api/business-overview/sales/trend", response_model=BOVSalesTrendResponse)
@@ -11404,7 +11470,8 @@ async def get_business_overview_alerts(
         keys.append("po_overdue")
         before = (today - timedelta(days=int(float(r.get("days", 14))))).isoformat()
         match_by_key["po_overdue"] = {"kind": "po_placed_before", "before": before}
-        tasks.append(bov.incoming_purchases_async(**_bov_conn_kwargs(purchases_store), limit=1, include_list=False, placed_before=before))
+        tasks.append(bov.incoming_purchases_async(**_bov_conn_kwargs(purchases_store), limit=1, include_list=False, placed_before=before,
+                                                  excluded_product_ids=_bov_po_exclusion_ids(db, purchases_store.id) or None))
     elif not r.get("enabled"):
         skipped.append("po_overdue: disabled")
     # --- Shopify mirror exceptions

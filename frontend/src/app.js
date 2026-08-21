@@ -18576,6 +18576,7 @@ const bovState = {
   lastShopifyRefreshAt: 0,
   shopifySyncNote: null,   // {text, tone} shown under "Updated …"
   modalCache: { quotation: new Map(), invoice: new Map(), po: new Map(), shopifyOrder: new Map() },
+  poModalData: null,       // last-rendered PO detail (for the exclude/include line actions)
   refreshTimer: null,
   updatedTimer: null,
   refreshing: false,
@@ -19476,6 +19477,12 @@ function bovBindOnce() {
     if (e.target.closest("summary, details")) return;
     const row = e.target.closest("tr[data-bov-href]");
     if (row && !e.target.closest("th")) window.open(row.dataset.bovHref, "_blank", "noopener");
+  });
+  document.getElementById("bov-po-body")?.addEventListener("click", (e) => {
+    const ex = e.target.closest("[data-bov-po-exclude]");
+    if (ex) { e.preventDefault(); e.stopPropagation(); bovExcludePoLine(parseInt(ex.dataset.bovPoExclude, 10)); return; }
+    const inc = e.target.closest("[data-bov-po-include]");
+    if (inc) { e.preventDefault(); e.stopPropagation(); bovIncludePoExclusion(parseInt(inc.dataset.bovPoInclude, 10)); }
   });
   document.getElementById("bov-charts-toggle")?.addEventListener("click", () => {
     bovSetChartsOpen(!bovState.chartsOpen);
@@ -22619,8 +22626,10 @@ function bovRenderPoModal(data) {
   const title = document.getElementById("bov-po-title");
   const body = document.getElementById("bov-po-body");
   if (!body) return;
+  bovState.poModalData = data;
   const h = data.header || {};
   const lines = data.lines || [];
+  const excludedCount = lines.filter((l) => l.excluded).length;
   if (title) title.textContent = `PO ${h.po_number || h.po_id || ""}${h.business_name ? ` — ${h.business_name}` : ""}`;
   const shipTo = [h.ship_to, h.ship_address1, h.ship_address2, [h.ship_city, h.ship_state, h.ship_zip_code].filter(Boolean).join(" ")].filter((x) => x && String(x).trim()).join(", ");
   const outstanding = h.qty_outstanding != null ? bovNum(h.qty_outstanding) : Math.max(0, bovNum(h.tot_qty_ord) - bovNum(h.tot_qty_rcv));
@@ -22641,19 +22650,63 @@ function bovRenderPoModal(data) {
     bovKv("Ship to", escapeHtml(shipTo || "—")),
     bovKv("Title", escapeHtml(h.po_title || "—")),
   ].join("");
-  const rowsHtml = lines.map((l) => {
+  const rowsHtml = lines.map((l, idx) => {
     const out = bovNum(l.qty_outstanding);
-    return `<tr><td><span class="bov-cell-main">${escapeHtml(l.product_description || "—")}</span><span class="bov-cell-sub bov-cell-mono">${escapeHtml([l.product_sku, l.product_upc, l.supplier_sku].filter(Boolean).join(" · "))}</span></td><td class="bov-num">${bovInt(l.qty_ordered)}</td><td class="bov-num">${bovInt(l.qty_received)}${l.date_received ? `<span class="bov-cell-sub">${escapeHtml(bovDateMdy(l.date_received))}</span>` : ""}</td><td class="bov-num">${out > 0 ? `<span class="dashboard-activity-status warn bov-age-chip">${bovInt(out)}</span>` : "0"}</td><td class="bov-num">${bovMoney(l.unit_cost)}</td><td class="bov-num">${bovMoney(l.extended_cost)}</td></tr>`;
+    const action = l.excluded
+      ? `<button type="button" class="btn btn-secondary bov-btn-xs" data-bov-po-include="${l.exclusion_id}" title="Count this product in PO calculations again">Include again</button>`
+      : l.product_id != null
+        ? `<button type="button" class="btn btn-secondary bov-btn-xs" data-bov-po-exclude="${idx}" title="Exclude this product from PO calculations (all POs)">Exclude</button>`
+        : "";
+    return `<tr${l.excluded ? ` class="bov-po-line-excluded"` : ""}><td><span class="bov-cell-main">${escapeHtml(l.product_description || "—")}</span><span class="bov-cell-sub bov-cell-mono">${escapeHtml([l.product_sku, l.product_upc, l.supplier_sku].filter(Boolean).join(" · "))}</span>${l.excluded ? `<span class="bov-cell-sub">Excluded from calculations</span>` : ""}</td><td class="bov-num">${bovInt(l.qty_ordered)}</td><td class="bov-num">${bovInt(l.qty_received)}${l.date_received ? `<span class="bov-cell-sub">${escapeHtml(bovDateMdy(l.date_received))}</span>` : ""}</td><td class="bov-num">${out > 0 && !l.excluded ? `<span class="dashboard-activity-status warn bov-age-chip">${bovInt(out)}</span>` : bovInt(out)}</td><td class="bov-num">${bovMoney(l.unit_cost)}</td><td class="bov-num">${bovMoney(l.extended_cost)}</td><td class="bov-num">${action}</td></tr>`;
   }).join("");
-  const sums = lines.reduce((a, l) => {
+  const sums = lines.filter((l) => !l.excluded).reduce((a, l) => {
     a.ord += bovNum(l.qty_ordered); a.rcv += bovNum(l.qty_received); a.out += bovNum(l.qty_outstanding); a.ext += bovNum(l.extended_cost); return a;
   }, { ord: 0, rcv: 0, out: 0, ext: 0 });
   body.innerHTML =
     `<div class="bov-kv-grid">${kv}</div>` +
     (lines.length
-      ? `<div class="bov-table-scroll"><table class="data-table bov-mini-table bov-modal-table"><thead><tr><th style="width:40%">Product</th><th class="bov-num" style="width:11%">Ordered</th><th class="bov-num" style="width:13%">Received</th><th class="bov-num" style="width:12%">Outstanding</th><th class="bov-num" style="width:11%">Unit cost</th><th class="bov-num" style="width:13%">Ext. cost</th></tr></thead><tbody>${rowsHtml}</tbody><tfoot><tr><td>${bovInt(lines.length)} lines</td><td class="bov-num">${bovInt(sums.ord)}</td><td class="bov-num">${bovInt(sums.rcv)}</td><td class="bov-num">${bovInt(sums.out)}</td><td></td><td class="bov-num">${bovMoney(sums.ext)}</td></tr></tfoot></table></div>`
+      ? `<div class="bov-table-scroll"><table class="data-table bov-mini-table bov-modal-table"><thead><tr><th style="width:29%">Product</th><th class="bov-num" style="width:10%">Ordered</th><th class="bov-num" style="width:12%">Received</th><th class="bov-num" style="width:12%">Outstanding</th><th class="bov-num" style="width:11%">Unit cost</th><th class="bov-num" style="width:13%">Ext. cost</th><th class="bov-num" style="width:13%"></th></tr></thead><tbody>${rowsHtml}</tbody><tfoot><tr><td>${bovInt(lines.length)} lines${excludedCount ? ` · ${bovInt(excludedCount)} excluded` : ""}</td><td class="bov-num">${bovInt(sums.ord)}</td><td class="bov-num">${bovInt(sums.rcv)}</td><td class="bov-num">${bovInt(sums.out)}</td><td></td><td class="bov-num">${bovMoney(sums.ext)}</td><td></td></tr></tfoot></table></div>`
       : `<p class="bov-modal-note">No line items on this purchase order.</p>`) +
     (h.notes ? `<p class="bov-modal-note">Notes: ${escapeHtml(h.notes)}</p>` : "");
+}
+
+async function bovExcludePoLine(idx) {
+  const d = bovState.poModalData;
+  const l = d && (d.lines || [])[idx];
+  if (!l || l.product_id == null) return;
+  try {
+    const resp = await fetch(`${API_BASE}/business-overview/purchases/exclusions`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ product_id: l.product_id, product_sku: l.product_sku, product_upc: l.product_upc, description: l.product_description }),
+    });
+    if (!resp.ok) {
+      let detail = `HTTP ${resp.status}`;
+      try { const j = await resp.json(); if (j && j.detail) detail = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail); } catch (e) { /* keep */ }
+      throw new Error(detail);
+    }
+    showToast(`✓ Excluded “${l.product_description || l.product_sku || l.product_id}” from PO calculations`, "success");
+    await bovPoExclusionChanged();
+  } catch (e) {
+    showToast(`✗ Could not exclude: ${e.message || e}`, "error");
+  }
+}
+
+async function bovIncludePoExclusion(id) {
+  try {
+    const resp = await fetch(`${API_BASE}/business-overview/purchases/exclusions/${id}`, { method: "DELETE" });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    showToast("✓ Product counted in PO calculations again", "success");
+    await bovPoExclusionChanged();
+  } catch (e) {
+    showToast(`✗ Could not remove the exclusion: ${e.message || e}`, "error");
+  }
+}
+
+async function bovPoExclusionChanged() {
+  bovState.modalCache.po.clear(); // product exclusions are global — every cached PO may change
+  const poId = bovState.poModalData && bovState.poModalData.header && bovState.poModalData.header.po_id;
+  if (poId != null) await bovOpenPoModal(poId);
+  bovFetchAll({ only: ["purchasesIncoming", "purchasesPurchased", "purchasesReceived", "summary", "alerts"], silent: true });
 }
 
 // ---------------------------------------------------------------------------

@@ -180,6 +180,20 @@ class BusinessOverviewShopifyExclusion(Base):
 
     store = relationship("Store")
 
+class BusinessOverviewPoProductExclusion(Base):
+    __tablename__ = "business_overview_po_product_exclusions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    store_id = Column(Integer, ForeignKey("stores.id", ondelete="CASCADE"), nullable=False)
+    product_id = Column(Integer, nullable=False)
+    product_sku = Column(Text, nullable=True)
+    product_upc = Column(Text, nullable=True)
+    description = Column(Text, nullable=True)
+    note = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    store = relationship("Store")
+
 class PriceUpdateHistory(Base):
     __tablename__ = "price_update_history"
 

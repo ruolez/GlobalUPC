@@ -441,6 +441,20 @@ def _excl_clause(names: List[str], column: str = "h.BusinessName") -> Tuple[str,
     return f" AND ({column} IS NULL OR ({' AND '.join(parts)}))", params
 
 
+def _po_excl_clause(product_ids: Optional[List[int]], column: str = "d.ProductID") -> Tuple[str, List[Any]]:
+    """AND (col IS NULL OR col NOT IN (...)) — excluded PO products (ProductID), chunked at MAX_PARAMS."""
+    ids = [int(p) for p in (product_ids or []) if p is not None]
+    if not ids:
+        return "", []
+    parts: List[str] = []
+    params: List[Any] = []
+    for i in range(0, len(ids), MAX_PARAMS):
+        chunk = ids[i:i + MAX_PARAMS]
+        parts.append(f"{column} NOT IN ({','.join(['?'] * len(chunk))})")
+        params.extend(chunk)
+    return f" AND ({column} IS NULL OR ({' AND '.join(parts)}))", params
+
+
 def _rows(cursor) -> List[Dict[str, Any]]:
     cols = [c[0] for c in cursor.description]
     return [dict(zip(cols, r)) for r in cursor.fetchall()]
@@ -1222,6 +1236,28 @@ _OUTSTANDING_APPLY = """
 """
 
 
+def _po_lines_apply(excl_sql: str) -> str:
+    """
+    Extended per-header line rollup used when PO product exclusions are active:
+    the denormalised h.TotQtyOrd / h.TotQtyRcv can't be filtered, so ordered /
+    received / outstanding are re-derived from the (filtered) detail lines.
+    `excl_sql` must be built with column="dx.ProductID".
+    """
+    return f"""
+    OUTER APPLY (
+        SELECT
+            SUM(CASE WHEN ISNULL(dx.QtyOrdered,0) > ISNULL(dx.QtyReceived,0)
+                     THEN (ISNULL(dx.QtyOrdered,0) - ISNULL(dx.QtyReceived,0)) * ISNULL(dx.UnitCost,0) ELSE 0 END) AS outstanding_value,
+            SUM(CASE WHEN ISNULL(dx.QtyOrdered,0) > ISNULL(dx.QtyReceived,0)
+                     THEN ISNULL(dx.QtyOrdered,0) - ISNULL(dx.QtyReceived,0) ELSE 0 END) AS qty_outstanding,
+            SUM(ISNULL(dx.QtyOrdered,0))  AS qty_ordered,
+            SUM(ISNULL(dx.QtyReceived,0)) AS qty_received
+        FROM PurchaseOrdersDetails_tbl dx
+        WHERE dx.PoID = h.PoID{excl_sql}
+    ) ov
+"""
+
+
 def _po_row(d: Dict[str, Any]) -> Dict[str, Any]:
     ord_q = _fo(d.get("TotQtyOrd"))
     rcv_q = _fo(d.get("TotQtyRcv"))
@@ -1257,9 +1293,25 @@ def _incoming_purchases_sync(
     sort_order: str = "desc",
     include_list: bool = True,
     placed_before: Optional[str] = None,
+    excluded_product_ids: Optional[List[int]] = None,
 ) -> Tuple[bool, Optional[str], Dict[str, Any]]:
     limit = _clamp_limit(limit)
-    where = _INCOMING_WHERE + (" AND h.PoDate < ?" if placed_before else "")
+    excl_sql, excl_params = _po_excl_clause(excluded_product_ids, "dx.ProductID")
+    if excl_sql:
+        # Line-derived: header TotQtyOrd/TotQtyRcv include excluded products.
+        apply_sql = _po_lines_apply(excl_sql)
+        where = "h.Status = 0 AND ISNULL(ov.qty_outstanding, 0) > 0" + (" AND h.PoDate < ?" if placed_before else "")
+        agg_qty_expr = "SUM(ov.qty_outstanding)"
+        list_qty_cols = """h.Status, h.PoTotal, h.NoLines, ov.qty_ordered AS TotQtyOrd, ov.qty_received AS TotQtyRcv,
+                        ISNULL(ov.qty_outstanding,0) AS qty_outstanding,"""
+        sortable = dict(SORTABLE_PO_COLUMNS, qty_outstanding="ISNULL(ov.qty_outstanding,0)")
+    else:
+        apply_sql = _OUTSTANDING_APPLY
+        where = _INCOMING_WHERE + (" AND h.PoDate < ?" if placed_before else "")
+        agg_qty_expr = "SUM(ISNULL(h.TotQtyOrd,0) - ISNULL(h.TotQtyRcv,0))"
+        list_qty_cols = """h.Status, h.PoTotal, h.NoLines, h.TotQtyOrd, h.TotQtyRcv,
+                        ISNULL(h.TotQtyOrd,0) - ISNULL(h.TotQtyRcv,0) AS qty_outstanding,"""
+        sortable = SORTABLE_PO_COLUMNS
     wparams: List[Any] = [placed_before] if placed_before else []
     try:
         with _connect(host, port, database, username, password) as conn:
@@ -1270,28 +1322,27 @@ def _incoming_purchases_sync(
                 return False, f"Table {', '.join(missing)} not found on this store", {}
             cur.execute(f"""
                 SELECT COUNT(*) AS purchase_orders, SUM(ISNULL(h.PoTotal,0)) AS po_total,
-                       SUM(ISNULL(h.TotQtyOrd,0) - ISNULL(h.TotQtyRcv,0)) AS qty_outstanding,
+                       {agg_qty_expr} AS qty_outstanding,
                        MIN(h.PoDate) AS oldest_po_date,
                        SUM(ov.outstanding_value) AS outstanding_value
                 FROM PurchaseOrders_tbl h
-                {_OUTSTANDING_APPLY}
+                {apply_sql}
                 WHERE {where}
-            """, wparams)
+            """, excl_params + wparams)
             agg = _rows(cur)[0]
             pos: List[Dict[str, Any]] = []
             if include_list:
-                sort_expr = _sort_sql(SORTABLE_PO_COLUMNS, sort_by, "po_date", sort_order, ", h.PoID DESC")
+                sort_expr = _sort_sql(sortable, sort_by, "po_date", sort_order, ", h.PoID DESC")
                 cur.execute(f"""
                     SELECT TOP (?)
                         h.PoID, h.PoNumber, h.PoDate, h.RequiredDate, h.SupplierID, h.BusinessName, h.AccountNo,
-                        h.Status, h.PoTotal, h.NoLines, h.TotQtyOrd, h.TotQtyRcv,
-                        ISNULL(h.TotQtyOrd,0) - ISNULL(h.TotQtyRcv,0) AS qty_outstanding,
+                        {list_qty_cols}
                         ov.outstanding_value
                     FROM PurchaseOrders_tbl h
-                    {_OUTSTANDING_APPLY}
+                    {apply_sql}
                     WHERE {where}
                     ORDER BY {sort_expr}
-                """, [limit] + wparams)
+                """, [limit] + excl_params + wparams)
                 pos = [_po_row(d) for d in _rows(cur)]
         count = int(agg.get("purchase_orders") or 0)
         return True, None, {
@@ -1317,21 +1368,38 @@ def _purchased_in_range_sync(
     sort_by: str = "po_date",
     sort_order: str = "desc",
     include_list: bool = True,
+    excluded_product_ids: Optional[List[int]] = None,
 ) -> Tuple[bool, Optional[str], Dict[str, Any]]:
     limit = _clamp_limit(limit)
+    excl_sql, excl_params = _po_excl_clause(excluded_product_ids, "dx.ProductID")
     try:
         with _connect(host, port, database, username, password) as conn:
             cur = conn.cursor()
-            present = _tables_present(cur, ["PurchaseOrders_tbl"])
+            present = _tables_present(cur, ["PurchaseOrders_tbl", "PurchaseOrdersDetails_tbl"])
             if not present.get("PurchaseOrders_tbl"):
                 return False, "Table PurchaseOrders_tbl not found on this store", {}
-            cur.execute("""
+            if excl_sql and not present.get("PurchaseOrdersDetails_tbl"):
+                excl_sql, excl_params = "", []  # can't re-derive qty from lines — fall back to header sums
+            if excl_sql:
+                apply_sql = _po_lines_apply(excl_sql)
+                series_qty_expr = "SUM(ISNULL(ov.qty_ordered,0))"
+                list_qty_cols = """h.Status, h.PoTotal, h.NoLines, ov.qty_ordered AS TotQtyOrd, ov.qty_received AS TotQtyRcv,
+                        ISNULL(ov.qty_outstanding,0) AS qty_outstanding"""
+                sortable = dict(SORTABLE_PO_COLUMNS, qty_outstanding="ISNULL(ov.qty_outstanding,0)")
+            else:
+                apply_sql = ""
+                series_qty_expr = "SUM(ISNULL(h.TotQtyOrd,0))"
+                list_qty_cols = """h.Status, h.PoTotal, h.NoLines, h.TotQtyOrd, h.TotQtyRcv,
+                        ISNULL(h.TotQtyOrd,0) - ISNULL(h.TotQtyRcv,0) AS qty_outstanding"""
+                sortable = SORTABLE_PO_COLUMNS
+            cur.execute(f"""
                 SELECT CAST(h.PoDate AS date) AS d, COUNT(*) AS purchase_orders,
-                       SUM(ISNULL(h.PoTotal,0)) AS total, SUM(ISNULL(h.TotQtyOrd,0)) AS qty
+                       SUM(ISNULL(h.PoTotal,0)) AS total, {series_qty_expr} AS qty
                 FROM PurchaseOrders_tbl h
+                {apply_sql}
                 WHERE h.PoDate >= ? AND h.PoDate < ?
                 GROUP BY CAST(h.PoDate AS date) ORDER BY d
-            """, [series_from, date_to_excl])
+            """, excl_params + [series_from, date_to_excl])
             daily: Dict[date, Dict[str, float]] = {}
             for r in _rows(cur):
                 d = r.get("d")
@@ -1342,16 +1410,16 @@ def _purchased_in_range_sync(
                                 "total": _f(r.get("total")), "qty": _f(r.get("qty"))}
             pos: List[Dict[str, Any]] = []
             if include_list:
-                sort_expr = _sort_sql(SORTABLE_PO_COLUMNS, sort_by, "po_date", sort_order, ", h.PoID DESC")
+                sort_expr = _sort_sql(sortable, sort_by, "po_date", sort_order, ", h.PoID DESC")
                 cur.execute(f"""
                     SELECT TOP (?)
                         h.PoID, h.PoNumber, h.PoDate, h.RequiredDate, h.SupplierID, h.BusinessName, h.AccountNo,
-                        h.Status, h.PoTotal, h.NoLines, h.TotQtyOrd, h.TotQtyRcv,
-                        ISNULL(h.TotQtyOrd,0) - ISNULL(h.TotQtyRcv,0) AS qty_outstanding
+                        {list_qty_cols}
                     FROM PurchaseOrders_tbl h
+                    {apply_sql}
                     WHERE h.PoDate >= ? AND h.PoDate < ?
                     ORDER BY {sort_expr}
-                """, [limit, date_from, date_to_excl])
+                """, [limit] + excl_params + [date_from, date_to_excl])
                 pos = [_po_row(d) for d in _rows(cur)]
         return True, None, {"purchase_orders": pos, "daily": daily, "limit": limit}
     except Exception as e:
@@ -1365,8 +1433,10 @@ def _received_in_range_sync(
     series_from: str,
     limit: int = DEFAULT_LIST_LIMIT,
     include_list: bool = True,
+    excluded_product_ids: Optional[List[int]] = None,
 ) -> Tuple[bool, Optional[str], Dict[str, Any]]:
     limit = _clamp_limit(limit)
+    excl_sql, excl_params = _po_excl_clause(excluded_product_ids, "d.ProductID")
     try:
         with _connect(host, port, database, username, password) as conn:
             cur = conn.cursor()
@@ -1374,14 +1444,14 @@ def _received_in_range_sync(
             missing = [t for t, ok in present.items() if not ok]
             if missing:
                 return False, f"Table {', '.join(missing)} not found on this store", {}
-            cur.execute("""
+            cur.execute(f"""
                 SELECT CAST(d.DateReceived AS date) AS d, COUNT(DISTINCT d.PoID) AS purchase_orders,
                        SUM(ISNULL(d.QtyReceived,0)) AS qty,
                        SUM(ISNULL(d.QtyReceived,0) * ISNULL(d.UnitCost,0)) AS value
                 FROM PurchaseOrdersDetails_tbl d
-                WHERE d.DateReceived >= ? AND d.DateReceived < ? AND ISNULL(d.QtyReceived,0) > 0
+                WHERE d.DateReceived >= ? AND d.DateReceived < ? AND ISNULL(d.QtyReceived,0) > 0{excl_sql}
                 GROUP BY CAST(d.DateReceived AS date) ORDER BY d
-            """, [series_from, date_to_excl])
+            """, [series_from, date_to_excl] + excl_params)
             daily: Dict[date, Dict[str, float]] = {}
             for r in _rows(cur):
                 d = r.get("d")
@@ -1392,29 +1462,54 @@ def _received_in_range_sync(
                                 "qty": _f(r.get("qty")), "value": _f(r.get("value"))}
             pos: List[Dict[str, Any]] = []
             if include_list:
-                cur.execute("""
-                    SELECT TOP (?)
-                        h.PoID, h.PoNumber, h.PoDate, h.RequiredDate, h.SupplierID, h.BusinessName, h.AccountNo,
-                        h.Status, h.PoTotal, h.NoLines, h.TotQtyOrd, h.TotQtyRcv,
-                        MAX(d.DateReceived)                                     AS last_received,
-                        SUM(ISNULL(d.QtyReceived,0))                            AS qty_received,
-                        SUM(ISNULL(d.QtyReceived,0) * ISNULL(d.UnitCost,0))     AS received_value,
-                        COUNT(*)                                                AS lines_received
-                    FROM PurchaseOrdersDetails_tbl d
-                    INNER JOIN PurchaseOrders_tbl h ON h.PoID = d.PoID
-                    WHERE d.DateReceived >= ? AND d.DateReceived < ?
-                      AND ISNULL(d.QtyReceived, 0) > 0
-                    GROUP BY h.PoID, h.PoNumber, h.PoDate, h.RequiredDate, h.SupplierID, h.BusinessName, h.AccountNo,
-                             h.Status, h.PoTotal, h.NoLines, h.TotQtyOrd, h.TotQtyRcv
-                    ORDER BY MAX(d.DateReceived) DESC, h.PoID DESC
-                """, [limit, date_from, date_to_excl])
+                if excl_sql:
+                    # Re-derive per-PO ordered/received from non-excluded lines so the
+                    # "X of Y ordered" / partial-vs-complete displays ignore excluded products.
+                    apply_excl_sql, apply_excl_params = _po_excl_clause(excluded_product_ids, "dx.ProductID")
+                    cur.execute(f"""
+                        SELECT TOP (?)
+                            h.PoID, h.PoNumber, h.PoDate, h.RequiredDate, h.SupplierID, h.BusinessName, h.AccountNo,
+                            h.Status, h.PoTotal, h.NoLines,
+                            MAX(ov.qty_ordered)                                     AS TotQtyOrd,
+                            MAX(ov.qty_received)                                    AS TotQtyRcv,
+                            MAX(d.DateReceived)                                     AS last_received,
+                            SUM(ISNULL(d.QtyReceived,0))                            AS qty_received,
+                            SUM(ISNULL(d.QtyReceived,0) * ISNULL(d.UnitCost,0))     AS received_value,
+                            COUNT(*)                                                AS lines_received
+                        FROM PurchaseOrdersDetails_tbl d
+                        INNER JOIN PurchaseOrders_tbl h ON h.PoID = d.PoID
+                        {_po_lines_apply(apply_excl_sql)}
+                        WHERE d.DateReceived >= ? AND d.DateReceived < ?
+                          AND ISNULL(d.QtyReceived, 0) > 0{excl_sql}
+                        GROUP BY h.PoID, h.PoNumber, h.PoDate, h.RequiredDate, h.SupplierID, h.BusinessName, h.AccountNo,
+                                 h.Status, h.PoTotal, h.NoLines
+                        ORDER BY MAX(d.DateReceived) DESC, h.PoID DESC
+                    """, [limit] + apply_excl_params + [date_from, date_to_excl] + excl_params)
+                else:
+                    cur.execute("""
+                        SELECT TOP (?)
+                            h.PoID, h.PoNumber, h.PoDate, h.RequiredDate, h.SupplierID, h.BusinessName, h.AccountNo,
+                            h.Status, h.PoTotal, h.NoLines, h.TotQtyOrd, h.TotQtyRcv,
+                            MAX(d.DateReceived)                                     AS last_received,
+                            SUM(ISNULL(d.QtyReceived,0))                            AS qty_received,
+                            SUM(ISNULL(d.QtyReceived,0) * ISNULL(d.UnitCost,0))     AS received_value,
+                            COUNT(*)                                                AS lines_received
+                        FROM PurchaseOrdersDetails_tbl d
+                        INNER JOIN PurchaseOrders_tbl h ON h.PoID = d.PoID
+                        WHERE d.DateReceived >= ? AND d.DateReceived < ?
+                          AND ISNULL(d.QtyReceived, 0) > 0
+                        GROUP BY h.PoID, h.PoNumber, h.PoDate, h.RequiredDate, h.SupplierID, h.BusinessName, h.AccountNo,
+                                 h.Status, h.PoTotal, h.NoLines, h.TotQtyOrd, h.TotQtyRcv
+                        ORDER BY MAX(d.DateReceived) DESC, h.PoID DESC
+                    """, [limit, date_from, date_to_excl])
                 pos = [_po_row(d) for d in _rows(cur)]
         return True, None, {"purchase_orders": pos, "daily": daily, "limit": limit}
     except Exception as e:
         return False, str(e), {}
 
 
-def _purchase_order_detail_sync(host, port, database, username, password, po_id: int) -> Tuple[bool, Optional[str], Dict[str, Any]]:
+def _purchase_order_detail_sync(host, port, database, username, password, po_id: int,
+                                excluded_product_ids: Optional[List[int]] = None) -> Tuple[bool, Optional[str], Dict[str, Any]]:
     try:
         with _connect(host, port, database, username, password) as conn:
             cur = conn.cursor()
@@ -1457,6 +1552,8 @@ def _purchase_order_detail_sync(host, port, database, username, password, po_id:
             })
             lines: List[Dict[str, Any]] = []
             outstanding_value = 0.0
+            excl = set(int(p) for p in (excluded_product_ids or []) if p is not None)
+            ord_sum = rcv_sum = out_sum = 0.0
             if present.get("PurchaseOrdersDetails_tbl"):
                 cur.execute("""
                     SELECT d.LineID, d.ProductID, d.ProductSKU, d.ProductUPC, d.SupplierSKU, d.ProductDescription,
@@ -1467,10 +1564,16 @@ def _purchase_order_detail_sync(host, port, database, username, password, po_id:
                     qo = _f(r.get("QtyOrdered"))
                     qr = _f(r.get("QtyReceived"))
                     outstanding = max(0.0, qo - qr)
-                    outstanding_value += outstanding * _f(r.get("UnitCost"))
+                    product_id = _io(r.get("ProductID"))
+                    is_excluded = product_id is not None and product_id in excl
+                    if not is_excluded:
+                        outstanding_value += outstanding * _f(r.get("UnitCost"))
+                        ord_sum += qo
+                        rcv_sum += qr
+                        out_sum += outstanding
                     lines.append({
                         "line_id": int(r.get("LineID")),
-                        "product_id": _io(r.get("ProductID")),
+                        "product_id": product_id,
                         "product_sku": _s(r.get("ProductSKU")),
                         "product_upc": _s(r.get("ProductUPC")),
                         "supplier_sku": _s(r.get("SupplierSKU")),
@@ -1483,7 +1586,13 @@ def _purchase_order_detail_sync(host, port, database, username, password, po_id:
                         "unit_cost": _fo(r.get("UnitCost")),
                         "extended_cost": _fo(r.get("ExtendedCost")),
                         "date_received": _iso(r.get("DateReceived")),
+                        "excluded": is_excluded,
                     })
+                if excl:
+                    # Header ordered/received/outstanding reflect non-excluded lines only.
+                    header["tot_qty_ord"] = ord_sum
+                    header["tot_qty_rcv"] = rcv_sum
+                    header["qty_outstanding"] = out_sum
             header["outstanding_value"] = round(outstanding_value, 2)
         return True, None, {"header": header, "lines": lines}
     except Exception as e:

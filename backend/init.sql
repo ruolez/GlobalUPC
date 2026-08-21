@@ -388,6 +388,20 @@ CREATE TABLE IF NOT EXISTS business_overview_shopify_exclusions (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_bov_shopify_excl_unique
     ON business_overview_shopify_exclusions (COALESCE(store_id, 0), COALESCE(variant_shopify_id, 0), COALESCE(product_shopify_id, 0), COALESCE(barcode, ''));
 
+-- Business Overview — purchase-order product exclusions (migration 024)
+CREATE TABLE IF NOT EXISTS business_overview_po_product_exclusions (
+    id SERIAL PRIMARY KEY,
+    store_id INTEGER NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
+    product_id INTEGER NOT NULL,
+    product_sku TEXT,
+    product_upc TEXT,
+    description TEXT,
+    note TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_bov_po_excl_unique
+    ON business_overview_po_product_exclusions (store_id, product_id);
+
 -- Insert default settings
 INSERT INTO settings (key, value, description) VALUES
     ('app_name', 'Global UPC', 'Application name'),
