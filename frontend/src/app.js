@@ -18539,6 +18539,7 @@ const bovState = {
   popover: null,        // id of the open topbar popover
   cardFilters: {        // per-list toolbar filters (store chip, status chip, search)
     quotations: { store: null, status: null, search: "", scan: "all", reps: null },  // reps: null = all
+    products: { store: null, search: "" },
     invoices: { store: null, search: "" },
     purchases: { store: null, search: "" },
     shopifyorders: { store: null, search: "" },
@@ -18550,6 +18551,7 @@ const bovState = {
   expanded: { quotations: false, invoices: false, purchases: false },
   sort: {
     quotations: { key: "quotation_total", dir: "desc" },
+    products: { key: "revenue", dir: "desc" },
     invoicesPeriod: { key: "invoice_date", dir: "desc" },
     invoicesOpen: { key: "age_days", dir: "desc" },
     purchasesIncoming: { key: "po_date", dir: "desc" },
@@ -18562,6 +18564,7 @@ const bovState = {
     trend: bovEmptyWidget(),
     top: bovEmptyWidget(),
     quotations: bovEmptyWidget(),
+    products: bovEmptyWidget(),
     invoicesPeriod: bovEmptyWidget(),
     invoicesOpen: bovEmptyWidget(),
     purchasesIncoming: bovEmptyWidget(),
@@ -18806,10 +18809,10 @@ function bovSavePrefs() {
 // Lifecycle
 // ---------------------------------------------------------------------------
 
-const BOV_SECTIONS = ["overview", "quotations", "invoices", "purchasing", "shopify"];
+const BOV_SECTIONS = ["overview", "quotations", "products", "invoices", "purchasing", "shopify"];
 const BOV_CARD_SECTION = {
   "bov-trend-card": "overview", "bov-margin-card": "overview", "bov-top-card": "overview", "bov-kpi-strip": "overview",
-  "bov-quotations-card": "quotations", "bov-invoices-card": "invoices",
+  "bov-quotations-card": "quotations", "bov-products-card": "products", "bov-invoices-card": "invoices",
   "bov-purchases-card": "purchasing", "bov-shopify-card": "shopify",
 };
 
@@ -18855,6 +18858,8 @@ function bovRenderNavBadges() {
   const okData = (w) => (w && w.data && w.data.configured && !w.data.error && !w.data.filtered_out) ? w.data : null;
   const q = okData(bovState.widgets.quotations);
   set("quotations", q ? (q.count || 0) : null);
+  const pr = okData(bovState.widgets.products);
+  set("products", pr ? (pr.count || 0) : null);
   const inv = okData(bovState.widgets.invoicesPeriod);
   set("invoices", inv ? (inv.count || 0) : null);
   const po = okData(bovState.widgets.purchasesIncoming);
@@ -19881,6 +19886,12 @@ const BOV_WIDGET_DEFS = {
     request: () => ["/quotations", { limit: BOV_LIST_LIMIT, ...bovStoreParams(), ...bovCostParams() }],
     render: () => bovRenderQuotationsTable(),
   },
+  products: {
+    // Both cost bases (local + S2S) come back side by side — no cost_mode param.
+    card: "bov-products-card",
+    request: () => ["/products", { ...bovRangeParams(), ...bovStoreParams() }],
+    render: () => bovRenderProductsTable(),
+  },
   invoicesPeriod: {
     card: "bov-invoices-card",
     request: () => ["/invoices/period", { ...bovRangeParams(), limit: BOV_LIST_LIMIT, ...bovStoreParams(), ...bovCostParams() }],
@@ -20026,6 +20037,7 @@ function bovPaintSkeleton(key) {
     trend: "bov-trend-wrap",
     top: "bov-top-body",
     quotations: "bov-quotations-body",
+    products: "bov-products-body",
     invoicesPeriod: "bov-invoices-body",
     invoicesOpen: "bov-invoices-body",
     purchasesIncoming: "bov-purchases-body",
@@ -21862,7 +21874,7 @@ function bovToggleSort(widgetKey, colKey) {
     s.dir = s.dir === "asc" ? "desc" : "asc";
   } else {
     s.key = colKey;
-    s.dir = ["business_name", "quotation_number", "invoice_number", "po_number", "sales_rep", "status", "packer", "store_name"].includes(colKey) ? "asc" : "desc";
+    s.dir = ["business_name", "quotation_number", "invoice_number", "po_number", "sales_rep", "status", "packer", "store_name", "description", "upc", "sku"].includes(colKey) ? "asc" : "desc";
   }
   bovRenderCard(widgetKey);
 }
@@ -21870,6 +21882,7 @@ function bovToggleSort(widgetKey, colKey) {
 function bovRenderCard(key) {
   if (key === "missingCost") { if (bovState.missingCost) bovRenderMissingCostModal(bovState.missingCost); return; }
   if (key === "quotations") bovRenderQuotationsTable();
+  else if (key === "products") bovRenderProductsTable();
   else if (key === "invoices" || key.startsWith("invoices")) bovRenderInvoices();
   else if (key === "purchases" || key.startsWith("purchases")) bovRenderPurchases();
   else if (key === "shopifyorders" || key === "shopifyOrders_list") bovRenderShopifyOrdersList();
@@ -21919,7 +21932,7 @@ function bovTableHtml(widgetKey, columns, rows, opts = {}) {
       return `<tr class="bov-row-click${alerted ? " bov-row-alert" : ""}" tabindex="0"${alerted ? ' title="Flagged by the alert you opened"' : ""} ${attrs}>${numbered ? `<td class="bov-num bov-line-no">${i + 1}</td>` : ""}${columns.map((c) => `<td class="${c.num ? "bov-num" : ""}${c.cls ? ` ${c.cls}` : ""}">${c.render ? c.render(r) : escapeHtml(r[c.key] == null ? "—" : String(r[c.key]))}</td>`).join("")}</tr>`;
     })
     .join("");
-  return `${bovFlagBarHtml(widgetKey, rows, alertMatches)}<div class="bov-table-scroll"><table class="data-table bov-mini-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+  return `${bovFlagBarHtml(widgetKey, rows, alertMatches)}<div class="bov-table-scroll"><table class="data-table bov-mini-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody>${opts.tfoot || ""}</table></div>`;
 }
 
 function bovStatusChip(status) {
@@ -22186,6 +22199,144 @@ function bovQuotationCols() {
     { key: "total_qty", label: "Qty", num: true, width: "5%", render: (r) => bovInt(r.total_qty) },
     { key: "quotation_total", label: "Total", num: true, width: "8%", render: (r) => bovMoney(r.quotation_total) },
     { key: "margin_pct", label: "Margin", num: true, width: "7%", render: bovMarginCell },
+  ];
+}
+
+// ---------------------------------------------------------------------------
+// Ops card: products sold (both cost bases side by side)
+// ---------------------------------------------------------------------------
+
+function bovRenderProductsTable() {
+  const body = document.getElementById("bov-products-body");
+  const meta = document.getElementById("bov-products-meta");
+  const foot = document.getElementById("bov-products-foot");
+  if (!body) return;
+  const w = bovState.widgets.products;
+  if (!w.data && !w.error) return;
+  if (foot) foot.innerHTML = "";
+  if (w.error && !w.data) {
+    body.innerHTML = bovInlineErrorHtml("products", w.error, "Products could not load");
+    if (meta) meta.textContent = "";
+    return;
+  }
+  const d = w.data;
+  if (!d.configured) {
+    body.innerHTML = bovUnconfiguredHtml("No sales sources", "The Products tab reads the BackOffice sales stores and synced Shopify stores — pick them under Data sources.", "config", "Set up data sources");
+    if (meta) meta.textContent = "";
+    return;
+  }
+  if (d.filtered_out) {
+    body.innerHTML = bovFilteredOutHtml();
+    if (meta) meta.textContent = "";
+    return;
+  }
+  if (d.error) {
+    body.innerHTML = bovInlineErrorHtml("products", d.error, "Products unavailable");
+    if (meta) meta.textContent = "";
+    return;
+  }
+  const allRows = d.rows || [];
+  const st = d.totals || {};
+  if (meta) meta.textContent = `${bovInt(d.count || allRows.length)} products · ${bovInt(st.units || 0)} units · ${bovCompactMoney(st.revenue || 0)}`;
+  const rows = bovApplyCardFilters("products", allRows, {
+    storeOf: (r) => r.store_name,
+    searchFields: ["description", "upc", "sku"],
+  });
+  if (!rows.length) {
+    body.innerHTML = bovEmptyHtml(allRows.length ? "No products match the filters." : "No products sold in this period.");
+    return;
+  }
+  const sorted = bovSortRows(rows, bovState.sort.products);
+  // Server totals cover every row (even beyond the limit); once a chip/search
+  // narrows the list, the totals row follows what's visible.
+  const totals = (!bovCardFiltersActive("products") && d.totals) ? d.totals : bovProductsComputeTotals(rows);
+  body.innerHTML = bovTableHtml("products", bovProductCols(), sorted, { tfoot: bovProductsTfootHtml(totals) });
+  if (foot) {
+    const notes = [];
+    if (d.truncated) notes.push(`showing top ${bovInt(allRows.length)} of ${bovInt(d.count)} by revenue`);
+    if (d.cost_store_name) notes.push(`S2S cost: ${d.cost_store_name}`);
+    (d.warnings || []).forEach((msg) => notes.push(msg));
+    foot.innerHTML = bovFootHtml("products", rows.length, sorted.length, escapeHtml(notes.join(" · ")));
+  }
+}
+
+function bovProductsComputeTotals(rows) {
+  const t = { products: rows.length, units: 0, revenue: 0,
+              local_cost: null, local_profit: null, local_margin_pct: null, local_cost_coverage: null,
+              s2s_cost: null, s2s_profit: null, s2s_margin_pct: null, s2s_cost_coverage: null };
+  let lc = 0, lr = 0, lAny = false, sc = 0, sr = 0, sAny = false;
+  rows.forEach((r) => {
+    t.units += bovNum(r.units);
+    t.revenue += bovNum(r.revenue);
+    if (r.local_cost != null) { lAny = true; lc += bovNum(r.local_cost); lr += bovNum(r.revenue); }
+    if (r.s2s_cost != null) { sAny = true; sc += bovNum(r.s2s_cost); sr += bovNum(r.revenue); }
+  });
+  if (lAny) {
+    t.local_cost = lc; t.local_profit = lr - lc;
+    t.local_margin_pct = lr ? ((lr - lc) / lr) * 100 : null;
+    t.local_cost_coverage = t.revenue ? (lr / t.revenue) * 100 : null;
+  }
+  if (sAny) {
+    t.s2s_cost = sc; t.s2s_profit = sr - sc;
+    t.s2s_margin_pct = sr ? ((sr - sc) / sr) * 100 : null;
+    t.s2s_cost_coverage = t.revenue ? (sr / t.revenue) * 100 : null;
+  }
+  return t;
+}
+
+function bovProductsTfootHtml(t) {
+  const marginCell = (pct, profit, cov) => {
+    if (pct == null) return `<span class="bov-cell-muted">—</span>`;
+    const m = bovNum(pct);
+    const tone = m < 0 ? " is-neg" : (m < 15 ? " is-low" : "");
+    const covTxt = cov != null && cov < 99.9 ? ` · cost known for ${Math.round(cov)}% of revenue` : "";
+    return `<span class="bov-margin${tone}" title="${escapeHtml(`Profit ${bovMoney(profit)}${covTxt}`)}">${escapeHtml(bovPct(m))}</span>`;
+  };
+  const money = (v) => escapeHtml(v == null ? "—" : bovMoney(v));
+  const avg = t.units ? bovMoney((t.revenue || 0) / t.units) : "—";
+  return `<tfoot><tr>` +
+    `<td class="bov-num bov-line-no"></td>` +
+    `<td>Totals · ${bovInt(t.products || 0)} products</td>` +
+    `<td></td><td></td>` +
+    `<td class="bov-num">${bovInt(t.units || 0)}</td>` +
+    `<td class="bov-num">${escapeHtml(avg)}</td>` +
+    `<td class="bov-num">${escapeHtml(bovMoney(t.revenue || 0))}</td>` +
+    `<td class="bov-num">${money(t.local_cost)}</td>` +
+    `<td class="bov-num">${money(t.s2s_cost)}</td>` +
+    `<td class="bov-num">${marginCell(t.local_margin_pct, t.local_profit, t.local_cost_coverage)}</td>` +
+    `<td class="bov-num">${marginCell(t.s2s_margin_pct, t.s2s_profit, t.s2s_cost_coverage)}</td>` +
+    `</tr></tfoot>`;
+}
+
+function bovProductCostCell(r, unitKey, totalKey) {
+  if (r[unitKey] == null && r[totalKey] == null) {
+    return `<span class="bov-cell-muted" title="Cost unknown (UPC not found in the cost source)">—</span>`;
+  }
+  const unit = r[unitKey];
+  return `${escapeHtml(unit != null ? bovMoney(unit) : "—")}${r[totalKey] != null ? `<span class="bov-cell-sub">${escapeHtml(bovMoney(r[totalKey]))} total</span>` : ""}`;
+}
+
+function bovProductMarginCell(r, pctKey, profitKey) {
+  if (r == null || r[pctKey] == null) {
+    return `<span class="bov-cell-muted" title="Cost unknown for this row (UPC not found in the cost source)">—</span>`;
+  }
+  const m = bovNum(r[pctKey]);
+  const tone = m < 0 ? " is-neg" : (m < 15 ? " is-low" : "");
+  return `<span class="bov-margin${tone}" title="${escapeHtml(`Profit ${bovMoney(r[profitKey])} on ${bovMoney(r.revenue)}`)}">${escapeHtml(bovPct(m))}</span><span class="bov-cell-sub">${escapeHtml(bovMoney(r[profitKey]))}</span>`;
+}
+
+function bovProductCols() {
+  return [
+    { key: "description", label: "Product", width: "22%", render: (r) => bovCustomerCell(r.description, r.sku && r.sku !== r.upc ? `SKU ${r.sku}` : null) },
+    { key: "upc", label: "UPC", width: "10%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.upc || "—")}</span>` },
+    { key: "store_name", label: "Store", width: "9%", cls: "bov-cell-store", render: (r) => escapeHtml(r.store_name || "—") },
+    { key: "units", label: "Qty", num: true, width: "5%", render: (r) => bovInt(r.units) },
+    { key: "avg_price", label: "Avg price", num: true, width: "7%", render: (r) => escapeHtml(r.avg_price != null ? bovMoney(r.avg_price) : "—") },
+    { key: "revenue", label: "Revenue", num: true, width: "8%", render: (r) => escapeHtml(bovMoney(r.revenue)) },
+    { key: "local_unit_cost", label: "Local cost", num: true, width: "9%", render: (r) => bovProductCostCell(r, "local_unit_cost", "local_cost") },
+    { key: "s2s_unit_cost", label: "S2S cost", num: true, width: "9%", render: (r) => bovProductCostCell(r, "s2s_unit_cost", "s2s_cost") },
+    { key: "local_margin_pct", label: "Local mgn", num: true, width: "8%", render: (r) => bovProductMarginCell(r, "local_margin_pct", "local_profit") },
+    { key: "s2s_margin_pct", label: "S2S mgn", num: true, width: "8%", render: (r) => bovProductMarginCell(r, "s2s_margin_pct", "s2s_profit") },
   ];
 }
 

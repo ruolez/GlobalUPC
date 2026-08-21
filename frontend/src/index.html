@@ -288,6 +288,10 @@
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M8 4h8l4 4v12H4V4h4z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M8 12h8M8 16h5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
                 <span>Quotations</span><span class="bov-subnav-badge" id="bov-nav-count-quotations" hidden></span>
               </button>
+              <button type="button" class="bov-subnav-item" role="tab" aria-selected="false" data-bov-section="products">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M4 7.5l8 4.5 8-4.5M12 12v9" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+                <span>Products</span><span class="bov-subnav-badge" id="bov-nav-count-products" hidden></span>
+              </button>
               <button type="button" class="bov-subnav-item" role="tab" aria-selected="false" data-bov-section="invoices">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 3h14v18l-3-2-2 2-2-2-2 2-2-2-3 2V3z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M8 8h8M8 12h8" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
                 <span>Invoices</span><span class="bov-subnav-badge" id="bov-nav-count-invoices" hidden></span>
@@ -414,6 +418,25 @@
                 </div>
                 <div class="bov-card-body" id="bov-quotations-body"></div>
                 <div class="bov-card-foot" id="bov-quotations-foot"></div>
+              </div>
+
+            </section>
+
+            <section class="bov-panel" data-bov-panel="products" hidden>
+              <div class="dashboard-card bov-card" id="bov-products-card">
+                <div class="dashboard-card-header bov-card-head">
+                  <div class="bov-card-title-wrap">
+                    <h3>Products sold</h3>
+                    <span class="dashboard-card-meta" id="bov-products-meta"></span>
+                  </div>
+                </div>
+                <div class="bov-list-toolbar bov-card-toolbar" id="bov-products-toolbar">
+                  <div class="sa-chip-group bov-list-stores" id="bov-products-stores" role="group" aria-label="Filter by store" hidden></div>
+                  <input type="search" class="dark-input bov-list-search-input" data-bov-kind="products" placeholder="Search description or UPC…" autocomplete="off" aria-label="Search products">
+                  <span class="bov-list-count" id="bov-products-count"></span>
+                </div>
+                <div class="bov-card-body" id="bov-products-body"></div>
+                <div class="bov-card-foot" id="bov-products-foot"></div>
               </div>
 
             </section>

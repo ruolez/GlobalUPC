@@ -1820,6 +1820,53 @@ class BOVMissingCostResponse(BOVBlockStatus):
     skipped_stores: List[str] = []
 
 
+# ---- Products sold (per product per store, both cost bases) ----------------
+class BOVProductRow(BaseModel):
+    store_id: int
+    store_name: str
+    store_type: str                           # backoffice | shopify
+    upc: Optional[str] = None
+    description: Optional[str] = None
+    sku: Optional[str] = None
+    orders: int = 0
+    units: float = 0.0
+    revenue: float = 0.0
+    avg_price: Optional[float] = None         # revenue / units
+    local_unit_cost: Optional[float] = None   # own Items_tbl.UnitCost (BackOffice) / S2S UnitPriceC (Shopify)
+    local_cost: Optional[float] = None
+    local_profit: Optional[float] = None
+    local_margin_pct: Optional[float] = None
+    s2s_unit_cost: Optional[float] = None     # S2S Items_tbl.UnitCost
+    s2s_cost: Optional[float] = None
+    s2s_profit: Optional[float] = None
+    s2s_margin_pct: Optional[float] = None
+
+
+class BOVProductsTotals(BaseModel):
+    products: int = 0
+    units: float = 0.0
+    revenue: float = 0.0
+    local_cost: Optional[float] = None
+    local_profit: Optional[float] = None
+    local_margin_pct: Optional[float] = None
+    local_cost_coverage: Optional[float] = None   # % of revenue with a known local cost
+    s2s_cost: Optional[float] = None
+    s2s_profit: Optional[float] = None
+    s2s_margin_pct: Optional[float] = None
+    s2s_cost_coverage: Optional[float] = None
+
+
+class BOVProductsResponse(BOVBlockStatus):
+    period: Optional[BOVPeriod] = None
+    rows: List[BOVProductRow] = []
+    count: int = 0                            # rows before the limit
+    totals: Optional[BOVProductsTotals] = None
+    warnings: List[str] = []
+    truncated: bool = False
+    cost_store_id: Optional[int] = None
+    cost_store_name: Optional[str] = None
+
+
 class BOVShopifyExclusionCreate(BaseModel):
     store_id: Optional[int] = None            # None = all stores
     variant_shopify_id: Optional[int] = None

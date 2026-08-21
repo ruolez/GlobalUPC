@@ -73,7 +73,7 @@ from schemas import (
     BOVPurchaseOrderLine, BOVPurchaseOrderHeader, BOVPurchaseOrderDetailResponse,
     BOVPlacedPurchasesBlock, BOVPlacedPurchasesResponse,
     BOVSalesSourceTotals, BOVSalesBucket, BOVSalesSourceStatus, BOVSalesTrendResponse,
-    BOVBreakdownRow, BOVSalesBreakdownResponse, BOVStoreStatus, BOVInvoicesPeriodResponse, BOVAlert, BOVAlertAction, BOVAlertsResponse, BOVShopifyOrderRow, BOVShopifyOrdersListResponse, BOVShopifyOrderLine, BOVShopifyOrderHeader, BOVShopifyOrderDetailResponse, BOVMissingCostRow, BOVMissingCostResponse, BOVShopifyExclusionCreate, BOVShopifyExclusion, BOVShopifyExclusionList, BOVPoExclusionCreate, BOVPoExclusion, BOVPoExclusionList, bov_merge_alert_rules, bov_validate_alert_rules, BOVShopifyStoreOrders, BOVShopifyOrdersResponse, BOVShopifyRefreshResult, BOVShopifyRefreshResponse,
+    BOVBreakdownRow, BOVSalesBreakdownResponse, BOVStoreStatus, BOVInvoicesPeriodResponse, BOVAlert, BOVAlertAction, BOVAlertsResponse, BOVShopifyOrderRow, BOVShopifyOrdersListResponse, BOVShopifyOrderLine, BOVShopifyOrderHeader, BOVShopifyOrderDetailResponse, BOVMissingCostRow, BOVMissingCostResponse, BOVProductRow, BOVProductsTotals, BOVProductsResponse, BOVShopifyExclusionCreate, BOVShopifyExclusion, BOVShopifyExclusionList, BOVPoExclusionCreate, BOVPoExclusion, BOVPoExclusionList, bov_merge_alert_rules, bov_validate_alert_rules, BOVShopifyStoreOrders, BOVShopifyOrdersResponse, BOVShopifyRefreshResult, BOVShopifyRefreshResponse,
     BOVShopifyStoreOpen, BOVShopifyOpenOrdersBlock, BOVSalesSummaryBlock,
     BusinessOverviewSummaryResponse,
 )
@@ -10803,9 +10803,9 @@ async def get_business_overview_sales_breakdown(
     cmode = _bov_cost_mode(cost_mode)
     resp["cost_mode"] = cmode
     s2s_lookup = _bov_make_cost_lookup(db, cfg, "unit_cost")
+    warnings: List[str] = []
     if cmode == "s2s" and not getattr(s2s_lookup, "configured", False):
         warnings.append("S2S cost: Item Tracker S2S store is not configured — cost unavailable")
-    warnings: List[str] = []
     merged: Dict[str, Dict[str, Any]] = {}
     total_rev = 0.0
 
@@ -10942,6 +10942,178 @@ async def get_business_overview_sales_breakdown(
     if warnings and not out_rows:
         resp["error"] = "; ".join(warnings)
     return BOVSalesBreakdownResponse(**resp)
+
+
+@app.get("/api/business-overview/products", response_model=BOVProductsResponse)
+async def get_business_overview_products(
+    preset: Optional[str] = None, date_from: Optional[str] = None, date_to: Optional[str] = None,
+    store_ids: Optional[str] = None, limit: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Products tab: every product sold in the period, one row per product per
+    store (BackOffice sales stores + synced Shopify mirrors), with BOTH cost
+    bases side by side — local cost (own Items_tbl.UnitCost for BackOffice,
+    S2S UnitPriceC for Shopify) and S2S cost (S2S Items_tbl.UnitCost) — plus
+    the margin each implies. Ignores cost_mode by design.
+    """
+    cfg = _bov_config(db)
+    period = _bov_period(cfg, preset, date_from, date_to)
+    only = _bov_parse_store_ids(store_ids)
+    try:
+        max_rows = max(1, min(int(limit or bov.MAX_LIST_LIMIT), bov.MAX_LIST_LIMIT))
+    except (TypeError, ValueError):
+        max_rows = bov.MAX_LIST_LIMIT
+    if not (_bov_sales_stores(db, cfg) or _bov_shopify_stores(db, cfg)):
+        return BOVProductsResponse(configured=False, period=BOVPeriod(**period.as_dict()))
+    bo_stores = _bov_sales_stores(db, cfg, only)
+    sh_stores = _bov_shopify_stores(db, cfg, only)
+    if not (bo_stores or sh_stores):
+        return BOVProductsResponse(configured=True, filtered_out=True, period=BOVPeriod(**period.as_dict()))
+
+    warnings: List[str] = []
+    statuses: List[Dict[str, Any]] = []
+    rows: List[Dict[str, Any]] = []
+
+    # ---- BackOffice: per-UPC aggregate with the store's own local cost
+    if bo_stores:
+        excl_sales, _ = _bov_excluded_names(db)
+        results = await _bov_fanout(bo_stores, lambda st: bov.backoffice_products_sold_async(
+            **_bov_conn_kwargs(st), date_from=period.start.isoformat(), date_to_excl=period.end_excl,
+            excluded_sales_names=excl_sales))
+        for st, ok, err, payload in results:
+            st_rows = payload if isinstance(payload, list) else []
+            statuses.append({"store_id": st.id, "store_name": st.name, "error": (None if ok else (err or "failed")),
+                             "count": (len(st_rows) if ok else None),
+                             "amount": (round(sum(float(r.get("revenue") or 0) for r in st_rows), 2) if ok else None)})
+            if not ok:
+                warnings.append(f"{st.name}: {err or 'failed'}")
+                continue
+            for r in st_rows:
+                rows.append({**r, "store_id": st.id, "store_name": st.name, "store_type": "backoffice"})
+
+    # ---- Shopify: local mirror, per barcode; both costs come from the S2S lookup
+    if sh_stores:
+        synced = await asyncio.to_thread(shopify_sync.get_synced_stores)
+        sh_excl = _bov_shopify_exclusions(db)
+        usable = []
+        for st in sh_stores:
+            if st["id"] in synced:
+                usable.append(st)
+            else:
+                warnings.append(f"{st['name']}: not synced")
+                statuses.append({"store_id": st["id"], "store_name": st["name"], "error": "not synced"})
+        sh_results = await asyncio.gather(*[bov.shopify_products_sold(
+            st["id"], (synced.get(st["id"]) or {}).get("shop_timezone") or _bov_tz(cfg),
+            period.start.isoformat(), period.end_excl, sh_excl) for st in usable], return_exceptions=True)
+        for st, res in zip(usable, sh_results):
+            if isinstance(res, Exception):
+                warnings.append(f"{st['name']}: {res}")
+                statuses.append({"store_id": st["id"], "store_name": st["name"], "error": str(res)})
+                continue
+            statuses.append({"store_id": st["id"], "store_name": st["name"], "error": None,
+                             "count": len(res),
+                             "amount": round(sum(float(r.get("revenue") or 0) for r in res), 2)})
+            for r in res:
+                title = (r.get("title") or "").strip()
+                variant = (r.get("variant_title") or "").strip()
+                rows.append({
+                    "upc": ((r.get("barcode") or "").strip() or None),
+                    "description": (f"{title} — {variant}" if title and variant else (title or variant or None)),
+                    "sku": r.get("sku"),
+                    "orders": int(r.get("orders") or 0),
+                    "revenue": round(float(r.get("revenue") or 0), 2),
+                    "units": float(r.get("units") or 0),
+                    "local_cost": None,   # filled from the S2S lookup (UnitPriceC) below
+                    "store_id": st["id"], "store_name": st["name"], "store_type": "shopify",
+                })
+
+    # ---- One batch lookup on the S2S store: UnitCost (S2S basis) + UnitPriceC (Shopify local basis)
+    conn = _bov_cost_conn(db, cfg)
+    cost_store = db.query(Store).filter(Store.id == conn.store_id).first() if conn else None
+    upcs = sorted({r["upc"] for r in rows if r.get("upc")})
+    by_upc: Dict[str, Any] = {}
+    lookup_error: Optional[str] = None
+    if conn is not None and upcs:
+        ok, err, found = await get_item_prices_batch_async(host=conn.host, port=conn.port, database=conn.database_name,
+                                                          username=conn.username, password=conn.password,
+                                                          upcs=upcs, include_discontinued=True)
+        if ok and isinstance(found, dict):
+            by_upc = found
+        else:
+            lookup_error = err or "cost lookup failed"
+    if conn is None:
+        warnings.append("Item Tracker S2S store is not configured — S2S cost unavailable")
+    elif lookup_error:
+        warnings.append(f"S2S cost lookup failed: {lookup_error}")
+
+    def _s2s_field(upc: Optional[str], field: str) -> Optional[float]:
+        rec = by_upc.get(upc) if upc else None
+        if not rec:
+            return None
+        v = rec.get(field)
+        try:
+            return float(v) if v is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    for r in rows:
+        units = float(r.get("units") or 0)
+        rev = float(r.get("revenue") or 0)
+        r["avg_price"] = (round(rev / units, 2) if units else None)
+        if r["store_type"] == "shopify":
+            local_unit = _s2s_field(r.get("upc"), "unit_delivery_b")
+            local_total = (round(local_unit * units, 2) if local_unit is not None else None)
+        else:
+            local_total = r.get("local_cost")
+            local_unit = (round(local_total / units, 4) if (local_total is not None and units) else None)
+        s2s_unit = _s2s_field(r.get("upc"), "unit_cost")
+        s2s_total = (round(s2s_unit * units, 2) if s2s_unit is not None else None)
+        r["local_unit_cost"] = local_unit
+        r["local_cost"] = (round(local_total, 2) if local_total is not None else None)
+        r["local_profit"] = (round(rev - local_total, 2) if local_total is not None else None)
+        r["local_margin_pct"] = (bov.margin_pct(rev, local_total) if local_total is not None else None)
+        r["s2s_unit_cost"] = s2s_unit
+        r["s2s_cost"] = s2s_total
+        r["s2s_profit"] = (round(rev - s2s_total, 2) if s2s_total is not None else None)
+        r["s2s_margin_pct"] = (bov.margin_pct(rev, s2s_total) if s2s_total is not None else None)
+
+    # ---- Totals over ALL rows (weighted margins on the cost-known subset)
+    tot_rev = sum(float(r.get("revenue") or 0) for r in rows)
+
+    def _basis_totals(cost_key: str) -> Dict[str, Optional[float]]:
+        known = [r for r in rows if r.get(cost_key) is not None]
+        if not known:
+            return {"cost": None, "profit": None, "margin": None, "coverage": (0.0 if rows else None)}
+        cost = sum(float(r[cost_key]) for r in known)
+        rev_known = sum(float(r.get("revenue") or 0) for r in known)
+        return {"cost": round(cost, 2), "profit": round(rev_known - cost, 2),
+                "margin": bov.margin_pct(rev_known, cost),
+                "coverage": (round(rev_known / tot_rev * 100, 1) if tot_rev else None)}
+
+    local_t = _basis_totals("local_cost")
+    s2s_t = _basis_totals("s2s_cost")
+    totals = BOVProductsTotals(
+        products=len(rows),
+        units=round(sum(float(r.get("units") or 0) for r in rows), 2),
+        revenue=round(tot_rev, 2),
+        local_cost=local_t["cost"], local_profit=local_t["profit"],
+        local_margin_pct=local_t["margin"], local_cost_coverage=local_t["coverage"],
+        s2s_cost=s2s_t["cost"], s2s_profit=s2s_t["profit"],
+        s2s_margin_pct=s2s_t["margin"], s2s_cost_coverage=s2s_t["coverage"],
+    )
+
+    rows.sort(key=lambda x: -(x.get("revenue") or 0))
+    out = rows[:max_rows]
+    err_msg = ("; ".join(warnings) if warnings and not rows else None)
+    return BOVProductsResponse(
+        configured=True, period=BOVPeriod(**period.as_dict()),
+        rows=[BOVProductRow(**r) for r in out], count=len(rows), totals=totals,
+        warnings=warnings, truncated=len(rows) > len(out),
+        cost_store_id=(cost_store.id if cost_store else None),
+        cost_store_name=(cost_store.name if cost_store else None),
+        stores=[BOVStoreStatus(**s) for s in statuses], error=err_msg,
+    )
 
 
 # ---- Access gate: the Overview is password protected ------------------------

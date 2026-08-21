@@ -1796,6 +1796,62 @@ def _backoffice_breakdown_sync(
         return False, str(e), []
 
 
+def _backoffice_products_sold_sync(
+    host, port, database, username, password,
+    date_from: str,
+    date_to_excl: str,
+    excluded_sales_names: Optional[List[str]] = None,
+) -> Tuple[bool, Optional[str], List[Dict[str, Any]]]:
+    """
+    Every product sold in the period, grouped by trimmed UPC, with the store's
+    own local cost (qty × Items_tbl.UnitCost, fallback line cost). No TOP clamp —
+    the Products tab wants the full list; the endpoint applies the limit.
+    """
+    excl_sql, excl_params = _excl_clause(excluded_sales_names or [])
+    try:
+        with _connect(host, port, database, username, password) as conn:
+            cur = conn.cursor()
+            present = _tables_present(cur, ["Invoices_tbl", "InvoicesDetails_tbl", "Items_tbl"])
+            if not (present.get("Invoices_tbl") and present.get("InvoicesDetails_tbl")):
+                return False, "Invoices_tbl / InvoicesDetails_tbl not found on this store", []
+            local_cost = bool(present.get("Items_tbl"))
+            cost_apply = _LOCAL_COST_APPLY if local_cost else ""
+            cost_expr = _LOCAL_COST_EXPR if local_cost else "ISNULL(d.QtyShipped,0)*ISNULL(d.UnitCost,0)"
+            cur.execute(f"""
+                SELECT LTRIM(RTRIM(d.ProductUPC))       AS upc,
+                       MAX(d.ProductDescription)        AS name,
+                       MAX(d.ProductSKU)                AS sku,
+                       COUNT(DISTINCT h.InvoiceID)      AS orders,
+                       SUM(ISNULL(d.ExtendedPrice, 0))  AS revenue,
+                       SUM(ISNULL(d.QtyShipped, 0))     AS units,
+                       SUM({cost_expr})                 AS local_cost
+                FROM InvoicesDetails_tbl d
+                INNER JOIN Invoices_tbl h ON h.InvoiceID = d.InvoiceID
+                {cost_apply}
+                WHERE ISNULL(h.Void, 0) = 0
+                  AND h.InvoiceDate >= ?
+                  AND h.InvoiceDate <  ?
+                  {excl_sql}
+                GROUP BY LTRIM(RTRIM(d.ProductUPC))
+                HAVING SUM(ISNULL(d.QtyShipped, 0)) <> 0
+                ORDER BY revenue DESC
+            """, [date_from, date_to_excl] + excl_params)
+            rows: List[Dict[str, Any]] = []
+            for r in _rows(cur):
+                rows.append({
+                    "upc": ((r.get("upc") or "").strip() or None),
+                    "description": _s(r.get("name")),
+                    "sku": _s(r.get("sku")),
+                    "orders": int(r.get("orders") or 0),
+                    "revenue": round(_f(r.get("revenue")), 2),
+                    "units": _f(r.get("units")),
+                    "local_cost": _fo(r.get("local_cost")),
+                })
+        return True, None, rows
+    except Exception as e:
+        return False, str(e), []
+
+
 def recost_backoffice_days(payload: Dict[str, Any], unit_costs: Dict[str, float]) -> Dict[str, Any]:
     """
     S2S mode: replace each day's cost with Σ units × S2S unit cost from
@@ -2454,6 +2510,10 @@ async def backoffice_daily_sales_async(**kw):
 
 async def backoffice_breakdown_async(**kw):
     return await _run(_backoffice_breakdown_sync, **kw)
+
+
+async def backoffice_products_sold_async(**kw):
+    return await _run(_backoffice_products_sold_sync, **kw)
 
 
 async def shopify_open_orders_local(store_id: int) -> Dict[str, float]:
