@@ -2036,3 +2036,4 @@ class MonthEndResponse(BaseModel):
     warnings: List[str] = []
     limit: int = 0
     truncated: bool = False
+    timings: Dict[str, float] = {}               # per-stage seconds: fetch / cost_lookup / parcels

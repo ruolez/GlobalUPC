@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, date, timedelta, timezone
 import uvicorn
 import asyncio
+import time
 import calendar
 import json
 import math
@@ -11859,10 +11860,13 @@ async def get_month_end(date_from: Optional[str] = None, date_to: Optional[str] 
             st["id"], st["_tz"], period.start.isoformat(), period.end_excl, sh_excl)
         return True, None, payload
 
+    timings: Dict[str, float] = {}
+    t_fetch = time.monotonic()
     bo_results, sh_results = await asyncio.gather(
         _bov_fanout(sales_stores, _bo),
         asyncio.gather(*[_sh(st) for st in usable_shopify], return_exceptions=True),
     )
+    timings["fetch"] = round(time.monotonic() - t_fetch, 2)
 
     stores_status: List[Dict[str, Any]] = []
     rows: List[Dict[str, Any]] = []
@@ -11914,35 +11918,54 @@ async def get_month_end(date_from: Optional[str] = None, date_to: Optional[str] 
         truncated = truncated or bool(payload.get("truncated"))
         sh_ok.append((st, payload))
 
-    # ---- One S2S cost lookup over every store's barcodes (UnitPriceC)
-    unit_costs: Dict[str, float] = {}
-    if sh_ok:
-        barcodes = sorted({bc for _st, p in sh_ok for lines in (p.get("lines") or {}).values()
-                           for (bc, _u, _r) in lines if bc})
-        lookup = _bov_make_cost_lookup(db, cfg, "unit_delivery_b")
-        if not getattr(lookup, "configured", False):
-            warnings.append("Item Tracker S2S store not configured — Shopify cost/profit unavailable")
-        elif barcodes:
-            unit_costs = await lookup(barcodes)
-            if getattr(lookup, "failed", None):
-                warnings.append(f"Shopify cost lookup failed — profit unavailable: {lookup.failed}")
-
-    # ---- Actual Shopify shipping cost: shipper store parcels by order name
+    # ---- S2S cost lookup (UnitPriceC) + shipper parcels lookup, concurrently
+    # (both hit MSSQL; running them in parallel keeps total latency = max, not sum)
     shipper_store = _resolve_shipper_store_soft(db)
     shipper: Dict[str, Any] = {"configured": shipper_store is not None,
                                "store_name": shipper_store.name if shipper_store else None,
                                "matched": 0, "unmatched": 0, "error": None}
-    parcel_map: Dict[str, Dict[str, float]] = {}
     all_names = [o.get("name") for _st, p in sh_ok for o in (p.get("orders") or []) if o.get("name")]
-    if shipper_store and all_names:
-        ok, err, parcel_map = await bov.parcel_costs_async(
-            **_bov_conn_kwargs(shipper_store), order_numbers=all_names)
-        if not ok:
-            shipper["error"] = err
-            warnings.append(f"Shipper parcels lookup failed — Shopify shipping cost unavailable: {err}")
-            parcel_map = {}
-    elif not shipper_store and sh_ok:
-        warnings.append("Shipper store not configured — Shopify shipping cost unavailable")
+
+    async def _cost_lookup() -> Dict[str, float]:
+        t = time.monotonic()
+        try:
+            if not sh_ok:
+                return {}
+            barcodes = sorted({bc for _st, p in sh_ok for lines in (p.get("lines") or {}).values()
+                               for (bc, _u, _r) in lines if bc})
+            lookup = _bov_make_cost_lookup(db, cfg, "unit_delivery_b")
+            if not getattr(lookup, "configured", False):
+                warnings.append("Item Tracker S2S store not configured — Shopify cost/profit unavailable")
+                return {}
+            if not barcodes:
+                return {}
+            costs = await lookup(barcodes)
+            if getattr(lookup, "failed", None):
+                warnings.append(f"Shopify cost lookup failed — profit unavailable: {lookup.failed}")
+            return costs
+        finally:
+            timings["cost_lookup"] = round(time.monotonic() - t, 2)
+
+    async def _parcels() -> Dict[str, Dict[str, float]]:
+        t = time.monotonic()
+        try:
+            if not shipper_store:
+                if sh_ok:
+                    warnings.append("Shipper store not configured — Shopify shipping cost unavailable")
+                return {}
+            if not all_names:
+                return {}
+            ok, err, pmap = await bov.parcel_costs_async(
+                **_bov_conn_kwargs(shipper_store), order_numbers=all_names)
+            if not ok:
+                shipper["error"] = err
+                warnings.append(f"Shipper parcels lookup failed — Shopify shipping cost unavailable: {err}")
+                return {}
+            return pmap
+        finally:
+            timings["parcels"] = round(time.monotonic() - t, 2)
+
+    unit_costs, parcel_map = await asyncio.gather(_cost_lookup(), _parcels())
 
     parcels_usable = bool(shipper_store) and not shipper["error"]
 
@@ -11991,6 +12014,7 @@ async def get_month_end(date_from: Optional[str] = None, date_to: Optional[str] 
         warnings=warnings,
         limit=limit,
         truncated=truncated,
+        timings=timings,
     )
 
 

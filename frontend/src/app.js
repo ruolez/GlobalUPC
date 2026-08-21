@@ -96,8 +96,6 @@ function navigateTo(page) {
     loadInventoryTimePage();
   } else if (page === "checked-orders") {
     loadCheckedOrdersPage();
-  } else if (page === "month-end") {
-    loadMonthEndPage();
   }
 }
 
@@ -18812,7 +18810,7 @@ function bovSavePrefs() {
 // Lifecycle
 // ---------------------------------------------------------------------------
 
-const BOV_SECTIONS = ["overview", "quotations", "products", "invoices", "purchasing", "shopify"];
+const BOV_SECTIONS = ["overview", "quotations", "products", "invoices", "purchasing", "shopify", "month-end"];
 const BOV_CARD_SECTION = {
   "bov-trend-card": "overview", "bov-margin-card": "overview", "bov-top-card": "overview", "bov-kpi-strip": "overview",
   "bov-quotations-card": "quotations", "bov-products-card": "products", "bov-invoices-card": "invoices",
@@ -18834,6 +18832,7 @@ function bovSetSection(id, opts = {}) {
   if (!opts.silent) bovSavePrefs();
   // SVG charts measure clientWidth, which is 0 while a panel is hidden.
   if (id === "overview") bovScheduleChartRender();
+  if (id === "month-end") loadMonthEndPage();   // lazy init + first fetch
   if (changed && !opts.silent && !opts.keepScroll) {
     const sticky = document.querySelector("#business-overview-page .bov-sticky");
     const top = sticky ? sticky.getBoundingClientRect().bottom : 0;
@@ -21921,12 +21920,13 @@ function bovToggleSort(widgetKey, colKey) {
     s.dir = s.dir === "asc" ? "desc" : "asc";
   } else {
     s.key = colKey;
-    s.dir = ["business_name", "quotation_number", "invoice_number", "po_number", "sales_rep", "status", "packer", "store_name", "description", "upc", "sku"].includes(colKey) ? "asc" : "desc";
+    s.dir = ["business_name", "quotation_number", "invoice_number", "po_number", "sales_rep", "status", "packer", "store_name", "description", "upc", "sku", "number", "customer"].includes(colKey) ? "asc" : "desc";
   }
   bovRenderCard(widgetKey);
 }
 
 function bovRenderCard(key) {
+  if (key === "monthEnd") { meSavePrefs(); renderMonthEnd(); return; }
   if (key === "missingCost") { if (bovState.missingCost) bovRenderMissingCostModal(bovState.missingCost); return; }
   if (key === "quotations") bovRenderQuotationsTable();
   else if (key === "products") bovRenderProductsTable();
@@ -23696,18 +23696,8 @@ function loadMonthEndPage() {
       }, 200);
     });
 
-    // Sortable headers (bovTableHtml emits th[data-bov-sort]); the Business
-    // Overview delegation is scoped to its own page, so bind our own here.
-    document.getElementById("month-end-page")?.addEventListener("click", (e) => {
-      const th = e.target.closest("th[data-bov-sort]");
-      if (!th || th.dataset.bovWidget !== "monthEnd") return;
-      const key = th.dataset.bovSort;
-      const s = bovState.sort.monthEnd;
-      if (s.key === key) s.dir = s.dir === "asc" ? "desc" : "asc";
-      else { s.key = key; s.dir = ["number", "customer", "store_name"].includes(key) ? "asc" : "desc"; }
-      meSavePrefs();
-      renderMonthEnd();
-    });
+    // Sortable headers ride the Business Overview page delegation:
+    // th[data-bov-sort] → bovToggleSort("monthEnd", key) → bovRenderCard("monthEnd").
   }
   if (!monthEndState.data && !monthEndState.loading) fetchMonthEnd();
 }
@@ -23883,8 +23873,14 @@ function renderMonthEnd() {
   const d = monthEndState.data;
   if (!d) return;
   const configured = !!d.configured;
+  const badge = document.getElementById("bov-nav-count-month-end");
+  if (badge) {
+    const n = configured && d.totals ? d.totals.orders : null;
+    badge.hidden = n == null;
+    badge.textContent = n == null ? "" : bovInt(n);
+  }
   meShow("me-not-configured", !configured);
-  meShow("me-toolbar", true);
+  meShow("me-toolbar", configured);
   if (!configured) {
     meShow("me-summary", false);
     meShow("me-table-card", false);

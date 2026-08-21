@@ -122,15 +122,6 @@
               </svg>
               <span>Inventory Time</span>
             </a>
-            <a href="#" class="nav-item" data-page="month-end">
-              <svg width="18" height="18" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <rect x="5" y="7" width="22" height="20" rx="2" stroke="currentColor" stroke-width="2"/>
-                <path d="M5 13h22" stroke="currentColor" stroke-width="2"/>
-                <path d="M11 4v5M21 4v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-                <path d="m12 21 3 3 5.5-5.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-              </svg>
-              <span>Month End</span>
-            </a>
           </div>
 
           <div class="nav-section">
@@ -312,6 +303,10 @@
               <button type="button" class="bov-subnav-item" role="tab" aria-selected="false" data-bov-section="shopify">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 7h12l1 13H5L6 7z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M9 10V6a3 3 0 0 1 6 0v4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
                 <span>Shopify</span><span class="bov-subnav-badge" id="bov-nav-count-shopify" hidden></span>
+              </button>
+              <button type="button" class="bov-subnav-item" role="tab" aria-selected="false" data-bov-section="month-end">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2" stroke="currentColor" stroke-width="1.7"/><path d="M3 9.5h18" stroke="currentColor" stroke-width="1.7"/><path d="M8 3v4M16 3v4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="m8.5 15 2.5 2.5 4.5-4.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                <span>Month End</span><span class="bov-subnav-badge" id="bov-nav-count-month-end" hidden></span>
               </button>
             </nav>
           </div>
@@ -533,6 +528,52 @@
                 </div>
                 <div class="bov-card-body" id="bov-shopifyorders-body"></div>
                 <div class="bov-card-foot" id="bov-shopifyorders-foot"></div>
+              </div>
+            </section>
+
+            <!-- Month End section -->
+            <section class="bov-panel" data-bov-panel="month-end" hidden>
+              <div id="me-not-configured" class="card" style="display: none; margin-bottom: 1.5rem;">
+                <div style="padding: 1.5rem; color: var(--text-secondary); font-size: 0.875rem; display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
+                  <span>No data sources are configured — pick the BackOffice sales stores and Shopify stores to use Month End.</span>
+                  <button type="button" class="btn btn-primary" data-bov-action="config">Set up data sources</button>
+                </div>
+              </div>
+
+              <div id="me-toolbar" class="card me-toolbar-card" style="margin-bottom: 1rem;">
+                <div class="me-toolbar">
+                  <div class="me-toolbar-group">
+                    <select id="me-period-select" title="Month to report on"></select>
+                    <div id="me-custom" style="display: none; align-items: center; gap: 0.5rem;">
+                      <input type="date" id="me-date-from" />
+                      <span style="color: var(--text-secondary)">to</span>
+                      <input type="date" id="me-date-to" />
+                      <button type="button" class="btn btn-primary me-btn-sm" id="me-apply">Apply</button>
+                    </div>
+                  </div>
+                  <div class="me-toolbar-group" id="me-type-chips" role="group" aria-label="Store type">
+                    <button type="button" class="me-chip is-active" data-me-type="all">All</button>
+                    <button type="button" class="me-chip" data-me-type="backoffice">BackOffice</button>
+                    <button type="button" class="me-chip" data-me-type="shopify">Shopify</button>
+                  </div>
+                  <div class="me-toolbar-group" id="me-store-chips" aria-label="Stores"></div>
+                  <div class="me-toolbar-group me-toolbar-right">
+                    <input type="search" id="me-search" placeholder="Search number or customer…" />
+                    <button type="button" class="btn btn-secondary me-btn-sm" id="me-refresh" title="Reload">Refresh</button>
+                  </div>
+                </div>
+              </div>
+
+              <div id="me-warnings" style="display: none; margin-bottom: 1rem;"></div>
+              <div id="me-summary" class="me-summary" style="display: none;"></div>
+              <div id="me-loading" style="display: none; text-align: center; padding: 2.5rem 1rem; color: var(--text-secondary);">Loading orders…</div>
+              <div id="me-error" class="qip-error" style="display: none; margin-bottom: 1.5rem;"></div>
+              <div id="me-empty" style="display: none; text-align: center; padding: 3rem 1rem; color: var(--text-secondary);">
+                <p>No orders in this period.</p>
+              </div>
+              <div id="me-table-card" class="card" style="display: none;">
+                <div id="me-table"></div>
+                <div id="me-foot" class="me-foot"></div>
               </div>
             </section>
           </div>
@@ -3415,52 +3456,6 @@
                 <tbody id="chkord-tbody"></tbody>
               </table>
             </div>
-          </div>
-        </div>
-
-        <!-- Month End Page -->
-        <div id="month-end-page" class="page" style="display: none">
-          <div id="me-not-configured" class="card" style="display: none; margin-bottom: 1.5rem;">
-            <div style="padding: 1.5rem; color: var(--text-secondary); font-size: 0.875rem;">
-              No data sources are configured. Pick the BackOffice sales stores and Shopify stores
-              under <strong>Business Overview → Data sources</strong> to use Month End.
-            </div>
-          </div>
-
-          <div id="me-toolbar" class="card me-toolbar-card" style="margin-bottom: 1rem;">
-            <div class="me-toolbar">
-              <div class="me-toolbar-group">
-                <select id="me-period-select" title="Month to report on"></select>
-                <div id="me-custom" style="display: none; align-items: center; gap: 0.5rem;">
-                  <input type="date" id="me-date-from" />
-                  <span style="color: var(--text-secondary)">to</span>
-                  <input type="date" id="me-date-to" />
-                  <button type="button" class="btn btn-primary me-btn-sm" id="me-apply">Apply</button>
-                </div>
-              </div>
-              <div class="me-toolbar-group" id="me-type-chips" role="group" aria-label="Store type">
-                <button type="button" class="me-chip is-active" data-me-type="all">All</button>
-                <button type="button" class="me-chip" data-me-type="backoffice">BackOffice</button>
-                <button type="button" class="me-chip" data-me-type="shopify">Shopify</button>
-              </div>
-              <div class="me-toolbar-group" id="me-store-chips" aria-label="Stores"></div>
-              <div class="me-toolbar-group me-toolbar-right">
-                <input type="search" id="me-search" placeholder="Search number or customer…" />
-                <button type="button" class="btn btn-secondary me-btn-sm" id="me-refresh" title="Reload">Refresh</button>
-              </div>
-            </div>
-          </div>
-
-          <div id="me-warnings" style="display: none; margin-bottom: 1rem;"></div>
-          <div id="me-summary" class="me-summary" style="display: none;"></div>
-          <div id="me-loading" style="display: none; text-align: center; padding: 2.5rem 1rem; color: var(--text-secondary);">Loading orders…</div>
-          <div id="me-error" class="qip-error" style="display: none; margin-bottom: 1.5rem;"></div>
-          <div id="me-empty" style="display: none; text-align: center; padding: 3rem 1rem; color: var(--text-secondary);">
-            <p>No orders in this period.</p>
-          </div>
-          <div id="me-table-card" class="card" style="display: none;">
-            <div id="me-table"></div>
-            <div id="me-foot" class="me-foot"></div>
           </div>
         </div>
 
