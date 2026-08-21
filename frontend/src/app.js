@@ -20417,6 +20417,7 @@ function bovRenderKpis() {
       const boCoverage = bo && bo.cost_coverage != null && bo.units ? bo.cost_coverage : null;
       const pf = [
         { k: "cost", v: money(tot.cost), title: bovCostBasisLabel() },
+        tot.shipping_cost ? { k: "shipping", v: money(tot.shipping_cost), title: "BackOffice invoice shipping cost (Invoices_tbl.ShippingCost) — already subtracted from profit" } : null,
         margin != null ? { k: "margin", v: `${bovNum(margin).toFixed(1)}%` } : null,
         tot.returns ? { k: "returns", v: money(tot.returns) } : null,
         coverage != null && coverage < 0.999 ? { k: "Shopify cost known", v: `${Math.round(coverage * 100)}%`, vHtml: `<a href="#" class="bov-kpi-link" data-bov-action="missing-cost" title="View and export the products without cost">${Math.round(coverage * 100)}% · view</a>`, tone: "warn", title: "Share of Shopify units whose barcode resolved to a cost in the S2S Items_tbl — margin is partial. Click to see the products." } : null,
@@ -21347,6 +21348,7 @@ function bovRenderTrendChart() {
       if (!bovState.splitSources) {
         rows.push({ label: "Margin", value: t.margin_pct != null ? bovPct(t.margin_pct) : "—", strong: true });
       }
+      if (t.shipping_cost) rows.push({ label: "Shipping cost", value: formatCurrency(t.shipping_cost) });
       if (b && b.total && b.total.orders) rows.push({ label: "Invoices / orders", value: bovInt(b.total.orders) });
       const head = b ? (b.start && b.end && b.start !== b.end ? `${bovDateMed(b.start)} – ${bovDateMed(b.end)}` : bovDateMed(b.start)) : "";
       return { head, rows };
@@ -21429,7 +21431,8 @@ function bovRenderMarginChart() {
         { label: p ? `Previous · ${bovBucketLabelFor(d.bucket, p)}` : "Previous", value: bovPct(prv[i]), color: BOV_COLORS.prev, dashed: true },
         { label: "Profit", value: formatCurrency(t.profit || 0) },
         { label: "Revenue", value: formatCurrency(t.revenue || 0) },
-      ];
+        t.shipping_cost ? { label: "Shipping cost", value: formatCurrency(t.shipping_cost) } : null,
+      ].filter(Boolean);
       return { head: b ? (b.start !== b.end ? `${bovDateMed(b.start)} – ${bovDateMed(b.end)}` : bovDateMed(b.start)) : "", rows };
     },
   });

@@ -1672,6 +1672,25 @@ def _backoffice_daily_sales_sync(
                 if isinstance(d, date):
                     days[d] = {"invoices": _f(r.get("invoices")), "revenue": _f(r.get("revenue")),
                                "cost": _f(r.get("cost")), "units": _f(r.get("units"))}
+            # Shipping cost lives on the invoice header — summing it through the
+            # details join would multiply it by the line count, so query it alone.
+            cur.execute(f"""
+                SELECT CAST(h.InvoiceDate AS date)     AS d,
+                       SUM(ISNULL(h.ShippingCost, 0))  AS shipping
+                FROM Invoices_tbl h
+                WHERE ISNULL(h.Void, 0) = 0
+                  AND h.InvoiceDate >= ?
+                  AND h.InvoiceDate <  ?
+                  {excl_sql}
+                GROUP BY CAST(h.InvoiceDate AS date)
+            """, [date_from, date_to_excl] + excl_params)
+            for r in _rows(cur):
+                d = r.get("d")
+                if isinstance(d, datetime):
+                    d = d.date()
+                if isinstance(d, date):
+                    slot = days.setdefault(d, {"invoices": 0.0, "revenue": 0.0, "cost": 0.0, "units": 0.0})
+                    slot["shipping"] = _f(r.get("shipping"))
             units_by_upc: List[Tuple[date, str, float]] = []
             if cost_mode == "s2s":
                 cur.execute(f"""
@@ -1888,7 +1907,7 @@ def compute_backoffice_series(payload: Dict[str, Any], period: Period, bucket: s
     days: Dict[date, Dict[str, float]] = payload.get("days") or {}
     returns: Dict[date, Dict[str, float]] = payload.get("returns") or {}
     recosted = bool(payload.get("recosted"))
-    fields = ["invoices", "revenue", "cost", "units"] + (["known_units"] if recosted else [])
+    fields = ["invoices", "revenue", "cost", "units", "shipping"] + (["known_units"] if recosted else [])
 
     def _cov(v: Dict[str, float]) -> Optional[float]:
         if not recosted:
@@ -1905,14 +1924,16 @@ def compute_backoffice_series(payload: Dict[str, Any], period: Period, bucket: s
             cost = v["cost"]
             out.append({
                 "key": c["key"], "start": c["start"], "end": c["end"], "label": c["label"],
-                "totals": _totals_dict(rev, cost, r["values"]["amount"], int(v["invoices"]), v["units"], _cov(v)),
+                "totals": _totals_dict(rev, cost, r["values"]["amount"], int(v["invoices"]), v["units"], _cov(v),
+                                       shipping=v.get("shipping", 0.0)),
             })
         return out
 
     def _tot(start: date, end: date) -> Dict[str, Any]:
         s = sum_daily(days, start, end, fields)
         r = sum_daily(returns, start, end, ["amount"])
-        return _totals_dict(s["revenue"], s["cost"], r["amount"], int(s["invoices"]), s["units"], _cov(s))
+        return _totals_dict(s["revenue"], s["cost"], r["amount"], int(s["invoices"]), s["units"], _cov(s),
+                            shipping=s.get("shipping", 0.0))
 
     return {
         "current": _series(period.start, period.end),
@@ -1923,17 +1944,21 @@ def compute_backoffice_series(payload: Dict[str, Any], period: Period, bucket: s
 
 
 def _totals_dict(revenue: float, cost: float, returns: float, orders: int, units: float,
-                 cost_coverage: Optional[float] = None) -> Dict[str, Any]:
+                 cost_coverage: Optional[float] = None, shipping: float = 0.0) -> Dict[str, Any]:
     revenue = _f(revenue)
     cost = _f(cost)
     returns = _f(returns)
+    shipping = _f(shipping)
     # cost_coverage == 0 means units were sold but no cost could be resolved:
     # report margin as unknown rather than a misleading 100%.
     unknown_cost = (cost_coverage is not None and cost_coverage == 0 and _f(units) > 0)
     return {
         "revenue": round(revenue, 2),
         "cost": round(cost, 2),
-        "profit": round(revenue - cost, 2),
+        # Real profit: BackOffice shipping cost (invoice header) is a cost too.
+        # Shopify sources pass shipping=0, so their profit is unchanged.
+        "profit": round(revenue - cost - shipping, 2),
+        "shipping_cost": round(shipping, 2),
         "margin_pct": (None if unknown_cost else margin_pct(revenue, cost)),
         "returns": round(returns, 2),
         "net_revenue": round(revenue - returns, 2),
@@ -1952,6 +1977,7 @@ def add_totals(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:
     revenue = _f(a.get("revenue")) + _f(b.get("revenue"))
     cost = _f(a.get("cost")) + _f(b.get("cost"))
     returns = _f(a.get("returns")) + _f(b.get("returns"))
+    shipping = _f(a.get("shipping_cost")) + _f(b.get("shipping_cost"))
     orders = int(a.get("orders") or 0) + int(b.get("orders") or 0)
     units = _f(a.get("units")) + _f(b.get("units"))
     cov_a, cov_b = a.get("cost_coverage"), b.get("cost_coverage")
@@ -1960,12 +1986,12 @@ def add_totals(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:
     if cov_a is not None or cov_b is not None:
         known = (cov_a or 0.0) * ua + (cov_b or 0.0) * ub if (ua + ub) else 0.0
         cov = round(known / (ua + ub), 4) if (ua + ub) else None
-    return _totals_dict(revenue, cost, returns, orders, units, cov)
+    return _totals_dict(revenue, cost, returns, orders, units, cov, shipping=shipping)
 
 
 def totals_change(cur: Dict[str, Any], prev: Dict[str, Any]) -> Dict[str, Optional[float]]:
     out: Dict[str, Optional[float]] = {}
-    for k in ("revenue", "cost", "profit", "orders", "units", "returns", "net_revenue"):
+    for k in ("revenue", "cost", "profit", "shipping_cost", "orders", "units", "returns", "net_revenue"):
         out[k] = pct_change(_f(cur.get(k)), _f(prev.get(k)))
     mc, mp = cur.get("margin_pct"), prev.get("margin_pct")
     out["margin_pct"] = (round(mc - mp, 2) if (mc is not None and mp is not None) else None)  # points, not %

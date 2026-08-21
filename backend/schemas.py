@@ -1577,7 +1577,8 @@ class BOVPurchaseOrderDetailResponse(BaseModel):
 class BOVSalesSourceTotals(BaseModel):
     revenue: float = 0.0
     cost: float = 0.0
-    profit: float = 0.0
+    profit: float = 0.0                     # revenue − cost − shipping_cost (BackOffice ships; Shopify 0)
+    shipping_cost: float = 0.0              # BackOffice Invoices_tbl.ShippingCost summed over the bucket
     margin_pct: Optional[float] = None
     returns: float = 0.0
     net_revenue: float = 0.0
@@ -1612,6 +1613,7 @@ class BOVSalesStoreTotals(BaseModel):
     revenue: float = 0.0
     cost: float = 0.0
     profit: float = 0.0
+    shipping_cost: float = 0.0
     margin_pct: Optional[float] = None
     orders: int = 0
     units: float = 0.0

@@ -10274,7 +10274,8 @@ async def _bov_sales_trend(db: Session, cfg, period: bov.Period, bucket: str,
         t = totals or {}
         return {"store_id": sid, "store_name": name, "source": source,
                 "revenue": round(float(t.get("revenue") or 0), 2), "cost": round(float(t.get("cost") or 0), 2),
-                "profit": round(float(t.get("profit") or 0), 2), "margin_pct": t.get("margin_pct"),
+                "profit": round(float(t.get("profit") or 0), 2),
+                "shipping_cost": round(float(t.get("shipping_cost") or 0), 2), "margin_pct": t.get("margin_pct"),
                 "orders": int(t.get("orders") or 0), "units": float(t.get("units") or 0),
                 "cost_coverage": t.get("cost_coverage"), "error": error}
 
