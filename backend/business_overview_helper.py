@@ -1362,11 +1362,13 @@ def _incoming_purchases_sync(
         return False, str(e), {}
 
 
-def _purchased_in_range_sync(
+# "Placed" = ordered but not yet confirmed by the vendor: still open and the
+# free-text PoHeader carries no text at all (a confirmed PO moves to Incoming).
+_PLACED_UNCONFIRMED_WHERE = "h.Status = 0 AND (h.PoHeader IS NULL OR LTRIM(RTRIM(h.PoHeader)) = '')"
+
+
+def _placed_unconfirmed_sync(
     host, port, database, username, password,
-    date_from: str,
-    date_to_excl: str,
-    series_from: str,
     limit: int = DEFAULT_LIST_LIMIT,
     sort_by: str = "po_date",
     sort_order: str = "desc",
@@ -1385,32 +1387,25 @@ def _purchased_in_range_sync(
                 excl_sql, excl_params = "", []  # can't re-derive qty from lines — fall back to header sums
             if excl_sql:
                 apply_sql = _po_lines_apply(excl_sql)
-                series_qty_expr = "SUM(ISNULL(ov.qty_ordered,0))"
+                agg_qty_expr = "SUM(ISNULL(ov.qty_ordered,0))"
                 list_qty_cols = """h.Status, h.PoTotal, h.NoLines, ov.qty_ordered AS TotQtyOrd, ov.qty_received AS TotQtyRcv,
                         ISNULL(ov.qty_outstanding,0) AS qty_outstanding"""
                 sortable = dict(SORTABLE_PO_COLUMNS, qty_outstanding="ISNULL(ov.qty_outstanding,0)")
             else:
                 apply_sql = ""
-                series_qty_expr = "SUM(ISNULL(h.TotQtyOrd,0))"
+                agg_qty_expr = "SUM(ISNULL(h.TotQtyOrd,0))"
                 list_qty_cols = """h.Status, h.PoTotal, h.NoLines, h.TotQtyOrd, h.TotQtyRcv,
                         ISNULL(h.TotQtyOrd,0) - ISNULL(h.TotQtyRcv,0) AS qty_outstanding"""
                 sortable = SORTABLE_PO_COLUMNS
             cur.execute(f"""
-                SELECT CAST(h.PoDate AS date) AS d, COUNT(*) AS purchase_orders,
-                       SUM(ISNULL(h.PoTotal,0)) AS total, {series_qty_expr} AS qty
+                SELECT COUNT(*) AS purchase_orders, SUM(ISNULL(h.PoTotal,0)) AS po_total,
+                       {agg_qty_expr} AS qty_ordered,
+                       MIN(h.PoDate) AS oldest_po_date
                 FROM PurchaseOrders_tbl h
                 {apply_sql}
-                WHERE h.PoDate >= ? AND h.PoDate < ?
-                GROUP BY CAST(h.PoDate AS date) ORDER BY d
-            """, excl_params + [series_from, date_to_excl])
-            daily: Dict[date, Dict[str, float]] = {}
-            for r in _rows(cur):
-                d = r.get("d")
-                if isinstance(d, datetime):
-                    d = d.date()
-                if isinstance(d, date):
-                    daily[d] = {"purchase_orders": _f(r.get("purchase_orders")),
-                                "total": _f(r.get("total")), "qty": _f(r.get("qty"))}
+                WHERE {_PLACED_UNCONFIRMED_WHERE}
+            """, excl_params)
+            agg = _rows(cur)[0]
             pos: List[Dict[str, Any]] = []
             if include_list:
                 sort_expr = _sort_sql(sortable, sort_by, "po_date", sort_order, ", h.PoID DESC")
@@ -1420,11 +1415,20 @@ def _purchased_in_range_sync(
                         {list_qty_cols}
                     FROM PurchaseOrders_tbl h
                     {apply_sql}
-                    WHERE h.PoDate >= ? AND h.PoDate < ?
+                    WHERE {_PLACED_UNCONFIRMED_WHERE}
                     ORDER BY {sort_expr}
-                """, [limit] + excl_params + [date_from, date_to_excl])
+                """, [limit] + excl_params)
                 pos = [_po_row(d) for d in _rows(cur)]
-        return True, None, {"purchase_orders": pos, "daily": daily, "limit": limit}
+        count = int(agg.get("purchase_orders") or 0)
+        return True, None, {
+            "purchase_orders": pos,
+            "count": count,
+            "po_total": round(_f(agg.get("po_total")), 2),
+            "qty_ordered": _f(agg.get("qty_ordered")),
+            "oldest_po_date": _iso(agg.get("oldest_po_date")),
+            "limit": limit,
+            "truncated": include_list and count > len(pos),
+        }
     except Exception as e:
         return False, str(e), {}
 
@@ -2432,8 +2436,8 @@ async def incoming_purchases_async(**kw):
     return await _run(_incoming_purchases_sync, **kw)
 
 
-async def purchased_in_range_async(**kw):
-    return await _run(_purchased_in_range_sync, **kw)
+async def placed_unconfirmed_async(**kw):
+    return await _run(_placed_unconfirmed_sync, **kw)
 
 
 async def received_in_range_async(**kw):

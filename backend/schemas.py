@@ -1498,6 +1498,20 @@ class BOVIncomingPurchasesResponse(BOVIncomingPurchasesBlock):
     truncated: bool = False
 
 
+class BOVPlacedPurchasesBlock(BOVBlockStatus):
+    # POs placed but awaiting vendor confirmation (Status 0, blank PoHeader) — snapshot, no date filter
+    count: int = 0
+    po_total: float = 0.0
+    qty_ordered: float = 0.0
+    oldest_po_date: Optional[str] = None
+
+
+class BOVPlacedPurchasesResponse(BOVPlacedPurchasesBlock):
+    purchase_orders: List[BOVPurchaseOrderRow] = []
+    limit: int = 0
+    truncated: bool = False
+
+
 class BOVPurchasesRangeBlock(BOVBlockStatus):
     period: Optional[BOVPeriod] = None
     # purchased: purchase_orders, total, qty  |  received: purchase_orders, qty, value
@@ -1902,7 +1916,7 @@ class BusinessOverviewSummaryResponse(BaseModel):
     invoices_open: BOVOpenInvoicesBlock
     invoices_shipped: BOVShippedInvoicesBlock
     purchases_incoming: BOVIncomingPurchasesBlock
-    purchases_purchased: BOVPurchasesRangeBlock
+    purchases_purchased: BOVPlacedPurchasesBlock
     purchases_received: BOVPurchasesRangeBlock
     sales: BOVSalesSummaryBlock
     shopify_open_orders: BOVShopifyOpenOrdersBlock

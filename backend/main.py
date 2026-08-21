@@ -71,6 +71,7 @@ from schemas import (
     BOVPurchaseOrderRow, BOVIncomingPurchasesBlock, BOVIncomingPurchasesResponse,
     BOVPurchasesRangeBlock, BOVPurchasesRangeResponse,
     BOVPurchaseOrderLine, BOVPurchaseOrderHeader, BOVPurchaseOrderDetailResponse,
+    BOVPlacedPurchasesBlock, BOVPlacedPurchasesResponse,
     BOVSalesSourceTotals, BOVSalesBucket, BOVSalesSourceStatus, BOVSalesTrendResponse,
     BOVBreakdownRow, BOVSalesBreakdownResponse, BOVStoreStatus, BOVInvoicesPeriodResponse, BOVAlert, BOVAlertAction, BOVAlertsResponse, BOVShopifyOrderRow, BOVShopifyOrdersListResponse, BOVShopifyOrderLine, BOVShopifyOrderHeader, BOVShopifyOrderDetailResponse, BOVMissingCostRow, BOVMissingCostResponse, BOVShopifyExclusionCreate, BOVShopifyExclusion, BOVShopifyExclusionList, BOVPoExclusionCreate, BOVPoExclusion, BOVPoExclusionList, bov_merge_alert_rules, bov_validate_alert_rules, BOVShopifyStoreOrders, BOVShopifyOrdersResponse, BOVShopifyRefreshResult, BOVShopifyRefreshResponse,
     BOVShopifyStoreOpen, BOVShopifyOpenOrdersBlock, BOVSalesSummaryBlock,
@@ -10092,31 +10093,24 @@ async def _bov_incoming_block(db: Session, cfg, include_list: bool, limit: int =
     return base
 
 
-async def _bov_purchased_block(db: Session, cfg, period: bov.Period, bucket: str, include_list: bool,
-                               limit: int = 500, sort_by: str = "po_date", sort_order: str = "desc",
-                               only_ids: Optional[Set[int]] = None) -> Dict[str, Any]:
+async def _bov_placed_block(db: Session, cfg, include_list: bool,
+                            limit: int = 500, sort_by: str = "po_date", sort_order: str = "desc",
+                            only_ids: Optional[Set[int]] = None) -> Dict[str, Any]:
+    """POs placed but not yet vendor-confirmed (Status 0, blank PoHeader) — snapshot, no date filter."""
     store, filtered_out = _bov_purchases_store(db, cfg, only_ids)
     if store is None:
-        return {"configured": False, "period": period.as_dict()}
+        return {"configured": False}
     if filtered_out:
         return {"configured": True, "filtered_out": True, "store_id": store.id, "store_name": store.name,
-                "period": period.as_dict(), "bucket": bucket, "purchase_orders": [], "limit": limit}
-    ok, err, payload = await bov.purchased_in_range_async(
-        **_bov_conn_kwargs(store),
-        date_from=period.start.isoformat(), date_to_excl=period.end_excl,
-        series_from=period.prev_start.isoformat(),
-        limit=limit, sort_by=sort_by, sort_order=sort_order, include_list=include_list,
+                "purchase_orders": [], "limit": limit}
+    ok, err, payload = await bov.placed_unconfirmed_async(
+        **_bov_conn_kwargs(store), limit=limit, sort_by=sort_by, sort_order=sort_order, include_list=include_list,
         excluded_product_ids=_bov_po_exclusion_ids(db, store.id) or None)
-    base = {"configured": True, "store_id": store.id, "store_name": store.name, "period": period.as_dict(), "bucket": bucket}
+    base = {"configured": True, "store_id": store.id, "store_name": store.name}
     if not ok:
         base["error"] = err
         return base
-    base.update(_bov_range_block_from_daily(payload.get("daily") or {}, period, bucket,
-                                            ["purchase_orders", "total", "qty"]))
-    pos = payload.get("purchase_orders") or []
-    base["purchase_orders"] = pos
-    base["limit"] = payload.get("limit", limit)
-    base["truncated"] = include_list and len(pos) >= int(payload.get("limit", limit))
+    base.update(payload)
     return base
 
 
@@ -10454,7 +10448,7 @@ async def get_business_overview_summary(
         _bov_open_invoices_block(db, cfg, include_list=False, only_ids=only, **open_kwargs),
         _bov_shipped_block(db, cfg, period, "day", include_list=False, only_ids=only),
         _bov_incoming_block(db, cfg, include_list=False, only_ids=only),
-        _bov_purchased_block(db, cfg, period, "day", include_list=False, only_ids=only),
+        _bov_placed_block(db, cfg, include_list=False, only_ids=only),
         _bov_received_block(db, cfg, period, "day", include_list=False, only_ids=only),
         _bov_sales_trend(db, cfg, period, "day", ["backoffice", "shopify"], only_ids=only, cost_mode=cmode),
         _bov_shopify_open_orders_block(db, cfg, only_ids=only),
@@ -10485,7 +10479,7 @@ async def get_business_overview_summary(
         invoices_open=BOVOpenInvoicesBlock(**_bov_result(invoices_open)),
         invoices_shipped=BOVShippedInvoicesBlock(**_bov_result(invoices_shipped, period)),
         purchases_incoming=BOVIncomingPurchasesBlock(**_bov_result(incoming)),
-        purchases_purchased=BOVPurchasesRangeBlock(**_bov_result(purchased, period)),
+        purchases_purchased=BOVPlacedPurchasesBlock(**_bov_result(purchased)),
         purchases_received=BOVPurchasesRangeBlock(**_bov_result(received, period)),
         sales=BOVSalesSummaryBlock(**sales_block),
         shopify_open_orders=BOVShopifyOpenOrdersBlock(**_bov_result(shopify_open)),
@@ -10650,19 +10644,16 @@ async def get_business_overview_incoming_purchases(
     return BOVIncomingPurchasesResponse(**block)
 
 
-@app.get("/api/business-overview/purchases/purchased", response_model=BOVPurchasesRangeResponse)
+@app.get("/api/business-overview/purchases/purchased", response_model=BOVPlacedPurchasesResponse)
 async def get_business_overview_purchased(
-    preset: Optional[str] = None, date_from: Optional[str] = None, date_to: Optional[str] = None,
-    bucket: str = "day", limit: int = 500, sort_by: str = "po_date", sort_order: str = "desc",
+    limit: int = 500, sort_by: str = "po_date", sort_order: str = "desc",
     store_ids: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
     cfg = _bov_config(db)
-    period = _bov_period(cfg, preset, date_from, date_to)
-    b = _bov_check_bucket(bucket)
-    block = await _bov_purchased_block(db, cfg, period, b, include_list=True, limit=limit, sort_by=sort_by, sort_order=sort_order,
-                                       only_ids=_bov_parse_store_ids(store_ids))
-    return BOVPurchasesRangeResponse(**block)
+    block = await _bov_placed_block(db, cfg, include_list=True, limit=limit, sort_by=sort_by, sort_order=sort_order,
+                                    only_ids=_bov_parse_store_ids(store_ids))
+    return BOVPlacedPurchasesResponse(**block)
 
 
 @app.get("/api/business-overview/purchases/received", response_model=BOVPurchasesRangeResponse)

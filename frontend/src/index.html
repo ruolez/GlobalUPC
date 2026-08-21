@@ -436,8 +436,8 @@
                 </div>
                 <div class="bov-list-toolbar bov-card-toolbar" id="bov-purchases-toolbar">
                   <div class="sancm-mode-group" data-bov-tabgroup="purchases">
-                    <button type="button" class="sancm-mode-btn active" data-bov-tab="purchases" data-value="incoming" title="Open POs still waiting on goods (Status 0 with quantity outstanding), regardless of when they were placed">Incoming <span class="bov-tab-count" id="bov-tab-count-incoming"></span></button>
-                    <button type="button" class="sancm-mode-btn" data-bov-tab="purchases" data-value="purchased" title="POs placed (PO date) in the selected period — open or already received">Placed <span class="bov-tab-count" id="bov-tab-count-purchased"></span></button>
+                    <button type="button" class="sancm-mode-btn active" data-bov-tab="purchases" data-value="incoming" title="Vendor-confirmed open POs still waiting on goods (Status 0, quantity outstanding, PO header marked confirmed), regardless of when they were placed">Incoming <span class="bov-tab-count" id="bov-tab-count-incoming"></span></button>
+                    <button type="button" class="sancm-mode-btn" data-bov-tab="purchases" data-value="purchased" title="Open POs awaiting vendor confirmation (Status 0, blank PO header), regardless of when they were placed">Placed <span class="bov-tab-count" id="bov-tab-count-purchased"></span></button>
                     <button type="button" class="sancm-mode-btn" data-bov-tab="purchases" data-value="received" title="POs with goods received (line DateReceived) in the selected period — a partially received PO also stays under Incoming">Received <span class="bov-tab-count" id="bov-tab-count-received"></span></button>
                   </div>
                   <div class="sa-chip-group bov-list-stores" id="bov-purchases-stores" role="group" aria-label="Filter by store" hidden></div>

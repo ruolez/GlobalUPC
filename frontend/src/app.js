@@ -19883,7 +19883,7 @@ const BOV_WIDGET_DEFS = {
   },
   purchasesPurchased: {
     card: "bov-purchases-card",
-    request: () => ["/purchases/purchased", { ...bovRangeParams(), bucket: "day", limit: BOV_LIST_LIMIT, ...bovStoreParams() }],
+    request: () => ["/purchases/purchased", { limit: BOV_LIST_LIMIT, ...bovStoreParams() }],
     render: () => bovRenderPurchases(),
   },
   purchasesReceived: {
@@ -20489,7 +20489,6 @@ function bovRenderKpis() {
   else if (pin.error) tiles.push(bovKpiError("PO incoming", pin.error, "purchasing"));
   else {
     const rc = (prc.totals && prc.totals.current) || {};
-    const pc = (ppl.totals && ppl.totals.current) || {};
     const rcSeries = (prc.series || []).map((pt) => pt.values && pt.values.value);
     const rcPrev = (prc.previous_series || []).map((pt) => pt.values && pt.values.value);
     tiles.push({
@@ -20502,7 +20501,7 @@ function bovRenderKpis() {
         : `<span class="bov-kpi-trend-empty">Receipts unavailable</span>`,
       facts: [
         prc.configured && !prc.error ? { k: "received in period", v: `${bovInt(rc.purchase_orders || 0)} PO · ${money(rc.value)}` } : null,
-        ppl.configured && !ppl.error ? { k: "placed in period", v: `${bovInt(pc.purchase_orders || 0)} PO · ${money(pc.total)}` } : null,
+        ppl.configured && !ppl.error ? { k: "awaiting confirmation", v: `${bovInt(ppl.count || 0)} PO · ${money(ppl.po_total)}` } : null,
       ].filter(Boolean),
       state: "ok",
       scrollTo: "bov-purchases-card",
@@ -22273,7 +22272,7 @@ function bovRenderPurchases() {
   const rec = bovState.widgets.purchasesReceived.data;
   const setCount = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
   setCount("bov-tab-count-incoming", inc && inc.configured && !inc.error ? bovInt(inc.count || 0) : "");
-  setCount("bov-tab-count-purchased", pur && pur.configured && !pur.error && pur.totals ? bovInt((pur.totals.current || {}).purchase_orders || 0) : "");
+  setCount("bov-tab-count-purchased", pur && pur.configured && !pur.error ? bovInt(pur.count || 0) : "");
   setCount("bov-tab-count-received", rec && rec.configured && !rec.error && rec.totals ? bovInt((rec.totals.current || {}).purchase_orders || 0) : "");
   document.querySelectorAll('[data-bov-tab="purchases"]').forEach((b) => b.classList.toggle("active", b.dataset.value === tab));
   const purchasedBtn = document.querySelector('[data-bov-tab="purchases"][data-value="purchased"]');
@@ -22325,11 +22324,9 @@ function bovRenderPurchases() {
     cols = bovPoCols("incoming");
   } else if (tab === "purchased") {
     sortKey = "purchasesPurchased";
-    const cur = (d.totals && d.totals.current) || {};
-    const prv = (d.totals && d.totals.previous) || {};
-    if (meta) meta.textContent = `${bovInt(cur.purchase_orders || 0)} placed in period · ${bovCompactMoney(cur.total || 0)}${prv.purchase_orders != null ? ` · prev ${bovInt(prv.purchase_orders)} / ${bovCompactMoney(prv.total || 0)}` : ""} · open and received alike`;
+    if (meta) meta.textContent = `${bovInt(d.count || 0)} placed · ${bovCompactMoney(d.po_total || 0)} · awaiting vendor confirmation (any PO date)`;
     if (!rows.length) {
-      body.innerHTML = bovEmptyHtml(filtersOn ? "No purchase orders match the filters." : "No purchase orders placed in this period.");
+      body.innerHTML = bovEmptyHtml(filtersOn ? "No purchase orders match the filters." : "No purchase orders awaiting vendor confirmation.");
       return;
     }
     cols = bovPoCols("purchased");
@@ -22370,7 +22367,7 @@ function bovPoCols(tab) {
       { key: "po_number", label: "PO #", width: "16%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.po_number || String(r.po_id))}</span>` },
       { key: "business_name", label: "Supplier", width: "34%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
       { key: "po_date", label: "Ordered", width: "14%", render: (r) => escapeHtml(bovDateMdy(r.po_date)) },
-      { key: "status", label: "Status", width: "12%", render: (r) => `<span class="qip-status-chip ${r.status === 1 ? "complete" : "picking"}">${r.status === 1 ? "Received" : "Open"}</span>` },
+      { key: "required_date", label: "Required by", width: "12%", render: (r) => escapeHtml(r.required_date ? bovDateMdy(r.required_date) : "—") },
       { key: "tot_qty_ord", label: "Qty", num: true, width: "10%", render: (r) => bovInt(r.tot_qty_ord) },
       { key: "po_total", label: "Total", num: true, width: "14%", render: (r) => bovMoney(r.po_total) },
     ];
