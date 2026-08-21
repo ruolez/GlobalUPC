@@ -391,6 +391,22 @@
                   </div>
                 </div>
                 <div class="bov-list-toolbar bov-card-toolbar" id="bov-quotations-toolbar">
+                  <div class="qip-segmented" id="bov-quotations-scan" role="group" aria-label="Scan status filter">
+                    <button type="button" class="active" data-bov-scan="all">All</button>
+                    <button type="button" data-bov-scan="in" title="Scanned in, not yet scanned out — picking in progress"><span class="qip-seg-dot in"></span>Scan-in</button>
+                    <button type="button" data-bov-scan="out" title="Scanned out — packing complete"><span class="qip-seg-dot out"></span>Scan-out</button>
+                    <button type="button" data-bov-scan="none" title="No scans yet"><span class="qip-seg-dot none"></span>No scans</button>
+                  </div>
+                  <div class="bov-filter" id="bov-quotations-rep-filter" hidden>
+                    <button type="button" class="bov-filter-trigger" id="bov-quotations-reps-trigger" aria-haspopup="listbox" aria-expanded="false" aria-controls="bov-quotations-reps-popover">
+                      <span class="bov-filter-text"><span class="bov-filter-key">Rep</span><span class="bov-filter-value" id="bov-quotations-reps-value">All reps</span></span>
+                      <span class="qip-ms-count" id="bov-quotations-reps-count" hidden>0</span>
+                      <svg class="bov-filter-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true"><polyline points="6 9 12 15 18 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    </button>
+                    <div class="bov-popover" id="bov-quotations-reps-popover" role="dialog" aria-label="Filter by sales rep" hidden>
+                      <div class="bov-popover-list" id="bov-quotations-reps-list" role="group" aria-label="Sales rep filter"></div>
+                    </div>
+                  </div>
                   <div class="sa-chip-group bov-list-types" id="bov-quotations-status" role="group" aria-label="Filter by status" hidden></div>
                   <div class="sa-chip-group bov-list-stores" id="bov-quotations-stores" role="group" aria-label="Filter by store" hidden></div>
                   <input type="search" class="dark-input bov-list-search-input" data-bov-kind="quotations" placeholder="Search quotations…" autocomplete="off" aria-label="Search quotations">

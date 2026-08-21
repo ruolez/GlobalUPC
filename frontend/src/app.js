@@ -18538,7 +18538,7 @@ const bovState = {
   section: "overview",  // active section tab
   popover: null,        // id of the open topbar popover
   cardFilters: {        // per-list toolbar filters (store chip, status chip, search)
-    quotations: { store: null, status: null, search: "" },
+    quotations: { store: null, status: null, search: "", scan: "all", reps: null },  // reps: null = all
     invoices: { store: null, search: "" },
     purchases: { store: null, search: "" },
     shopifyorders: { store: null, search: "" },
@@ -19282,6 +19282,23 @@ function bovBindOnce() {
     const chip = e.target.closest("[data-bov-store]");
     if (!chip) return;
     bovToggleStoreChip(chip.dataset.bovStore);
+  });
+
+  // Quotations: scan-status segmented + sales-rep multiselect
+  document.getElementById("bov-quotations-scan")?.addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-bov-scan]");
+    if (!btn) return;
+    bovState.cardFilters.quotations.scan = btn.dataset.bovScan;
+    bovRenderCard("quotations");
+  });
+  document.getElementById("bov-quotations-reps-trigger")?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    bovTogglePopover("bov-quotations-reps-popover");
+  });
+  document.getElementById("bov-quotations-reps-list")?.addEventListener("click", (e) => {
+    const item = e.target.closest("[data-bov-rep]");
+    if (!item) return;
+    bovToggleQuotationRep(item.dataset.bovRep);
   });
 
   // Split toggle
@@ -20675,6 +20692,11 @@ function bovApplyAlertAction(alert) {
     const f = bovState.cardFilters.invoices || (bovState.cardFilters.invoices = { store: null, status: null, search: "" });
     f.store = act.card_store || null;
   }
+  if (act.target === "bov-quotations-card") {
+    // Scan / rep filters could hide the flagged rows — reset them so the alert lands on visible rows.
+    const f = bovState.cardFilters.quotations;
+    if (f) { f.scan = "all"; f.reps = null; }
+  }
   bovRerenderLists();
   if (act.tab) {
     const [group, value] = String(act.tab).split(":");
@@ -21866,6 +21888,12 @@ function bovSortRows(rows, sort) {
     if (na) return 1;
     if (nb) return -1;
     if (typeof va === "number" && typeof vb === "number") return (va - vb) * dir;
+    if (key === "dop2" || key === "dop3") {
+      // Legacy scan timestamps are "MM/DD/YYYY HH:MM AM/PM" strings — lexicographic order is wrong.
+      const pa = Date.parse(String(va));
+      const pb = Date.parse(String(vb));
+      if (!isNaN(pa) && !isNaN(pb)) return (pa - pb) * dir;
+    }
     return String(va).localeCompare(String(vb), undefined, { numeric: true, sensitivity: "base" }) * dir;
   });
 }
@@ -21979,6 +22007,8 @@ function bovApplyCardFilters(kind, rows, { storeOf, searchFields, withStatus = f
   let out = all;
   if (f.store != null && storeOf) out = out.filter((r) => (storeOf(r) || "—") === f.store);
   if (f.status != null && withStatus) out = out.filter((r) => bovStatusOf(r) === f.status);
+  if (f.scan && f.scan !== "all") out = out.filter((r) => bovScanMatch(r, f.scan));
+  if (f.reps != null) out = out.filter((r) => f.reps.includes(bovRepKey(r)));
   const q = (f.search || "").trim().toLowerCase();
   if (q && searchFields) out = out.filter((r) => searchFields.some((k) => r[k] != null && String(r[k]).toLowerCase().includes(q)));
   const countEl = document.getElementById(`bov-${kind}-count`);
@@ -21988,7 +22018,88 @@ function bovApplyCardFilters(kind, rows, { storeOf, searchFields, withStatus = f
 
 function bovCardFiltersActive(kind) {
   const f = bovState.cardFilters[kind];
-  return !!(f && (f.store != null || f.status != null || (f.search || "").trim()));
+  return !!(f && (f.store != null || f.status != null || (f.search || "").trim()
+    || (f.scan && f.scan !== "all") || f.reps != null));
+}
+
+// --- Quotations scan / sales-rep filters (mirrors the In Progress patterns) ---
+
+function bovScanMatch(r, scan) {
+  const hasIn = !!(r.dop2 && String(r.dop2).trim());
+  const hasOut = !!(r.dop3 && String(r.dop3).trim());
+  if (scan === "in") return hasIn && !hasOut;   // picking in progress
+  if (scan === "out") return hasOut;            // packed / complete
+  if (scan === "none") return !hasIn && !hasOut;
+  return true;
+}
+
+function bovRepKey(r) {
+  return (r.sales_rep == null ? "" : String(r.sales_rep).trim()) || "—";
+}
+
+function bovRenderQuotationScanSeg() {
+  const seg = document.getElementById("bov-quotations-scan");
+  if (!seg) return;
+  const cur = (bovState.cardFilters.quotations || {}).scan || "all";
+  seg.querySelectorAll("button[data-bov-scan]").forEach((b) => b.classList.toggle("active", b.dataset.bovScan === cur));
+}
+
+function bovRenderQuotationRepFilter(allRows) {
+  const bar = document.getElementById("bov-quotations-rep-filter");
+  const list = document.getElementById("bov-quotations-reps-list");
+  if (!bar || !list) return;
+  const f = bovState.cardFilters.quotations;
+  const counts = new Map();
+  (allRows || []).forEach((r) => { const k = bovRepKey(r); counts.set(k, (counts.get(k) || 0) + 1); });
+  const options = Array.from(counts.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+  bovState.quotationRepOptions = options.map(([name]) => name);
+  if (options.length < 2) {
+    f.reps = null;
+    bar.hidden = true;
+    list.innerHTML = "";
+    return;
+  }
+  bar.hidden = false;
+  // Prune selections for reps that vanished from the list; back to "all" if nothing left to exclude.
+  if (f.reps != null) {
+    f.reps = f.reps.filter((n) => counts.has(n));
+    if (f.reps.length >= options.length) f.reps = null;
+  }
+  const isAll = f.reps == null;
+  const rowsHtml = [
+    `<button type="button" class="bov-ms-item${isAll ? " active" : ""}" role="checkbox" aria-checked="${isAll}" data-bov-rep="all"><span class="bov-ms-check" aria-hidden="true"></span><span class="bov-ms-label">All reps</span><span class="bov-store-chip-tag">${bovInt(options.length)}</span></button>`,
+  ].concat(options.map(([name, n]) => {
+    const on = isAll || f.reps.includes(name);
+    return `<button type="button" class="bov-ms-item${on ? " active" : ""}" role="checkbox" aria-checked="${on}" data-bov-rep="${escapeHtml(name)}" title="${escapeHtml(name)}"><span class="bov-ms-check" aria-hidden="true"></span><span class="bov-ms-label">${escapeHtml(name === "—" ? "No rep" : name)}</span><span class="bov-store-chip-tag">${bovInt(n)}</span></button>`;
+  }));
+  list.innerHTML = rowsHtml.join("");
+  const val = document.getElementById("bov-quotations-reps-value");
+  const cnt = document.getElementById("bov-quotations-reps-count");
+  const trig = document.getElementById("bov-quotations-reps-trigger");
+  if (val) {
+    if (isAll) val.textContent = "All reps";
+    else if (f.reps.length <= 2) val.textContent = f.reps.map((n) => (n === "—" ? "No rep" : n)).join(", ") || "None";
+    else val.textContent = `${f.reps.length} of ${options.length} reps`;
+  }
+  if (cnt) {
+    cnt.hidden = isAll;
+    cnt.textContent = isAll ? "0" : String(f.reps.length);
+  }
+  trig?.classList.toggle("has-selection", !isAll);
+}
+
+function bovToggleQuotationRep(value) {
+  const f = bovState.cardFilters.quotations;
+  const options = bovState.quotationRepOptions || [];
+  if (value === "all") {
+    f.reps = null;
+  } else {
+    const cur = f.reps == null ? options.slice() : f.reps.slice();   // all-checked -> materialize, then toggle
+    const i = cur.indexOf(value);
+    if (i >= 0) cur.splice(i, 1); else cur.push(value);
+    f.reps = cur.length >= options.length ? null : cur;
+  }
+  bovRenderCard("quotations");
 }
 
 function bovRenderQuotationsTable() {
@@ -22022,6 +22133,8 @@ function bovRenderQuotationsTable() {
   }
   const allRows = d.quotations || [];
   if (meta) meta.textContent = `${bovInt(d.count || allRows.length)} · ${bovCompactMoney(d.total_amount || 0)}${d.statuses && d.statuses.length ? ` · ${d.statuses.join(", ")}` : ""}`;
+  bovRenderQuotationScanSeg();
+  bovRenderQuotationRepFilter(allRows);
   const rows = bovApplyCardFilters("quotations", allRows, {
     storeOf: (r) => bovSourceDbLabel(r.source_db),
     searchFields: ["quotation_number", "business_name", "account_no", "sales_rep", "status", "packer", "checker", "source_db"],
@@ -22052,17 +22165,27 @@ function bovQuotationRowAttrs(r) {
   return `data-bov-open="quotation" data-bov-id="${escapeHtml(r.quotation_number)}"`;
 }
 
+function bovQuotationScanCell(r) {
+  const hasIn = !!(r.dop2 && String(r.dop2).trim());
+  const hasOut = !!(r.dop3 && String(r.dop3).trim());
+  const inTime = hasIn ? qipFormatTime(String(r.dop2)) : "";
+  const outTime = hasOut ? qipFormatTime(String(r.dop3)) : "";
+  const title = [hasIn ? `In: ${String(r.dop2).trim()}` : "", hasOut ? `Out: ${String(r.dop3).trim()}` : ""].filter(Boolean).join(" · ");
+  return `<span title="${escapeHtml(title)}">${qipRenderStatusChip(qipStatusFor(hasIn, hasOut), inTime, outTime)}</span>`;
+}
+
 function bovQuotationCols() {
   return [
-    { key: "quotation_number", label: "Quote #", width: "13%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.quotation_number)}</span>${r.source_db ? `<span class="bov-cell-sub">${escapeHtml(bovSourceDbLabel(r.source_db))}</span>` : ""}` },
-    { key: "start_date", label: "Started", width: "11%", render: (r) => `${escapeHtml(bovDateMdy(r.start_date))}${bovTimeHm(r.start_date) ? `<span class="bov-cell-sub">${escapeHtml(bovTimeHm(r.start_date))}</span>` : ""}` },
-    { key: "business_name", label: "Customer", width: "21%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
-    { key: "sales_rep", label: "Rep", width: "10%", render: (r) => escapeHtml(r.sales_rep || "—") },
-    { key: "packer", label: "Packer", width: "10%", render: (r) => `${escapeHtml(r.packer || "—")}${r.checker ? `<span class="bov-cell-sub">chk ${escapeHtml(r.checker)}</span>` : ""}` },
-    { key: "status", label: "Status", width: "10%", render: (r) => bovStatusChip(r.status) },
-    { key: "total_qty", label: "Qty", num: true, width: "6%", render: (r) => bovInt(r.total_qty) },
-    { key: "quotation_total", label: "Total", num: true, width: "10%", render: (r) => bovMoney(r.quotation_total) },
-    { key: "margin_pct", label: "Margin", num: true, width: "9%", render: bovMarginCell },
+    { key: "quotation_number", label: "Quote #", width: "12%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.quotation_number)}</span>${r.source_db ? `<span class="bov-cell-sub">${escapeHtml(bovSourceDbLabel(r.source_db))}</span>` : ""}` },
+    { key: "start_date", label: "Started", width: "10%", render: (r) => `${escapeHtml(bovDateMdy(r.start_date))}${bovTimeHm(r.start_date) ? `<span class="bov-cell-sub">${escapeHtml(bovTimeHm(r.start_date))}</span>` : ""}` },
+    { key: "business_name", label: "Customer", width: "16%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
+    { key: "sales_rep", label: "Rep", width: "9%", render: (r) => escapeHtml(r.sales_rep || "—") },
+    { key: "packer", label: "Packer", width: "9%", render: (r) => `${escapeHtml(r.packer || "—")}${r.checker ? `<span class="bov-cell-sub">chk ${escapeHtml(r.checker)}</span>` : ""}` },
+    { key: "status", label: "Status", width: "9%", render: (r) => bovStatusChip(r.status) },
+    { key: "dop2", label: "Scans", width: "15%", render: bovQuotationScanCell },
+    { key: "total_qty", label: "Qty", num: true, width: "5%", render: (r) => bovInt(r.total_qty) },
+    { key: "quotation_total", label: "Total", num: true, width: "8%", render: (r) => bovMoney(r.quotation_total) },
+    { key: "margin_pct", label: "Margin", num: true, width: "7%", render: bovMarginCell },
   ];
 }
 
