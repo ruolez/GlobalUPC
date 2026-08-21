@@ -76,6 +76,7 @@ from schemas import (
     BOVBreakdownRow, BOVSalesBreakdownResponse, BOVStoreStatus, BOVInvoicesPeriodResponse, BOVAlert, BOVAlertAction, BOVAlertsResponse, BOVShopifyOrderRow, BOVShopifyOrdersListResponse, BOVShopifyOrderLine, BOVShopifyOrderHeader, BOVShopifyOrderDetailResponse, BOVMissingCostRow, BOVMissingCostResponse, BOVProductRow, BOVProductsTotals, BOVProductsResponse, BOVShopifyExclusionCreate, BOVShopifyExclusion, BOVShopifyExclusionList, BOVPoExclusionCreate, BOVPoExclusion, BOVPoExclusionList, bov_merge_alert_rules, bov_validate_alert_rules, BOVShopifyStoreOrders, BOVShopifyOrdersResponse, BOVShopifyRefreshResult, BOVShopifyRefreshResponse,
     BOVShopifyStoreOpen, BOVShopifyOpenOrdersBlock, BOVSalesSummaryBlock,
     BusinessOverviewSummaryResponse,
+    MonthEndRow, MonthEndTotals, MonthEndStoreStatus, MonthEndShipperStatus, MonthEndResponse,
 )
 from mssql_helper import (
     test_mssql_connection, search_upc_across_mssql_stores, search_products_by_upc,
@@ -11783,6 +11784,213 @@ async def get_business_overview_alerts(
         period=BOVPeriod(**period.as_dict()), rules=rules,
         alerts=[BOVAlert(**{**a, "action": BOVAlertAction(**a["action"]) if a.get("action") else None}) for a in alerts],
         checked=checked, skipped=skipped, errors=errors, generated_at=datetime.utcnow(),
+    )
+
+
+# ============================================================================
+# Month End — combined BackOffice invoices + Shopify orders with real shipping
+# ============================================================================
+
+def _month_end_default_range(tz: str) -> Tuple[str, str]:
+    """Previous calendar month in the configured timezone."""
+    today = bov.today_in_tz(tz)
+    prev_end = today.replace(day=1) - timedelta(days=1)
+    return prev_end.replace(day=1).isoformat(), prev_end.isoformat()
+
+
+def _month_end_totals(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    t = {"orders": 0, "total": 0.0, "revenue": 0.0, "cost": 0.0, "product_profit": 0.0,
+         "shipping_collected": 0.0, "shipping_cost": 0.0, "profit": 0.0, "profit_known": 0}
+    for r in rows:
+        t["orders"] += 1
+        for k in ("total", "revenue", "cost", "product_profit", "shipping_collected", "shipping_cost"):
+            v = r.get(k)
+            if v is not None:
+                t[k] += float(v)
+        if r.get("profit") is not None:
+            t["profit"] += float(r["profit"])
+            t["profit_known"] += 1
+    for k in ("total", "revenue", "cost", "product_profit", "shipping_collected", "shipping_cost", "profit"):
+        t[k] = round(t[k], 2)
+    return t
+
+
+@app.get("/api/business-overview/month-end", response_model=MonthEndResponse)
+async def get_month_end(date_from: Optional[str] = None, date_to: Optional[str] = None,
+                        limit: int = bov.MAX_LIST_LIMIT, db: Session = Depends(get_db)):
+    cfg = _bov_config(db)
+    tz = _bov_tz(cfg)
+    if not date_from and not date_to:
+        date_from, date_to = _month_end_default_range(tz)
+    period = _bov_period(cfg, None, date_from, date_to)
+    limit = max(1, min(int(limit or bov.MAX_LIST_LIMIT), bov.MAX_LIST_LIMIT))
+
+    sales_stores = _bov_sales_stores(db, cfg)
+    shopify_stores = _bov_shopify_stores(db, cfg)
+    if not sales_stores and not shopify_stores:
+        return MonthEndResponse(configured=False, period=BOVPeriod(**period.as_dict()), limit=limit)
+
+    warnings: List[str] = []
+    synced = await asyncio.to_thread(shopify_sync.get_synced_stores) if shopify_stores else {}
+    sh_excl = _bov_shopify_exclusions(db)
+    usable_shopify: List[Dict[str, Any]] = []
+    for st in shopify_stores:
+        info = synced.get(st["id"])
+        if not info:
+            warnings.append(f"{st['name']}: not synced — skipped (run Data Sync)")
+            continue
+        st["_tz"] = info.get("shop_timezone") or tz
+        usable_shopify.append(st)
+
+    excl_sales = _bov_excluded_names(db)[0]
+
+    async def _bo(st: Store):
+        return await bov.invoices_in_period_async(
+            **_bov_conn_kwargs(st), date_from=period.start.isoformat(), date_to_excl=period.end_excl,
+            limit=limit, sort_by="invoice_date", sort_order="desc", include_list=True,
+            today=period.today, excluded_names=excl_sales, cost_mode="default")
+
+    async def _sh(st: Dict[str, Any]):
+        ok, err, payload = await bov.month_end_shopify_orders(
+            st["id"], st["_tz"], period.start.isoformat(), period.end_excl, limit)
+        if not ok:
+            return ok, err, payload
+        payload["lines"] = await bov.month_end_shopify_lines(
+            st["id"], st["_tz"], period.start.isoformat(), period.end_excl, sh_excl)
+        return True, None, payload
+
+    bo_results, sh_results = await asyncio.gather(
+        _bov_fanout(sales_stores, _bo),
+        asyncio.gather(*[_sh(st) for st in usable_shopify], return_exceptions=True),
+    )
+
+    stores_status: List[Dict[str, Any]] = []
+    rows: List[Dict[str, Any]] = []
+    truncated = False
+
+    # ---- BackOffice rows (profit already net of Invoices_tbl.ShippingCost)
+    for st, ok, err, payload in bo_results:
+        if not ok:
+            warnings.append(f"{st.name}: {err}")
+            stores_status.append({"store_id": st.id, "store_name": st.name, "source": "backoffice", "error": err})
+            continue
+        stores_status.append({"store_id": st.id, "store_name": st.name, "source": "backoffice",
+                              "count": int(payload.get("count") or 0), "truncated": bool(payload.get("truncated"))})
+        truncated = truncated or bool(payload.get("truncated"))
+        for inv in payload.get("invoices") or []:
+            rows.append({
+                "source": "backoffice",
+                "row_key": f"bo:{st.id}:{inv['invoice_id']}",
+                "store_id": st.id, "store_name": st.name,
+                "date": inv.get("invoice_date"),
+                "number": inv.get("invoice_number") or str(inv.get("invoice_id")),
+                "customer": inv.get("business_name"),
+                "total": inv.get("invoice_total"),
+                "revenue": inv.get("revenue"), "cost": inv.get("cost"),
+                "product_profit": inv.get("profit"),
+                "shipping_collected": None,
+                "shipping_cost": inv.get("shipping_cost"),
+                "shipping_missing": False,
+                "parcels": None,
+                "profit": inv.get("net_profit"),
+                "cost_coverage": inv.get("cost_coverage"),
+                "status": "shipped" if inv.get("is_shipped") else "open",
+            })
+
+    # ---- Shopify store results
+    sh_ok: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
+    for st, res in zip(usable_shopify, sh_results):
+        if isinstance(res, Exception):
+            warnings.append(f"{st['name']}: {res}")
+            stores_status.append({"store_id": st["id"], "store_name": st["name"], "source": "shopify", "error": str(res)})
+            continue
+        ok, err, payload = res
+        if not ok:
+            warnings.append(f"{st['name']}: {err}")
+            stores_status.append({"store_id": st["id"], "store_name": st["name"], "source": "shopify", "error": err})
+            continue
+        stores_status.append({"store_id": st["id"], "store_name": st["name"], "source": "shopify",
+                              "count": int(payload.get("count") or 0), "truncated": bool(payload.get("truncated"))})
+        truncated = truncated or bool(payload.get("truncated"))
+        sh_ok.append((st, payload))
+
+    # ---- One S2S cost lookup over every store's barcodes (UnitPriceC)
+    unit_costs: Dict[str, float] = {}
+    if sh_ok:
+        barcodes = sorted({bc for _st, p in sh_ok for lines in (p.get("lines") or {}).values()
+                           for (bc, _u, _r) in lines if bc})
+        lookup = _bov_make_cost_lookup(db, cfg, "unit_delivery_b")
+        if not getattr(lookup, "configured", False):
+            warnings.append("Item Tracker S2S store not configured — Shopify cost/profit unavailable")
+        elif barcodes:
+            unit_costs = await lookup(barcodes)
+            if getattr(lookup, "failed", None):
+                warnings.append(f"Shopify cost lookup failed — profit unavailable: {lookup.failed}")
+
+    # ---- Actual Shopify shipping cost: shipper store parcels by order name
+    shipper_store = _resolve_shipper_store_soft(db)
+    shipper: Dict[str, Any] = {"configured": shipper_store is not None,
+                               "store_name": shipper_store.name if shipper_store else None,
+                               "matched": 0, "unmatched": 0, "error": None}
+    parcel_map: Dict[str, Dict[str, float]] = {}
+    all_names = [o.get("name") for _st, p in sh_ok for o in (p.get("orders") or []) if o.get("name")]
+    if shipper_store and all_names:
+        ok, err, parcel_map = await bov.parcel_costs_async(
+            **_bov_conn_kwargs(shipper_store), order_numbers=all_names)
+        if not ok:
+            shipper["error"] = err
+            warnings.append(f"Shipper parcels lookup failed — Shopify shipping cost unavailable: {err}")
+            parcel_map = {}
+    elif not shipper_store and sh_ok:
+        warnings.append("Shipper store not configured — Shopify shipping cost unavailable")
+
+    parcels_usable = bool(shipper_store) and not shipper["error"]
+
+    # ---- Shopify rows: profit = product profit + shipping collected − parcels cost
+    for st, payload in sh_ok:
+        lines_by_order = payload.get("lines") or {}
+        for o in payload.get("orders") or []:
+            costing = bov.shopify_order_costing(lines_by_order.get(o["shopify_id"]) or [], unit_costs)
+            parcel = parcel_map.get(bov.normalize_order_number(o.get("name")))
+            if parcels_usable:
+                shipper["matched" if parcel else "unmatched"] += 1
+            ship_cost = parcel["cost"] if parcel else None
+            pp = costing["product_profit"]
+            profit = (round(pp + (o.get("total_shipping") or 0.0) - (ship_cost or 0.0), 2)
+                      if pp is not None else None)
+            rows.append({
+                "source": "shopify",
+                "row_key": f"sh:{st['id']}:{o['shopify_id']}",
+                "store_id": st["id"], "store_name": st["name"],
+                "date": o.get("created_at"),
+                "number": o.get("name"),
+                "customer": o.get("customer_name"),
+                "total": o.get("total_price"),
+                "revenue": costing["revenue"], "cost": costing["cost"],
+                "product_profit": pp,
+                "shipping_collected": o.get("total_shipping"),
+                "shipping_cost": ship_cost,
+                "shipping_missing": bool(parcels_usable and parcel is None),
+                "parcels": int(parcel["parcels"]) if parcel else None,
+                "profit": profit,
+                "cost_coverage": costing["cost_coverage"],
+                "status": (str(o.get("financial_status") or "").lower() or None),
+            })
+
+    rows.sort(key=lambda r: (r.get("date") or ""), reverse=True)
+    by_source = {src: _month_end_totals([r for r in rows if r["source"] == src])
+                 for src in ("backoffice", "shopify") if any(r["source"] == src for r in rows)}
+    return MonthEndResponse(
+        configured=True,
+        period=BOVPeriod(**period.as_dict()),
+        stores=[MonthEndStoreStatus(**s) for s in stores_status],
+        rows=[MonthEndRow(**r) for r in rows],
+        totals=MonthEndTotals(**_month_end_totals(rows)),
+        by_source={k: MonthEndTotals(**v) for k, v in by_source.items()},
+        shipper=MonthEndShipperStatus(**shipper),
+        warnings=warnings,
+        limit=limit,
+        truncated=truncated,
     )
 
 

@@ -1972,3 +1972,67 @@ class BusinessOverviewSummaryResponse(BaseModel):
     shopify_open_orders: BOVShopifyOpenOrdersBlock
     store_ids: List[int] = []                              # store filter applied (empty = all)
     generated_at: datetime
+
+
+# ---- Month End --------------------------------------------------------------
+class MonthEndRow(BaseModel):
+    source: str                                  # "backoffice" | "shopify"
+    row_key: str                                 # "bo:<store_id>:<invoice_id>" | "sh:<store_id>:<shopify_id>"
+    store_id: int
+    store_name: str
+    date: Optional[str] = None
+    number: Optional[str] = None
+    customer: Optional[str] = None
+    total: Optional[float] = None
+    revenue: Optional[float] = None              # product revenue (line-level)
+    cost: Optional[float] = None
+    product_profit: Optional[float] = None       # revenue - cost
+    shipping_collected: Optional[float] = None   # Shopify checkout shipping; None for BackOffice
+    shipping_cost: Optional[float] = None        # BackOffice Invoices_tbl.ShippingCost | Σ shipper parcels.cost
+    shipping_missing: bool = False               # Shopify: shipper configured but no parcel matched
+    parcels: Optional[int] = None                # Shopify: matched parcel/box count
+    profit: Optional[float] = None               # product_profit + shipping_collected - shipping_cost
+    cost_coverage: Optional[float] = None
+    status: Optional[str] = None                 # backoffice: shipped/open · shopify: financial_status
+
+
+class MonthEndTotals(BaseModel):
+    orders: int = 0
+    total: float = 0.0
+    revenue: float = 0.0
+    cost: float = 0.0
+    product_profit: float = 0.0
+    shipping_collected: float = 0.0
+    shipping_cost: float = 0.0
+    profit: float = 0.0
+    profit_known: int = 0                        # rows whose profit could be computed
+
+
+class MonthEndStoreStatus(BaseModel):
+    store_id: int
+    store_name: str
+    source: str
+    count: Optional[int] = None
+    error: Optional[str] = None
+    truncated: bool = False
+
+
+class MonthEndShipperStatus(BaseModel):
+    configured: bool = False
+    store_name: Optional[str] = None
+    matched: int = 0
+    unmatched: int = 0
+    error: Optional[str] = None
+
+
+class MonthEndResponse(BaseModel):
+    configured: bool = False
+    period: Optional[BOVPeriod] = None
+    stores: List[MonthEndStoreStatus] = []
+    rows: List[MonthEndRow] = []
+    totals: Optional[MonthEndTotals] = None
+    by_source: Dict[str, MonthEndTotals] = {}
+    shipper: MonthEndShipperStatus = MonthEndShipperStatus()
+    warnings: List[str] = []
+    limit: int = 0
+    truncated: bool = False

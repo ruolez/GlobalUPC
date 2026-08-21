@@ -8376,3 +8376,84 @@ tr.bov-line-void td { opacity: 0.55; text-decoration: line-through; }
 .bov-lock-row .dark-input { flex: 1; }
 .bov-lock-error { margin: 0.625rem 0 0; font-size: 0.8125rem; color: var(--danger); }
 .bov-lock-error[hidden] { display: none; }
+
+/* ============================================================================
+   Month End
+   ============================================================================ */
+.me-toolbar-card { padding: 0; }
+.me-toolbar { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; padding: 0.75rem 1rem; }
+.me-toolbar-group { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+.me-toolbar-right { margin-left: auto; }
+.me-toolbar select,
+.me-toolbar input[type="date"],
+.me-toolbar input[type="search"] {
+  background: var(--bg-tertiary); color: var(--text-primary);
+  border: 1px solid var(--border-color); border-radius: var(--radius-sm);
+  padding: 0.4rem 0.6rem; font-size: 0.8125rem;
+}
+.me-toolbar input[type="search"] { min-width: 220px; }
+.me-btn-sm { font-size: 0.75rem; padding: 0.4rem 0.75rem; }
+
+.me-chip {
+  border: 1px solid var(--border-color); background: var(--bg-tertiary); color: var(--text-secondary);
+  border-radius: 999px; padding: 0.3rem 0.75rem; font-size: 0.75rem; font-weight: 500;
+  cursor: pointer; transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.me-chip:hover { background: var(--bg-hover); color: var(--text-primary); }
+.me-chip.is-active {
+  background: color-mix(in srgb, var(--accent-primary) 16%, var(--bg-primary));
+  border-color: color-mix(in srgb, var(--accent-primary) 45%, var(--border-color));
+  color: var(--text-primary);
+}
+.me-chip.is-error { border-color: color-mix(in srgb, var(--danger) 50%, var(--border-color)); color: var(--danger); }
+
+.me-summary {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 0.75rem; margin-bottom: 1rem;
+}
+.me-tile {
+  background: var(--bg-secondary); border: 1px solid var(--border-color);
+  border-radius: var(--radius-md); padding: 0.875rem 1rem;
+}
+.me-tile-label {
+  font-size: 0.6875rem; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--text-tertiary); margin-bottom: 0.3rem;
+}
+.me-tile-value { font-size: 1.375rem; font-weight: 700; color: var(--text-primary); font-variant-numeric: tabular-nums; }
+.me-tile-sub { font-size: 0.6875rem; color: var(--text-tertiary); margin-top: 0.25rem; }
+
+.me-badge {
+  display: inline-block; font-size: 0.625rem; font-weight: 700; letter-spacing: 0.04em;
+  border-radius: var(--radius-sm); padding: 0.1rem 0.4rem; margin-right: 0.45rem;
+  text-transform: uppercase; vertical-align: middle;
+}
+.me-badge-bo {
+  background: color-mix(in srgb, var(--accent-primary) 16%, var(--bg-primary));
+  color: color-mix(in srgb, var(--accent-primary) 80%, var(--text-primary));
+}
+.me-badge-shopify {
+  background: color-mix(in srgb, var(--success) 16%, var(--bg-primary));
+  color: color-mix(in srgb, var(--success) 80%, var(--text-primary));
+}
+.me-store-name { vertical-align: middle; }
+
+.me-ship-missing { color: var(--warning); }
+
+.me-warning {
+  background: color-mix(in srgb, var(--warning) 10%, var(--bg-primary));
+  border: 1px solid color-mix(in srgb, var(--warning) 35%, var(--border-color));
+  border-radius: var(--radius-sm); color: var(--text-secondary);
+  font-size: 0.8125rem; padding: 0.5rem 0.75rem; margin-bottom: 0.4rem;
+}
+
+#me-table-card { padding: 0; }
+#me-table .bov-table-scroll { overflow-x: auto; }
+#me-table table tfoot td {
+  font-weight: 600; color: var(--text-primary);
+  border-top: 2px solid var(--border-color); background: var(--bg-tertiary);
+  position: sticky; bottom: 0;
+}
+.me-foot {
+  display: flex; justify-content: flex-end; padding: 0.5rem 1rem;
+  font-size: 0.75rem; color: var(--text-tertiary); border-top: 1px solid var(--border-color);
+}

@@ -2490,6 +2490,142 @@ def merge_bucket_lists(lists: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]
 
 
 # ============================================================================
+# Month End — combined BackOffice + Shopify order list with real shipping cost
+# ============================================================================
+
+def normalize_order_number(name: Any) -> str:
+    """Join key between a Shopify order name and shipper parcels.order_number."""
+    return str(name or "").strip().lstrip("#")
+
+
+def _month_end_shopify_orders_sync(store_id: int, tz: str, date_from: str, date_to_excl: str,
+                                   limit: int = MAX_LIST_LIMIT) -> Tuple[bool, Optional[str], Dict[str, Any]]:
+    """Completed + fulfilled mirror orders for the period, newest first."""
+    tz = _safe_tz(tz)
+    where = f"""o.store_id = :sid AND {_SHOPIFY_COMPLETED} AND o.fulfillment_status = 'FULFILLED'
+          AND o.created_at >= (CAST(:start AS date)::timestamp AT TIME ZONE :tz)
+          AND o.created_at <  (CAST(:end_excl AS date)::timestamp AT TIME ZONE :tz)"""
+    params = {"sid": int(store_id), "tz": tz, "start": date_from, "end_excl": date_to_excl}
+    try:
+        with engine.connect() as conn:
+            count = int(conn.execute(text(f"SELECT COUNT(*) FROM shopify_orders o WHERE {where}"), params).scalar() or 0)
+            rows = conn.execute(text(f"""
+                SELECT o.shopify_id, o.name, (o.created_at AT TIME ZONE :tz) AS created_local, o.financial_status,
+                       o.total_price, o.total_shipping, c.display_name AS customer_name, o.email
+                FROM shopify_orders o
+                LEFT JOIN shopify_customers c ON c.store_id = o.store_id AND c.shopify_id = o.customer_shopify_id
+                WHERE {where}
+                ORDER BY o.created_at DESC
+                LIMIT :limit
+            """), {**params, "limit": int(limit)}).mappings().all()
+        orders = [{
+            "shopify_id": int(r["shopify_id"]),
+            "name": _s(r["name"]),
+            "created_at": _iso(r["created_local"]),
+            "financial_status": r["financial_status"],
+            "total_price": _fo(r["total_price"]),
+            "total_shipping": _fo(r["total_shipping"]),
+            "customer_name": _s(r["customer_name"]) or _s(r["email"]),
+        } for r in rows]
+        return True, None, {"orders": orders, "count": count, "truncated": count > len(orders)}
+    except Exception as e:
+        return False, str(e), {}
+
+
+def _month_end_shopify_lines_sync(store_id: int, tz: str, date_from: str, date_to_excl: str,
+                                  exclusions: Optional[List[Dict[str, Any]]] = None,
+                                  ) -> Dict[int, List[Tuple[Optional[str], float, float]]]:
+    """(barcode, units, revenue) per order — product revenue plus the cost-lookup input."""
+    tz = _safe_tz(tz)
+    excl_sql, excl_params = _shopify_excl_clause(store_id, exclusions)
+    excl_where = f"AND NOT {excl_sql}" if excl_sql else ""
+    sql = f"""
+        SELECT li.order_shopify_id, NULLIF(BTRIM(li.barcode), '') AS barcode,
+               SUM(COALESCE(li.current_quantity, li.quantity, 0)) AS units,
+               SUM(COALESCE(li.discounted_total, 0))              AS revenue
+        FROM shopify_orders o
+        JOIN shopify_order_line_items li ON li.store_id = o.store_id AND li.order_shopify_id = o.shopify_id
+        WHERE o.store_id = :sid AND {_SHOPIFY_COMPLETED} AND o.fulfillment_status = 'FULFILLED'
+          AND o.created_at >= (CAST(:start AS date)::timestamp AT TIME ZONE :tz)
+          AND o.created_at <  (CAST(:end_excl AS date)::timestamp AT TIME ZONE :tz)
+          {excl_where}
+        GROUP BY 1, 2
+    """
+    out: Dict[int, List[Tuple[Optional[str], float, float]]] = {}
+    with engine.connect() as conn:
+        for r in conn.execute(text(sql), {"sid": int(store_id), "tz": tz, "start": date_from,
+                                          "end_excl": date_to_excl, **excl_params}).mappings():
+            out.setdefault(int(r["order_shopify_id"]), []).append((r["barcode"], _f(r["units"]), _f(r["revenue"])))
+    return out
+
+
+def shopify_order_costing(lines: List[Tuple[Optional[str], float, float]],
+                          unit_costs: Dict[str, float]) -> Dict[str, Any]:
+    """revenue/cost/product_profit/cost_coverage for one order's (barcode, units, revenue) lines."""
+    revenue = 0.0
+    cost = 0.0
+    units = 0.0
+    known = 0.0
+    for barcode, n, rev in lines:
+        revenue += rev
+        units += n
+        c = unit_costs.get(barcode) if barcode else None
+        if c is not None:
+            cost += n * float(c)
+            known += n
+    cov = (round(known / units, 4) if units else None)
+    if units and not known:
+        # units sold but no barcode resolved to a cost — profit unknown, not 100%
+        return {"revenue": round(revenue, 2), "cost": None, "product_profit": None, "cost_coverage": cov}
+    return {"revenue": round(revenue, 2), "cost": round(cost, 2),
+            "product_profit": round(revenue - cost, 2), "cost_coverage": cov}
+
+
+def _parcel_costs_sync(host, port, database, username, password,
+                       order_numbers: List[str]) -> Tuple[bool, Optional[str], Dict[str, Dict[str, float]]]:
+    """SUM(parcels.cost) + box count per order_number on the shipper store, keyed by
+    normalized order number. Queries every raw/#-stripped/#-prefixed candidate so the
+    join survives either storage convention."""
+    candidates = set()
+    for n in order_numbers:
+        raw = str(n or "").strip()
+        norm = normalize_order_number(raw)
+        if not norm:
+            continue
+        candidates.update({raw, norm, "#" + norm})
+    cand = sorted(candidates)
+    out: Dict[str, Dict[str, float]] = {}
+    if not cand:
+        return True, None, out
+    try:
+        with _connect(host, port, database, username, password) as conn:
+            cur = conn.cursor()
+            if not _tables_present(cur, ["parcels"]).get("parcels"):
+                return False, "Table parcels not found on the shipper store", {}
+            for i in range(0, len(cand), MAX_PARAMS):
+                chunk = cand[i:i + MAX_PARAMS]
+                ph = ",".join("?" * len(chunk))
+                cur.execute(f"""
+                    SELECT order_number, SUM(ISNULL(cost, 0)) AS cost, COUNT(*) AS parcels
+                    FROM parcels
+                    WHERE order_number IN ({ph})
+                    GROUP BY order_number
+                """, chunk)
+                for r in _rows(cur):
+                    key = normalize_order_number(r.get("order_number"))
+                    if not key:
+                        continue
+                    slot = out.setdefault(key, {"cost": 0.0, "parcels": 0})
+                    slot["cost"] += _f(r.get("cost"))
+                    slot["parcels"] += int(r.get("parcels") or 0)
+        for slot in out.values():
+            slot["cost"] = round(slot["cost"], 2)
+        return True, None, out
+    except Exception as e:
+        return False, str(e), {}
+
+
+# ============================================================================
 # Async wrappers
 # ============================================================================
 
@@ -2561,6 +2697,20 @@ async def shopify_open_orders_local(store_id: int) -> Dict[str, float]:
 async def shopify_top_products(store_id: int, tz: str, date_from: str, date_to_excl: str, limit: int = 10,
                                exclusions: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
     return await asyncio.to_thread(_shopify_top_products_sync, store_id, tz, date_from, date_to_excl, limit, exclusions)
+
+
+async def month_end_shopify_orders(store_id: int, tz: str, date_from: str, date_to_excl: str,
+                                   limit: int = MAX_LIST_LIMIT) -> Tuple[bool, Optional[str], Dict[str, Any]]:
+    return await asyncio.to_thread(_month_end_shopify_orders_sync, store_id, tz, date_from, date_to_excl, limit)
+
+
+async def month_end_shopify_lines(store_id: int, tz: str, date_from: str, date_to_excl: str,
+                                  exclusions: Optional[List[Dict[str, Any]]] = None):
+    return await asyncio.to_thread(_month_end_shopify_lines_sync, store_id, tz, date_from, date_to_excl, exclusions)
+
+
+async def parcel_costs_async(**kw):
+    return await _run(_parcel_costs_sync, **kw)
 
 
 def shutdown_bov_executor():

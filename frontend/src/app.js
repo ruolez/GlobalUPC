@@ -96,6 +96,8 @@ function navigateTo(page) {
     loadInventoryTimePage();
   } else if (page === "checked-orders") {
     loadCheckedOrdersPage();
+  } else if (page === "month-end") {
+    loadMonthEndPage();
   }
 }
 
@@ -18558,6 +18560,7 @@ const bovState = {
     purchasesPurchased: { key: "po_date", dir: "desc" },
     purchasesReceived: { key: "last_received", dir: "desc" },
     shopifyOrders_list: { key: "created_at", dir: "asc" },
+    monthEnd: { key: "date", dir: "desc" },
   },
   widgets: {
     summary: bovEmptyWidget(),
@@ -23572,3 +23575,349 @@ function bovExclAutocomplete() {
 }
 
 // ===== End Business Overview =====
+
+// ============================================================================
+// Month End — combined BackOffice + Shopify order list with real shipping cost
+// ============================================================================
+
+const ME_PREFS_KEY = "month_end_prefs";
+const monthEndState = {
+  initialized: false,
+  loading: false,
+  data: null,
+  filters: { type: "all", stores: new Set(), search: "" }, // empty stores set = all
+  abort: null,
+};
+
+function meShow(id, visible, text) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.style.display = visible ? "" : "none";
+  if (text !== undefined) el.textContent = text;
+}
+
+function meYmd(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function meLoadPrefs() {
+  try {
+    const p = JSON.parse(localStorage.getItem(ME_PREFS_KEY) || "{}");
+    if (["all", "backoffice", "shopify"].includes(p.type)) monthEndState.filters.type = p.type;
+    if (p.sort && p.sort.key) bovState.sort.monthEnd = { key: String(p.sort.key), dir: p.sort.dir === "asc" ? "asc" : "desc" };
+  } catch (e) { /* corrupt prefs — defaults win */ }
+}
+
+function meSavePrefs() {
+  try {
+    localStorage.setItem(ME_PREFS_KEY, JSON.stringify({ type: monthEndState.filters.type, sort: bovState.sort.monthEnd }));
+  } catch (e) { /* storage full/blocked — non-fatal */ }
+}
+
+function mePopulatePeriodSelect() {
+  const sel = document.getElementById("me-period-select");
+  if (!sel) return;
+  const now = new Date();
+  const opts = [`<option value="this">This month</option>`];
+  for (let i = 1; i <= 12; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const val = `m:${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    const label = d.toLocaleDateString(undefined, { month: "short", year: "numeric" });
+    opts.push(`<option value="${val}"${i === 1 ? " selected" : ""}>${escapeHtml(label)}</option>`);
+  }
+  opts.push(`<option value="custom">Custom range…</option>`);
+  sel.innerHTML = opts.join("");
+}
+
+function monthEndPeriodParams() {
+  const sel = document.getElementById("me-period-select");
+  const v = sel ? sel.value : "";
+  if (v === "custom") {
+    const f = document.getElementById("me-date-from")?.value;
+    const t = document.getElementById("me-date-to")?.value;
+    if (!f || !t) return null;
+    return { date_from: f, date_to: t };
+  }
+  const now = new Date();
+  if (v === "this") {
+    return { date_from: meYmd(new Date(now.getFullYear(), now.getMonth(), 1)),
+             date_to: meYmd(new Date(now.getFullYear(), now.getMonth() + 1, 0)) };
+  }
+  const m = /^m:(\d{4})-(\d{2})$/.exec(v || "");
+  if (m) {
+    const y = parseInt(m[1], 10);
+    const mo = parseInt(m[2], 10) - 1;
+    return { date_from: meYmd(new Date(y, mo, 1)), date_to: meYmd(new Date(y, mo + 1, 0)) };
+  }
+  return {}; // backend defaults to last calendar month
+}
+
+function loadMonthEndPage() {
+  if (!monthEndState.initialized) {
+    monthEndState.initialized = true;
+    meLoadPrefs();
+    mePopulatePeriodSelect();
+    document.querySelectorAll('#me-type-chips [data-me-type]').forEach((b) =>
+      b.classList.toggle("is-active", b.dataset.meType === monthEndState.filters.type));
+
+    document.getElementById("me-period-select")?.addEventListener("change", (e) => {
+      const custom = e.target.value === "custom";
+      const el = document.getElementById("me-custom");
+      if (el) el.style.display = custom ? "flex" : "none";
+      if (!custom) fetchMonthEnd();
+    });
+    document.getElementById("me-apply")?.addEventListener("click", () => fetchMonthEnd());
+    document.getElementById("me-refresh")?.addEventListener("click", () => fetchMonthEnd());
+
+    document.getElementById("me-type-chips")?.addEventListener("click", (e) => {
+      const b = e.target.closest("[data-me-type]");
+      if (!b) return;
+      monthEndState.filters.type = b.dataset.meType;
+      document.querySelectorAll('#me-type-chips [data-me-type]').forEach((x) =>
+        x.classList.toggle("is-active", x === b));
+      meSavePrefs();
+      renderMonthEnd();
+    });
+    document.getElementById("me-store-chips")?.addEventListener("click", (e) => {
+      const b = e.target.closest("[data-me-store]");
+      if (!b) return;
+      const id = parseInt(b.dataset.meStore, 10);
+      const sel = monthEndState.filters.stores;
+      if (sel.has(id)) sel.delete(id); else sel.add(id);
+      renderMonthEnd();
+    });
+
+    let searchTimer = null;
+    document.getElementById("me-search")?.addEventListener("input", (e) => {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => {
+        monthEndState.filters.search = (e.target.value || "").trim().toLowerCase();
+        renderMonthEnd();
+      }, 200);
+    });
+
+    // Sortable headers (bovTableHtml emits th[data-bov-sort]); the Business
+    // Overview delegation is scoped to its own page, so bind our own here.
+    document.getElementById("month-end-page")?.addEventListener("click", (e) => {
+      const th = e.target.closest("th[data-bov-sort]");
+      if (!th || th.dataset.bovWidget !== "monthEnd") return;
+      const key = th.dataset.bovSort;
+      const s = bovState.sort.monthEnd;
+      if (s.key === key) s.dir = s.dir === "asc" ? "desc" : "asc";
+      else { s.key = key; s.dir = ["number", "customer", "store_name"].includes(key) ? "asc" : "desc"; }
+      meSavePrefs();
+      renderMonthEnd();
+    });
+  }
+  if (!monthEndState.data && !monthEndState.loading) fetchMonthEnd();
+}
+
+async function fetchMonthEnd() {
+  const params = monthEndPeriodParams();
+  if (!params) return; // custom range incomplete
+  if (monthEndState.abort) monthEndState.abort.abort();
+  const ctl = new AbortController();
+  monthEndState.abort = ctl;
+  monthEndState.loading = true;
+  meShow("me-error", false);
+  meShow("me-loading", true);
+  if (!monthEndState.data) {
+    meShow("me-summary", false);
+    meShow("me-table-card", false);
+    meShow("me-empty", false);
+  }
+  try {
+    const data = await bovFetchJson("/month-end", params, ctl.signal);
+    if (ctl.signal.aborted) return;
+    monthEndState.data = data;
+    renderMonthEnd();
+  } catch (e) {
+    if (e.name === "AbortError") return;
+    const el = document.getElementById("me-error");
+    if (el) { el.textContent = `Could not load Month End: ${e.message || e}`; el.style.display = ""; }
+  } finally {
+    if (monthEndState.abort === ctl) {
+      monthEndState.loading = false;
+      meShow("me-loading", false);
+    }
+  }
+}
+
+function monthEndVisibleRows() {
+  const d = monthEndState.data;
+  let rows = (d && d.rows) || [];
+  const f = monthEndState.filters;
+  if (f.type !== "all") rows = rows.filter((r) => r.source === f.type);
+  if (f.stores.size) rows = rows.filter((r) => f.stores.has(r.store_id));
+  if (f.search) {
+    rows = rows.filter((r) =>
+      String(r.number || "").toLowerCase().includes(f.search) ||
+      String(r.customer || "").toLowerCase().includes(f.search));
+  }
+  return bovSortRows(rows, bovState.sort.monthEnd);
+}
+
+function meTotals(rows) {
+  const t = { orders: rows.length, total: 0, revenue: 0, product_profit: 0,
+              shipping_collected: 0, shipping_cost: 0, profit: 0, profit_known: 0, ship_missing: 0 };
+  rows.forEach((r) => {
+    t.total += bovNum(r.total);
+    t.revenue += bovNum(r.revenue);
+    t.product_profit += bovNum(r.product_profit);
+    t.shipping_collected += bovNum(r.shipping_collected);
+    t.shipping_cost += bovNum(r.shipping_cost);
+    if (r.profit != null) { t.profit += bovNum(r.profit); t.profit_known++; }
+    if (r.shipping_missing) t.ship_missing++;
+  });
+  return t;
+}
+
+function meStoreCell(r) {
+  const badge = r.source === "shopify"
+    ? `<span class="me-badge me-badge-shopify">Shopify</span>`
+    : `<span class="me-badge me-badge-bo">BO</span>`;
+  return `${badge}<span class="me-store-name">${escapeHtml(bovStoreShort(r.store_name))}</span>`;
+}
+
+function meShipCollectedCell(r) {
+  if (r.shipping_collected == null) {
+    return `<span class="bov-cell-muted" title="${r.source === "backoffice" ? "BackOffice invoices do not collect shipping separately" : ""}">—</span>`;
+  }
+  return bovMoney(r.shipping_collected);
+}
+
+function meShipCostCell(r) {
+  if (r.shipping_cost == null) {
+    const why = r.source === "shopify"
+      ? (r.shipping_missing ? "No parcel found in the shipper database for this order — profit computed with $0 shipping" : "Shipping cost unavailable")
+      : "";
+    return `<span class="bov-cell-muted${r.shipping_missing ? " me-ship-missing" : ""}" title="${escapeHtml(why)}">${r.shipping_missing ? "no parcel" : "—"}</span>`;
+  }
+  const boxes = r.parcels && r.parcels > 1 ? `<span class="bov-cell-sub">${bovInt(r.parcels)} boxes</span>` : "";
+  return `${bovMoney(r.shipping_cost)}${boxes}`;
+}
+
+function meProfitCell(r) {
+  if (r.profit == null) {
+    const why = r.revenue != null && r.cost == null
+      ? "Product cost unknown — the order's barcodes were not found in the S2S items table"
+      : "";
+    return `<span class="bov-cell-muted" title="${escapeHtml(why)}">—</span>`;
+  }
+  const n = bovNum(r.profit);
+  const breakdown = r.source === "shopify"
+    ? `Product profit ${bovMoney(r.product_profit)} + shipping collected ${bovMoney(r.shipping_collected || 0)} − shipping cost ${bovMoney(r.shipping_cost || 0)}`
+    : `Product profit ${bovMoney(r.product_profit)} − shipping cost ${bovMoney(r.shipping_cost || 0)}`;
+  const cov = r.cost_coverage != null && r.cost_coverage < 0.999
+    ? `<span class="bov-cell-sub">cost ${Math.round(r.cost_coverage * 100)}% known</span>` : "";
+  return `<span class="bov-profit${n < 0 ? " is-neg" : ""}" title="${escapeHtml(breakdown)}">${escapeHtml(bovMoney(n))}</span>${cov}`;
+}
+
+function meColumns() {
+  return [
+    { key: "date", label: "Date", width: "9%", render: (r) => escapeHtml(bovDateMdy(r.date)) },
+    { key: "number", label: "Number", width: "11%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.number || "—")}</span>` },
+    { key: "store_name", label: "Store", width: "13%", render: meStoreCell },
+    { key: "customer", label: "Customer", width: "21%", render: (r) => escapeHtml(r.customer || "—") },
+    { key: "total", label: "Total", num: true, width: "10%", render: (r) => bovMoney(r.total) },
+    { key: "shipping_collected", label: "Ship collected", num: true, width: "11%", render: meShipCollectedCell },
+    { key: "shipping_cost", label: "Ship cost", num: true, width: "11%", render: meShipCostCell },
+    { key: "profit", label: "Profit", num: true, width: "11%", render: meProfitCell },
+  ];
+}
+
+function meTfootHtml(t) {
+  return `<tfoot><tr>` +
+    `<td class="bov-num bov-line-no"></td>` +
+    `<td colspan="4">${bovInt(t.orders)} orders${t.profit_known < t.orders ? ` · profit known for ${bovInt(t.profit_known)}` : ""}</td>` +
+    `<td class="bov-num">${bovMoney(t.total)}</td>` +
+    `<td class="bov-num">${bovMoney(t.shipping_collected)}</td>` +
+    `<td class="bov-num">${bovMoney(t.shipping_cost)}</td>` +
+    `<td class="bov-num"><span class="bov-profit${t.profit < 0 ? " is-neg" : ""}">${escapeHtml(bovMoney(t.profit))}</span></td>` +
+    `</tr></tfoot>`;
+}
+
+function meSummaryHtml(t) {
+  const tile = (label, value, sub, cls) =>
+    `<div class="me-tile${cls ? ` ${cls}` : ""}"><div class="me-tile-label">${escapeHtml(label)}</div>` +
+    `<div class="me-tile-value">${value}</div>${sub ? `<div class="me-tile-sub">${escapeHtml(sub)}</div>` : ""}</div>`;
+  return [
+    tile("Orders", bovInt(t.orders)),
+    tile("Total", escapeHtml(bovMoney(t.total))),
+    tile("Shipping collected", escapeHtml(bovMoney(t.shipping_collected))),
+    tile("Shipping cost", escapeHtml(bovMoney(t.shipping_cost))),
+    tile("Profit", `<span class="bov-profit${t.profit < 0 ? " is-neg" : ""}">${escapeHtml(bovMoney(t.profit))}</span>`,
+      t.profit_known < t.orders ? `${bovInt(t.orders - t.profit_known)} orders without a known profit` : ""),
+  ].join("");
+}
+
+function meRenderStoreChips(d) {
+  const wrap = document.getElementById("me-store-chips");
+  if (!wrap) return;
+  const sel = monthEndState.filters.stores;
+  const known = new Set((d.stores || []).map((s) => s.store_id));
+  [...sel].forEach((id) => { if (!known.has(id)) sel.delete(id); });
+  wrap.innerHTML = (d.stores || []).map((s) => {
+    const active = sel.has(s.store_id);
+    const err = s.error ? ` title="${escapeHtml(s.error)}"` : ` title="${escapeHtml(`${s.store_name} · ${bovInt(s.count || 0)} orders`)}"`;
+    return `<button type="button" class="me-chip${active ? " is-active" : ""}${s.error ? " is-error" : ""}" data-me-store="${s.store_id}"${err}>` +
+      `${escapeHtml(bovStoreShort(s.store_name))}${s.error ? " ⚠" : ` · ${bovInt(s.count || 0)}`}</button>`;
+  }).join("");
+}
+
+function meRenderWarnings(d, visibleTotals) {
+  const el = document.getElementById("me-warnings");
+  if (!el) return;
+  const notes = [];
+  (d.warnings || []).forEach((w) => notes.push(w));
+  if (d.truncated) notes.push(`Some stores hit the ${bovInt(d.limit)}-row limit — totals cover the listed orders only`);
+  if (d.shipper && d.shipper.configured && d.shipper.unmatched > 0) {
+    notes.push(`No parcel found for ${bovInt(d.shipper.unmatched)} Shopify order${d.shipper.unmatched === 1 ? "" : "s"} — their profit assumes $0 shipping cost`);
+  }
+  if (!notes.length) { el.style.display = "none"; el.innerHTML = ""; return; }
+  el.style.display = "";
+  el.innerHTML = notes.map((n) => `<div class="me-warning">${escapeHtml(n)}</div>`).join("");
+}
+
+function renderMonthEnd() {
+  const d = monthEndState.data;
+  if (!d) return;
+  const configured = !!d.configured;
+  meShow("me-not-configured", !configured);
+  meShow("me-toolbar", true);
+  if (!configured) {
+    meShow("me-summary", false);
+    meShow("me-table-card", false);
+    meShow("me-empty", false);
+    meShow("me-warnings", false);
+    return;
+  }
+  meRenderStoreChips(d);
+  const rows = monthEndVisibleRows();
+  const t = meTotals(rows);
+  meRenderWarnings(d, t);
+
+  const summary = document.getElementById("me-summary");
+  if (summary) { summary.innerHTML = meSummaryHtml(t); summary.style.display = ""; }
+
+  const tableCard = document.getElementById("me-table-card");
+  const table = document.getElementById("me-table");
+  const foot = document.getElementById("me-foot");
+  if (!rows.length) {
+    meShow("me-table-card", false);
+    const filtered = (d.rows || []).length > 0;
+    meShow("me-empty", true);
+    const empty = document.querySelector("#me-empty p");
+    if (empty) empty.textContent = filtered ? "No orders match the filters." : "No orders in this period.";
+    return;
+  }
+  meShow("me-empty", false);
+  if (table) table.innerHTML = bovTableHtml("monthEnd", meColumns(), rows, { tfoot: meTfootHtml(t) });
+  if (foot) {
+    const p = d.period || {};
+    foot.innerHTML = `<span>${bovInt(rows.length)} of ${bovInt((d.rows || []).length)} orders · ${escapeHtml(p.start || "")} → ${escapeHtml(p.end || "")}</span>`;
+  }
+  if (tableCard) tableCard.style.display = "";
+}
+
+// ===== End Month End =====
