@@ -22329,7 +22329,7 @@ function bovProductCols() {
   return [
     { key: "description", label: "Product", width: "22%", render: (r) => bovCustomerCell(r.description, r.sku && r.sku !== r.upc ? `SKU ${r.sku}` : null) },
     { key: "upc", label: "UPC", width: "10%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.upc || "—")}</span>` },
-    { key: "store_name", label: "Store", width: "9%", cls: "bov-cell-store", render: (r) => escapeHtml(r.store_name || "—") },
+    { key: "store_name", label: "Store", width: "9%", render: (r) => `<span class="bov-cell-store">${escapeHtml(bovStoreShort(r.store_name))}</span>` },
     { key: "units", label: "Qty", num: true, width: "5%", render: (r) => bovInt(r.units) },
     { key: "avg_price", label: "Avg price", num: true, width: "7%", render: (r) => escapeHtml(r.avg_price != null ? bovMoney(r.avg_price) : "—") },
     { key: "revenue", label: "Revenue", num: true, width: "8%", render: (r) => escapeHtml(bovMoney(r.revenue)) },
