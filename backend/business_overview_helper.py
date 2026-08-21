@@ -1226,7 +1226,10 @@ SORTABLE_PO_COLUMNS = {
     "required_date": "h.RequiredDate",
 }
 
-_INCOMING_WHERE = "h.Status = 0 AND ISNULL(h.TotQtyRcv, 0) < ISNULL(h.TotQtyOrd, 0)"
+# Vendor-confirmed POs carry the text "confirmed" in the free-text PoHeader column
+# (case-insensitive under the default collation); unconfirmed POs are not "incoming".
+_PO_CONFIRMED = "h.PoHeader LIKE '%confirmed%'"
+_INCOMING_WHERE = f"h.Status = 0 AND ISNULL(h.TotQtyRcv, 0) < ISNULL(h.TotQtyOrd, 0) AND {_PO_CONFIRMED}"
 _OUTSTANDING_APPLY = """
     OUTER APPLY (
         SELECT SUM((ISNULL(d.QtyOrdered,0) - ISNULL(d.QtyReceived,0)) * ISNULL(d.UnitCost,0)) AS outstanding_value
@@ -1300,7 +1303,7 @@ def _incoming_purchases_sync(
     if excl_sql:
         # Line-derived: header TotQtyOrd/TotQtyRcv include excluded products.
         apply_sql = _po_lines_apply(excl_sql)
-        where = "h.Status = 0 AND ISNULL(ov.qty_outstanding, 0) > 0" + (" AND h.PoDate < ?" if placed_before else "")
+        where = f"h.Status = 0 AND ISNULL(ov.qty_outstanding, 0) > 0 AND {_PO_CONFIRMED}" + (" AND h.PoDate < ?" if placed_before else "")
         agg_qty_expr = "SUM(ov.qty_outstanding)"
         list_qty_cols = """h.Status, h.PoTotal, h.NoLines, ov.qty_ordered AS TotQtyOrd, ov.qty_received AS TotQtyRcv,
                         ISNULL(ov.qty_outstanding,0) AS qty_outstanding,"""
