@@ -11821,6 +11821,11 @@ def _month_end_totals(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
 # exact IN(...) fallback over just the unmatched order names.
 _MONTH_END_PARCEL_PAD_DAYS = 45
 
+# Month End is a month-close report: totals must cover every order, so its
+# per-store row ceiling sits far above monthly volume (~6k Shopify orders)
+# instead of the 5k MAX_LIST_LIMIT the interactive BOV lists use.
+_MONTH_END_MAX_ROWS = 20000
+
 
 async def _month_end_payload(db: Session, date_from: Optional[str], date_to: Optional[str],
                              limit: int, store_ids: Optional[str] = None, progress=None) -> Dict[str, Any]:
@@ -11833,7 +11838,7 @@ async def _month_end_payload(db: Session, date_from: Optional[str], date_to: Opt
     if not date_from and not date_to:
         date_from, date_to = _month_end_default_range(tz)
     period = _bov_period(cfg, None, date_from, date_to)
-    limit = max(1, min(int(limit or bov.MAX_LIST_LIMIT), bov.MAX_LIST_LIMIT))
+    limit = max(1, min(int(limit or _MONTH_END_MAX_ROWS), _MONTH_END_MAX_ROWS))
 
     only = _bov_parse_store_ids(store_ids)
     sales_stores = _bov_sales_stores(db, cfg, only)
@@ -11859,9 +11864,11 @@ async def _month_end_payload(db: Session, date_from: Optional[str], date_to: Opt
     excl_sales = _bov_excluded_names(db)[0]
 
     async def _bo(st: Store):
+        # The invoice helper clamps to its own MAX_LIST_LIMIT (5k) — far above
+        # monthly BackOffice volume; only the Shopify side needs the higher cap.
         return await bov.invoices_in_period_async(
             **_bov_conn_kwargs(st), date_from=period.start.isoformat(), date_to_excl=period.end_excl,
-            limit=limit, sort_by="invoice_date", sort_order="desc", include_list=True,
+            limit=min(limit, bov.MAX_LIST_LIMIT), sort_by="invoice_date", sort_order="desc", include_list=True,
             today=period.today, excluded_names=excl_sales, cost_mode="default")
 
     async def _sh(st: Dict[str, Any]):
@@ -12058,7 +12065,7 @@ async def _month_end_payload(db: Session, date_from: Optional[str], date_to: Opt
 
 @app.get("/api/business-overview/month-end", response_model=MonthEndResponse)
 async def get_month_end(date_from: Optional[str] = None, date_to: Optional[str] = None,
-                        limit: int = bov.MAX_LIST_LIMIT, store_ids: Optional[str] = None,
+                        limit: int = _MONTH_END_MAX_ROWS, store_ids: Optional[str] = None,
                         db: Session = Depends(get_db)):
     payload = await _month_end_payload(db, date_from, date_to, limit, store_ids)
     return MonthEndResponse(**payload)
@@ -12066,7 +12073,7 @@ async def get_month_end(date_from: Optional[str] = None, date_to: Optional[str] 
 
 @app.get("/api/business-overview/month-end/stream")
 async def stream_month_end(date_from: Optional[str] = None, date_to: Optional[str] = None,
-                           limit: int = bov.MAX_LIST_LIMIT, store_ids: Optional[str] = None,
+                           limit: int = _MONTH_END_MAX_ROWS, store_ids: Optional[str] = None,
                            db: Session = Depends(get_db)):
     """SSE twin of /month-end: progress events while the report is computed,
     then one `result` event carrying the full payload."""
