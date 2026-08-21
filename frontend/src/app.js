@@ -22092,7 +22092,7 @@ function bovToggleQuotationRep(value) {
   const f = bovState.cardFilters.quotations;
   const options = bovState.quotationRepOptions || [];
   if (value === "all") {
-    f.reps = null;
+    f.reps = f.reps == null ? [] : null;   // toggle: all checked <-> none checked
   } else {
     const cur = f.reps == null ? options.slice() : f.reps.slice();   // all-checked -> materialize, then toggle
     const i = cur.indexOf(value);
