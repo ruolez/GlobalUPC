@@ -2027,6 +2027,7 @@ class MonthEndShipperStatus(BaseModel):
 
 class MonthEndResponse(BaseModel):
     configured: bool = False
+    filtered_out: bool = False                   # topbar store filter excludes every configured store
     period: Optional[BOVPeriod] = None
     stores: List[MonthEndStoreStatus] = []
     rows: List[MonthEndRow] = []

@@ -23617,9 +23617,10 @@ function meSavePrefs() {
   } catch (e) { /* storage full/blocked — non-fatal */ }
 }
 
-// Month End follows the period selected in the Business Overview topbar.
+// Month End follows the period AND store filter selected in the Business
+// Overview topbar — unselected stores are not queried at all.
 function monthEndPeriodParams() {
-  return bovRangeParams();
+  return { ...bovRangeParams(), ...bovStoreParams() };
 }
 
 function loadMonthEndPage() {
@@ -23906,7 +23907,16 @@ function renderMonthEnd() {
     badge.textContent = n == null ? "" : bovInt(n);
   }
   meShow("me-not-configured", !configured);
-  meShow("me-toolbar", configured);
+  meShow("me-toolbar", configured && !d.filtered_out);
+  if (configured && d.filtered_out) {
+    meShow("me-summary", false);
+    meShow("me-table-card", false);
+    meShow("me-warnings", false);
+    meShow("me-empty", true);
+    const empty = document.querySelector("#me-empty p");
+    if (empty) empty.textContent = "The store filter in the topbar excludes every Month End source — pick at least one sales or Shopify store.";
+    return;
+  }
   const rangeEl = document.getElementById("me-range-label");
   if (rangeEl) {
     const p = d.period || {};

@@ -11823,7 +11823,7 @@ _MONTH_END_PARCEL_PAD_DAYS = 45
 
 
 async def _month_end_payload(db: Session, date_from: Optional[str], date_to: Optional[str],
-                             limit: int, progress=None) -> Dict[str, Any]:
+                             limit: int, store_ids: Optional[str] = None, progress=None) -> Dict[str, Any]:
     async def note(msg: str):
         if progress:
             await progress(msg)
@@ -11835,9 +11835,13 @@ async def _month_end_payload(db: Session, date_from: Optional[str], date_to: Opt
     period = _bov_period(cfg, None, date_from, date_to)
     limit = max(1, min(int(limit or bov.MAX_LIST_LIMIT), bov.MAX_LIST_LIMIT))
 
-    sales_stores = _bov_sales_stores(db, cfg)
-    shopify_stores = _bov_shopify_stores(db, cfg)
+    only = _bov_parse_store_ids(store_ids)
+    sales_stores = _bov_sales_stores(db, cfg, only)
+    shopify_stores = _bov_shopify_stores(db, cfg, only)
     if not sales_stores and not shopify_stores:
+        # Distinguish "nothing configured" from "the topbar store filter excludes everything".
+        if only is not None and (_bov_sales_stores(db, cfg) or _bov_shopify_stores(db, cfg)):
+            return {"configured": True, "filtered_out": True, "period": period.as_dict(), "limit": limit}
         return {"configured": False, "period": period.as_dict(), "limit": limit}
 
     warnings: List[str] = []
@@ -12054,14 +12058,16 @@ async def _month_end_payload(db: Session, date_from: Optional[str], date_to: Opt
 
 @app.get("/api/business-overview/month-end", response_model=MonthEndResponse)
 async def get_month_end(date_from: Optional[str] = None, date_to: Optional[str] = None,
-                        limit: int = bov.MAX_LIST_LIMIT, db: Session = Depends(get_db)):
-    payload = await _month_end_payload(db, date_from, date_to, limit)
+                        limit: int = bov.MAX_LIST_LIMIT, store_ids: Optional[str] = None,
+                        db: Session = Depends(get_db)):
+    payload = await _month_end_payload(db, date_from, date_to, limit, store_ids)
     return MonthEndResponse(**payload)
 
 
 @app.get("/api/business-overview/month-end/stream")
 async def stream_month_end(date_from: Optional[str] = None, date_to: Optional[str] = None,
-                           limit: int = bov.MAX_LIST_LIMIT, db: Session = Depends(get_db)):
+                           limit: int = bov.MAX_LIST_LIMIT, store_ids: Optional[str] = None,
+                           db: Session = Depends(get_db)):
     """SSE twin of /month-end: progress events while the report is computed,
     then one `result` event carrying the full payload."""
     queue: asyncio.Queue = asyncio.Queue()
@@ -12071,7 +12077,7 @@ async def stream_month_end(date_from: Optional[str] = None, date_to: Optional[st
 
     async def runner():
         try:
-            payload = await _month_end_payload(db, date_from, date_to, limit, progress=progress)
+            payload = await _month_end_payload(db, date_from, date_to, limit, store_ids, progress=progress)
             await queue.put(("result", payload))
         except HTTPException as e:
             await queue.put(("error", {"message": str(e.detail)}))
