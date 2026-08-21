@@ -19890,7 +19890,12 @@ const BOV_WIDGET_DEFS = {
     // Both cost bases (local + S2S) come back side by side — no cost_mode param.
     card: "bov-products-card",
     request: () => ["/products", { ...bovRangeParams(), ...bovStoreParams() }],
-    render: () => bovRenderProductsTable(),
+    render: () => {
+      bovRenderProductsTable();
+      // The margin-floor alert is evaluated per product from this data.
+      bovRenderAttention();
+      bovRenderNavBadges();
+    },
   },
   invoicesPeriod: {
     card: "bov-invoices-card",
@@ -20558,42 +20563,60 @@ function bovMoneyAlerts(summaryData, rules) {
   const prev = (sales.previous_totals && sales.previous_totals.total) || {};
   const mf = rules.margin_floor || {};
   if (mf.enabled !== false && mf.pct != null) {
+    // Per-PRODUCT evaluation: every product whose local margin sits below the
+    // floor (global, or the store's override) raises the alert. Clicking opens
+    // the Products tab sorted worst-first, filtered to the store for per-store
+    // alerts, with the offending rows highlighted and scrolled into view.
     const floor = bovNum(mf.pct);
-    // Low-margin alerts open the Products tab sorted by local margin (worst
-    // first), with the offending store's chip set for a per-store alert and
-    // the below-floor rows highlighted.
-    const productsAction = (pct, storeName, storeId) => ({
-      section: "products", target: "bov-products-card",
-      sort: { widget: "products", key: "local_margin_pct", dir: "asc" },
-      card_store: storeName || null,
-      match: { kind: "product_margin_below", pct, store_id: storeId != null ? storeId : null },
-    });
-    if ((tot.revenue || 0) > 0 && tot.margin_pct != null && bovNum(tot.margin_pct) < floor) {
-      out.push({
-        key: "margin_floor", severity: "warn", count: null, amount: null,
-        title: `Margin ${bovNum(tot.margin_pct).toFixed(1)}% is below the ${floor}% floor`,
-        detail: `${bovCompactMoney(tot.profit || 0)} profit on ${bovCompactMoney(tot.revenue || 0)}`,
-        stores: [], action: productsAction(floor, null, null),
+    const pw = bovState.widgets.products;
+    const prows = (pw && pw.data && pw.data.configured && !pw.data.error && !pw.data.filtered_out
+      && Array.isArray(pw.data.rows)) ? pw.data.rows : null;
+    if (prows) {
+      const overrides = (mf.per_store && mf.stores) || {};
+      const floorFor = (storeId) => {
+        const ov = overrides[String(storeId)] || {};
+        if (ov.enabled === false) return null;
+        return (mf.per_store && ov.pct != null) ? bovNum(ov.pct) : floor;
+      };
+      const productsAction = (pct, storeName, storeId) => ({
+        section: "products", target: "bov-products-card", scroll_match: true,
+        sort: { widget: "products", key: "local_margin_pct", dir: "asc" },
+        card_store: storeName || null,
+        match: { kind: "product_margin_below", pct, store_id: storeId != null ? storeId : null },
       });
-    }
-    if (mf.per_store) {
-      const overrides = mf.stores || {};
-      (sales.per_store || []).forEach((ps) => {
-        if (ps.error || !(ps.revenue > 0) || ps.margin_pct == null) return;
-        const ov = overrides[String(ps.store_id)] || {};
-        if (ov.enabled === false) return;
-        const storeFloor = ov.pct != null ? bovNum(ov.pct) : floor;
-        if (bovNum(ps.margin_pct) < storeFloor) {
-          out.push({
-            key: `margin_floor:${ps.store_id}`, severity: "warn", count: null, amount: null,
-            title: `${bovStoreShort(ps.store_name)} margin ${bovNum(ps.margin_pct).toFixed(1)}% below the ${storeFloor}% floor`,
-            detail: `${bovCompactMoney(ps.profit || 0)} profit on ${bovCompactMoney(ps.revenue || 0)}${ps.source === "shopify" ? " · Shopify" : ""}`,
-            stores: [ps.store_name],
-            // Products covers Shopify stores too, so every store lands there.
-            action: productsAction(storeFloor, ps.store_name, ps.store_id),
-          });
-        }
-      });
+      const alertFor = (offenders, pct, storeName, storeId) => {
+        const worst = offenders.reduce((a, r) => (a == null || bovNum(r.local_margin_pct) < bovNum(a.local_margin_pct) ? r : a), null);
+        const rev = offenders.reduce((a, r) => a + bovNum(r.revenue), 0);
+        const prefix = storeName ? `${bovStoreShort(storeName)}: ` : "";
+        const one = offenders.length === 1;
+        return {
+          key: storeId != null ? `margin_floor:${storeId}` : "margin_floor",
+          severity: "warn", count: one ? null : offenders.length, amount: null,
+          title: one
+            ? `${prefix}${worst.description || worst.upc || "Product"} margin ${bovNum(worst.local_margin_pct).toFixed(1)}% below the ${pct}% floor`
+            : `${offenders.length} ${prefix ? `${prefix.slice(0, -2)} ` : ""}products below the ${pct}% margin floor`,
+          detail: one
+            ? `${bovCompactMoney(rev)} revenue in the period`
+            : `worst: ${worst.description || worst.upc || "—"} ${bovNum(worst.local_margin_pct).toFixed(1)}% · ${bovCompactMoney(rev)} revenue`,
+          stores: storeName ? [storeName] : [],
+          action: productsAction(pct, storeName, storeId),
+        };
+      };
+      if (mf.per_store) {
+        const byStore = new Map();
+        prows.forEach((r) => {
+          if (r.local_margin_pct == null) return;
+          const f = floorFor(r.store_id);
+          if (f == null || bovNum(r.local_margin_pct) >= f) return;
+          const slot = byStore.get(r.store_id) || { name: r.store_name, floor: f, rows: [] };
+          slot.rows.push(r);
+          byStore.set(r.store_id, slot);
+        });
+        byStore.forEach((s, sid) => out.push(alertFor(s.rows, s.floor, s.name, sid)));
+      } else {
+        const offenders = prows.filter((r) => r.local_margin_pct != null && bovNum(r.local_margin_pct) < floor);
+        if (offenders.length) out.push(alertFor(offenders, floor, null, null));
+      }
     }
   }
   const rd = rules.revenue_drop || {};
@@ -20737,6 +20760,13 @@ function bovApplyAlertAction(alert) {
     void target.offsetWidth;
     target.classList.add("is-flash");
     setTimeout(() => target.classList.remove("is-flash"), 1400);
+  }
+  if (act.scroll_match && target) {
+    // Land on the first flagged row (after the card's own scroll settles).
+    setTimeout(() => {
+      const row = target.querySelector("tbody tr.bov-row-alert");
+      if (row) row.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 450);
   }
 }
 
