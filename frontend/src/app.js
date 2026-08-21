@@ -20559,20 +20559,21 @@ function bovMoneyAlerts(summaryData, rules) {
   const mf = rules.margin_floor || {};
   if (mf.enabled !== false && mf.pct != null) {
     const floor = bovNum(mf.pct);
-    // Low-margin alerts open the Invoices list sorted by margin with the offending
-    // invoices highlighted (and the card's store chip set for a per-store alert).
-    const invoicesAction = (pct, storeName, storeId) => ({
-      section: "invoices", tab: "invoices:all", target: "bov-invoices-card",
-      sort: { widget: "invoicesPeriod", key: "margin_pct", dir: "asc" },
+    // Low-margin alerts open the Products tab sorted by local margin (worst
+    // first), with the offending store's chip set for a per-store alert and
+    // the below-floor rows highlighted.
+    const productsAction = (pct, storeName, storeId) => ({
+      section: "products", target: "bov-products-card",
+      sort: { widget: "products", key: "local_margin_pct", dir: "asc" },
       card_store: storeName || null,
-      match: { kind: "invoice_margin_below", pct, store_id: storeId != null ? storeId : null },
+      match: { kind: "product_margin_below", pct, store_id: storeId != null ? storeId : null },
     });
     if ((tot.revenue || 0) > 0 && tot.margin_pct != null && bovNum(tot.margin_pct) < floor) {
       out.push({
         key: "margin_floor", severity: "warn", count: null, amount: null,
         title: `Margin ${bovNum(tot.margin_pct).toFixed(1)}% is below the ${floor}% floor`,
         detail: `${bovCompactMoney(tot.profit || 0)} profit on ${bovCompactMoney(tot.revenue || 0)}`,
-        stores: [], action: invoicesAction(floor, null, null),
+        stores: [], action: productsAction(floor, null, null),
       });
     }
     if (mf.per_store) {
@@ -20588,9 +20589,8 @@ function bovMoneyAlerts(summaryData, rules) {
             title: `${bovStoreShort(ps.store_name)} margin ${bovNum(ps.margin_pct).toFixed(1)}% below the ${storeFloor}% floor`,
             detail: `${bovCompactMoney(ps.profit || 0)} profit on ${bovCompactMoney(ps.revenue || 0)}${ps.source === "shopify" ? " · Shopify" : ""}`,
             stores: [ps.store_name],
-            action: ps.source === "shopify"
-              ? { section: "overview", target: "bov-trend-card" }
-              : invoicesAction(storeFloor, ps.store_name, ps.store_id),
+            // Products covers Shopify stores too, so every store lands there.
+            action: productsAction(storeFloor, ps.store_name, ps.store_id),
           });
         }
       });
@@ -20700,9 +20700,15 @@ function bovMarkKpiAlerts() {
 
 function bovApplyAlertAction(alert) {
   const act = (alert && alert.action) || {};
-  if (act.card_store !== undefined && act.section === "invoices") {
-    const f = bovState.cardFilters.invoices || (bovState.cardFilters.invoices = { store: null, status: null, search: "" });
+  if (act.card_store !== undefined && (act.section === "invoices" || act.section === "products")) {
+    const f = bovState.cardFilters[act.section] || (bovState.cardFilters[act.section] = { store: null, status: null, search: "" });
     f.store = act.card_store || null;
+    // An active search could hide the flagged rows — clear it so the alert lands on visible rows.
+    if (act.section === "products") {
+      f.search = "";
+      const inp = document.querySelector('.bov-list-search-input[data-bov-kind="products"]');
+      if (inp) inp.value = "";
+    }
   }
   if (act.target === "bov-quotations-card") {
     // Scan / rep filters could hide the flagged rows — reset them so the alert lands on visible rows.
@@ -20736,6 +20742,7 @@ function bovApplyAlertAction(alert) {
 
 function bovRerenderLists() {
   bovRenderQuotationsTable();
+  bovRenderProductsTable();
   bovRenderInvoices();
   bovRenderPurchases();
   bovRenderShopifyOrdersList();
@@ -20757,6 +20764,7 @@ function bovActiveMatches(widgetKey) {
 const BOV_HIGHLIGHT_WIDGETS = {
   invoice_open_before: ["invoicesOpen", "invoicesPeriod"],
   invoice_margin_below: ["invoicesOpen", "invoicesPeriod"],
+  product_margin_below: ["products"],
   quotation_started_before: ["quotations"],
   po_placed_before: ["purchasesIncoming"],
   shopify_on_hold: ["shopifyOrders_list"],
@@ -20786,6 +20794,9 @@ function bovRowMatches(m, r) {
     case "invoice_margin_below":
       if (m.store_id != null && String(r.store_id) !== String(m.store_id)) return false;
       return r.margin_pct != null && bovNum(r.margin_pct) < bovNum(m.pct);
+    case "product_margin_below":
+      if (m.store_id != null && String(r.store_id) !== String(m.store_id)) return false;
+      return r.local_margin_pct != null && bovNum(r.local_margin_pct) < bovNum(m.pct);
     case "quotation_started_before":
       return !!r.start_date && bovNormDt(r.start_date) < bovNormDt(m.before);
     case "po_placed_before":
