@@ -1782,10 +1782,19 @@ class BOVShopifyOrderLine(BaseModel):
     current_quantity: Optional[int] = None
     unit_price: Optional[float] = None
     discounted_total: Optional[float] = None
+    unit_cost: Optional[float] = None            # Item Tracker S2S Items_tbl.UnitPriceC by barcode
+    line_cost: Optional[float] = None
+    line_profit: Optional[float] = None
+    margin_pct: Optional[float] = None
 
 
 class BOVShopifyOrderHeader(BOVShopifyOrderRow):
     fulfillments: List[Dict[str, Any]] = []
+    revenue: Optional[float] = None              # Σ line discounted_total
+    cost: Optional[float] = None
+    product_profit: Optional[float] = None
+    margin_pct: Optional[float] = None
+    cost_coverage: Optional[float] = None
 
 
 class BOVShopifyOrderDetailResponse(BaseModel):

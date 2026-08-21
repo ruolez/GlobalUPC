@@ -7466,6 +7466,7 @@ tr.bov-line-void td { opacity: 0.55; text-decoration: line-through; }
 .bov-modal-note { font-size: 0.75rem; color: var(--text-tertiary); margin: 0.75rem 0 0; }
 .bov-modal-error { color: var(--danger); }
 .bov-modal .bov-modal-table { min-width: 40rem; }
+.bov-modal .bov-table-scroll table { min-width: 40rem; }
 .bov-modal .data-table thead th { position: sticky; top: 0; z-index: 1; }
 
 /* --- Responsive ----------------------------------------------------------- */

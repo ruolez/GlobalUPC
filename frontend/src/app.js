@@ -18559,6 +18559,8 @@ const bovState = {
     purchasesReceived: { key: "last_received", dir: "desc" },
     shopifyOrders_list: { key: "created_at", dir: "asc" },
     monthEnd: { key: "date", dir: "desc" },
+    invoiceLines: { key: null, dir: "desc" },        // null = original line order
+    shopifyOrderLines: { key: null, dir: "desc" },
   },
   widgets: {
     summary: bovEmptyWidget(),
@@ -21811,11 +21813,14 @@ function bovExportMissingCost() {
   setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
 }
 
-async function bovOpenShopifyOrderModal(storeId, shopifyId) {
+async function bovOpenShopifyOrderModal(storeId, shopifyId, meCtx) {
   const title = document.getElementById("bov-shopify-order-title");
   const metaEl = document.getElementById("bov-shopify-order-meta");
   const body = document.getElementById("bov-shopify-order-body");
   if (!body) return;
+  // Month End passes the row's real shipping cost (shipper parcels) so the
+  // modal can show real profit; other openers leave it unset.
+  bovState.shopifyOrderModalCtx = meCtx || null;
   if (title) title.textContent = "Shopify order";
   if (metaEl) metaEl.textContent = "";
   openModal("bov-shopify-order-modal");
@@ -21840,8 +21845,10 @@ function bovRenderShopifyOrderModal(data) {
   const metaEl = document.getElementById("bov-shopify-order-meta");
   const body = document.getElementById("bov-shopify-order-body");
   if (!body) return;
+  bovState.shopifyOrderModalData = data;
   const h = data.header || {};
   const lines = data.lines || [];
+  const ctx = bovState.shopifyOrderModalCtx;
   if (title) title.textContent = `Order ${h.name || h.shopify_id || ""}${data.store_name ? ` — ${data.store_name}` : ""}`;
   if (metaEl) metaEl.innerHTML = `${bovShopifyStatusChip(h.fulfillment_status)} ${h.financial_status ? `<span class="qip-status-chip ${String(h.financial_status).toUpperCase() === "PAID" ? "complete" : "pending"}">${escapeHtml(String(h.financial_status).toLowerCase())}</span>` : ""}`;
   const shipTo = [h.ship_city, h.ship_province_code, h.ship_zip, h.ship_country_code].filter(Boolean).join(", ");
@@ -21859,23 +21866,60 @@ function bovRenderShopifyOrderModal(data) {
     bovKv("Tags", (h.tags || []).length ? h.tags.map((t) => `<span class="bov-cell-store">${escapeHtml(t)}</span>`).join(" ") : "—"),
     bovKv("Note", h.note ? escapeHtml(h.note) : "—"),
     bovKv("Subtotal", escapeHtml(bovMoney(h.subtotal_price))),
-    bovKv("Shipping / refunded", `${escapeHtml(bovMoney(h.total_shipping))} / ${escapeHtml(bovMoney(h.total_refunded))}`),
+    bovKv("Shipping collected / refunded", `${escapeHtml(bovMoney(h.total_shipping))} / ${escapeHtml(bovMoney(h.total_refunded))}`),
     bovKv("Total", `<strong>${escapeHtml(bovMoney(h.total_price))}</strong>${h.currency ? ` <span class="bov-cell-sub">${escapeHtml(h.currency)}</span>` : ""}`),
+    bovKv("Product profit", (() => {
+      if (h.product_profit == null) {
+        return `<span class="bov-cell-muted" title="Product cost unknown — barcodes not found in the S2S items table">—</span>`;
+      }
+      const cov = h.cost_coverage != null && h.cost_coverage < 0.999 ? `<span class="bov-cell-sub">cost known for ${Math.round(h.cost_coverage * 100)}% of units</span>` : "";
+      return `<span class="bov-profit${bovNum(h.product_profit) < 0 ? " is-neg" : ""}">${escapeHtml(bovMoney(h.product_profit))}</span>${h.margin_pct != null ? ` <span class="sa-kpi-pct">${escapeHtml(bovPct(h.margin_pct))}</span>` : ""}${cov}`;
+    })()),
+    ...(ctx ? [
+      bovKv("Shipping cost", ctx.shipping_cost != null
+        ? `${escapeHtml(bovMoney(ctx.shipping_cost))}${ctx.parcels > 1 ? `<span class="bov-cell-sub">${bovInt(ctx.parcels)} boxes</span>` : ""}`
+        : `<span class="bov-cell-muted${ctx.shipping_missing ? " me-ship-missing" : ""}">${ctx.shipping_missing ? "no parcel found" : "—"}</span>`),
+      bovKv("Real profit", (() => {
+        if (h.product_profit == null) return `<span class="bov-cell-muted">—</span>`;
+        const real = bovNum(h.product_profit) + bovNum(h.total_shipping) - bovNum(ctx.shipping_cost);
+        return `<strong class="bov-profit${real < 0 ? " is-neg" : ""}">${escapeHtml(bovMoney(real))}</strong>` +
+          `<span class="bov-cell-sub">${escapeHtml(`product ${bovMoney(h.product_profit)} + shipping collected ${bovMoney(h.total_shipping || 0)} − shipping cost ${bovMoney(ctx.shipping_cost || 0)}`)}</span>`;
+      })()),
+    ] : []),
   ].join("");
-  const rowsHtml = lines.map((l) => {
-    const qty = l.current_quantity != null ? l.current_quantity : l.quantity;
-    const qtyHtml = l.current_quantity != null && l.quantity != null && l.current_quantity !== l.quantity ? `${bovInt(l.current_quantity)} <span class="bov-cell-sub">of ${bovInt(l.quantity)}</span>` : bovInt(qty || 0);
-    const subBits = [l.variant_title, l.sku ? `SKU ${l.sku}` : "", l.barcode ? `UPC ${l.barcode}` : ""].filter(Boolean).join(" · ");
-    return `<tr><td>${escapeHtml(l.title || l.product_title || "—")}${subBits ? `<span class="bov-cell-sub">${escapeHtml(subBits)}</span>` : ""}</td><td class="bov-num">${qtyHtml}</td><td class="bov-num">${bovMoney(l.unit_price)}</td><td class="bov-num">${bovMoney(l.discounted_total)}</td></tr>`;
-  }).join("");
   const totalQty = lines.reduce((a, l) => a + bovNum(l.current_quantity != null ? l.current_quantity : l.quantity), 0);
   const totalLines = lines.reduce((a, l) => a + bovNum(l.discounted_total), 0);
+  const tfoot = `<tfoot><tr><td class="bov-num bov-line-no"></td><td>${bovInt(lines.length)} line${lines.length === 1 ? "" : "s"}</td>` +
+    `<td class="bov-num">${bovInt(totalQty)}</td><td></td><td class="bov-num">${bovMoney(totalLines)}</td>` +
+    `<td class="bov-num">${h.cost != null ? bovMoney(h.cost) : "—"}</td>` +
+    `<td class="bov-num">${h.product_profit != null ? bovMoney(h.product_profit) : "—"}</td>` +
+    `<td class="bov-num">${h.margin_pct != null ? escapeHtml(bovPct(h.margin_pct)) : "—"}</td></tr></tfoot>`;
   body.innerHTML =
     `<div class="bov-kv-grid">${kv}</div>` +
     (lines.length
-      ? `<div class="bov-table-scroll"><table class="data-table bov-mini-table bov-modal-table"><thead><tr><th style="width:55%">Product</th><th class="bov-num" style="width:15%">Qty</th><th class="bov-num" style="width:15%">Unit price</th><th class="bov-num" style="width:15%">Line total</th></tr></thead><tbody>${rowsHtml}</tbody><tfoot><tr><td>${bovInt(lines.length)} line${lines.length === 1 ? "" : "s"}</td><td class="bov-num">${bovInt(totalQty)}</td><td></td><td class="bov-num">${bovMoney(totalLines)}</td></tr></tfoot></table></div>`
+      ? bovTableHtml("shopifyOrderLines", bovShopifyOrderLineCols(), bovSortRows(lines, bovState.sort.shopifyOrderLines),
+                     { tfoot, plainRows: true })
       : bovEmptyHtml("No line items in the local mirror for this order.")) +
     (data.admin_url ? `<div class="bov-modal-totals"><a class="bov-modal-link" href="${escapeHtml(data.admin_url)}" target="_blank" rel="noopener">Open in Shopify admin ↗</a></div>` : "");
+}
+
+function bovShopifyOrderLineCols() {
+  return [
+    { key: "title", label: "Product", width: "34%", render: (l) => {
+      const subBits = [l.variant_title, l.sku ? `SKU ${l.sku}` : "", l.barcode ? `UPC ${l.barcode}` : ""].filter(Boolean).join(" · ");
+      return `<span class="bov-cell-main">${escapeHtml(l.title || l.product_title || "—")}</span>${subBits ? `<span class="bov-cell-sub">${escapeHtml(subBits)}</span>` : ""}`;
+    } },
+    { key: "current_quantity", label: "Qty", num: true, width: "8%", render: (l) => {
+      const qty = l.current_quantity != null ? l.current_quantity : l.quantity;
+      return l.current_quantity != null && l.quantity != null && l.current_quantity !== l.quantity
+        ? `${bovInt(l.current_quantity)} <span class="bov-cell-sub">of ${bovInt(l.quantity)}</span>` : bovInt(qty || 0);
+    } },
+    { key: "unit_price", label: "Price", num: true, width: "10%", render: (l) => bovMoney(l.unit_price) },
+    { key: "discounted_total", label: "Line total", num: true, width: "12%", render: (l) => bovMoney(l.discounted_total) },
+    { key: "unit_cost", label: "Cost", num: true, width: "11%", render: (l) => l.unit_cost != null ? bovMoney(l.unit_cost) : `<span class="bov-cell-muted" title="Barcode not found in the S2S items table">—</span>` },
+    { key: "line_profit", label: "Profit", num: true, width: "12%", render: (l) => bovLineProfitCell(l.line_profit) },
+    { key: "margin_pct", label: "Margin", num: true, width: "9%", render: (l) => bovLineMarginCell(l.margin_pct) },
+  ];
 }
 
 // ---------------------------------------------------------------------------
@@ -21926,13 +21970,15 @@ function bovToggleSort(widgetKey, colKey) {
     s.dir = s.dir === "asc" ? "desc" : "asc";
   } else {
     s.key = colKey;
-    s.dir = ["business_name", "quotation_number", "invoice_number", "po_number", "sales_rep", "status", "packer", "store_name", "description", "upc", "sku", "number", "customer"].includes(colKey) ? "asc" : "desc";
+    s.dir = ["business_name", "quotation_number", "invoice_number", "po_number", "sales_rep", "status", "packer", "store_name", "description", "upc", "sku", "number", "customer", "title", "product_description"].includes(colKey) ? "asc" : "desc";
   }
   bovRenderCard(widgetKey);
 }
 
 function bovRenderCard(key) {
   if (key === "monthEnd") { meSavePrefs(); renderMonthEnd(); return; }
+  if (key === "invoiceLines") { if (bovState.invoiceModalData) bovRenderInvoiceModal(bovState.invoiceModalData); return; }
+  if (key === "shopifyOrderLines") { if (bovState.shopifyOrderModalData) bovRenderShopifyOrderModal(bovState.shopifyOrderModalData); return; }
   if (key === "missingCost") { if (bovState.missingCost) bovRenderMissingCostModal(bovState.missingCost); return; }
   if (key === "quotations") bovRenderQuotationsTable();
   else if (key === "products") bovRenderProductsTable();
@@ -21982,7 +22028,8 @@ function bovTableHtml(widgetKey, columns, rows, opts = {}) {
     .map((r, i) => {
       const attrs = opts.rowAttrs ? opts.rowAttrs(r) : "";
       const alerted = bovRowAlerted(widgetKey, r, alertMatches);
-      return `<tr class="bov-row-click${alerted ? " bov-row-alert" : ""}" tabindex="0"${alerted ? ' title="Flagged by the alert you opened"' : ""} ${attrs}>${numbered ? `<td class="bov-num bov-line-no">${i + 1}</td>` : ""}${columns.map((c) => `<td class="${c.num ? "bov-num" : ""}${c.cls ? ` ${c.cls}` : ""}">${c.render ? c.render(r) : escapeHtml(r[c.key] == null ? "—" : String(r[c.key]))}</td>`).join("")}</tr>`;
+      const rowCls = `${opts.plainRows ? "" : "bov-row-click"}${alerted ? " bov-row-alert" : ""}`;
+      return `<tr class="${rowCls}"${opts.plainRows ? "" : ' tabindex="0"'}${alerted ? ' title="Flagged by the alert you opened"' : ""} ${attrs}>${numbered ? `<td class="bov-num bov-line-no">${i + 1}</td>` : ""}${columns.map((c) => `<td class="${c.num ? "bov-num" : ""}${c.cls ? ` ${c.cls}` : ""}">${c.render ? c.render(r) : escapeHtml(r[c.key] == null ? "—" : String(r[c.key]))}</td>`).join("")}</tr>`;
     })
     .join("");
   return `${bovFlagBarHtml(widgetKey, rows, alertMatches)}<div class="bov-table-scroll"><table class="data-table bov-mini-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody>${opts.tfoot || ""}</table></div>`;
@@ -22782,7 +22829,15 @@ function bovOpenRow(rowEl) {
   if (kind === "quotation") bovOpenQuotationModal(id);
   else if (kind === "invoice") bovOpenInvoiceModal(parseInt(id, 10), rowEl.dataset.bovStore ? parseInt(rowEl.dataset.bovStore, 10) : null);
   else if (kind === "po") bovOpenPoModal(parseInt(id, 10));
-  else if (kind === "shopify-order") bovOpenShopifyOrderModal(parseInt(rowEl.dataset.bovStore, 10), id);
+  else if (kind === "shopify-order") {
+    // Month End rows carry the order's real shipping cost from shipper parcels.
+    const ctx = rowEl.dataset.meShipCost != null || rowEl.dataset.meShipMissing != null
+      ? { shipping_cost: rowEl.dataset.meShipCost != null ? parseFloat(rowEl.dataset.meShipCost) : null,
+          parcels: rowEl.dataset.meParcels != null ? parseInt(rowEl.dataset.meParcels, 10) : null,
+          shipping_missing: rowEl.dataset.meShipMissing === "1" }
+      : null;
+    bovOpenShopifyOrderModal(parseInt(rowEl.dataset.bovStore, 10), id, ctx);
+  }
 }
 
 function bovKv(label, valueHtml) {
@@ -22901,6 +22956,7 @@ function bovRenderInvoiceModal(data) {
   const title = document.getElementById("bov-invoice-title");
   const body = document.getElementById("bov-invoice-body");
   if (!body) return;
+  bovState.invoiceModalData = data;
   const h = data.header || {};
   const lines = data.lines || [];
   if (title) title.textContent = `Invoice ${h.invoice_number || h.invoice_id || ""}${h.business_name ? ` — ${h.business_name}` : ""}${data.store_name && bovSalesStoreIds().length > 1 ? ` · ${data.store_name}` : ""}`;
@@ -22936,16 +22992,42 @@ function bovRenderInvoiceModal(data) {
       ? `<span class="bov-cost-basis is-s2s" title="S2S Cost is on — every line costed from the Item Tracker S2S Items_tbl.UnitCost by UPC">S2S UnitCost</span>`
       : `<span class="bov-cost-basis" title="Each line costed from this store's Items_tbl.UnitCost by UPC (invoice line cost when the item is missing)">Store UnitCost</span>`),
   ].join("");
-  const rowsHtml = lines.map((l) => {
-    const qty = bovNum(l.qty_shipped);
-    return `<tr${l.void ? ' class="bov-line-void"' : ""}><td><span class="bov-cell-main">${escapeHtml(l.product_description || "—")}</span><span class="bov-cell-sub bov-cell-mono">${escapeHtml([l.product_sku, l.product_upc].filter(Boolean).join(" · "))}${l.unit_desc ? ` · ${escapeHtml(l.unit_desc)}` : ""}</span></td><td class="bov-num">${bovInt(qty)}${l.qty_ordered != null && bovNum(l.qty_ordered) !== qty ? `<span class="bov-cell-sub">of ${bovInt(l.qty_ordered)}</span>` : ""}</td><td class="bov-num">${bovMoney(l.unit_price)}</td><td class="bov-num">${l.unit_cost != null ? bovMoney(l.unit_cost) : "—"}${l.line_unit_cost != null && l.unit_cost != null && Math.abs(bovNum(l.line_unit_cost) - bovNum(l.unit_cost)) > 0.004 ? `<span class="bov-cell-sub" title="Cost stamped on the invoice line">line ${escapeHtml(bovMoney(l.line_unit_cost))}</span>` : ""}</td><td class="bov-num">${bovMoney(l.extended_price)}</td><td class="bov-num">${l.line_profit != null ? bovMoney(l.line_profit) : "—"}${l.margin_pct != null ? `<span class="bov-cell-sub">${escapeHtml(bovPct(l.margin_pct))}</span>` : ""}</td></tr>`;
-  }).join("");
+  const tfoot = `<tfoot><tr><td class="bov-num bov-line-no"></td><td>${bovInt(lines.length)} lines</td>` +
+    `<td class="bov-num">${bovInt(lines.reduce((a, l) => a + bovNum(l.qty_shipped), 0))}</td><td></td>` +
+    `<td class="bov-num">${bovMoney(h.cost)}</td><td class="bov-num">${bovMoney(h.revenue)}</td>` +
+    `<td class="bov-num" title="Product profit before shipping — real profit after shipping is shown above">${bovMoney(h.profit)}</td>` +
+    `<td class="bov-num">${h.margin_pct != null ? escapeHtml(bovPct(h.margin_pct)) : "—"}</td></tr></tfoot>`;
   body.innerHTML =
     `<div class="bov-kv-grid">${kv}</div>` +
     (lines.length
-      ? `<div class="bov-table-scroll"><table class="data-table bov-mini-table bov-modal-table"><thead><tr><th style="width:40%">Product</th><th class="bov-num" style="width:10%">Qty</th><th class="bov-num" style="width:12%">Price</th><th class="bov-num" style="width:12%">Cost</th><th class="bov-num" style="width:13%">Line total</th><th class="bov-num" style="width:13%">Profit</th></tr></thead><tbody>${rowsHtml}</tbody><tfoot><tr><td>${bovInt(lines.length)} lines</td><td class="bov-num">${bovInt(lines.reduce((a, l) => a + bovNum(l.qty_shipped), 0))}</td><td></td><td class="bov-num">${bovMoney(h.cost)}</td><td class="bov-num">${bovMoney(h.revenue)}</td><td class="bov-num" title="Product profit before shipping — real profit after shipping is shown above">${bovMoney(h.profit)}${h.margin_pct != null ? `<span class="bov-cell-sub">${escapeHtml(bovPct(h.margin_pct))}</span>` : ""}</td></tr></tfoot></table></div>`
+      ? bovTableHtml("invoiceLines", bovInvoiceLineCols(), bovSortRows(lines, bovState.sort.invoiceLines),
+                     { tfoot, plainRows: true, rowAttrs: (l) => (l.void ? 'style="opacity:.55" title="Voided line"' : "") })
       : `<p class="bov-modal-note">No line items on this invoice.</p>`) +
     (h.notes ? `<p class="bov-modal-note">Notes: ${escapeHtml(h.notes)}</p>` : "");
+}
+
+function bovLineProfitCell(profit) {
+  if (profit == null) return `<span class="bov-cell-muted">—</span>`;
+  return `<span class="bov-profit${bovNum(profit) < 0 ? " is-neg" : ""}">${escapeHtml(bovMoney(profit))}</span>`;
+}
+
+function bovLineMarginCell(pct) {
+  if (pct == null) return `<span class="bov-cell-muted">—</span>`;
+  const m = bovNum(pct);
+  const tone = m < 0 ? " is-neg" : (m < 15 ? " is-low" : "");
+  return `<span class="bov-margin${tone}">${escapeHtml(bovPct(m))}</span>`;
+}
+
+function bovInvoiceLineCols() {
+  return [
+    { key: "product_description", label: "Product", width: "36%", render: (l) => `<span class="bov-cell-main">${escapeHtml(l.product_description || "—")}</span><span class="bov-cell-sub bov-cell-mono">${escapeHtml([l.product_sku, l.product_upc].filter(Boolean).join(" · "))}${l.unit_desc ? ` · ${escapeHtml(l.unit_desc)}` : ""}</span>` },
+    { key: "qty_shipped", label: "Qty", num: true, width: "8%", render: (l) => { const qty = bovNum(l.qty_shipped); return `${bovInt(qty)}${l.qty_ordered != null && bovNum(l.qty_ordered) !== qty ? `<span class="bov-cell-sub">of ${bovInt(l.qty_ordered)}</span>` : ""}`; } },
+    { key: "unit_price", label: "Price", num: true, width: "10%", render: (l) => bovMoney(l.unit_price) },
+    { key: "unit_cost", label: "Cost", num: true, width: "11%", render: (l) => `${l.unit_cost != null ? bovMoney(l.unit_cost) : "—"}${l.line_unit_cost != null && l.unit_cost != null && Math.abs(bovNum(l.line_unit_cost) - bovNum(l.unit_cost)) > 0.004 ? `<span class="bov-cell-sub" title="Cost stamped on the invoice line">line ${escapeHtml(bovMoney(l.line_unit_cost))}</span>` : ""}` },
+    { key: "extended_price", label: "Line total", num: true, width: "12%", render: (l) => bovMoney(l.extended_price) },
+    { key: "line_profit", label: "Profit", num: true, width: "12%", render: (l) => bovLineProfitCell(l.line_profit) },
+    { key: "margin_pct", label: "Margin", num: true, width: "9%", render: (l) => bovLineMarginCell(l.margin_pct) },
+  ];
 }
 
 async function bovOpenPoModal(poId) {
@@ -23843,6 +23925,17 @@ function meColumns() {
   ];
 }
 
+function meRowAttrs(r) {
+  const id = String(r.row_key || "").split(":")[2] || "";
+  if (r.source === "backoffice") {
+    return `data-bov-open="invoice" data-bov-id="${escapeHtml(id)}" data-bov-store="${r.store_id}"`;
+  }
+  return `data-bov-open="shopify-order" data-bov-id="${escapeHtml(id)}" data-bov-store="${r.store_id}"` +
+    (r.shipping_cost != null ? ` data-me-ship-cost="${r.shipping_cost}"` : "") +
+    (r.parcels != null ? ` data-me-parcels="${r.parcels}"` : "") +
+    ` data-me-ship-missing="${r.shipping_missing ? "1" : "0"}"`;
+}
+
 function meTfootHtml(t) {
   return `<tfoot><tr>` +
     `<td class="bov-num bov-line-no"></td>` +
@@ -23949,7 +24042,7 @@ function renderMonthEnd() {
     return;
   }
   meShow("me-empty", false);
-  if (table) table.innerHTML = bovTableHtml("monthEnd", meColumns(), rows, { tfoot: meTfootHtml(t) });
+  if (table) table.innerHTML = bovTableHtml("monthEnd", meColumns(), rows, { tfoot: meTfootHtml(t), rowAttrs: meRowAttrs });
   if (foot) {
     const p = d.period || {};
     foot.innerHTML = `<span>${bovInt(rows.length)} of ${bovInt((d.rows || []).length)} orders · ${escapeHtml(p.start || "")} → ${escapeHtml(p.end || "")}</span>`;

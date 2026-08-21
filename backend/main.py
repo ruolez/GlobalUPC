@@ -11285,6 +11285,35 @@ async def get_business_overview_shopify_order_detail(store_id: int, shopify_id: 
         raise HTTPException(status_code=404, detail="Order not found in the local mirror")
     header = payload["header"]
     header["store_name"] = store["name"]
+    # Per-line product cost/profit from the S2S items table (UnitPriceC by barcode);
+    # soft — unresolved lookups leave the cost fields null.
+    lines = payload.get("lines") or []
+    lookup = _bov_make_cost_lookup(db, cfg, "unit_delivery_b")
+    barcodes = sorted({(l.get("barcode") or "").strip() for l in lines if (l.get("barcode") or "").strip()})
+    unit_costs = await lookup(barcodes) if (barcodes and getattr(lookup, "configured", False)) else {}
+    cost_known = bool(getattr(lookup, "configured", False)) and not getattr(lookup, "failed", None)
+    revenue = cost = units = known = 0.0
+    for l in lines:
+        qty = float(l["current_quantity"] if l.get("current_quantity") is not None else (l.get("quantity") or 0))
+        rev = float(l.get("discounted_total") or 0)
+        uc = unit_costs.get((l.get("barcode") or "").strip()) if cost_known else None
+        l["unit_cost"] = (float(uc) if uc is not None else None)
+        l["line_cost"] = (round(qty * float(uc), 4) if uc is not None else None)
+        l["line_profit"] = (round(rev - qty * float(uc), 4) if uc is not None else None)
+        l["margin_pct"] = (bov.margin_pct(rev, qty * float(uc)) if (uc is not None and rev) else None)
+        revenue += rev
+        units += qty
+        if uc is not None:
+            cost += qty * float(uc)
+            known += qty
+    header["revenue"] = round(revenue, 2)
+    header["cost_coverage"] = (round(known / units, 4) if units else None)
+    if units and not known:
+        header["cost"] = header["product_profit"] = header["margin_pct"] = None
+    else:
+        header["cost"] = round(cost, 2)
+        header["product_profit"] = round(revenue - cost, 2)
+        header["margin_pct"] = bov.margin_pct(revenue, cost)
     domain = (store.get("shop_domain") or "").replace("https://", "").replace("http://", "").strip("/")
     admin_url = f"https://{domain}/admin/orders/{shopify_id}" if domain else None
     return BOVShopifyOrderDetailResponse(header=BOVShopifyOrderHeader(**header),
