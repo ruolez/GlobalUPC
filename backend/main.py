@@ -10627,6 +10627,7 @@ async def get_business_overview_invoice_detail(invoice_id: int, store_id: Option
         cost = sum(float(l.get("line_cost") or 0) for l in lines)
         payload["header"].update({"revenue": round(revenue, 2), "cost": round(cost, 2),
                                   "profit": round(revenue - cost, 2), "margin_pct": bov.margin_pct(revenue, cost)})
+        payload["header"]["net_profit"] = bov.invoice_net_profit(payload["header"])
     return BOVInvoiceDetailResponse(header=BOVInvoiceHeader(**payload["header"]),
                                     lines=[BOVInvoiceLine(**l) for l in lines],
                                     store_name=store.name, cost_basis=cost_basis)

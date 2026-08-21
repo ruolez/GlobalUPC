@@ -1361,6 +1361,7 @@ class BOVInvoiceRow(BaseModel):
     revenue: Optional[float] = None
     cost: Optional[float] = None
     profit: Optional[float] = None
+    net_profit: Optional[float] = None  # profit minus shipping_cost — the "real" profit
     margin_pct: Optional[float] = None
     cost_coverage: Optional[float] = None
 

@@ -756,7 +756,7 @@ def _invoice_row(d: Dict[str, Any], today: Optional[date] = None) -> Dict[str, A
         idate = inv_date.date() if isinstance(inv_date, datetime) else inv_date
         age_days = max(0, (today - idate).days)
     rep_id = _io(d.get("SalesRepID"))
-    return {
+    row = {
         "invoice_id": int(d.get("InvoiceID")),
         "invoice_number": _s(d.get("InvoiceNumber")),
         "invoice_date": _iso(inv_date),
@@ -785,6 +785,15 @@ def _invoice_row(d: Dict[str, Any], today: Optional[date] = None) -> Dict[str, A
         "age_days": age_days,
         **_margin_fields(_fo(d.get("line_revenue")), _fo(d.get("line_cost"))),
     }
+    row["net_profit"] = invoice_net_profit(row)
+    return row
+
+
+def invoice_net_profit(row: Dict[str, Any]) -> Optional[float]:
+    """Real profit for an invoice: product profit minus the invoice's shipping cost."""
+    if row.get("profit") is None:
+        return None
+    return round(row["profit"] - (row.get("shipping_cost") or 0.0), 2)
 
 
 def _margin_fields(revenue: Optional[float], cost: Optional[float],
@@ -822,21 +831,23 @@ def recost_rows_s2s(rows: List[Dict[str, Any]], units_by_key: Dict[Any, List[Tup
         rev = r.get("revenue")
         if lines is None or rev is None:
             r.update(_margin_fields(rev, None))
-            continue
-        cost = 0.0
-        units = 0.0
-        known = 0.0
-        for upc, n in lines:
-            units += n
-            c = unit_costs.get(upc) if upc else None
-            if c is not None:
-                cost += n * float(c)
-                known += n
-        cov = (round(known / units, 4) if units else None)
-        if units and not known:
-            r.update(_margin_fields(rev, None, cov))
         else:
-            r.update(_margin_fields(rev, cost, cov))
+            cost = 0.0
+            units = 0.0
+            known = 0.0
+            for upc, n in lines:
+                units += n
+                c = unit_costs.get(upc) if upc else None
+                if c is not None:
+                    cost += n * float(c)
+                    known += n
+            cov = (round(known / units, 4) if units else None)
+            if units and not known:
+                r.update(_margin_fields(rev, None, cov))
+            else:
+                r.update(_margin_fields(rev, cost, cov))
+        if "shipping_cost" in r:  # invoice rows only — quotations have no shipping
+            r["net_profit"] = invoice_net_profit(r)
 
 
 def _open_invoices_sync(
@@ -1208,6 +1219,7 @@ def _invoice_detail_sync(host, port, database, username, password, invoice_id: i
                 "profit": round(revenue - cost, 2),
                 "margin_pct": margin_pct(revenue, cost),
             })
+            header["net_profit"] = invoice_net_profit(header)
         return True, None, {"header": header, "lines": lines}
     except Exception as e:
         return False, str(e), {}

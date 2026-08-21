@@ -22215,6 +22215,19 @@ function bovMarginCell(r) {
   return `<span class="bov-margin${tone}" title="${escapeHtml(`Profit ${bovMoney(r.profit)} on ${bovMoney(r.revenue)}${cov}`)}">${escapeHtml(bovPct(m))}</span><span class="bov-cell-sub">${escapeHtml(bovMoney(r.profit))}</span>`;
 }
 
+// Real profit for an invoice row: product profit minus the invoice's shipping cost
+// (backend `net_profit`). Sub-line shows the shipping deducted when there is any.
+function bovInvoiceProfitCell(r) {
+  if (r == null || r.net_profit == null) {
+    const why = r && r.revenue != null && r.cost == null ? "Cost unknown for this row (items not found in the cost source)" : "";
+    return `<span class="bov-cell-muted" title="${escapeHtml(why)}">—</span>`;
+  }
+  const net = bovNum(r.net_profit);
+  const ship = bovNum(r.shipping_cost);
+  const title = `Product profit ${bovMoney(r.profit)} − shipping ${bovMoney(ship)}`;
+  return `<span class="bov-profit${net < 0 ? " is-neg" : ""}" title="${escapeHtml(title)}">${escapeHtml(bovMoney(net))}</span>${ship ? `<span class="bov-cell-sub">ship ${escapeHtml(bovMoney(ship))}</span>` : ""}`;
+}
+
 function bovQuotationRowAttrs(r) {
   return `data-bov-open="quotation" data-bov-id="${escapeHtml(r.quotation_number)}"`;
 }
@@ -22509,12 +22522,13 @@ function bovPeriodInvoiceCols(multi) {
   ];
   if (multi) cols.push({ key: "store_name", label: "Store", width: "11%", render: (r) => `<span class="bov-cell-store">${escapeHtml(bovStoreShort(r.store_name))}</span>` });
   cols.push(
-    { key: "business_name", label: "Customer", width: multi ? "19%" : "23%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
-    { key: "sales_rep", label: "Rep", width: "9%", render: (r) => escapeHtml(r.sales_rep || "—") },
-    { key: "is_shipped", label: "Status", width: "15%", render: status },
-    { key: "shipper", label: "Shipper", width: "10%", render: (r) => escapeHtml(r.shipper || "—") },
-    { key: "no_lines", label: "Lines", num: true, width: "6%", render: (r) => r.no_lines == null ? "—" : bovInt(r.no_lines) },
-    { key: "invoice_total", label: "Total", num: true, width: "10%", render: (r) => bovMoney(r.invoice_total) },
+    { key: "business_name", label: "Customer", width: multi ? "16%" : "20%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
+    { key: "sales_rep", label: "Rep", width: "8%", render: (r) => escapeHtml(r.sales_rep || "—") },
+    { key: "is_shipped", label: "Status", width: "13%", render: status },
+    { key: "shipper", label: "Shipper", width: "9%", render: (r) => escapeHtml(r.shipper || "—") },
+    { key: "no_lines", label: "Lines", num: true, width: "5%", render: (r) => r.no_lines == null ? "—" : bovInt(r.no_lines) },
+    { key: "invoice_total", label: "Total", num: true, width: "9%", render: (r) => bovMoney(r.invoice_total) },
+    { key: "net_profit", label: "Profit", num: true, width: "9%", render: bovInvoiceProfitCell },
     { key: "margin_pct", label: "Margin", num: true, width: "8%", render: bovMarginCell },
   );
   return cols;
@@ -22527,20 +22541,22 @@ function bovInvoiceRowAttrs(r) {
 function bovOpenInvoiceCols(multi) {
   return multi ? [
     { key: "invoice_number", label: "Invoice #", width: "15%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.invoice_number || String(r.invoice_id))}</span><span class="bov-cell-sub">${escapeHtml(bovDateMdy(r.invoice_date))}</span>` },
-    { key: "store_name", label: "Store", width: "13%", render: (r) => `<span class="bov-cell-store">${escapeHtml(bovStoreShort(r.store_name))}</span>` },
-    { key: "business_name", label: "Customer", width: "22%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
-    { key: "sales_rep", label: "Rep", width: "11%", render: (r) => escapeHtml(r.sales_rep || "—") },
-    { key: "age_days", label: "Age", width: "10%", render: (r) => bovAgeChip(r.age_days) },
-    { key: "no_lines", label: "Lines", num: true, width: "7%", render: (r) => r.no_lines == null ? "—" : bovInt(r.no_lines) },
-    { key: "invoice_total", label: "Total", num: true, width: "12%", render: (r) => bovMoney(r.invoice_total) },
+    { key: "store_name", label: "Store", width: "12%", render: (r) => `<span class="bov-cell-store">${escapeHtml(bovStoreShort(r.store_name))}</span>` },
+    { key: "business_name", label: "Customer", width: "18%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
+    { key: "sales_rep", label: "Rep", width: "10%", render: (r) => escapeHtml(r.sales_rep || "—") },
+    { key: "age_days", label: "Age", width: "8%", render: (r) => bovAgeChip(r.age_days) },
+    { key: "no_lines", label: "Lines", num: true, width: "6%", render: (r) => r.no_lines == null ? "—" : bovInt(r.no_lines) },
+    { key: "invoice_total", label: "Total", num: true, width: "11%", render: (r) => bovMoney(r.invoice_total) },
+    { key: "net_profit", label: "Profit", num: true, width: "10%", render: bovInvoiceProfitCell },
     { key: "margin_pct", label: "Margin", num: true, width: "10%", render: bovMarginCell },
   ] : [
-    { key: "invoice_number", label: "Invoice #", width: "16%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.invoice_number || String(r.invoice_id))}</span><span class="bov-cell-sub">${escapeHtml(bovDateMdy(r.invoice_date))}</span>` },
-    { key: "business_name", label: "Customer", width: "26%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
-    { key: "sales_rep", label: "Rep", width: "12%", render: (r) => escapeHtml(r.sales_rep || "—") },
-    { key: "age_days", label: "Age", width: "11%", render: (r) => bovAgeChip(r.age_days) },
-    { key: "no_lines", label: "Lines", num: true, width: "8%", render: (r) => r.no_lines == null ? "—" : bovInt(r.no_lines) },
-    { key: "invoice_total", label: "Total", num: true, width: "13%", render: (r) => bovMoney(r.invoice_total) },
+    { key: "invoice_number", label: "Invoice #", width: "15%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.invoice_number || String(r.invoice_id))}</span><span class="bov-cell-sub">${escapeHtml(bovDateMdy(r.invoice_date))}</span>` },
+    { key: "business_name", label: "Customer", width: "22%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
+    { key: "sales_rep", label: "Rep", width: "10%", render: (r) => escapeHtml(r.sales_rep || "—") },
+    { key: "age_days", label: "Age", width: "9%", render: (r) => bovAgeChip(r.age_days) },
+    { key: "no_lines", label: "Lines", num: true, width: "7%", render: (r) => r.no_lines == null ? "—" : bovInt(r.no_lines) },
+    { key: "invoice_total", label: "Total", num: true, width: "12%", render: (r) => bovMoney(r.invoice_total) },
+    { key: "net_profit", label: "Profit", num: true, width: "11%", render: bovInvoiceProfitCell },
     { key: "margin_pct", label: "Margin", num: true, width: "10%", render: bovMarginCell },
   ];
 }
@@ -22552,16 +22568,18 @@ function bovShippedInvoiceCols(multi) {
     { key: "ship_date", label: "Shipped", width: "12%", render: (r) => escapeHtml(bovDateMdy(r.ship_date || r.invoice_date)) },
     { key: "business_name", label: "Customer", width: "24%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
     { key: "sales_rep", label: "Rep", width: "10%", render: (r) => escapeHtml(r.sales_rep || "—") },
-    { key: "shipper", label: "Shipper", width: "13%", render: (r) => `${escapeHtml(r.shipper || "—")}${r.tracking_no ? `<span class="bov-cell-sub bov-cell-mono">${escapeHtml(r.tracking_no)}</span>` : ""}` },
-    { key: "invoice_total", label: "Total", num: true, width: "11%", render: (r) => bovMoney(r.invoice_total) },
+    { key: "shipper", label: "Shipper", width: "11%", render: (r) => `${escapeHtml(r.shipper || "—")}${r.tracking_no ? `<span class="bov-cell-sub bov-cell-mono">${escapeHtml(r.tracking_no)}</span>` : ""}` },
+    { key: "invoice_total", label: "Total", num: true, width: "10%", render: (r) => bovMoney(r.invoice_total) },
+    { key: "net_profit", label: "Profit", num: true, width: "9%", render: bovInvoiceProfitCell },
     { key: "margin_pct", label: "Margin", num: true, width: "8%", render: bovMarginCell },
   ] : [
-    { key: "invoice_number", label: "Invoice #", width: "16%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.invoice_number || String(r.invoice_id))}</span>` },
-    { key: "ship_date", label: "Shipped", width: "13%", render: (r) => escapeHtml(bovDateMdy(r.ship_date || r.invoice_date)) },
-    { key: "business_name", label: "Customer", width: "27%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
-    { key: "sales_rep", label: "Rep", width: "12%", render: (r) => escapeHtml(r.sales_rep || "—") },
-    { key: "shipper", label: "Shipper", width: "16%", render: (r) => `${escapeHtml(r.shipper || "—")}${r.tracking_no ? `<span class="bov-cell-sub bov-cell-mono">${escapeHtml(r.tracking_no)}</span>` : ""}` },
-    { key: "invoice_total", label: "Total", num: true, width: "12%", render: (r) => bovMoney(r.invoice_total) },
+    { key: "invoice_number", label: "Invoice #", width: "15%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.invoice_number || String(r.invoice_id))}</span>` },
+    { key: "ship_date", label: "Shipped", width: "12%", render: (r) => escapeHtml(bovDateMdy(r.ship_date || r.invoice_date)) },
+    { key: "business_name", label: "Customer", width: "23%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
+    { key: "sales_rep", label: "Rep", width: "10%", render: (r) => escapeHtml(r.sales_rep || "—") },
+    { key: "shipper", label: "Shipper", width: "13%", render: (r) => `${escapeHtml(r.shipper || "—")}${r.tracking_no ? `<span class="bov-cell-sub bov-cell-mono">${escapeHtml(r.tracking_no)}</span>` : ""}` },
+    { key: "invoice_total", label: "Total", num: true, width: "11%", render: (r) => bovMoney(r.invoice_total) },
+    { key: "net_profit", label: "Profit", num: true, width: "10%", render: bovInvoiceProfitCell },
     { key: "margin_pct", label: "Margin", num: true, width: "10%", render: bovMarginCell },
   ];
 }
@@ -22896,7 +22914,12 @@ function bovRenderInvoiceModal(data) {
     bovKv("Taxes / shipping", `${escapeHtml(bovMoney(h.total_taxes))} / ${escapeHtml(bovMoney(h.shipping_cost))}`),
     bovKv("Invoice total", `<strong>${escapeHtml(bovMoney(h.invoice_total))}</strong>`),
     bovKv("Paid / credits", `${escapeHtml(bovMoney(h.total_payments))} / ${escapeHtml(bovMoney(h.total_credits))}`),
-    bovKv("Profit", `${escapeHtml(bovMoney(h.profit))}${h.margin_pct != null ? ` <span class="sa-kpi-pct">${escapeHtml(bovPct(h.margin_pct))}</span>` : ""}`),
+    bovKv("Profit", (() => {
+      const net = h.net_profit != null ? h.net_profit : h.profit;
+      if (net == null) return "—";
+      const netPct = bovNum(h.revenue) > 0 ? (bovNum(net) / bovNum(h.revenue)) * 100 : null;
+      return `<strong class="bov-profit${bovNum(net) < 0 ? " is-neg" : ""}">${escapeHtml(bovMoney(net))}</strong>${netPct != null ? ` <span class="sa-kpi-pct">${escapeHtml(bovPct(netPct))}</span>` : ""}<span class="bov-cell-sub">${escapeHtml(`product ${bovMoney(h.profit)} − shipping ${bovMoney(h.shipping_cost || 0)}`)}</span>`;
+    })()),
     bovKv("Cost basis", data.cost_basis === "s2s"
       ? `<span class="bov-cost-basis is-s2s" title="S2S Cost is on — every line costed from the Item Tracker S2S Items_tbl.UnitCost by UPC">S2S UnitCost</span>`
       : `<span class="bov-cost-basis" title="Each line costed from this store's Items_tbl.UnitCost by UPC (invoice line cost when the item is missing)">Store UnitCost</span>`),
@@ -22908,7 +22931,7 @@ function bovRenderInvoiceModal(data) {
   body.innerHTML =
     `<div class="bov-kv-grid">${kv}</div>` +
     (lines.length
-      ? `<div class="bov-table-scroll"><table class="data-table bov-mini-table bov-modal-table"><thead><tr><th style="width:40%">Product</th><th class="bov-num" style="width:10%">Qty</th><th class="bov-num" style="width:12%">Price</th><th class="bov-num" style="width:12%">Cost</th><th class="bov-num" style="width:13%">Line total</th><th class="bov-num" style="width:13%">Profit</th></tr></thead><tbody>${rowsHtml}</tbody><tfoot><tr><td>${bovInt(lines.length)} lines</td><td class="bov-num">${bovInt(lines.reduce((a, l) => a + bovNum(l.qty_shipped), 0))}</td><td></td><td class="bov-num">${bovMoney(h.cost)}</td><td class="bov-num">${bovMoney(h.revenue)}</td><td class="bov-num">${bovMoney(h.profit)}${h.margin_pct != null ? `<span class="bov-cell-sub">${escapeHtml(bovPct(h.margin_pct))}</span>` : ""}</td></tr></tfoot></table></div>`
+      ? `<div class="bov-table-scroll"><table class="data-table bov-mini-table bov-modal-table"><thead><tr><th style="width:40%">Product</th><th class="bov-num" style="width:10%">Qty</th><th class="bov-num" style="width:12%">Price</th><th class="bov-num" style="width:12%">Cost</th><th class="bov-num" style="width:13%">Line total</th><th class="bov-num" style="width:13%">Profit</th></tr></thead><tbody>${rowsHtml}</tbody><tfoot><tr><td>${bovInt(lines.length)} lines</td><td class="bov-num">${bovInt(lines.reduce((a, l) => a + bovNum(l.qty_shipped), 0))}</td><td></td><td class="bov-num">${bovMoney(h.cost)}</td><td class="bov-num">${bovMoney(h.revenue)}</td><td class="bov-num" title="Product profit before shipping — real profit after shipping is shown above">${bovMoney(h.profit)}${h.margin_pct != null ? `<span class="bov-cell-sub">${escapeHtml(bovPct(h.margin_pct))}</span>` : ""}</td></tr></tfoot></table></div>`
       : `<p class="bov-modal-note">No line items on this invoice.</p>`) +
     (h.notes ? `<p class="bov-modal-note">Notes: ${escapeHtml(h.notes)}</p>` : "");
 }

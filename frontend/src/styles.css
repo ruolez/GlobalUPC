@@ -7768,6 +7768,9 @@ tr.bov-line-void td { opacity: 0.55; text-decoration: line-through; }
 .bov-margin { font-variant-numeric: tabular-nums; color: var(--success); font-weight: 600; }
 .bov-margin.is-low { color: var(--warning); }
 .bov-margin.is-neg { color: var(--danger); }
+/* Real profit (product profit − shipping) in the invoice lists and modal */
+.bov-profit { font-variant-numeric: tabular-nums; font-weight: 600; }
+.bov-profit.is-neg { color: var(--danger); }
 .bov-cell-muted { color: var(--text-tertiary); }
 
 /* --- Filter triggers (Period / Stores) --- */
