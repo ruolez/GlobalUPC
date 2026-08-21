@@ -11800,7 +11800,7 @@ async def get_business_overview_alerts(
                     age_h = (now_utc - last).total_seconds() / 3600
                     bad.append(f"{st['name']}: synced {age_h / 24:.1f} days ago" if age_h >= 48 else f"{st['name']}: synced {age_h:.0f} h ago")
             if bad:
-                alerts.append({"key": "shopify_sync_stale", "severity": "warn", "count": len(bad), "stores": [b.split(":")[0] for b in bad],
+                alerts.append({"key": "shopify_sync_stale", "severity": "info", "count": len(bad), "stores": [b.split(":")[0] for b in bad],
                                "title": f"Shopify data stale for {len(bad)} store{'s' if len(bad) != 1 else ''}", "detail": "; ".join(bad),
                                "action": {"section": "shopify", "target": "bov-shopify-card"}})
         except Exception as e:
@@ -11808,7 +11808,7 @@ async def get_business_overview_alerts(
     elif not r.get("enabled"):
         skipped.append("shopify_sync_stale: disabled")
 
-    sev_rank = {"critical": 0, "warn": 1}
+    sev_rank = {"critical": 0, "warn": 1, "info": 2}
     alerts.sort(key=lambda a: (sev_rank.get(a["severity"], 9), -(a.get("count") or 0)))
     return BOVAlertsResponse(
         period=BOVPeriod(**period.as_dict()), rules=rules,

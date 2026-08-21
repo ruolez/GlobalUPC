@@ -20602,7 +20602,7 @@ function bovMoneyAlerts(summaryData, rules) {
         const one = offenders.length === 1;
         return {
           key: storeId != null ? `margin_floor:${storeId}` : "margin_floor",
-          severity: "warn", count: one ? null : offenders.length, amount: null,
+          severity: "critical", count: one ? null : offenders.length, amount: null,
           title: one
             ? `${prefix}${worst.description || worst.upc || "Product"} margin ${bovNum(worst.local_margin_pct).toFixed(1)}% below the ${pct}% floor`
             : `${offenders.length} ${prefix ? `${prefix.slice(0, -2)} ` : ""}products below the ${pct}% margin floor`,
@@ -20652,18 +20652,29 @@ function bovAllAlerts() {
   const server = (aw && aw.data && Array.isArray(aw.data.alerts)) ? aw.data.alerts : [];
   const sw = bovState.widgets.summary;
   const money = sw && sw.data ? bovMoneyAlerts(sw.data, (aw && aw.data && aw.data.rules) || null) : [];
-  const rank = { critical: 0, warn: 1 };
+  const rank = { critical: 0, warn: 1, info: 2 };
   return server.concat(money).sort((a, b) => (rank[a.severity] ?? 9) - (rank[b.severity] ?? 9) || (b.count || 0) - (a.count || 0));
 }
 
+function bovAlertSevClass(severity) {
+  return severity === "critical" ? "is-critical" : severity === "info" ? "is-info" : "is-warn";
+}
+
+const BOV_ALERT_ICONS = {
+  "is-critical": '<svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M7.13 1.53a1 1 0 0 1 1.74 0l6.02 10.98A1 1 0 0 1 14.02 14H1.98a1 1 0 0 1-.87-1.49L7.13 1.53Z M8 5.5c.41 0 .73.35.7.76l-.2 3.05a.5.5 0 0 1-1 0l-.2-3.05A.7.7 0 0 1 8 5.5Zm0 5.4a.85.85 0 1 1 0 1.7.85.85 0 0 1 0-1.7Z" fill-rule="evenodd"/></svg>',
+  "is-warn": '<svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M8 1a7 7 0 1 1 0 14A7 7 0 0 1 8 1Zm0 3.5c.41 0 .73.35.7.76l-.2 3.55a.5.5 0 0 1-1 0l-.2-3.55A.7.7 0 0 1 8 4.5Zm0 6.15a.85.85 0 1 1 0 1.7.85.85 0 0 1 0-1.7Z" fill-rule="evenodd"/></svg>',
+  "is-info": '<svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M8 1a7 7 0 1 1 0 14A7 7 0 0 1 8 1Zm0 5.6c.41 0 .75.34.75.75v3.4a.75.75 0 0 1-1.5 0v-3.4c0-.41.34-.75.75-.75Zm0-2.45a.85.85 0 1 1 0 1.7.85.85 0 0 1 0-1.7Z" fill-rule="evenodd"/></svg>',
+  "is-ok": '<svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M8 1a7 7 0 1 1 0 14A7 7 0 0 1 8 1Zm3.03 4.72a.75.75 0 0 1 0 1.06l-3.5 3.5a.75.75 0 0 1-1.06 0l-1.5-1.5a.75.75 0 1 1 1.06-1.06l.97.97 2.97-2.97a.75.75 0 0 1 1.06 0Z" fill-rule="evenodd"/></svg>',
+};
+
 function bovAlertPillHtml(a) {
-  const sev = a.severity === "critical" ? "is-critical" : "is-warn";
+  const sev = bovAlertSevClass(a.severity);
   const val = a.count != null ? bovInt(a.count) : (a.amount != null ? bovCompactMoney(a.amount) : "");
   const title = a.title || "";
   // Strip a leading count from the title when we already show it as the value.
   const label = a.count != null && title.startsWith(bovInt(a.count)) ? title.slice(bovInt(a.count).length).trim() : title;
   return `<span class="bov-alert ${sev}" role="button" tabindex="0" data-bov-alert="${escapeHtml(a.key)}" title="${escapeHtml([a.title, a.detail].filter(Boolean).join(" — "))}">` +
-    `<span class="bov-alert-dot" aria-hidden="true"></span>` +
+    `<span class="bov-alert-ico" aria-hidden="true">${BOV_ALERT_ICONS[sev]}</span>` +
     (val ? `<b class="bov-alert-val">${escapeHtml(val)}</b>` : "") +
     `<span class="bov-alert-title">${escapeHtml(label)}</span>` +
     (a.detail ? `<span class="bov-alert-detail">${escapeHtml(a.detail)}</span>` : "") +
@@ -20685,25 +20696,32 @@ function bovRenderAttention() {
   if (w.error && !w.data) {
     body.innerHTML = bovInlineErrorHtml("alerts", w.error, "Alerts could not be checked");
     if (cap) cap.textContent = "";
-    wrap.classList.remove("is-clear");
+    wrap.classList.remove("is-clear", "is-critical");
     return;
   }
   const d = w.data;
   const alerts = bovAllAlerts();
   const errors = d.errors || [];
   const checked = (d.checked || []).length + 2; // + client money rules
+  const tiers = { "is-critical": 0, "is-warn": 0, "is-info": 0 };
+  alerts.forEach((a) => { tiers[bovAlertSevClass(a.severity)] += 1; });
+  const sums = [];
+  if (tiers["is-critical"]) sums.push(`<span class="bov-attn-sum is-critical">${bovInt(tiers["is-critical"])} critical</span>`);
+  if (tiers["is-warn"]) sums.push(`<span class="bov-attn-sum is-warn">${bovInt(tiers["is-warn"])} warning${tiers["is-warn"] === 1 ? "" : "s"}</span>`);
+  if (tiers["is-info"]) sums.push(`<span class="bov-attn-sum is-info">${bovInt(tiers["is-info"])} info</span>`);
   const bits = [`checked ${bovInt(checked)} rule${checked === 1 ? "" : "s"}`];
   if (d.skipped && d.skipped.length) bits.push(`${bovInt(d.skipped.length)} skipped`);
   if (errors.length) bits.push(`${bovInt(errors.length)} couldn't be checked`);
   if (cap) {
-    cap.textContent = bits.join(" · ");
+    cap.innerHTML = sums.concat(`<span class="bov-attn-checked">${bits.join(" · ")}</span>`).join("");
     cap.title = [...(d.skipped || []), ...errors].join("\n");
     cap.classList.toggle("is-warn", errors.length > 0);
   }
   bovState.alertsCache = alerts;
+  wrap.classList.toggle("is-critical", tiers["is-critical"] > 0);
   if (!alerts.length) {
     wrap.classList.add("is-clear");
-    body.innerHTML = `<span class="bov-alert is-ok"><span class="bov-alert-dot" aria-hidden="true"></span><span class="bov-alert-title">All clear — nothing needs attention</span>${errors.length ? `<span class="bov-alert-detail">${bovInt(errors.length)} rule${errors.length === 1 ? "" : "s"} couldn't be checked</span>` : ""}</span>`;
+    body.innerHTML = `<span class="bov-alert is-ok"><span class="bov-alert-ico" aria-hidden="true">${BOV_ALERT_ICONS["is-ok"]}</span><span class="bov-alert-title">All clear — nothing needs attention</span>${errors.length ? `<span class="bov-alert-detail">${bovInt(errors.length)} rule${errors.length === 1 ? "" : "s"} couldn't be checked</span>` : ""}</span>`;
     return;
   }
   wrap.classList.remove("is-clear");
