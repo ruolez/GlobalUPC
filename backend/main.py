@@ -12066,7 +12066,9 @@ async def _month_end_payload(db: Session, date_from: Optional[str], date_to: Opt
             b = store_buckets.setdefault(st["id"], {})
             for c in payload.get("comparables") or []:
                 p = parcel_map.get(bov.normalize_order_number(c["name"]))
-                if p is None or c["total"] is None or not c["state"]:
+                # A matched parcel with cost <= 0 means the cost was never
+                # recorded — it is not a valid comparable.
+                if p is None or float(p["cost"] or 0) <= 0 or c["total"] is None or not c["state"]:
                     continue
                 pair = (float(c["total"]), float(p["cost"]))
                 b.setdefault(c["state"], []).append(pair)
@@ -12096,9 +12098,12 @@ async def _month_end_payload(db: Session, date_from: Optional[str], date_to: Opt
                 shipper["matched" if parcel else "unmatched"] += 1
             ship_cost = parcel["cost"] if parcel else None
             missing = bool(parcels_usable and parcel is None)
+            # Cost unknown either way: no parcel matched, or a parcel matched
+            # but its cost was never recorded (summed to 0).
+            cost_unknown = missing or bool(parcel is not None and float(parcel["cost"] or 0) <= 0)
             est = est_n = None
             est_cross = False
-            if missing and o.get("ship_state") and o.get("total_price") is not None:
+            if cost_unknown and o.get("ship_state") and o.get("total_price") is not None:
                 t0 = float(o["total_price"])
                 est, est_n = _ship_estimate(store_buckets.get(st["id"]) or {}, o["ship_state"], t0)
                 if est is None:

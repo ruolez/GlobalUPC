@@ -23881,7 +23881,8 @@ async function fetchMonthEnd() {
 function meApplyEstimate(r) {
   // Materialize the estimate onto a row copy so sorting, totals, cells and the
   // modal handoff all see the estimated shipping cost + recomputed profit.
-  if (r.source !== "shopify" || !r.shipping_missing || r.shipping_estimate == null) return r;
+  // Applies when the real cost is unknown: no parcel, or a $0-cost parcel.
+  if (r.source !== "shopify" || r.shipping_estimate == null || bovNum(r.shipping_cost) > 0) return r;
   const profit = r.product_profit != null
     ? Math.round((r.product_profit + (r.shipping_collected || 0) - r.shipping_estimate) * 100) / 100
     : null;
@@ -23937,8 +23938,9 @@ function meShipCollectedCell(r) {
 function meShipCostCell(r) {
   if (r._estimated) {
     const scope = r.shipping_estimate_cross ? "across all stores — this store has no parcel history" : "same store";
+    const reason = r.shipping_missing ? "no parcel found for this order" : "the matched parcel has no recorded cost";
     const why = `Estimated from ${bovInt(r.shipping_estimate_n || 0)} similar order${r.shipping_estimate_n === 1 ? "" : "s"} ` +
-      `(${scope}, shipped to ${r.ship_state || "the same state"}, total ±$10, last 90 days) — no parcel found for this order`;
+      `(${scope}, shipped to ${r.ship_state || "the same state"}, total ±$10, last 90 days) — ${reason}`;
     return `<span class="me-ship-est" title="${escapeHtml(why)}">~${escapeHtml(bovMoney(r.shipping_cost))}</span>` +
       `<span class="bov-cell-sub">est · ${bovInt(r.shipping_estimate_n || 0)}${r.shipping_estimate_cross ? " · all stores" : ""}</span>`;
   }
@@ -23947,6 +23949,9 @@ function meShipCostCell(r) {
       ? (r.shipping_missing ? "No parcel found in the shipper database for this order — profit computed with $0 shipping" : "Shipping cost unavailable")
       : "";
     return `<span class="bov-cell-muted${r.shipping_missing ? " me-ship-missing" : ""}" title="${escapeHtml(why)}">${r.shipping_missing ? "no parcel" : "—"}</span>`;
+  }
+  if (r.source === "shopify" && bovNum(r.shipping_cost) === 0) {
+    return `<span class="me-ship-missing" title="Parcel matched but no cost recorded in the shipper database — profit computed with $0 shipping">$0.00</span>`;
   }
   const boxes = r.parcels && r.parcels > 1 ? `<span class="bov-cell-sub">${bovInt(r.parcels)} boxes</span>` : "";
   return `${bovMoney(r.shipping_cost)}${boxes}`;
