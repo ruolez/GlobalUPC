@@ -2002,6 +2002,7 @@ class MonthEndRow(BaseModel):
     ship_state: Optional[str] = None             # Shopify: shipping address province/state code
     shipping_estimate: Optional[float] = None    # Shopify: avg parcel cost of same-state orders, total ±$10, 90d lookback
     shipping_estimate_n: Optional[int] = None    # number of comparable orders behind the estimate
+    shipping_estimate_cross: Optional[bool] = None  # True when the pool is all stores (own store has no candidates)
     parcels: Optional[int] = None                # Shopify: matched parcel/box count
     profit: Optional[float] = None               # product_profit + shipping_collected - shipping_cost
     cost_coverage: Optional[float] = None

@@ -23936,10 +23936,11 @@ function meShipCollectedCell(r) {
 
 function meShipCostCell(r) {
   if (r._estimated) {
+    const scope = r.shipping_estimate_cross ? "across all stores — this store has no parcel history" : "same store";
     const why = `Estimated from ${bovInt(r.shipping_estimate_n || 0)} similar order${r.shipping_estimate_n === 1 ? "" : "s"} ` +
-      `(same store, shipped to ${r.ship_state || "the same state"}, total ±$10, last 90 days) — no parcel found for this order`;
+      `(${scope}, shipped to ${r.ship_state || "the same state"}, total ±$10, last 90 days) — no parcel found for this order`;
     return `<span class="me-ship-est" title="${escapeHtml(why)}">~${escapeHtml(bovMoney(r.shipping_cost))}</span>` +
-      `<span class="bov-cell-sub">est · ${bovInt(r.shipping_estimate_n || 0)}</span>`;
+      `<span class="bov-cell-sub">est · ${bovInt(r.shipping_estimate_n || 0)}${r.shipping_estimate_cross ? " · all stores" : ""}</span>`;
   }
   if (r.shipping_cost == null) {
     const why = r.source === "shopify"

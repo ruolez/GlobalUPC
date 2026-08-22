@@ -12056,20 +12056,39 @@ async def _month_end_payload(db: Session, date_from: Optional[str], date_to: Opt
 
     parcels_usable = bool(shipper_store) and not shipper["error"]
 
-    # ---- Shopify rows: profit = product profit + shipping collected − parcels cost
-    for st, payload in sh_ok:
-        lines_by_order = payload.get("lines") or {}
-        # state -> sorted (total, cost) pairs from lookback orders with a real
-        # parcel cost — the comparable pool for estimating missing shipping.
-        buckets: Dict[str, List[Tuple[float, float]]] = {}
-        if parcels_usable:
+    # ---- Comparable pools for estimating missing shipping: per store, plus a
+    # cross-store pool for stores with no parcel history of their own (e.g. a
+    # store that ships outside the shipper database entirely).
+    store_buckets: Dict[int, Dict[str, List[Tuple[float, float]]]] = {}
+    global_buckets: Dict[str, List[Tuple[float, float]]] = {}
+    if parcels_usable:
+        for st, payload in sh_ok:
+            b = store_buckets.setdefault(st["id"], {})
             for c in payload.get("comparables") or []:
                 p = parcel_map.get(bov.normalize_order_number(c["name"]))
                 if p is None or c["total"] is None or not c["state"]:
                     continue
-                buckets.setdefault(c["state"], []).append((float(c["total"]), float(p["cost"])))
-            for pairs in buckets.values():
+                pair = (float(c["total"]), float(p["cost"]))
+                b.setdefault(c["state"], []).append(pair)
+                global_buckets.setdefault(c["state"], []).append(pair)
+        for bk in store_buckets.values():
+            for pairs in bk.values():
                 pairs.sort()
+        for pairs in global_buckets.values():
+            pairs.sort()
+
+    def _ship_estimate(buckets: Dict[str, List[Tuple[float, float]]],
+                       state: str, total: float) -> Tuple[Optional[float], Optional[int]]:
+        pairs = buckets.get(state) or []
+        lo = bisect.bisect_left(pairs, (total - _MONTH_END_ESTIMATE_TOLERANCE, float("-inf")))
+        hi = bisect.bisect_right(pairs, (total + _MONTH_END_ESTIMATE_TOLERANCE, float("inf")))
+        if hi <= lo:
+            return None, None
+        return round(sum(c for _t, c in pairs[lo:hi]) / (hi - lo), 2), hi - lo
+
+    # ---- Shopify rows: profit = product profit + shipping collected − parcels cost
+    for st, payload in sh_ok:
+        lines_by_order = payload.get("lines") or {}
         for o in payload.get("orders") or []:
             costing = bov.shopify_order_costing(lines_by_order.get(o["shopify_id"]) or [], unit_costs)
             parcel = parcel_map.get(bov.normalize_order_number(o.get("name")))
@@ -12078,14 +12097,13 @@ async def _month_end_payload(db: Session, date_from: Optional[str], date_to: Opt
             ship_cost = parcel["cost"] if parcel else None
             missing = bool(parcels_usable and parcel is None)
             est = est_n = None
+            est_cross = False
             if missing and o.get("ship_state") and o.get("total_price") is not None:
-                pairs = buckets.get(o["ship_state"]) or []
                 t0 = float(o["total_price"])
-                lo = bisect.bisect_left(pairs, (t0 - _MONTH_END_ESTIMATE_TOLERANCE, float("-inf")))
-                hi = bisect.bisect_right(pairs, (t0 + _MONTH_END_ESTIMATE_TOLERANCE, float("inf")))
-                if hi > lo:
-                    est = round(sum(c for _t, c in pairs[lo:hi]) / (hi - lo), 2)
-                    est_n = hi - lo
+                est, est_n = _ship_estimate(store_buckets.get(st["id"]) or {}, o["ship_state"], t0)
+                if est is None:
+                    est, est_n = _ship_estimate(global_buckets, o["ship_state"], t0)
+                    est_cross = est is not None
             pp = costing["product_profit"]
             profit = (round(pp + (o.get("total_shipping") or 0.0) - (ship_cost or 0.0), 2)
                       if pp is not None else None)
@@ -12105,6 +12123,7 @@ async def _month_end_payload(db: Session, date_from: Optional[str], date_to: Opt
                 "ship_state": o.get("ship_state"),
                 "shipping_estimate": est,
                 "shipping_estimate_n": est_n,
+                "shipping_estimate_cross": est_cross or None,
                 "parcels": int(parcel["parcels"]) if parcel else None,
                 "profit": profit,
                 "cost_coverage": costing["cost_coverage"],
