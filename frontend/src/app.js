@@ -23484,6 +23484,14 @@ function bovPopulateConfigForm(cfg, opts = {}) {
       : `<span class="bov-field-help">No active Shopify stores.</span>`;
   }
 
+  const shipExclWrap = document.getElementById("bov-cfg-shipexcl");
+  if (shipExclWrap) {
+    const chosen = new Set((cfg.ship_estimate_excluded_store_ids || []).map(String));
+    shipExclWrap.innerHTML = shopify.length
+      ? shopify.map((s) => bovPillCheck("bov-cfg-shipexcl-cb", s.id, s.name, chosen.has(String(s.id)))).join("")
+      : `<span class="bov-field-help">No active Shopify stores.</span>`;
+  }
+
   const stWrap = document.getElementById("bov-cfg-statuses");
   if (stWrap) {
     const chosen = (cfg.quotation_statuses && cfg.quotation_statuses.length ? cfg.quotation_statuses : ["In Progress", "Locked"]).map((s) => String(s));
@@ -23551,6 +23559,7 @@ async function bovSaveConfig() {
     sales_store_ids: salesIds,
     purchases_store_id: purchId ? parseInt(purchId, 10) : null,
     shopify_store_ids: shopIds,
+    ship_estimate_excluded_store_ids: Array.from(document.querySelectorAll(".bov-cfg-shipexcl-cb:checked")).map((cb) => parseInt(cb.value, 10)).filter((n) => !isNaN(n)),
     quotation_statuses: statuses,
     timezone: tz,
     alert_rules: bovCollectAlertRules(),

@@ -1189,6 +1189,7 @@ class BusinessOverviewConfigCreate(BaseModel):
     sales_store_id: Optional[int] = None      # legacy single value; merged into sales_store_ids
     purchases_store_id: Optional[int] = None
     shopify_store_ids: List[int] = []
+    ship_estimate_excluded_store_ids: List[int] = []  # Shopify stores that never ship — no shipping estimates
     quotation_statuses: List[str] = list(BOV_DEFAULT_QUOTATION_STATUSES)
     timezone: str = "America/Chicago"
     alert_rules: Optional[Dict[str, Dict]] = None    # partial per-rule overrides; merged over defaults
@@ -1205,6 +1206,7 @@ class BusinessOverviewConfigResponse(BaseModel):
     purchases_store_name: Optional[str] = None
     shopify_store_ids: List[int] = []
     shopify_store_names: List[str] = []
+    ship_estimate_excluded_store_ids: List[int] = []
     quotation_statuses: List[str] = []
     timezone: str = "America/Chicago"
     alert_rules: Dict[str, Dict] = {}
