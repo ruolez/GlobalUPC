@@ -23937,12 +23937,17 @@ function meShipCollectedCell(r) {
 
 function meShipCostCell(r) {
   if (r._estimated) {
-    const scope = r.shipping_estimate_cross ? "across all stores — this store has no parcel history" : "same store";
+    const scope = r.shipping_estimate_cross ? "across all stores" : "same store";
+    const basis = r.shipping_estimate_near
+      ? `the ${bovInt(r.shipping_estimate_n || 0)} order${r.shipping_estimate_n === 1 ? "" : "s"} closest by total — no comparable within ±$10/±10%`
+      : `${bovInt(r.shipping_estimate_n || 0)} similar order${r.shipping_estimate_n === 1 ? "" : "s"} (total ±$10 or ±10%)`;
     const reason = r.shipping_missing ? "no parcel found for this order" : "the matched parcel has no recorded cost";
-    const why = `Estimated from ${bovInt(r.shipping_estimate_n || 0)} similar order${r.shipping_estimate_n === 1 ? "" : "s"} ` +
-      `(${scope}, shipped to ${r.ship_state || "the same state"}, total ±$10 or ±10%, last 90 days) — ${reason}`;
+    const why = `Estimated from ${basis}, ${scope}, shipped to ${r.ship_state || "any state"}, last 90 days — ${reason}`;
+    const tags = [`est · ${bovInt(r.shipping_estimate_n || 0)}`];
+    if (r.shipping_estimate_near) tags.push("nearest");
+    if (r.shipping_estimate_cross) tags.push("all stores");
     return `<span class="me-ship-est" title="${escapeHtml(why)}">~${escapeHtml(bovMoney(r.shipping_cost))}</span>` +
-      `<span class="bov-cell-sub">est · ${bovInt(r.shipping_estimate_n || 0)}${r.shipping_estimate_cross ? " · all stores" : ""}</span>`;
+      `<span class="bov-cell-sub">${tags.join(" · ")}</span>`;
   }
   if (r.shipping_cost == null) {
     const why = r.source === "shopify"

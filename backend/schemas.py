@@ -2003,6 +2003,7 @@ class MonthEndRow(BaseModel):
     shipping_estimate: Optional[float] = None    # Shopify: avg parcel cost of same-state orders, total ±max($10, 10%), 90d lookback; emitted when no parcel matched OR the matched parcel's cost is 0/unrecorded
     shipping_estimate_n: Optional[int] = None    # number of comparable orders behind the estimate
     shipping_estimate_cross: Optional[bool] = None  # True when the pool is all stores (own store has no candidates)
+    shipping_estimate_near: Optional[bool] = None   # True for the nearest-by-total fallback (no comparable in the window)
     parcels: Optional[int] = None                # Shopify: matched parcel/box count
     profit: Optional[float] = None               # product_profit + shipping_collected - shipping_cost
     cost_coverage: Optional[float] = None

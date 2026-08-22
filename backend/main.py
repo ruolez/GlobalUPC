@@ -11864,6 +11864,9 @@ _MONTH_END_MAX_ROWS = 20000
 _MONTH_END_ESTIMATE_LOOKBACK_DAYS = 90
 _MONTH_END_ESTIMATE_TOLERANCE = 10.0
 _MONTH_END_ESTIMATE_TOLERANCE_PCT = 0.10
+# Orders with no comparable even in the proportional window fall back to the
+# average of the k orders closest by total (same state, then any state).
+_MONTH_END_ESTIMATE_NEAREST_K = 5
 
 
 async def _month_end_payload(db: Session, date_from: Optional[str], date_to: Optional[str],
@@ -12092,6 +12095,16 @@ async def _month_end_payload(db: Session, date_from: Optional[str], date_to: Opt
             return None, None
         return round(sum(c for _t, c in pairs[lo:hi]) / (hi - lo), 2), hi - lo
 
+    def _ship_nearest(pairs: List[Tuple[float, float]], total: float,
+                      k: int = _MONTH_END_ESTIMATE_NEAREST_K) -> Tuple[Optional[float], Optional[int]]:
+        # Last-resort estimate: the k orders closest by total, however far away.
+        if not pairs:
+            return None, None
+        best = sorted(pairs, key=lambda p: abs(p[0] - total))[:k]
+        return round(sum(c for _t, c in best) / len(best), 2), len(best)
+
+    global_all_pairs: List[Tuple[float, float]] = [p for ps in global_buckets.values() for p in ps]
+
     # ---- Shopify rows: profit = product profit + shipping collected − parcels cost
     for st, payload in sh_ok:
         lines_by_order = payload.get("lines") or {}
@@ -12106,13 +12119,26 @@ async def _month_end_payload(db: Session, date_from: Optional[str], date_to: Opt
             # but its cost was never recorded (summed to 0).
             cost_unknown = missing or bool(parcel is not None and float(parcel["cost"] or 0) <= 0)
             est = est_n = None
-            est_cross = False
-            if cost_unknown and o.get("ship_state") and o.get("total_price") is not None:
+            est_cross = est_near = False
+            if cost_unknown and o.get("total_price") is not None:
                 t0 = float(o["total_price"])
-                est, est_n = _ship_estimate(store_buckets.get(st["id"]) or {}, o["ship_state"], t0)
+                state = o.get("ship_state")
+                sb = store_buckets.get(st["id"]) or {}
+                if state:
+                    est, est_n = _ship_estimate(sb, state, t0)
+                    if est is None:
+                        est, est_n = _ship_estimate(global_buckets, state, t0)
+                        est_cross = est is not None
+                    if est is None:
+                        est, est_n = _ship_nearest(sb.get(state) or [], t0)
+                        est_near = est is not None
+                    if est is None:
+                        est, est_n = _ship_nearest(global_buckets.get(state) or [], t0)
+                        est_cross = est_near = est is not None
                 if est is None:
-                    est, est_n = _ship_estimate(global_buckets, o["ship_state"], t0)
-                    est_cross = est is not None
+                    # No usable state data anywhere — closest totals across all states.
+                    est, est_n = _ship_nearest(global_all_pairs, t0)
+                    est_cross = est_near = est is not None
             pp = costing["product_profit"]
             profit = (round(pp + (o.get("total_shipping") or 0.0) - (ship_cost or 0.0), 2)
                       if pp is not None else None)
@@ -12133,6 +12159,7 @@ async def _month_end_payload(db: Session, date_from: Optional[str], date_to: Opt
                 "shipping_estimate": est,
                 "shipping_estimate_n": est_n,
                 "shipping_estimate_cross": est_cross or None,
+                "shipping_estimate_near": est_near or None,
                 "parcels": int(parcel["parcels"]) if parcel else None,
                 "profit": profit,
                 "cost_coverage": costing["cost_coverage"],
