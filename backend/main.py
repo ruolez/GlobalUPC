@@ -9735,7 +9735,6 @@ def _bov_config_response(db: Session, cfg: Optional[BusinessOverviewConfig]) -> 
         purchases_store_name=purchases_store.name if purchases_store else None,
         shopify_store_ids=shopify_ids,
         shopify_store_names=shopify_names,
-        ship_estimate_excluded_store_ids=list((cfg.ship_estimate_excluded_store_ids if cfg else []) or []),
         quotation_statuses=list((cfg.quotation_statuses if cfg else BOV_DEFAULT_QUOTATION_STATUSES) or []),
         timezone=_bov_tz(cfg),
         alert_rules=bov_merge_alert_rules(cfg.alert_rules if cfg else None),
@@ -9766,8 +9765,6 @@ def save_business_overview_config(data: BusinessOverviewConfigCreate, db: Sessio
     for sid in data.shopify_store_ids:
         if not db.query(Store).filter(Store.id == sid, Store.store_type == StoreType.shopify).first():
             raise HTTPException(status_code=400, detail=f"Invalid Shopify store ID: {sid}")
-    ship_excl_ids = [sid for sid in dict.fromkeys(data.ship_estimate_excluded_store_ids or [])
-                     if db.query(Store).filter(Store.id == sid, Store.store_type == StoreType.shopify).first()]
     tz = (data.timezone or "").strip() or "America/Chicago"
     try:
         _BovZoneInfo(tz)
@@ -9809,7 +9806,6 @@ def save_business_overview_config(data: BusinessOverviewConfigCreate, db: Sessio
         cfg.sales_store_id = sales_ids[0] if sales_ids else None
         cfg.purchases_store_id = data.purchases_store_id
         cfg.shopify_store_ids = list(dict.fromkeys(data.shopify_store_ids))
-        cfg.ship_estimate_excluded_store_ids = ship_excl_ids
         cfg.quotation_statuses = statuses
         cfg.timezone = tz
         if new_rules is not None:
@@ -9820,7 +9816,6 @@ def save_business_overview_config(data: BusinessOverviewConfigCreate, db: Sessio
             sales_store_id=sales_ids[0] if sales_ids else None,
             purchases_store_id=data.purchases_store_id,
             shopify_store_ids=list(dict.fromkeys(data.shopify_store_ids)),
-            ship_estimate_excluded_store_ids=ship_excl_ids,
             quotation_statuses=statuses,
             timezone=tz,
             alert_rules=new_rules or {},
@@ -10219,7 +10214,6 @@ async def _bov_sales_trend(db: Session, cfg, period: bov.Period, bucket: str,
     warnings: List[str] = []
     src_status: Dict[str, Dict[str, Any]] = {}
     tasks: Dict[str, Any] = {}
-    ship_est_excl = set((cfg.ship_estimate_excluded_store_ids if cfg else []) or [])
     s2s_lookup = _bov_make_cost_lookup(db, cfg, "unit_cost") if cost_mode == "s2s" else None
     if cost_mode == "s2s" and not getattr(s2s_lookup, "configured", False):
         warnings.append("S2S cost: Item Tracker S2S store is not configured — cost/margin unavailable")
@@ -10285,7 +10279,7 @@ async def _bov_sales_trend(db: Session, cfg, period: bov.Period, bucket: str,
                 for st in usable:
                     tasks[f"shiporders:{st['id']}"] = bov.shopify_ship_orders(
                         st["id"], st["_tz"], period.prev_start.isoformat(), period.end_excl)
-                    if est_shipping and st["id"] not in ship_est_excl:
+                    if est_shipping:
                         tasks[f"shipcmp:{st['id']}"] = bov.month_end_ship_comparables(
                             st["id"], st["_tz"], win_start.isoformat(), period.end_excl)
 
@@ -10328,7 +10322,7 @@ async def _bov_sales_trend(db: Session, cfg, period: bov.Period, bucket: str,
             for o in orders:
                 parcel = parcel_map.get(bov.normalize_order_number(o["name"]))
                 cost = float(parcel["cost"]) if parcel and float(parcel["cost"] or 0) > 0 else None
-                if cost is None and est_shipping and sid2 not in ship_est_excl:
+                if cost is None and est_shipping:
                     cost, _n, _cross, _near = bov.estimate_ship_cost(
                         sb_pools.get(sid2) or {}, gl_pools, gl_all, o["state"], o["total"])
                 if cost:
@@ -11971,7 +11965,6 @@ async def _month_end_payload(db: Session, date_from: Optional[str], date_to: Opt
     limit = max(1, min(int(limit or _MONTH_END_MAX_ROWS), _MONTH_END_MAX_ROWS))
 
     only = _bov_parse_store_ids(store_ids)
-    ship_est_excl = set((cfg.ship_estimate_excluded_store_ids if cfg else []) or [])
     sales_stores = _bov_sales_stores(db, cfg, only)
     shopify_stores = _bov_shopify_stores(db, cfg, only)
     if not sales_stores and not shopify_stores:
@@ -12171,7 +12164,7 @@ async def _month_end_payload(db: Session, date_from: Optional[str], date_to: Opt
             cost_unknown = missing or bool(parcel is not None and float(parcel["cost"] or 0) <= 0)
             est = est_n = None
             est_cross = est_near = False
-            if cost_unknown and st["id"] not in ship_est_excl:
+            if cost_unknown:
                 est, est_n, est_cross, est_near = bov.estimate_ship_cost(
                     store_buckets.get(st["id"]) or {}, global_buckets, global_all_pairs,
                     o.get("ship_state"), o.get("total_price"))
