@@ -1577,9 +1577,10 @@ class BOVPurchaseOrderDetailResponse(BaseModel):
 class BOVSalesSourceTotals(BaseModel):
     revenue: float = 0.0
     cost: float = 0.0
-    profit: float = 0.0                     # revenue − cost − shipping_cost (BackOffice ships; Shopify 0)
-    shipping_cost: float = 0.0              # BackOffice Invoices_tbl.ShippingCost summed over the bucket
-    margin_pct: Optional[float] = None
+    profit: float = 0.0                     # revenue − cost − shipping_cost + shipping_collected
+    shipping_cost: float = 0.0              # BackOffice Invoices_tbl.ShippingCost + Shopify shipper parcels (± estimates when est_shipping)
+    shipping_collected: float = 0.0         # Shopify total_shipping charged to customers; 0 for BackOffice
+    margin_pct: Optional[float] = None      # product-based: shipping never enters margin
     returns: float = 0.0
     net_revenue: float = 0.0
     orders: int = 0
@@ -1614,6 +1615,7 @@ class BOVSalesStoreTotals(BaseModel):
     cost: float = 0.0
     profit: float = 0.0
     shipping_cost: float = 0.0
+    shipping_collected: float = 0.0
     margin_pct: Optional[float] = None
     orders: int = 0
     units: float = 0.0

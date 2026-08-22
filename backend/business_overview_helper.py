@@ -18,6 +18,7 @@ Conventions:
     period is served by the same round trip
 """
 import asyncio
+import bisect
 import calendar
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -1944,21 +1945,25 @@ def compute_backoffice_series(payload: Dict[str, Any], period: Period, bucket: s
 
 
 def _totals_dict(revenue: float, cost: float, returns: float, orders: int, units: float,
-                 cost_coverage: Optional[float] = None, shipping: float = 0.0) -> Dict[str, Any]:
+                 cost_coverage: Optional[float] = None, shipping: float = 0.0,
+                 shipping_collected: float = 0.0) -> Dict[str, Any]:
     revenue = _f(revenue)
     cost = _f(cost)
     returns = _f(returns)
     shipping = _f(shipping)
+    shipping_collected = _f(shipping_collected)
     # cost_coverage == 0 means units were sold but no cost could be resolved:
     # report margin as unknown rather than a misleading 100%.
     unknown_cost = (cost_coverage is not None and cost_coverage == 0 and _f(units) > 0)
     return {
         "revenue": round(revenue, 2),
         "cost": round(cost, 2),
-        # Real profit: BackOffice shipping cost (invoice header) is a cost too.
-        # Shopify sources pass shipping=0, so their profit is unchanged.
-        "profit": round(revenue - cost - shipping, 2),
+        # Real profit: shipping charged to customers (Shopify total_shipping) is
+        # income, shipping paid out (BackOffice invoice header / shipper parcels)
+        # is a cost. Margin stays product-based — shipping never enters it.
+        "profit": round(revenue - cost - shipping + shipping_collected, 2),
         "shipping_cost": round(shipping, 2),
+        "shipping_collected": round(shipping_collected, 2),
         "margin_pct": (None if unknown_cost else margin_pct(revenue, cost)),
         "returns": round(returns, 2),
         "net_revenue": round(revenue - returns, 2),
@@ -1986,12 +1991,23 @@ def add_totals(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:
     if cov_a is not None or cov_b is not None:
         known = (cov_a or 0.0) * ua + (cov_b or 0.0) * ub if (ua + ub) else 0.0
         cov = round(known / (ua + ub), 4) if (ua + ub) else None
-    return _totals_dict(revenue, cost, returns, orders, units, cov, shipping=shipping)
+    return _totals_dict(revenue, cost, returns, orders, units, cov, shipping=shipping,
+                        shipping_collected=_f(a.get("shipping_collected")) + _f(b.get("shipping_collected")))
+
+
+def add_shipping_cost(totals: Dict[str, Any], amount: float) -> None:
+    """Fold an extra shipping cost into an already-built totals dict, keeping
+    profit derived the same way _totals_dict derives it."""
+    if not amount:
+        return
+    totals["shipping_cost"] = round(_f(totals.get("shipping_cost")) + _f(amount), 2)
+    totals["profit"] = round(_f(totals.get("revenue")) - _f(totals.get("cost"))
+                             - _f(totals.get("shipping_cost")) + _f(totals.get("shipping_collected")), 2)
 
 
 def totals_change(cur: Dict[str, Any], prev: Dict[str, Any]) -> Dict[str, Optional[float]]:
     out: Dict[str, Optional[float]] = {}
-    for k in ("revenue", "cost", "profit", "shipping_cost", "orders", "units", "returns", "net_revenue"):
+    for k in ("revenue", "cost", "profit", "shipping_cost", "shipping_collected", "orders", "units", "returns", "net_revenue"):
         out[k] = pct_change(_f(cur.get(k)), _f(prev.get(k)))
     mc, mp = cur.get("margin_pct"), prev.get("margin_pct")
     out["margin_pct"] = (round(mc - mp, 2) if (mc is not None and mp is not None) else None)  # points, not %
@@ -2452,23 +2468,25 @@ async def compute_shopify_series(
                 cost_by_b[b] = cost_by_b.get(b, 0.0) + units * _f(c)
                 known_by_b[b] = known_by_b.get(b, 0.0) + units
         out: List[Dict[str, Any]] = []
-        agg_rev = agg_cost = agg_ret = agg_units = agg_known = 0.0
+        agg_rev = agg_cost = agg_ret = agg_units = agg_known = agg_shipc = 0.0
         agg_orders = 0
         for k, cs, ce in iter_buckets(start, end, bucket):
             o = orders_by_b.get(k) or {}
             rev = max(0.0, _f(o.get("revenue")) - _f(ex_rev.get(k)))
             ret = _f(o.get("refunded"))
             orders = int(_f(o.get("orders")))
+            ship_col = _f(o.get("shipping"))
             cost = cost_by_b.get(k, 0.0)
             units = units_by_b.get(k, 0.0)
             known = known_by_b.get(k, 0.0)
             cov = (round(known / units, 4) if units else None)
             out.append({"key": k.isoformat(), "start": cs.isoformat(), "end": ce.isoformat(),
                         "label": bucket_label(k, bucket),
-                        "totals": _totals_dict(rev, cost, ret, orders, units, cov)})
+                        "totals": _totals_dict(rev, cost, ret, orders, units, cov, shipping_collected=ship_col)})
             agg_rev += rev; agg_cost += cost; agg_ret += ret; agg_units += units; agg_known += known; agg_orders += orders
+            agg_shipc += ship_col
         cov_all = (round(agg_known / agg_units, 4) if agg_units else None)
-        return out, _totals_dict(agg_rev, agg_cost, agg_ret, agg_orders, agg_units, cov_all)
+        return out, _totals_dict(agg_rev, agg_cost, agg_ret, agg_orders, agg_units, cov_all, shipping_collected=agg_shipc)
 
     (cur, cur_tot), (prev, prev_tot) = await asyncio.gather(
         _range(period.start, period.end),
@@ -2558,6 +2576,105 @@ def _month_end_shopify_lines_sync(store_id: int, tz: str, date_from: str, date_t
                                           "end_excl": date_to_excl, **excl_params}).mappings():
             out.setdefault(int(r["order_shopify_id"]), []).append((r["barcode"], _f(r["units"]), _f(r["revenue"])))
     return out
+
+
+def _shopify_ship_orders_sync(store_id: int, tz: str, date_from: str, date_to_excl: str,
+                              ) -> List[Dict[str, Any]]:
+    """Per-order (store-local day, name, total, state) for the summary's shipping
+    join — same completed-order membership as the sales series (no fulfillment
+    filter: unshipped orders are exactly the cost gap estimates close)."""
+    tz = _safe_tz(tz)
+    sql = f"""
+        SELECT (o.created_at AT TIME ZONE :tz)::date AS d, o.name, o.total_price, o.ship_province_code
+        FROM shopify_orders o
+        WHERE o.store_id = :sid AND {_SHOPIFY_COMPLETED}
+          AND o.created_at >= (CAST(:start AS date)::timestamp AT TIME ZONE :tz)
+          AND o.created_at <  (CAST(:end_excl AS date)::timestamp AT TIME ZONE :tz)
+    """
+    with engine.connect() as conn:
+        rows = conn.execute(text(sql), {"sid": int(store_id), "tz": tz,
+                                        "start": date_from, "end_excl": date_to_excl}).mappings().all()
+    return [{"day": r["d"], "name": _s(r["name"]), "total": _fo(r["total_price"]),
+             "state": _s(r["ship_province_code"]) or None} for r in rows]
+
+
+# ---- Shipping-cost estimation (shared by Month End and the Overview summary)
+# Rule: average real parcel cost of comparable orders — same store first, same
+# destination state, order total within ±max($10, 10%); stores/rows with no
+# window match fall back to the k orders closest by total, then any state.
+SHIP_EST_LOOKBACK_DAYS = 90
+SHIP_EST_TOLERANCE = 10.0
+SHIP_EST_TOLERANCE_PCT = 0.10
+SHIP_EST_NEAREST_K = 5
+
+ShipPairs = List[Tuple[float, float]]  # sorted (order_total, parcel_cost)
+
+
+def build_ship_pools(comparables_by_store: Dict[int, List[Dict[str, Any]]],
+                     parcel_map: Dict[str, Dict[str, float]],
+                     ) -> Tuple[Dict[int, Dict[str, ShipPairs]], Dict[str, ShipPairs], ShipPairs]:
+    """Comparable pools from lookback orders that have a real (> $0) parcel cost."""
+    store_buckets: Dict[int, Dict[str, ShipPairs]] = {}
+    global_buckets: Dict[str, ShipPairs] = {}
+    for sid, comparables in comparables_by_store.items():
+        b = store_buckets.setdefault(int(sid), {})
+        for c in comparables or []:
+            p = parcel_map.get(normalize_order_number(c["name"]))
+            if p is None or float(p["cost"] or 0) <= 0 or c["total"] is None or not c["state"]:
+                continue
+            pair = (float(c["total"]), float(p["cost"]))
+            b.setdefault(c["state"], []).append(pair)
+            global_buckets.setdefault(c["state"], []).append(pair)
+    for bk in store_buckets.values():
+        for pairs in bk.values():
+            pairs.sort()
+    for pairs in global_buckets.values():
+        pairs.sort()
+    global_all: ShipPairs = [p for ps in global_buckets.values() for p in ps]
+    return store_buckets, global_buckets, global_all
+
+
+def _ship_window_avg(pairs: ShipPairs, total: float) -> Tuple[Optional[float], Optional[int]]:
+    tol = max(SHIP_EST_TOLERANCE, total * SHIP_EST_TOLERANCE_PCT)
+    lo = bisect.bisect_left(pairs, (total - tol, float("-inf")))
+    hi = bisect.bisect_right(pairs, (total + tol, float("inf")))
+    if hi <= lo:
+        return None, None
+    return round(sum(c for _t, c in pairs[lo:hi]) / (hi - lo), 2), hi - lo
+
+
+def _ship_nearest_avg(pairs: ShipPairs, total: float,
+                      k: int = SHIP_EST_NEAREST_K) -> Tuple[Optional[float], Optional[int]]:
+    if not pairs:
+        return None, None
+    best = sorted(pairs, key=lambda p: abs(p[0] - total))[:k]
+    return round(sum(c for _t, c in best) / len(best), 2), len(best)
+
+
+def estimate_ship_cost(store_bucket: Dict[str, ShipPairs], global_buckets: Dict[str, ShipPairs],
+                       global_all: ShipPairs, state: Optional[str], total: Optional[float],
+                       ) -> Tuple[Optional[float], Optional[int], bool, bool]:
+    """Returns (estimate, sample_n, cross_store, nearest_fallback)."""
+    if total is None:
+        return None, None, False, False
+    t0 = float(total)
+    est = est_n = None
+    cross = near = False
+    if state:
+        est, est_n = _ship_window_avg(store_bucket.get(state) or [], t0)
+        if est is None:
+            est, est_n = _ship_window_avg(global_buckets.get(state) or [], t0)
+            cross = est is not None
+        if est is None:
+            est, est_n = _ship_nearest_avg(store_bucket.get(state) or [], t0)
+            near = est is not None
+        if est is None:
+            est, est_n = _ship_nearest_avg(global_buckets.get(state) or [], t0)
+            cross = near = est is not None
+    if est is None:
+        est, est_n = _ship_nearest_avg(global_all, t0)
+        cross = near = est is not None
+    return est, est_n, cross, near
 
 
 def _month_end_ship_comparables_sync(store_id: int, tz: str, date_from: str, date_to_excl: str,
@@ -2767,6 +2884,10 @@ async def month_end_shopify_lines(store_id: int, tz: str, date_from: str, date_t
 
 async def month_end_ship_comparables(store_id: int, tz: str, date_from: str, date_to_excl: str):
     return await asyncio.to_thread(_month_end_ship_comparables_sync, store_id, tz, date_from, date_to_excl)
+
+
+async def shopify_ship_orders(store_id: int, tz: str, date_from: str, date_to_excl: str):
+    return await asyncio.to_thread(_shopify_ship_orders_sync, store_id, tz, date_from, date_to_excl)
 
 
 async def parcel_costs_async(**kw):

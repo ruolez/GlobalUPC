@@ -261,6 +261,12 @@
                   <span class="bov-cost-toggle-track" aria-hidden="true"></span>
                   <span class="bov-cost-toggle-text">S2S Cost</span>
                 </label>
+                <!-- Estimate shipping toggle (shared: Overview profit + Month End) -->
+                <label class="bov-cost-toggle" id="bov-ship-toggle" title="Estimate shipping cost for Shopify orders whose parcel is missing or has a $0 recorded cost: average of same-store orders shipped to the same state with a total within ±$10 or ±10% (last 90 days); falls back to other stores, then nearest totals. Applies to the Overview profit and the Month End tab.">
+                  <input type="checkbox" id="bov-estship" />
+                  <span class="bov-cost-toggle-track" aria-hidden="true"></span>
+                  <span class="bov-cost-toggle-text">Est. shipping</span>
+                </label>
                 <!-- Refresh + status -->
                 <div class="bov-topbar-status">
                   <button type="button" class="dashboard-refresh-btn" id="bov-refresh-btn" title="Refresh (also syncs Shopify)" aria-label="Refresh overview">
@@ -552,11 +558,6 @@
                   </div>
                   <div class="me-toolbar-group" id="me-store-chips" aria-label="Stores"></div>
                   <div class="me-toolbar-group me-toolbar-right">
-                    <label class="bov-cost-toggle me-est-toggle" title="Estimate shipping cost for Shopify orders with no parcel or a $0 recorded cost: average of same-store orders shipped to the same state with a total within ±$10 or ±10%, whichever is larger (last 90 days); stores with no parcel history fall back to all stores. Estimated rows are marked and included in profit and totals.">
-                      <input type="checkbox" id="me-estimate" />
-                      <span class="bov-cost-toggle-track" aria-hidden="true"></span>
-                      <span class="bov-cost-toggle-text">Estimate shipping</span>
-                    </label>
                     <input type="search" id="me-search" placeholder="Search number or customer…" />
                     <button type="button" class="btn btn-secondary me-btn-sm" id="me-refresh" title="Reload">Refresh</button>
                   </div>

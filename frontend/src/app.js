@@ -18534,6 +18534,7 @@ const bovState = {
   storeFilter: [],      // store ids; [] = all configured sources
   chartsOpen: false,    // revenue/margin charts collapsed by default
   costMode: "default",  // "default" (local UnitCost / S2S UnitPriceC) | "s2s" (S2S UnitCost everywhere)
+  estShipping: false,   // shared Est. shipping toggle (Overview profit + Month End rows)
   collapsedCards: {},   // cardId -> true when the user collapsed it
   section: "overview",  // active section tab
   popover: null,        // id of the open topbar popover
@@ -18763,8 +18764,15 @@ function bovResolvedBucket() {
 function bovLoadPrefs() {
   try {
     const raw = localStorage.getItem(BOV_PREFS_KEY);
+    const p = raw ? JSON.parse(raw) : null;
+    if (!p || typeof p.estShipping !== "boolean") {
+      // Migrate the old Month End tab-local preference (toggle is now shared).
+      try {
+        const me = JSON.parse(localStorage.getItem("month_end_prefs") || "{}");
+        if (me.estimate_shipping === true) bovState.estShipping = true;
+      } catch (e2) { /* ignore */ }
+    }
     if (!raw) return;
-    const p = JSON.parse(raw);
     if (p && BOV_PRESETS.some((x) => x.key === p.preset)) bovState.preset = p.preset;
     if (p && typeof p.customFrom === "string") bovState.customFrom = p.customFrom;
     if (p && typeof p.customTo === "string") bovState.customTo = p.customTo;
@@ -18774,6 +18782,7 @@ function bovLoadPrefs() {
     if (p && typeof p.charts === "boolean") bovState.chartsOpen = p.charts;
     if (p && typeof p.openInRange === "boolean") bovState.openInRange = p.openInRange;
     if (p && ["default", "s2s"].includes(p.costMode)) bovState.costMode = p.costMode;
+    if (p && typeof p.estShipping === "boolean") bovState.estShipping = p.estShipping;
     if (p && p.collapsed && typeof p.collapsed === "object") {
       bovState.collapsedCards = {};
       Object.keys(p.collapsed).forEach((k) => { if (BOV_COLLAPSIBLE_CARDS.includes(k) && p.collapsed[k]) bovState.collapsedCards[k] = true; });
@@ -18799,6 +18808,7 @@ function bovSavePrefs() {
         charts: bovState.chartsOpen,
         openInRange: bovState.openInRange,
         costMode: bovState.costMode,
+        estShipping: bovState.estShipping,
         collapsed: bovState.collapsedCards,
         section: bovState.section,
       }),
@@ -18994,6 +19004,7 @@ async function loadBusinessOverviewPage() {
   bovBindOnce();
   bovLoadPrefs();
   bovSyncCostToggle();
+  bovSyncShipToggle();
   BOV_COLLAPSIBLE_CARDS.forEach(bovApplyCollapsed);
   bovState.section = "overview";           // always land on the Overview tab
   bovSetSection("overview", { silent: true });
@@ -19068,8 +19079,14 @@ function bovCostParams() {
   return bovState.costMode === "s2s" ? { cost_mode: "s2s" } : {};
 }
 
+function bovShipParams() {
+  return bovState.estShipping ? { est_shipping: "1" } : {};
+}
+
 // Widgets whose figures depend on the cost basis (S2S Cost toggle).
 const BOV_COST_WIDGETS = ["summary", "trend", "top", "quotations", "invoicesPeriod", "invoicesOpen"];
+// Widgets whose figures depend on the Est. shipping toggle.
+const BOV_SHIP_WIDGETS = ["summary", "trend"];
 
 function bovSyncCostToggle() {
   const cb = document.getElementById("bov-cost-s2s");
@@ -19085,6 +19102,22 @@ function bovSetCostMode(mode) {
   bovSyncCostToggle();
   bovState.modalCache.invoice.clear();
   bovFetchAll({ only: BOV_COST_WIDGETS });
+}
+
+function bovSyncShipToggle() {
+  const cb = document.getElementById("bov-estship");
+  if (cb) cb.checked = !!bovState.estShipping;
+  document.getElementById("bov-ship-toggle")?.classList.toggle("is-on", !!bovState.estShipping);
+}
+
+function bovSetEstShipping(on) {
+  const next = !!on;
+  if (bovState.estShipping === next) return;
+  bovState.estShipping = next;
+  bovSavePrefs();
+  bovSyncShipToggle();
+  bovFetchAll({ only: BOV_SHIP_WIDGETS });
+  if (monthEndState.data) renderMonthEnd();
 }
 
 function bovCostBasisLabel() {
@@ -19320,6 +19353,11 @@ function bovBindOnce() {
   // Cost basis (S2S Cost)
   document.getElementById("bov-cost-s2s")?.addEventListener("change", (e) => {
     bovSetCostMode(e.target.checked ? "s2s" : "default");
+  });
+
+  // Estimate shipping (shared: Overview profit + Month End rows)
+  document.getElementById("bov-estship")?.addEventListener("change", (e) => {
+    bovSetEstShipping(e.target.checked);
   });
 
   // Refresh
@@ -19865,7 +19903,7 @@ function bovRangeParams() {
 const BOV_WIDGET_DEFS = {
   summary: {
     card: "bov-kpi-strip",
-    request: () => ["/summary", { ...bovRangeParams(), open_scope: bovState.openInRange ? "range" : "all", ...bovStoreParams(), ...bovCostParams() }],
+    request: () => ["/summary", { ...bovRangeParams(), open_scope: bovState.openInRange ? "range" : "all", ...bovStoreParams(), ...bovCostParams(), ...bovShipParams() }],
     render: () => {
       bovRenderKpis();
       bovRenderInvoices();   // margin-floor alerts (from the summary) tint the invoice rows
@@ -19873,7 +19911,7 @@ const BOV_WIDGET_DEFS = {
   },
   trend: {
     card: "bov-trend-card",
-    request: () => ["/sales/trend", { ...bovRangeParams(), bucket: bovResolvedBucket(), ...bovStoreParams(), ...bovCostParams() }],
+    request: () => ["/sales/trend", { ...bovRangeParams(), bucket: bovResolvedBucket(), ...bovStoreParams(), ...bovCostParams(), ...bovShipParams() }],
     render: () => {
       bovRenderTrendChart();
       bovRenderMarginChart();
@@ -20427,7 +20465,8 @@ function bovRenderKpis() {
       const boCoverage = bo && bo.cost_coverage != null && bo.units ? bo.cost_coverage : null;
       const pf = [
         { k: "cost", v: money(tot.cost), title: bovCostBasisLabel() },
-        tot.shipping_cost ? { k: "shipping", v: money(tot.shipping_cost), title: "BackOffice invoice shipping cost (Invoices_tbl.ShippingCost) — already subtracted from profit" } : null,
+        tot.shipping_collected ? { k: "ship collected", v: `+${money(tot.shipping_collected)}`, title: "Shopify shipping paid by customers (total_shipping) — added to profit" } : null,
+        tot.shipping_cost ? { k: "ship cost", v: `−${money(tot.shipping_cost)}`, title: `BackOffice invoice shipping (Invoices_tbl.ShippingCost) + Shopify shipper parcel costs${bovState.estShipping ? " incl. estimates for cost-unknown orders" : ""} — subtracted from profit` } : null,
         margin != null ? { k: "margin", v: `${bovNum(margin).toFixed(1)}%` } : null,
         tot.returns ? { k: "returns", v: money(tot.returns) } : null,
         coverage != null && coverage < 0.999 ? { k: "Shopify cost known", v: `${Math.round(coverage * 100)}%`, vHtml: `<a href="#" class="bov-kpi-link" data-bov-action="missing-cost" title="View and export the products without cost">${Math.round(coverage * 100)}% · view</a>`, tone: "warn", title: "Share of Shopify units whose barcode resolved to a cost in the S2S Items_tbl — margin is partial. Click to see the products." } : null,
@@ -21376,6 +21415,7 @@ function bovRenderTrendChart() {
       if (!bovState.splitSources) {
         rows.push({ label: "Margin", value: t.margin_pct != null ? bovPct(t.margin_pct) : "—", strong: true });
       }
+      if (t.shipping_collected) rows.push({ label: "Shipping collected", value: formatCurrency(t.shipping_collected) });
       if (t.shipping_cost) rows.push({ label: "Shipping cost", value: formatCurrency(t.shipping_cost) });
       if (b && b.total && b.total.orders) rows.push({ label: "Invoices / orders", value: bovInt(b.total.orders) });
       const head = b ? (b.start && b.end && b.start !== b.end ? `${bovDateMed(b.start)} – ${bovDateMed(b.end)}` : bovDateMed(b.start)) : "";
@@ -21459,6 +21499,7 @@ function bovRenderMarginChart() {
         { label: p ? `Previous · ${bovBucketLabelFor(d.bucket, p)}` : "Previous", value: bovPct(prv[i]), color: BOV_COLORS.prev, dashed: true },
         { label: "Profit", value: formatCurrency(t.profit || 0) },
         { label: "Revenue", value: formatCurrency(t.revenue || 0) },
+        t.shipping_collected ? { label: "Shipping collected", value: formatCurrency(t.shipping_collected) } : null,
         t.shipping_cost ? { label: "Shipping cost", value: formatCurrency(t.shipping_cost) } : null,
       ].filter(Boolean);
       return { head: b ? (b.start !== b.end ? `${bovDateMed(b.start)} – ${bovDateMed(b.end)}` : bovDateMed(b.start)) : "", rows };
@@ -23695,7 +23736,6 @@ const monthEndState = {
   loading: false,
   data: null,
   filters: { type: "all", stores: new Set(), search: "" }, // empty stores set = all
-  estimateShipping: false, // apply server-computed estimates to rows missing a parcel
   abort: null,
   progressLog: [],
 };
@@ -23712,14 +23752,12 @@ function meLoadPrefs() {
     const p = JSON.parse(localStorage.getItem(ME_PREFS_KEY) || "{}");
     if (["all", "backoffice", "shopify"].includes(p.type)) monthEndState.filters.type = p.type;
     if (p.sort && p.sort.key) bovState.sort.monthEnd = { key: String(p.sort.key), dir: p.sort.dir === "asc" ? "asc" : "desc" };
-    monthEndState.estimateShipping = p.estimate_shipping === true;
   } catch (e) { /* corrupt prefs — defaults win */ }
 }
 
 function meSavePrefs() {
   try {
-    localStorage.setItem(ME_PREFS_KEY, JSON.stringify({ type: monthEndState.filters.type, sort: bovState.sort.monthEnd,
-      estimate_shipping: monthEndState.estimateShipping }));
+    localStorage.setItem(ME_PREFS_KEY, JSON.stringify({ type: monthEndState.filters.type, sort: bovState.sort.monthEnd }));
   } catch (e) { /* storage full/blocked — non-fatal */ }
 }
 
@@ -23755,18 +23793,6 @@ function loadMonthEndPage() {
       if (sel.has(id)) sel.delete(id); else sel.add(id);
       renderMonthEnd();
     });
-
-    const estToggle = document.getElementById("me-estimate");
-    if (estToggle) {
-      estToggle.checked = monthEndState.estimateShipping;
-      estToggle.closest(".bov-cost-toggle")?.classList.toggle("is-on", monthEndState.estimateShipping);
-      estToggle.addEventListener("change", () => {
-        monthEndState.estimateShipping = estToggle.checked;
-        estToggle.closest(".bov-cost-toggle")?.classList.toggle("is-on", estToggle.checked);
-        meSavePrefs();
-        renderMonthEnd();
-      });
-    }
 
     let searchTimer = null;
     document.getElementById("me-search")?.addEventListener("input", (e) => {
@@ -23892,7 +23918,7 @@ function meApplyEstimate(r) {
 function monthEndVisibleRows() {
   const d = monthEndState.data;
   let rows = (d && d.rows) || [];
-  if (monthEndState.estimateShipping) rows = rows.map(meApplyEstimate);
+  if (bovState.estShipping) rows = rows.map(meApplyEstimate);
   const f = monthEndState.filters;
   if (f.type !== "all") rows = rows.filter((r) => r.source === f.type);
   if (f.stores.size) rows = rows.filter((r) => f.stores.has(r.store_id));

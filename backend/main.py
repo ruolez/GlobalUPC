@@ -10182,13 +10182,34 @@ def _bov_make_conn_cost_lookup(conn, field: str = "unit_cost"):
     return lookup
 
 
+def _bov_apply_ship_cost(res: Dict[str, Any], day_costs: Optional[Dict[Any, float]]) -> None:
+    """Fold per-day Shopify parcel costs into one store's series result —
+    buckets first, then the matching period totals — so profit stays derived."""
+    if not day_costs:
+        return
+    for which, tkey in (("current", "totals"), ("previous", "previous_totals")):
+        total_amt = 0.0
+        for b in res.get(which) or []:
+            bs = date.fromisoformat(b["start"])
+            be = date.fromisoformat(b["end"])
+            amt = sum(v for d, v in day_costs.items() if bs <= d <= be)
+            if amt:
+                bov.add_shipping_cost(b["totals"], amt)
+                total_amt += amt
+        if total_amt and res.get(tkey):
+            bov.add_shipping_cost(res[tkey], total_amt)
+
+
 async def _bov_sales_trend(db: Session, cfg, period: bov.Period, bucket: str,
                            sources: List[str], only_ids: Optional[Set[int]] = None,
-                           cost_mode: str = "default") -> Dict[str, Any]:
+                           cost_mode: str = "default", est_shipping: bool = False) -> Dict[str, Any]:
     """
     Shared by /summary (sales block) and /sales/trend.
     cost_mode 'default': BackOffice = each store's own Items_tbl.UnitCost, Shopify = S2S Items_tbl.UnitPriceC.
     cost_mode 's2s': everything = S2S Items_tbl.UnitCost.
+    Shopify profit additionally gets shipping collected (mirror total_shipping)
+    minus shipper parcel costs; est_shipping fills cost-unknown orders with the
+    shared estimation chain (see bov.estimate_ship_cost).
     """
     warnings: List[str] = []
     src_status: Dict[str, Dict[str, Any]] = {}
@@ -10244,9 +10265,70 @@ async def _bov_sales_trend(db: Session, cfg, period: bov.Period, bucket: str,
                                      "store_names": [s["name"] for s in shopify_stores], "skipped_stores": skipped}
             for st in usable:
                 tasks[f"shopify:{st['id']}"] = bov.compute_shopify_series(st, st["_tz"], period, bucket, cost_lookup)
+            # Shipping cost from shipper parcels (mirrors Month End). One window
+            # aggregate — no exact IN(...) sweep here, the summary must stay fast.
+            shipper_store = _resolve_shipper_store_soft(db) if usable else None
+            if usable and not shipper_store:
+                warnings.append("Shipper store not configured — Shopify shipping cost unavailable")
+            if shipper_store:
+                win_start = (period.prev_start - timedelta(days=bov.SHIP_EST_LOOKBACK_DAYS)
+                             if est_shipping else period.prev_start)
+                pad_end = (period.end + timedelta(days=_MONTH_END_PARCEL_PAD_DAYS + 1)).isoformat()
+                tasks["parcelwin"] = bov.parcel_costs_window_async(
+                    **_bov_conn_kwargs(shipper_store), date_from=win_start.isoformat(), date_to_excl=pad_end)
+                for st in usable:
+                    tasks[f"shiporders:{st['id']}"] = bov.shopify_ship_orders(
+                        st["id"], st["_tz"], period.prev_start.isoformat(), period.end_excl)
+                    if est_shipping:
+                        tasks[f"shipcmp:{st['id']}"] = bov.month_end_ship_comparables(
+                            st["id"], st["_tz"], win_start.isoformat(), period.end_excl)
 
     keys = list(tasks.keys())
     results = await asyncio.gather(*[tasks[k] for k in keys], return_exceptions=True) if keys else []
+
+    # Pull the shipping lookups out of the fan-out results before the store loop.
+    ship_orders_by_store: Dict[int, List[Dict[str, Any]]] = {}
+    ship_cmp_by_store: Dict[int, List[Dict[str, Any]]] = {}
+    parcel_map: Dict[str, Dict[str, float]] = {}
+    parcels_ok = False
+    store_pairs: List[Tuple[str, Any]] = []
+    for k, res in zip(keys, results):
+        if k == "parcelwin":
+            if isinstance(res, Exception):
+                warnings.append(f"Shipper parcels lookup failed — Shopify shipping cost unavailable: {res}")
+            else:
+                ok, err, pmap = res
+                if ok:
+                    parcel_map, parcels_ok = pmap, True
+                else:
+                    warnings.append(f"Shipper parcels lookup failed — Shopify shipping cost unavailable: {err}")
+        elif k.startswith("shiporders:"):
+            if isinstance(res, Exception):
+                warnings.append(f"Shopify shipping orders lookup failed: {res}")
+            else:
+                ship_orders_by_store[int(k.split(":", 1)[1])] = res
+        elif k.startswith("shipcmp:"):
+            if not isinstance(res, Exception):
+                ship_cmp_by_store[int(k.split(":", 1)[1])] = res
+        else:
+            store_pairs.append((k, res))
+
+    ship_cost_maps: Dict[int, Dict[Any, float]] = {}
+    if parcels_ok:
+        sb_pools, gl_pools, gl_all = (bov.build_ship_pools(ship_cmp_by_store, parcel_map)
+                                      if est_shipping else ({}, {}, []))
+        for sid2, orders in ship_orders_by_store.items():
+            m: Dict[Any, float] = {}
+            for o in orders:
+                parcel = parcel_map.get(bov.normalize_order_number(o["name"]))
+                cost = float(parcel["cost"]) if parcel and float(parcel["cost"] or 0) > 0 else None
+                if cost is None and est_shipping:
+                    cost, _n, _cross, _near = bov.estimate_ship_cost(
+                        sb_pools.get(sid2) or {}, gl_pools, gl_all, o["state"], o["total"])
+                if cost:
+                    m[o["day"]] = m.get(o["day"], 0.0) + cost
+            if m:
+                ship_cost_maps[sid2] = m
     if "shopify" in sources and shopify_stores:
         failed = getattr(cost_lookup, "failed", None)
         if failed:
@@ -10254,14 +10336,14 @@ async def _bov_sales_trend(db: Session, cfg, period: bov.Period, bucket: str,
     if s2s_lookup is not None:
         # S2S mode: re-cost every BackOffice day from units × S2S Items_tbl.UnitCost by UPC.
         upcs: Set[str] = set()
-        for k, res in zip(keys, results):
+        for k, res in store_pairs:
             if k.startswith("backoffice:") and not isinstance(res, Exception) and res[0]:
                 upcs.update(u for (_d, u, _n) in (res[2].get("units_by_upc") or []) if u)
         unit_costs = await s2s_lookup(sorted(upcs)) if (upcs and getattr(s2s_lookup, "configured", False)) else {}
         failed = getattr(s2s_lookup, "failed", None)
         if failed:
             warnings.append(f"S2S cost lookup failed — margin unavailable: {failed}")
-        for k, res in zip(keys, results):
+        for k, res in store_pairs:
             if k.startswith("backoffice:") and not isinstance(res, Exception) and res[0]:
                 bov.recost_backoffice_days(res[2], unit_costs)
 
@@ -10278,11 +10360,13 @@ async def _bov_sales_trend(db: Session, cfg, period: bov.Period, bucket: str,
         return {"store_id": sid, "store_name": name, "source": source,
                 "revenue": round(float(t.get("revenue") or 0), 2), "cost": round(float(t.get("cost") or 0), 2),
                 "profit": round(float(t.get("profit") or 0), 2),
-                "shipping_cost": round(float(t.get("shipping_cost") or 0), 2), "margin_pct": t.get("margin_pct"),
+                "shipping_cost": round(float(t.get("shipping_cost") or 0), 2),
+                "shipping_collected": round(float(t.get("shipping_collected") or 0), 2),
+                "margin_pct": t.get("margin_pct"),
                 "orders": int(t.get("orders") or 0), "units": float(t.get("units") or 0),
                 "cost_coverage": t.get("cost_coverage"), "error": error}
 
-    for k, res in zip(keys, results):
+    for k, res in store_pairs:
         name = k.split(":", 1)[0]
         sid = int(k.split(":", 1)[1]) if ":" in k else 0
         if isinstance(res, Exception):
@@ -10307,6 +10391,7 @@ async def _bov_sales_trend(db: Session, cfg, period: bov.Period, bucket: str,
             per_store.append(_store_row(bo_names_by_key.get(k, k), sid, "backoffice",
                                         bov.compute_backoffice_series(payload, period, bucket)["totals"]))
         else:
+            _bov_apply_ship_cost(res, ship_cost_maps.get(sid))
             per_store.append(_store_row(sh_name_by_id.get(sid, k), sid, "shopify", res.get("totals")))
             sh = per_source.get("shopify")
             if sh is None:
@@ -10432,12 +10517,14 @@ async def get_business_overview_summary(
     store_ids: Optional[str] = None,
     open_scope: str = "range",
     cost_mode: str = "default",
+    est_shipping: str = "0",
     db: Session = Depends(get_db),
 ):
     cfg = _bov_config(db)
     period = _bov_period(cfg, preset, date_from, date_to)
     only = _bov_parse_store_ids(store_ids)
     cmode = _bov_cost_mode(cost_mode)
+    est_ship = str(est_shipping).strip().lower() in ("1", "true", "yes")
     # Open (unshipped) invoices: "range" = invoiced within the selected period
     # (default — the whole historical backlog is rarely what the owner wants);
     # "all" = every unshipped invoice regardless of date.
@@ -10454,7 +10541,8 @@ async def get_business_overview_summary(
         _bov_incoming_block(db, cfg, include_list=False, only_ids=only),
         _bov_placed_block(db, cfg, include_list=False, only_ids=only),
         _bov_received_block(db, cfg, period, "day", include_list=False, only_ids=only),
-        _bov_sales_trend(db, cfg, period, "day", ["backoffice", "shopify"], only_ids=only, cost_mode=cmode),
+        _bov_sales_trend(db, cfg, period, "day", ["backoffice", "shopify"], only_ids=only, cost_mode=cmode,
+                         est_shipping=est_ship),
         _bov_shopify_open_orders_block(db, cfg, only_ids=only),
         return_exceptions=True,
     )
@@ -10750,6 +10838,7 @@ async def get_business_overview_sales_trend(
     preset: Optional[str] = None, date_from: Optional[str] = None, date_to: Optional[str] = None,
     bucket: str = "day", sources: str = "backoffice,shopify",
     store_ids: Optional[str] = None, cost_mode: str = "default",
+    est_shipping: str = "0",
     db: Session = Depends(get_db),
 ):
     cfg = _bov_config(db)
@@ -10758,7 +10847,8 @@ async def get_business_overview_sales_trend(
     src = [s.strip().lower() for s in (sources or "").split(",") if s.strip()]
     src = [s for s in src if s in ("backoffice", "shopify")] or ["backoffice", "shopify"]
     res = await _bov_sales_trend(db, cfg, period, b, src, only_ids=_bov_parse_store_ids(store_ids),
-                                 cost_mode=_bov_cost_mode(cost_mode))
+                                 cost_mode=_bov_cost_mode(cost_mode),
+                                 est_shipping=str(est_shipping).strip().lower() in ("1", "true", "yes"))
     return BOVSalesTrendResponse(
         period=BOVPeriod(**res["period"]),
         bucket=b,
@@ -11856,17 +11946,9 @@ _MONTH_END_PARCEL_PAD_DAYS = 45
 # instead of the 5k MAX_LIST_LIMIT the interactive BOV lists use.
 _MONTH_END_MAX_ROWS = 20000
 
-# Estimated shipping for orders without a parcel: average the real parcel costs
-# of same-store orders shipped to the same state with a total within
-# ±max($10, 10% of the total) — the flat floor serves typical orders, the
-# percentage keeps large totals from having an impossibly narrow window.
-# Comparables come from the period plus this many days of lookback.
-_MONTH_END_ESTIMATE_LOOKBACK_DAYS = 90
-_MONTH_END_ESTIMATE_TOLERANCE = 10.0
-_MONTH_END_ESTIMATE_TOLERANCE_PCT = 0.10
-# Orders with no comparable even in the proportional window fall back to the
-# average of the k orders closest by total (same state, then any state).
-_MONTH_END_ESTIMATE_NEAREST_K = 5
+# Estimation rule + constants live in business_overview_helper (shared with the
+# Overview summary): bov.SHIP_EST_LOOKBACK_DAYS, bov.build_ship_pools,
+# bov.estimate_ship_cost.
 
 
 async def _month_end_payload(db: Session, date_from: Optional[str], date_to: Optional[str],
@@ -11913,7 +11995,7 @@ async def _month_end_payload(db: Session, date_from: Optional[str], date_to: Opt
             limit=min(limit, bov.MAX_LIST_LIMIT), sort_by="invoice_date", sort_order="desc", include_list=True,
             today=period.today, excluded_names=excl_sales, cost_mode="default")
 
-    est_start = (period.start - timedelta(days=_MONTH_END_ESTIMATE_LOOKBACK_DAYS)).isoformat()
+    est_start = (period.start - timedelta(days=bov.SHIP_EST_LOOKBACK_DAYS)).isoformat()
 
     async def _sh(st: Dict[str, Any]):
         (ok, err, payload), lines, comparables = await asyncio.gather(
@@ -12062,48 +12144,10 @@ async def _month_end_payload(db: Session, date_from: Optional[str], date_to: Opt
 
     parcels_usable = bool(shipper_store) and not shipper["error"]
 
-    # ---- Comparable pools for estimating missing shipping: per store, plus a
-    # cross-store pool for stores with no parcel history of their own (e.g. a
-    # store that ships outside the shipper database entirely).
-    store_buckets: Dict[int, Dict[str, List[Tuple[float, float]]]] = {}
-    global_buckets: Dict[str, List[Tuple[float, float]]] = {}
-    if parcels_usable:
-        for st, payload in sh_ok:
-            b = store_buckets.setdefault(st["id"], {})
-            for c in payload.get("comparables") or []:
-                p = parcel_map.get(bov.normalize_order_number(c["name"]))
-                # A matched parcel with cost <= 0 means the cost was never
-                # recorded — it is not a valid comparable.
-                if p is None or float(p["cost"] or 0) <= 0 or c["total"] is None or not c["state"]:
-                    continue
-                pair = (float(c["total"]), float(p["cost"]))
-                b.setdefault(c["state"], []).append(pair)
-                global_buckets.setdefault(c["state"], []).append(pair)
-        for bk in store_buckets.values():
-            for pairs in bk.values():
-                pairs.sort()
-        for pairs in global_buckets.values():
-            pairs.sort()
-
-    def _ship_estimate(buckets: Dict[str, List[Tuple[float, float]]],
-                       state: str, total: float) -> Tuple[Optional[float], Optional[int]]:
-        pairs = buckets.get(state) or []
-        tol = max(_MONTH_END_ESTIMATE_TOLERANCE, total * _MONTH_END_ESTIMATE_TOLERANCE_PCT)
-        lo = bisect.bisect_left(pairs, (total - tol, float("-inf")))
-        hi = bisect.bisect_right(pairs, (total + tol, float("inf")))
-        if hi <= lo:
-            return None, None
-        return round(sum(c for _t, c in pairs[lo:hi]) / (hi - lo), 2), hi - lo
-
-    def _ship_nearest(pairs: List[Tuple[float, float]], total: float,
-                      k: int = _MONTH_END_ESTIMATE_NEAREST_K) -> Tuple[Optional[float], Optional[int]]:
-        # Last-resort estimate: the k orders closest by total, however far away.
-        if not pairs:
-            return None, None
-        best = sorted(pairs, key=lambda p: abs(p[0] - total))[:k]
-        return round(sum(c for _t, c in best) / len(best), 2), len(best)
-
-    global_all_pairs: List[Tuple[float, float]] = [p for ps in global_buckets.values() for p in ps]
+    # ---- Comparable pools for estimating missing shipping (shared helpers)
+    comparables_by_store = {st["id"]: (payload.get("comparables") or []) for st, payload in sh_ok}
+    store_buckets, global_buckets, global_all_pairs = (
+        bov.build_ship_pools(comparables_by_store, parcel_map) if parcels_usable else ({}, {}, []))
 
     # ---- Shopify rows: profit = product profit + shipping collected − parcels cost
     for st, payload in sh_ok:
@@ -12120,25 +12164,10 @@ async def _month_end_payload(db: Session, date_from: Optional[str], date_to: Opt
             cost_unknown = missing or bool(parcel is not None and float(parcel["cost"] or 0) <= 0)
             est = est_n = None
             est_cross = est_near = False
-            if cost_unknown and o.get("total_price") is not None:
-                t0 = float(o["total_price"])
-                state = o.get("ship_state")
-                sb = store_buckets.get(st["id"]) or {}
-                if state:
-                    est, est_n = _ship_estimate(sb, state, t0)
-                    if est is None:
-                        est, est_n = _ship_estimate(global_buckets, state, t0)
-                        est_cross = est is not None
-                    if est is None:
-                        est, est_n = _ship_nearest(sb.get(state) or [], t0)
-                        est_near = est is not None
-                    if est is None:
-                        est, est_n = _ship_nearest(global_buckets.get(state) or [], t0)
-                        est_cross = est_near = est is not None
-                if est is None:
-                    # No usable state data anywhere — closest totals across all states.
-                    est, est_n = _ship_nearest(global_all_pairs, t0)
-                    est_cross = est_near = est is not None
+            if cost_unknown:
+                est, est_n, est_cross, est_near = bov.estimate_ship_cost(
+                    store_buckets.get(st["id"]) or {}, global_buckets, global_all_pairs,
+                    o.get("ship_state"), o.get("total_price"))
             pp = costing["product_profit"]
             profit = (round(pp + (o.get("total_shipping") or 0.0) - (ship_cost or 0.0), 2)
                       if pp is not None else None)
