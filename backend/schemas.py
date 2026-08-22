@@ -2000,7 +2000,7 @@ class MonthEndRow(BaseModel):
     shipping_cost: Optional[float] = None        # BackOffice Invoices_tbl.ShippingCost | Σ shipper parcels.cost
     shipping_missing: bool = False               # Shopify: shipper configured but no parcel matched
     ship_state: Optional[str] = None             # Shopify: shipping address province/state code
-    shipping_estimate: Optional[float] = None    # Shopify: avg parcel cost of same-state orders, total ±$10, 90d lookback; emitted when no parcel matched OR the matched parcel's cost is 0/unrecorded
+    shipping_estimate: Optional[float] = None    # Shopify: avg parcel cost of same-state orders, total ±max($10, 10%), 90d lookback; emitted when no parcel matched OR the matched parcel's cost is 0/unrecorded
     shipping_estimate_n: Optional[int] = None    # number of comparable orders behind the estimate
     shipping_estimate_cross: Optional[bool] = None  # True when the pool is all stores (own store has no candidates)
     parcels: Optional[int] = None                # Shopify: matched parcel/box count

@@ -23940,7 +23940,7 @@ function meShipCostCell(r) {
     const scope = r.shipping_estimate_cross ? "across all stores — this store has no parcel history" : "same store";
     const reason = r.shipping_missing ? "no parcel found for this order" : "the matched parcel has no recorded cost";
     const why = `Estimated from ${bovInt(r.shipping_estimate_n || 0)} similar order${r.shipping_estimate_n === 1 ? "" : "s"} ` +
-      `(${scope}, shipped to ${r.ship_state || "the same state"}, total ±$10, last 90 days) — ${reason}`;
+      `(${scope}, shipped to ${r.ship_state || "the same state"}, total ±$10 or ±10%, last 90 days) — ${reason}`;
     return `<span class="me-ship-est" title="${escapeHtml(why)}">~${escapeHtml(bovMoney(r.shipping_cost))}</span>` +
       `<span class="bov-cell-sub">est · ${bovInt(r.shipping_estimate_n || 0)}${r.shipping_estimate_cross ? " · all stores" : ""}</span>`;
   }

@@ -11857,10 +11857,13 @@ _MONTH_END_PARCEL_PAD_DAYS = 45
 _MONTH_END_MAX_ROWS = 20000
 
 # Estimated shipping for orders without a parcel: average the real parcel costs
-# of same-store orders shipped to the same state with a total within ±$10,
-# drawn from the period plus this many days of lookback.
+# of same-store orders shipped to the same state with a total within
+# ±max($10, 10% of the total) — the flat floor serves typical orders, the
+# percentage keeps large totals from having an impossibly narrow window.
+# Comparables come from the period plus this many days of lookback.
 _MONTH_END_ESTIMATE_LOOKBACK_DAYS = 90
 _MONTH_END_ESTIMATE_TOLERANCE = 10.0
+_MONTH_END_ESTIMATE_TOLERANCE_PCT = 0.10
 
 
 async def _month_end_payload(db: Session, date_from: Optional[str], date_to: Optional[str],
@@ -12082,8 +12085,9 @@ async def _month_end_payload(db: Session, date_from: Optional[str], date_to: Opt
     def _ship_estimate(buckets: Dict[str, List[Tuple[float, float]]],
                        state: str, total: float) -> Tuple[Optional[float], Optional[int]]:
         pairs = buckets.get(state) or []
-        lo = bisect.bisect_left(pairs, (total - _MONTH_END_ESTIMATE_TOLERANCE, float("-inf")))
-        hi = bisect.bisect_right(pairs, (total + _MONTH_END_ESTIMATE_TOLERANCE, float("inf")))
+        tol = max(_MONTH_END_ESTIMATE_TOLERANCE, total * _MONTH_END_ESTIMATE_TOLERANCE_PCT)
+        lo = bisect.bisect_left(pairs, (total - tol, float("-inf")))
+        hi = bisect.bisect_right(pairs, (total + tol, float("inf")))
         if hi <= lo:
             return None, None
         return round(sum(c for _t, c in pairs[lo:hi]) / (hi - lo), 2), hi - lo
