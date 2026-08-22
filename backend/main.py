@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, date, timedelta, timezone
 import uvicorn
 import asyncio
+import bisect
 import time
 import calendar
 import json
@@ -11855,6 +11856,12 @@ _MONTH_END_PARCEL_PAD_DAYS = 45
 # instead of the 5k MAX_LIST_LIMIT the interactive BOV lists use.
 _MONTH_END_MAX_ROWS = 20000
 
+# Estimated shipping for orders without a parcel: average the real parcel costs
+# of same-store orders shipped to the same state with a total within ±$10,
+# drawn from the period plus this many days of lookback.
+_MONTH_END_ESTIMATE_LOOKBACK_DAYS = 90
+_MONTH_END_ESTIMATE_TOLERANCE = 10.0
+
 
 async def _month_end_payload(db: Session, date_from: Optional[str], date_to: Optional[str],
                              limit: int, store_ids: Optional[str] = None, progress=None) -> Dict[str, Any]:
@@ -11900,14 +11907,18 @@ async def _month_end_payload(db: Session, date_from: Optional[str], date_to: Opt
             limit=min(limit, bov.MAX_LIST_LIMIT), sort_by="invoice_date", sort_order="desc", include_list=True,
             today=period.today, excluded_names=excl_sales, cost_mode="default")
 
+    est_start = (period.start - timedelta(days=_MONTH_END_ESTIMATE_LOOKBACK_DAYS)).isoformat()
+
     async def _sh(st: Dict[str, Any]):
-        (ok, err, payload), lines = await asyncio.gather(
+        (ok, err, payload), lines, comparables = await asyncio.gather(
             bov.month_end_shopify_orders(st["id"], st["_tz"], period.start.isoformat(), period.end_excl, limit),
             bov.month_end_shopify_lines(st["id"], st["_tz"], period.start.isoformat(), period.end_excl, sh_excl),
+            bov.month_end_ship_comparables(st["id"], st["_tz"], est_start, period.end_excl),
         )
         if not ok:
             return ok, err, payload
         payload["lines"] = lines
+        payload["comparables"] = comparables
         return True, None, payload
 
     await note(f"Loading orders from {len(sales_stores)} BackOffice store(s) and "
@@ -12015,11 +12026,13 @@ async def _month_end_payload(db: Session, date_from: Optional[str], date_to: Opt
                 return {}
             await note(f"Summing shipper parcel costs for {len(all_names):,} orders…")
             # One date-bounded aggregate covers a period's parcels; only names it
-            # missed (late shipments) fall back to the exact IN(...) lookup.
+            # missed (late shipments) fall back to the exact IN(...) lookup. The
+            # window starts at the estimate lookback so comparable orders get
+            # their real parcel costs from the same single query.
             pad_end = (period.end + timedelta(days=_MONTH_END_PARCEL_PAD_DAYS + 1)).isoformat()
             ok, err, pmap = await bov.parcel_costs_window_async(
                 **_bov_conn_kwargs(shipper_store),
-                date_from=period.start.isoformat(), date_to_excl=pad_end)
+                date_from=est_start, date_to_excl=pad_end)
             if not ok:
                 shipper["error"] = err
                 warnings.append(f"Shipper parcels lookup failed — Shopify shipping cost unavailable: {err}")
@@ -12046,12 +12059,33 @@ async def _month_end_payload(db: Session, date_from: Optional[str], date_to: Opt
     # ---- Shopify rows: profit = product profit + shipping collected − parcels cost
     for st, payload in sh_ok:
         lines_by_order = payload.get("lines") or {}
+        # state -> sorted (total, cost) pairs from lookback orders with a real
+        # parcel cost — the comparable pool for estimating missing shipping.
+        buckets: Dict[str, List[Tuple[float, float]]] = {}
+        if parcels_usable:
+            for c in payload.get("comparables") or []:
+                p = parcel_map.get(bov.normalize_order_number(c["name"]))
+                if p is None or c["total"] is None or not c["state"]:
+                    continue
+                buckets.setdefault(c["state"], []).append((float(c["total"]), float(p["cost"])))
+            for pairs in buckets.values():
+                pairs.sort()
         for o in payload.get("orders") or []:
             costing = bov.shopify_order_costing(lines_by_order.get(o["shopify_id"]) or [], unit_costs)
             parcel = parcel_map.get(bov.normalize_order_number(o.get("name")))
             if parcels_usable:
                 shipper["matched" if parcel else "unmatched"] += 1
             ship_cost = parcel["cost"] if parcel else None
+            missing = bool(parcels_usable and parcel is None)
+            est = est_n = None
+            if missing and o.get("ship_state") and o.get("total_price") is not None:
+                pairs = buckets.get(o["ship_state"]) or []
+                t0 = float(o["total_price"])
+                lo = bisect.bisect_left(pairs, (t0 - _MONTH_END_ESTIMATE_TOLERANCE, float("-inf")))
+                hi = bisect.bisect_right(pairs, (t0 + _MONTH_END_ESTIMATE_TOLERANCE, float("inf")))
+                if hi > lo:
+                    est = round(sum(c for _t, c in pairs[lo:hi]) / (hi - lo), 2)
+                    est_n = hi - lo
             pp = costing["product_profit"]
             profit = (round(pp + (o.get("total_shipping") or 0.0) - (ship_cost or 0.0), 2)
                       if pp is not None else None)
@@ -12067,7 +12101,10 @@ async def _month_end_payload(db: Session, date_from: Optional[str], date_to: Opt
                 "product_profit": pp,
                 "shipping_collected": o.get("total_shipping"),
                 "shipping_cost": ship_cost,
-                "shipping_missing": bool(parcels_usable and parcel is None),
+                "shipping_missing": missing,
+                "ship_state": o.get("ship_state"),
+                "shipping_estimate": est,
+                "shipping_estimate_n": est_n,
                 "parcels": int(parcel["parcels"]) if parcel else None,
                 "profit": profit,
                 "cost_coverage": costing["cost_coverage"],

@@ -8483,6 +8483,8 @@ tr.bov-line-void td { opacity: 0.55; text-decoration: line-through; }
 .me-store-name { vertical-align: middle; }
 
 .me-ship-missing { color: var(--warning); }
+.me-ship-est { color: var(--info); font-variant-numeric: tabular-nums; }
+.me-est-toggle { height: 32px; flex: none; white-space: nowrap; }
 
 .me-range-label { font-size: 0.8125rem; font-weight: 600; color: var(--text-primary); }
 

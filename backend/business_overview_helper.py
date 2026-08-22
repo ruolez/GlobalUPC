@@ -2511,7 +2511,7 @@ def _month_end_shopify_orders_sync(store_id: int, tz: str, date_from: str, date_
             count = int(conn.execute(text(f"SELECT COUNT(*) FROM shopify_orders o WHERE {where}"), params).scalar() or 0)
             rows = conn.execute(text(f"""
                 SELECT o.shopify_id, o.name, (o.created_at AT TIME ZONE :tz) AS created_local, o.financial_status,
-                       o.total_price, o.total_shipping, c.display_name AS customer_name, o.email
+                       o.total_price, o.total_shipping, o.ship_province_code, c.display_name AS customer_name, o.email
                 FROM shopify_orders o
                 LEFT JOIN shopify_customers c ON c.store_id = o.store_id AND c.shopify_id = o.customer_shopify_id
                 WHERE {where}
@@ -2525,6 +2525,7 @@ def _month_end_shopify_orders_sync(store_id: int, tz: str, date_from: str, date_
             "financial_status": r["financial_status"],
             "total_price": _fo(r["total_price"]),
             "total_shipping": _fo(r["total_shipping"]),
+            "ship_state": _s(r["ship_province_code"]) or None,
             "customer_name": _s(r["customer_name"]) or _s(r["email"]),
         } for r in rows]
         return True, None, {"orders": orders, "count": count, "truncated": count > len(orders)}
@@ -2557,6 +2558,25 @@ def _month_end_shopify_lines_sync(store_id: int, tz: str, date_from: str, date_t
                                           "end_excl": date_to_excl, **excl_params}).mappings():
             out.setdefault(int(r["order_shopify_id"]), []).append((r["barcode"], _f(r["units"]), _f(r["revenue"])))
     return out
+
+
+def _month_end_ship_comparables_sync(store_id: int, tz: str, date_from: str, date_to_excl: str,
+                                     ) -> List[Dict[str, Any]]:
+    """Slim (name, total, state) list used to estimate missing shipping costs."""
+    tz = _safe_tz(tz)
+    sql = f"""
+        SELECT o.name, o.total_price, o.ship_province_code
+        FROM shopify_orders o
+        WHERE o.store_id = :sid AND {_SHOPIFY_COMPLETED} AND o.fulfillment_status = 'FULFILLED'
+          AND o.ship_province_code IS NOT NULL
+          AND o.created_at >= (CAST(:start AS date)::timestamp AT TIME ZONE :tz)
+          AND o.created_at <  (CAST(:end_excl AS date)::timestamp AT TIME ZONE :tz)
+    """
+    with engine.connect() as conn:
+        rows = conn.execute(text(sql), {"sid": int(store_id), "tz": tz,
+                                        "start": date_from, "end_excl": date_to_excl}).mappings().all()
+    return [{"name": _s(r["name"]), "total": _fo(r["total_price"]), "state": _s(r["ship_province_code"])}
+            for r in rows]
 
 
 def shopify_order_costing(lines: List[Tuple[Optional[str], float, float]],
@@ -2743,6 +2763,10 @@ async def month_end_shopify_orders(store_id: int, tz: str, date_from: str, date_
 async def month_end_shopify_lines(store_id: int, tz: str, date_from: str, date_to_excl: str,
                                   exclusions: Optional[List[Dict[str, Any]]] = None):
     return await asyncio.to_thread(_month_end_shopify_lines_sync, store_id, tz, date_from, date_to_excl, exclusions)
+
+
+async def month_end_ship_comparables(store_id: int, tz: str, date_from: str, date_to_excl: str):
+    return await asyncio.to_thread(_month_end_ship_comparables_sync, store_id, tz, date_from, date_to_excl)
 
 
 async def parcel_costs_async(**kw):
