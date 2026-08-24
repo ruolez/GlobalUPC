@@ -18824,7 +18824,7 @@ function bovSavePrefs() {
 // Lifecycle
 // ---------------------------------------------------------------------------
 
-const BOV_SECTIONS = ["overview", "quotations", "products", "invoices", "purchasing", "shopify", "month-end"];
+const BOV_SECTIONS = ["overview", "quotations", "products", "invoices", "purchasing", "shopify", "month-end", "inventory"];
 const BOV_CARD_SECTION = {
   "bov-trend-card": "overview", "bov-margin-card": "overview", "bov-top-card": "overview", "bov-kpi-strip": "overview",
   "bov-quotations-card": "quotations", "bov-products-card": "products", "bov-invoices-card": "invoices",
@@ -18847,6 +18847,7 @@ function bovSetSection(id, opts = {}) {
   // SVG charts measure clientWidth, which is 0 while a panel is hidden.
   if (id === "overview") bovScheduleChartRender();
   if (id === "month-end") loadMonthEndPage();   // lazy init + first fetch
+  if (id === "inventory") loadInventoryTab();   // lazy init + first fetch
   if (changed && !opts.silent && !opts.keepScroll) {
     const sticky = document.querySelector("#business-overview-page .bov-sticky");
     const top = sticky ? sticky.getBoundingClientRect().bottom : 0;
@@ -20005,6 +20006,11 @@ async function bovFetchAll(opts = {}) {
   if (!opts.only && monthEndState.initialized) {
     monthEndState.data = null;
     if (bovState.section === "month-end") fetchMonthEnd();
+  }
+  // Inventory shares the topbar period the same way.
+  if (!opts.only && invState.initialized) {
+    invState.hasData = false;
+    if (bovState.section === "inventory") fetchInventoryReport();
   }
 
   const promises = keys.map((key) => {
@@ -24148,3 +24154,854 @@ function renderMonthEnd() {
 }
 
 // ===== End Month End =====
+
+// ===== BOV Inventory tab =====
+// Clone of the Sales report as a Business Overview tab. Config is read-only
+// from the Sales page (GET /sales/config); the period follows the BOV topbar.
+
+const INV_COLUMNS = [
+  { key: "upc",            label: "UPC",         soldOnly: false, baseWidth: 10, align: "left",  thStyle: "",                    tdStyle: "font-family: monospace; font-size: 0.8125rem",                                                                      hasFilter: true },
+  { key: "description",    label: "Description", soldOnly: false, baseWidth: 25, align: "left",  thStyle: "",                    tdStyle: "font-size: 0.8125rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap",                               hasFilter: true },
+  { key: "subcategory",    label: "Subcategory", soldOnly: false, baseWidth: 12, align: "left",  thStyle: "",                    tdStyle: "font-size: 0.8125rem; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap", hasFilter: true },
+  { key: "bin_location",   label: "Bin",         soldOnly: false, baseWidth: 8,  align: "left",  thStyle: "",                    tdStyle: "font-size: 0.8125rem",                                                                                              hasFilter: false },
+  { key: "reorder_level",  label: "Reorder",     soldOnly: false, baseWidth: 6,  align: "right", thStyle: "text-align: right;",  tdStyle: "text-align: right; font-size: 0.8125rem",                                                                           hasFilter: true },
+  { key: "quant_on_hand",  label: "On Hand",     soldOnly: false, baseWidth: 7,  align: "right", thStyle: "text-align: right;",  tdStyle: "text-align: right; font-size: 0.8125rem",                                                                           hasFilter: false },
+  { key: "s2s_cost",       label: "S2S Cost",    soldOnly: false, baseWidth: 7,  align: "right", thStyle: "text-align: right;",  tdStyle: "text-align: right; font-size: 0.8125rem",                                                                           hasFilter: false, money: true },
+  { key: "total_sold",     label: "Sold",        soldOnly: true,  baseWidth: 6,  align: "right", thStyle: "text-align: right;",  tdStyle: "text-align: right; font-size: 0.8125rem",                                                                           hasFilter: false },
+  { key: "total_returned", label: "Returns",     soldOnly: true,  baseWidth: 6,  align: "right", thStyle: "text-align: right;",  tdStyle: "text-align: right; font-size: 0.8125rem; color: var(--warning)",                                                    hasFilter: false },
+  { key: "net_sold",       label: "Net Sold",    soldOnly: true,  baseWidth: 7,  align: "right", thStyle: "text-align: right;",  tdStyle: "text-align: right; font-size: 0.8125rem; font-weight: 600",                                                         hasFilter: false },
+];
+
+let invState = {
+  initialized: false,
+  isLoading: false,
+  hasData: false,
+  abort: null,
+  allProducts: [],
+  filteredProducts: [],
+  viewMode: "all",
+  sortColumn: "net_sold",
+  sortDirection: "desc",
+  currentPage: 0,
+  pageSize: parseInt(localStorage.getItem("inv_page_size") || "100"),
+  summary: null,
+  stores: [],
+  config: null,
+  subcategories: [],
+  allSubcategories: [],
+  selectedSubcategories: [],
+  excludedSubcategories: [],
+  upcFilter: "",
+  descFilter: "",
+  selectedReorderLevels: [],
+  binsFilter: "",
+  hiddenColumns: JSON.parse(localStorage.getItem("inv_hidden_columns") || "[]"),
+};
+
+function invGetVisibleColumns(isSold) {
+  const cols = INV_COLUMNS.filter(col => {
+    if (col.soldOnly && !isSold) return false;
+    return !invState.hiddenColumns.includes(col.key);
+  });
+  const totalBase = cols.reduce((s, c) => s + c.baseWidth, 0);
+  const target = 98;
+  cols.forEach(col => {
+    col.width = ((col.baseWidth / totalBase) * target).toFixed(1) + "%";
+  });
+  return cols;
+}
+
+function invBuildColumnTogglePills() {
+  const container = document.getElementById("inv-column-pills");
+  if (!container) return;
+  container.innerHTML = "";
+  INV_COLUMNS.forEach(col => {
+    const isVisible = !invState.hiddenColumns.includes(col.key);
+    const label = document.createElement("label");
+    label.style.cssText = `display: inline-flex; align-items: center; gap: 0.25rem; font-size: 0.75rem; cursor: pointer; padding: 0.2rem 0.5rem; border-radius: 1rem; border: 1px solid var(--border-color); background: ${isVisible ? "var(--bg-tertiary, rgba(255,255,255,0.08))" : "transparent"}; white-space: nowrap; opacity: ${isVisible ? "1" : "0.5"}; transition: opacity 0.15s, background 0.15s;`;
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = isVisible;
+    cb.style.cssText = "margin: 0; cursor: pointer;";
+    cb.onchange = () => invToggleColumn(col.key);
+    label.appendChild(cb);
+    label.appendChild(document.createTextNode(col.label));
+    container.appendChild(label);
+  });
+}
+
+function invToggleColumn(key) {
+  const idx = invState.hiddenColumns.indexOf(key);
+  if (idx >= 0) {
+    invState.hiddenColumns.splice(idx, 1);
+  } else {
+    const visibleCount = INV_COLUMNS.filter(c => !invState.hiddenColumns.includes(c.key)).length;
+    if (visibleCount <= 1) {
+      showToast("At least one column must remain visible", "warning");
+      invBuildColumnTogglePills();
+      return;
+    }
+    invState.hiddenColumns.push(key);
+  }
+  localStorage.setItem("inv_hidden_columns", JSON.stringify(invState.hiddenColumns));
+  invBuildColumnTogglePills();
+  const filterRow = document.getElementById("inv-table-filters");
+  if (filterRow) filterRow.dataset.viewKey = "";
+  renderInvTable();
+}
+
+function resetInvColumns() {
+  invState.hiddenColumns = [];
+  localStorage.removeItem("inv_hidden_columns");
+  invBuildColumnTogglePills();
+  const filterRow = document.getElementById("inv-table-filters");
+  if (filterRow) filterRow.dataset.viewKey = "";
+  renderInvTable();
+}
+
+async function loadInventoryTab() {
+  if (!invState.initialized) {
+    invState.initialized = true;
+    invBuildColumnTogglePills();
+    const refreshBtn = document.getElementById("inv-refresh");
+    if (refreshBtn) refreshBtn.addEventListener("click", () => {
+      invState.hasData = false;
+      fetchInventoryReport();
+    });
+  }
+
+  try {
+    const config = await apiRequest("/sales/config");
+    if (!config || !config.s2s_store_id) {
+      document.getElementById("inv-not-configured").style.display = "block";
+      document.getElementById("inv-toolbar").style.display = "none";
+      return;
+    }
+    invState.config = config;
+    invState.excludedSubcategories = config.excluded_subcategories || [];
+    document.getElementById("inv-not-configured").style.display = "none";
+    document.getElementById("inv-toolbar").style.display = "block";
+    const sources = document.getElementById("inv-sources-line");
+    if (sources) {
+      const stores = (config.mssql_store_names || []).concat(config.shopify_store_names || []);
+      sources.textContent = `S2S: ${config.s2s_store_name || "?"} · Stores: ${stores.join(", ") || "None"}`;
+    }
+  } catch (e) {
+    document.getElementById("inv-not-configured").style.display = "block";
+    document.getElementById("inv-toolbar").style.display = "none";
+    return;
+  }
+
+  if (!invState.hasData && !invState.isLoading) fetchInventoryReport();
+}
+
+async function fetchInventoryReport() {
+  const config = invState.config;
+  if (!config || !config.s2s_store_id) return;
+
+  const mssqlStoreIds = config.mssql_store_ids || [];
+  const shopifyStoreIds = config.shopify_store_ids || [];
+  if (mssqlStoreIds.length === 0 && shopifyStoreIds.length === 0) {
+    document.getElementById("inv-error").style.display = "block";
+    document.getElementById("inv-error").textContent = "No sales stores configured — pick at least one on the Sales page.";
+    return;
+  }
+
+  // The topbar period can change mid-stream: abort the previous fetch.
+  if (invState.abort) invState.abort.abort();
+  const controller = new AbortController();
+  invState.abort = controller;
+  invState.isLoading = true;
+
+  const range = bovRangeParams();
+  const rangeEl = document.getElementById("inv-range-label");
+  if (rangeEl) rangeEl.textContent = `${bovDateMdy(range.date_from)} – ${bovDateMdy(range.date_to)}`;
+
+  document.getElementById("inv-results").style.display = "none";
+  document.getElementById("inv-empty").style.display = "none";
+  document.getElementById("inv-summary").style.display = "none";
+  document.getElementById("inv-error").style.display = "none";
+  document.getElementById("inv-progress").style.display = "block";
+  const progressList = document.getElementById("inv-progress-list");
+  progressList.innerHTML = "";
+
+  try {
+    const response = await fetch(`${API_BASE}/sales/report/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
+      body: JSON.stringify({
+        mssql_store_ids: mssqlStoreIds,
+        shopify_store_ids: shopifyStoreIds,
+        date_from: range.date_from || null,
+        date_to: range.date_to || null,
+      }),
+    });
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        if (line.startsWith("data: ")) {
+          try {
+            const data = JSON.parse(line.substring(6));
+            invHandleProgress(data, progressList);
+          } catch (e) {
+            // skip malformed
+          }
+        }
+      }
+    }
+  } catch (e) {
+    if (e.name !== "AbortError") {
+      invAddProgressItem(progressList, `Error: ${e.message}`, "var(--danger)");
+    }
+  } finally {
+    if (invState.abort === controller) {
+      invState.abort = null;
+      invState.isLoading = false;
+    }
+  }
+}
+
+function invHandleProgress(data, progressList) {
+  if (data.message && !data.status) {
+    invAddProgressItem(progressList, data.message, "var(--danger)");
+    return;
+  }
+
+  switch (data.status) {
+    case "fetching_products":
+      invAddProgressItem(progressList, "Fetching active products from primary database...", "var(--text-secondary)");
+      break;
+    case "products_fetched":
+      invAddProgressItem(progressList, `Found ${data.count.toLocaleString()} active products`, "var(--success)");
+      break;
+    case "searching_store":
+      invAddProgressItem(progressList, `Searching ${data.store_name} (${data.store_type})...`, "var(--text-secondary)");
+      break;
+    case "completed_store":
+      invAddProgressItem(progressList, `${data.store_name}: ${data.products_found.toLocaleString()} products with sales (${data.completed}/${data.total_stores})`, "var(--success)");
+      break;
+    case "error_store":
+      invAddProgressItem(progressList, `${data.store_name}: ${data.message}`, "var(--danger)");
+      break;
+    case "merging":
+      invAddProgressItem(progressList, "Merging results...", "var(--text-secondary)");
+      break;
+  }
+
+  if (data.products) {
+    document.getElementById("inv-progress").style.display = "none";
+    if (data.products.length === 0) {
+      document.getElementById("inv-empty").style.display = "block";
+    } else {
+      displayInventoryResults(data);
+    }
+  }
+}
+
+function invAddProgressItem(container, text, color) {
+  const li = document.createElement("li");
+  li.style.cssText = `padding: 0.25rem 0; color: ${color};`;
+  li.textContent = text;
+  container.appendChild(li);
+}
+
+function displayInventoryResults(data) {
+  invState.hasData = true;
+  invState.allProducts = data.products;
+  invState.summary = data.summary;
+  invState.stores = data.stores || [];
+  invState.allSubcategories = data.subcategories || [];
+  invState.subcategories = data.subcategories || [];
+  invState.selectedSubcategories = [];
+
+  const savedView = localStorage.getItem("inv_view_mode");
+  invState.viewMode = savedView || "all";
+  invState.sortColumn = invState.viewMode === "sold" ? "net_sold" : "description";
+  invState.sortDirection = invState.viewMode === "sold" ? "desc" : "asc";
+  invState.currentPage = 0;
+
+  document.querySelectorAll(".inv-toggle-btn").forEach((b) => b.classList.remove("active"));
+  const activeBtn = document.querySelector(`.inv-toggle-btn[data-view="${invState.viewMode}"]`);
+  if (activeBtn) activeBtn.classList.add("active");
+
+  invState.upcFilter = localStorage.getItem("inv_filter_upc") || "";
+  invState.descFilter = localStorage.getItem("inv_filter_desc") || "";
+
+  const savedReorder = JSON.parse(localStorage.getItem("inv_filter_reorder") || "[]");
+  if (savedReorder.length > 0) {
+    invState.selectedReorderLevels = savedReorder;
+  }
+
+  const savedSubcats = JSON.parse(localStorage.getItem("inv_filter_subcategories") || "[]");
+  if (savedSubcats.length > 0 && savedSubcats.length < (data.subcategories || []).length) {
+    invState.selectedSubcategories = savedSubcats.filter((s) => (data.subcategories || []).includes(s));
+  }
+
+  applyInvFilters();
+
+  const instockEl = document.getElementById("inv-filter-instock");
+  const binsEl = document.getElementById("inv-filter-bins");
+  if (instockEl) instockEl.checked = localStorage.getItem("inv_filter_instock") === "1";
+  const savedBins = localStorage.getItem("inv_filter_bins") || "";
+  invState.binsFilter = savedBins;
+  if (binsEl) binsEl.value = savedBins;
+
+  applyInvFilters();
+  document.getElementById("inv-results").style.display = "block";
+}
+
+function toggleInventoryView(mode) {
+  invState.viewMode = mode;
+  invState.currentPage = 0;
+  localStorage.setItem("inv_view_mode", mode);
+
+  if (mode === "sold" || mode === "all") {
+    invState.sortColumn = "net_sold";
+    invState.sortDirection = "desc";
+  } else {
+    invState.sortColumn = "description";
+    invState.sortDirection = "asc";
+  }
+
+  document.querySelectorAll(".inv-toggle-btn").forEach((b) => b.classList.remove("active"));
+  const activeBtn = document.querySelector(`.inv-toggle-btn[data-view="${mode}"]`);
+  if (activeBtn) activeBtn.classList.add("active");
+
+  applyInvFilters();
+}
+
+function applyInvFilters() {
+  const upcEl = document.getElementById("inv-filter-upc");
+  const descEl = document.getElementById("inv-filter-desc");
+  const upcFilter = upcEl ? upcEl.value.toLowerCase().trim() : (invState.upcFilter || "");
+  const descFilter = descEl ? descEl.value.toLowerCase().trim() : (invState.descFilter || "");
+  const subcatFilters = invState.selectedSubcategories || [];
+  const reorderFilters = invState.selectedReorderLevels || [];
+  const instockEl = document.getElementById("inv-filter-instock");
+  const binsEl = document.getElementById("inv-filter-bins");
+  const instockOnly = instockEl ? instockEl.checked : false;
+  const binsFilter = binsEl ? binsEl.value : (invState.binsFilter || "");
+
+  invState.upcFilter = upcFilter;
+  invState.descFilter = descFilter;
+  invState.binsFilter = binsFilter;
+
+  localStorage.setItem("inv_filter_upc", upcFilter);
+  localStorage.setItem("inv_filter_desc", descFilter);
+  localStorage.setItem("inv_filter_reorder", JSON.stringify(reorderFilters));
+  localStorage.setItem("inv_filter_subcategories", JSON.stringify(subcatFilters));
+  localStorage.setItem("inv_filter_instock", instockOnly ? "1" : "0");
+  localStorage.setItem("inv_filter_bins", binsFilter);
+
+  const allReorderLevels = [...new Set(invState.allProducts.map(p => p.reorder_level || 0))];
+  const reorderActive = reorderFilters.length > 0 && reorderFilters.length < allReorderLevels.length;
+
+  const matchesFilters = (p) => {
+    if (upcFilter && !p.upc.toLowerCase().includes(upcFilter)) return false;
+    if (descFilter && !p.description.toLowerCase().includes(descFilter)) return false;
+    if (subcatFilters.length > 0 && !subcatFilters.includes(p.subcategory || "")) return false;
+    if (reorderActive && !reorderFilters.includes(p.reorder_level || 0)) return false;
+    return true;
+  };
+
+  let filtered = invState.allProducts.filter((p) => {
+    if (invState.viewMode === "sold" && p.net_sold <= 0) return false;
+    if (invState.viewMode === "not-sold" && p.net_sold > 0) return false;
+    if (instockOnly && p.quant_on_hand <= 0) return false;
+    if (binsFilter === "no-bins" && p.bin_location) return false;
+    if (binsFilter === "bins-only" && !p.bin_location) return false;
+    return matchesFilters(p);
+  });
+
+  invState.filteredProducts = filtered;
+  sortInvProducts();
+  invState.currentPage = 0;
+
+  const soldCount = invState.allProducts.filter((p) => {
+    if (p.net_sold <= 0) return false;
+    return matchesFilters(p);
+  }).length;
+  const notSoldCount = invState.allProducts.filter((p) => {
+    if (p.net_sold > 0) return false;
+    return matchesFilters(p);
+  }).length;
+  const soldBtn = document.querySelector('.inv-toggle-btn[data-view="sold"]');
+  const notSoldBtn = document.querySelector('.inv-toggle-btn[data-view="not-sold"]');
+  const allBtn = document.querySelector('.inv-toggle-btn[data-view="all"]');
+  if (soldBtn) soldBtn.textContent = `Sold (${soldCount.toLocaleString()})`;
+  if (notSoldBtn) notSoldBtn.textContent = `Not Sold (${notSoldCount.toLocaleString()})`;
+  if (allBtn) allBtn.textContent = `All (${(soldCount + notSoldCount).toLocaleString()})`;
+
+  renderInvTable();
+  invRenderSummaryTiles();
+}
+
+function clearInvFilters() {
+  invState.upcFilter = "";
+  invState.descFilter = "";
+  invState.binsFilter = "";
+  const upcEl = document.getElementById("inv-filter-upc");
+  const descEl = document.getElementById("inv-filter-desc");
+  if (upcEl) upcEl.value = "";
+  if (descEl) descEl.value = "";
+  invState.selectedSubcategories = [...(invState.subcategories || [])];
+  document.querySelectorAll(".inv-subcat-cb").forEach((cb) => (cb.checked = true));
+  invUpdateSubcatLabel();
+  const reorderLevels = [...new Set(invState.allProducts.map(p => p.reorder_level || 0))].sort((a, b) => a - b);
+  invState.selectedReorderLevels = [...reorderLevels];
+  document.querySelectorAll(".inv-reorder-cb").forEach((cb) => (cb.checked = true));
+  invUpdateReorderLabel();
+  const instockEl = document.getElementById("inv-filter-instock");
+  const binsEl = document.getElementById("inv-filter-bins");
+  if (instockEl) instockEl.checked = false;
+  if (binsEl) binsEl.value = "";
+  localStorage.removeItem("inv_filter_upc");
+  localStorage.removeItem("inv_filter_desc");
+  localStorage.removeItem("inv_filter_reorder");
+  localStorage.removeItem("inv_filter_subcategories");
+  localStorage.removeItem("inv_filter_instock");
+  localStorage.removeItem("inv_filter_bins");
+  applyInvFilters();
+}
+
+function sortInvProducts() {
+  const col = invState.sortColumn;
+  const dir = invState.sortDirection === "asc" ? 1 : -1;
+
+  invState.filteredProducts.sort((a, b) => {
+    let va = a[col];
+    let vb = b[col];
+    if (typeof va === "string" || typeof vb === "string") {
+      return (va || "").localeCompare(vb || "") * dir;
+    }
+    return ((va || 0) - (vb || 0)) * dir;
+  });
+}
+
+function handleInvSort(column) {
+  if (invState.sortColumn === column) {
+    invState.sortDirection = invState.sortDirection === "asc" ? "desc" : "asc";
+  } else {
+    invState.sortColumn = column;
+    invState.sortDirection = column === "description" || column === "upc" ? "asc" : "desc";
+  }
+  sortInvProducts();
+  invState.currentPage = 0;
+  renderInvTable();
+}
+
+function invComputeTotals() {
+  let onHand = 0, value = 0, sold = 0, returned = 0, net = 0;
+  invState.filteredProducts.forEach((p) => {
+    onHand += p.quant_on_hand || 0;
+    value += (p.quant_on_hand || 0) * (p.s2s_cost || 0);
+    sold += p.total_sold || 0;
+    returned += p.total_returned || 0;
+    net += p.net_sold || 0;
+  });
+  return { products: invState.filteredProducts.length, onHand, value, sold, returned, net };
+}
+
+function invRenderSummaryTiles() {
+  const el = document.getElementById("inv-summary");
+  if (!el) return;
+  const t = invComputeTotals();
+  const tile = (label, value, sub) =>
+    `<div class="me-tile"><div class="me-tile-label">${escapeHtml(label)}</div>` +
+    `<div class="me-tile-value">${value}</div>${sub ? `<div class="me-tile-sub">${escapeHtml(sub)}</div>` : ""}</div>`;
+  el.innerHTML = [
+    tile("Products", bovInt(t.products)),
+    tile("On Hand", bovInt(t.onHand)),
+    tile("Inventory Value", escapeHtml(bovMoney(t.value)), "Σ On Hand × S2S Cost"),
+    tile("Sold", bovInt(t.sold)),
+    tile("Returns", bovInt(t.returned)),
+    tile("Net Sold", bovInt(t.net)),
+  ].join("");
+  el.style.display = "grid";
+}
+
+function renderInvTable() {
+  const isSold = invState.viewMode === "sold" || invState.viewMode === "all";
+  const thead = document.getElementById("inv-table-head");
+  const filterRow = document.getElementById("inv-table-filters");
+  const tbody = document.getElementById("inv-table-body");
+  const tfoot = document.getElementById("inv-table-foot");
+  const visibleCols = invGetVisibleColumns(isSold);
+
+  const sortIcon = (col) => {
+    if (invState.sortColumn !== col) return "";
+    return invState.sortDirection === "asc" ? " ▲" : " ▼";
+  };
+  const sortStyle = 'cursor: pointer; user-select: none;';
+
+  let headHtml = `<th style="width: 20px; text-align: center">#</th>`;
+  visibleCols.forEach(col => {
+    const widthStyle = col.width ? `width: ${col.width};` : "";
+    headHtml += `<th style="${widthStyle} ${col.thStyle} ${sortStyle}" onclick="handleInvSort('${col.key}')">${col.label}${sortIcon(col.key)}</th>`;
+  });
+  thead.innerHTML = headHtml;
+
+  // Build filter row — only rebuild when view mode or visible columns change
+  const filterCacheKey = `${isSold ? "sold" : "not-sold"}|${invState.hiddenColumns.join(",")}`;
+  if (filterRow.dataset.viewKey !== filterCacheKey) {
+    filterRow.dataset.viewKey = filterCacheKey;
+
+    const subcatTrigger = `<div id="inv-subcat-trigger" onclick="invToggleSubcatDropdown()" class="dark-input" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center; font-size: 0.75rem; padding: 0.2rem 0.4rem; user-select: none;">
+      <span id="inv-subcat-label" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">All</span>
+      <span style="font-size: 0.5rem; color: var(--text-tertiary);">▼</span>
+    </div>
+    <div id="inv-subcat-dropdown" style="display: none; position: fixed; z-index: 100; max-height: 500px; overflow-y: auto; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-md); box-shadow: var(--shadow-md); min-width: 280px;"></div>`;
+
+    const reorderTrigger = `<div id="inv-reorder-trigger" onclick="invToggleReorderDropdown()" class="dark-input" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center; font-size: 0.75rem; padding: 0.2rem 0.4rem; user-select: none;">
+      <span id="inv-reorder-label" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">All</span>
+      <span style="font-size: 0.5rem; color: var(--text-tertiary);">▼</span>
+    </div>
+    <div id="inv-reorder-dropdown" style="display: none; position: fixed; z-index: 100; max-height: 500px; overflow-y: auto; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-md); box-shadow: var(--shadow-md); min-width: 180px;"></div>`;
+
+    let filterHtml = `<td style="width: 20px;"></td>`;
+    visibleCols.forEach(col => {
+      const w = col.width ? `width: ${col.width};` : "";
+      if (col.key === "upc") {
+        filterHtml += `<td style="${w}"><input type="text" id="inv-filter-upc" class="dark-input" placeholder="Filter..." oninput="applyInvFilters()"></td>`;
+      } else if (col.key === "description") {
+        filterHtml += `<td style="${w}"><input type="text" id="inv-filter-desc" class="dark-input" placeholder="Filter..." oninput="applyInvFilters()"></td>`;
+      } else if (col.key === "subcategory") {
+        filterHtml += `<td style="${w}">${subcatTrigger}</td>`;
+      } else if (col.key === "reorder_level") {
+        filterHtml += `<td style="${w}">${reorderTrigger}</td>`;
+      } else if (col.key === "bin_location") {
+        filterHtml += `<td style="${w}"><select id="inv-filter-bins" class="dark-input" onchange="applyInvFilters()" style="font-size: 0.75rem; padding: 0.2rem 0.3rem;"><option value="">All</option><option value="no-bins">No Bins</option><option value="bins-only">Bins Only</option></select></td>`;
+      } else if (col.key === "quant_on_hand") {
+        filterHtml += `<td style="${w}"><label style="display: flex; align-items: center; gap: 0.25rem; font-size: 0.75rem; cursor: pointer; white-space: nowrap;"><input type="checkbox" id="inv-filter-instock" onchange="applyInvFilters()"> In Stock</label></td>`;
+      } else {
+        filterHtml += `<td style="${w}"></td>`;
+      }
+    });
+    filterRow.innerHTML = filterHtml;
+
+    // Restore filter input values from state
+    const upcEl = document.getElementById("inv-filter-upc");
+    const descEl = document.getElementById("inv-filter-desc");
+    if (upcEl) upcEl.value = invState.upcFilter || "";
+    if (descEl) descEl.value = invState.descFilter || "";
+
+    // Rebuild subcategory dropdown, preserving any saved selections
+    const savedSubcats = invState.selectedSubcategories ? [...invState.selectedSubcategories] : [];
+    invBuildSubcatDropdown(invState.allSubcategories || invState.subcategories || []);
+    if (savedSubcats.length > 0 && savedSubcats.length < (invState.subcategories || []).length) {
+      invState.selectedSubcategories = savedSubcats.filter(s => (invState.subcategories || []).includes(s));
+      document.querySelectorAll(".inv-subcat-cb").forEach(cb => {
+        cb.checked = invState.selectedSubcategories.includes(cb.value);
+      });
+    }
+    invUpdateSubcatLabel();
+
+    // Build reorder dropdown, preserving any saved selections
+    const reorderLevels = [...new Set(invState.allProducts.map(p => p.reorder_level || 0))].sort((a, b) => a - b);
+    const savedReorders = invState.selectedReorderLevels.length > 0 ? [...invState.selectedReorderLevels] : [];
+    invBuildReorderDropdown(reorderLevels);
+    if (savedReorders.length > 0 && savedReorders.length < reorderLevels.length) {
+      invState.selectedReorderLevels = savedReorders.filter(v => reorderLevels.includes(v));
+      document.querySelectorAll(".inv-reorder-cb").forEach(cb => {
+        cb.checked = invState.selectedReorderLevels.includes(Number(cb.value));
+      });
+    }
+    invUpdateReorderLabel();
+
+    // Restore bins dropdown
+    const binsEl = document.getElementById("inv-filter-bins");
+    if (binsEl) binsEl.value = invState.binsFilter || "";
+  } else {
+    // Update reorder dropdown options without full rebuild (dataset may have changed)
+    const reorderLevels = [...new Set(invState.allProducts.map(p => p.reorder_level || 0))].sort((a, b) => a - b);
+    const currentSelected = invState.selectedReorderLevels;
+    invBuildReorderDropdown(reorderLevels);
+    if (currentSelected.length > 0 && currentSelected.length < reorderLevels.length) {
+      invState.selectedReorderLevels = currentSelected.filter(v => reorderLevels.includes(v));
+      document.querySelectorAll(".inv-reorder-cb").forEach(cb => {
+        cb.checked = invState.selectedReorderLevels.includes(Number(cb.value));
+      });
+    }
+    invUpdateReorderLabel();
+  }
+
+  const start = invState.currentPage * invState.pageSize;
+  const end = Math.min(start + invState.pageSize, invState.filteredProducts.length);
+  const pageData = invState.filteredProducts.slice(start, end);
+
+  tbody.innerHTML = "";
+  pageData.forEach((p, i) => {
+    const row = document.createElement("tr");
+    let cellsHtml = `<td style="text-align: center; color: var(--text-tertiary); font-size: 0.75rem">${start + i + 1}</td>`;
+    visibleCols.forEach(col => {
+      const raw = col.key === "subcategory" ? (p.subcategory || "") :
+                  col.key === "bin_location" ? (p.bin_location || "") :
+                  col.key === "reorder_level" ? (p.reorder_level || 0) :
+                  p[col.key];
+      const display = col.money ? bovMoney(raw) : typeof raw === "number" ? raw.toLocaleString() : raw;
+      const titleAttr = (col.key === "description" || col.key === "subcategory" || col.key === "bin_location") ? ` title="${raw}"` : "";
+      cellsHtml += `<td style="${col.tdStyle}"${titleAttr}>${display}</td>`;
+    });
+    row.innerHTML = cellsHtml;
+    tbody.appendChild(row);
+  });
+
+  tfoot.innerHTML = "";
+  if (pageData.length > 0) {
+    const t = invComputeTotals();
+    const totalsMap = { quant_on_hand: t.onHand, s2s_cost: t.value, total_sold: t.sold, total_returned: t.returned, net_sold: t.net };
+    const hasDesc = visibleCols.some(c => c.key === "description");
+
+    let footHtml = `<td></td>`;
+    let labelPlaced = false;
+    visibleCols.forEach((col, idx) => {
+      if (col.key === "description") {
+        footHtml += `<td style="font-size: 0.8125rem">Totals</td>`;
+        labelPlaced = true;
+      } else if (!labelPlaced && !hasDesc && idx === 0) {
+        footHtml += `<td style="font-size: 0.8125rem">Totals</td>`;
+        labelPlaced = true;
+      } else if (totalsMap[col.key] !== undefined) {
+        const colorStyle = col.key === "total_returned" ? " color: var(--warning);" : "";
+        const display = col.key === "s2s_cost" ? bovMoney(totalsMap[col.key]) : totalsMap[col.key].toLocaleString();
+        const titleAttr = col.key === "s2s_cost" ? ' title="Inventory Value = Σ On Hand × S2S Cost"' : "";
+        footHtml += `<td style="text-align: right; font-size: 0.8125rem;${colorStyle}"${titleAttr}>${display}</td>`;
+      } else {
+        footHtml += `<td></td>`;
+      }
+    });
+    tfoot.innerHTML = `<tr style="font-weight: 700; border-top: 2px solid var(--border-color);">${footHtml}</tr>`;
+  }
+
+  const total = invState.filteredProducts.length;
+  const totalPages = Math.max(1, Math.ceil(total / invState.pageSize));
+  document.getElementById("inv-total-records").textContent = `${total.toLocaleString()} records`;
+  document.getElementById("inv-page-info").textContent = `Page ${invState.currentPage + 1} of ${totalPages}`;
+  document.getElementById("inv-prev-page").disabled = invState.currentPage === 0;
+  document.getElementById("inv-next-page").disabled = invState.currentPage >= totalPages - 1;
+  const viewLabel = invState.viewMode === "sold" ? "products sold" : invState.viewMode === "not-sold" ? "products not sold" : "products";
+  document.getElementById("inv-results-count").textContent = `Showing ${total === 0 ? 0 : start + 1}-${end} of ${total.toLocaleString()} ${viewLabel}`;
+  document.getElementById("inv-page-size").value = invState.pageSize;
+}
+
+function changeInvPage(delta) {
+  const totalPages = Math.ceil(invState.filteredProducts.length / invState.pageSize);
+  const newPage = invState.currentPage + delta;
+  if (newPage >= 0 && newPage < totalPages) {
+    invState.currentPage = newPage;
+    renderInvTable();
+  }
+}
+
+function changeInvPageSize() {
+  invState.pageSize = parseInt(document.getElementById("inv-page-size").value);
+  invState.currentPage = 0;
+  localStorage.setItem("inv_page_size", invState.pageSize);
+  renderInvTable();
+}
+
+function exportInventoryReport() {
+  if (!invState.filteredProducts || invState.filteredProducts.length === 0) return;
+
+  const isSold = invState.viewMode === "sold" || invState.viewMode === "all";
+  const visibleCols = invGetVisibleColumns(isSold);
+  const headers = visibleCols.map(col => col.label);
+
+  const dataRows = invState.filteredProducts.map((p) =>
+    visibleCols.map(col => {
+      if (col.key === "subcategory") return p.subcategory || "";
+      if (col.key === "bin_location") return p.bin_location || "";
+      if (col.key === "reorder_level") return p.reorder_level || 0;
+      return p[col.key];
+    })
+  );
+
+  const t = invComputeTotals();
+  const totalsMap = { quant_on_hand: t.onHand, s2s_cost: t.value, total_sold: t.sold, total_returned: t.returned, net_sold: t.net };
+  const totalsRow = visibleCols.map(col => {
+    if (col.key === "description") return "Totals";
+    if (totalsMap[col.key] !== undefined) return totalsMap[col.key];
+    return "";
+  });
+  dataRows.push(totalsRow);
+
+  const wsData = [headers, ...dataRows];
+  const ws = XLSX.utils.aoa_to_sheet(wsData);
+  ws["!cols"] = headers.map(() => ({ wch: 18 }));
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Inventory");
+
+  const dateStr = new Date().toISOString().split("T")[0];
+  XLSX.writeFile(wb, `inventory-report-${invState.viewMode}-${dateStr}.xlsx`);
+}
+
+function invSelectSellingSubcategories() {
+  const sellingSubcats = new Set();
+  invState.allProducts.forEach((p) => {
+    if (p.net_sold > 0 && p.subcategory) sellingSubcats.add(p.subcategory);
+  });
+  invState.selectedSubcategories = [...sellingSubcats];
+  document.querySelectorAll(".inv-subcat-cb").forEach((cb) => {
+    cb.checked = sellingSubcats.has(cb.value);
+  });
+  invUpdateSubcatLabel();
+  applyInvFilters();
+}
+
+function invBuildSubcatDropdown(subcategories) {
+  const container = document.getElementById("inv-subcat-dropdown");
+  if (!container) return;
+  container.innerHTML = "";
+
+  // Excluded subcategories are managed on the Sales page; applied read-only here.
+  const excludedSubcats = invState.excludedSubcategories || [];
+  const visibleSubcats = subcategories.filter((sc) => !excludedSubcats.includes(sc));
+  invState.subcategories = visibleSubcats;
+
+  const controls = document.createElement("div");
+  controls.style.cssText = "display: flex; justify-content: space-between; align-items: center; padding: 0.375rem 0.75rem; border-bottom: 2px solid var(--border-color); gap: 0.25rem;";
+  controls.innerHTML = `
+    <div style="display: flex; gap: 0.375rem;">
+      <button type="button" class="btn btn-secondary" onclick="invSubcatCheckAll(true)" style="font-size: 0.625rem; padding: 0.15rem 0.4rem;">All</button>
+      <button type="button" class="btn btn-secondary" onclick="invSubcatCheckAll(false)" style="font-size: 0.625rem; padding: 0.15rem 0.4rem;">None</button>
+    </div>
+  `;
+  container.appendChild(controls);
+
+  visibleSubcats.forEach((sc) => {
+    const label = document.createElement("label");
+    label.style.cssText = "display: flex; align-items: center; gap: 0.5rem; padding: 0.375rem 0.75rem; cursor: pointer; font-size: 0.8125rem; border-bottom: 1px solid var(--border-color);";
+    label.innerHTML = `<input type="checkbox" class="inv-subcat-cb" value="${sc}" checked onchange="onInvSubcatChange()"> ${sc}`;
+    container.appendChild(label);
+  });
+  invState.selectedSubcategories = [...visibleSubcats];
+}
+
+function invSubcatCheckAll(checked) {
+  document.querySelectorAll(".inv-subcat-cb").forEach((cb) => (cb.checked = checked));
+  onInvSubcatChange();
+}
+
+function invToggleSubcatDropdown() {
+  const dd = document.getElementById("inv-subcat-dropdown");
+  if (dd.style.display === "none") {
+    const trigger = document.getElementById("inv-subcat-trigger");
+    const rect = trigger.getBoundingClientRect();
+    dd.style.position = "fixed";
+    dd.style.top = (rect.bottom + 2) + "px";
+    dd.style.left = rect.left + "px";
+    dd.style.display = "block";
+  } else {
+    dd.style.display = "none";
+  }
+}
+
+function onInvSubcatChange() {
+  invState.selectedSubcategories = Array.from(document.querySelectorAll(".inv-subcat-cb:checked")).map((cb) => cb.value);
+  invUpdateSubcatLabel();
+  applyInvFilters();
+}
+
+function invUpdateSubcatLabel() {
+  const sel = invState.selectedSubcategories || [];
+  const total = invState.subcategories ? invState.subcategories.length : 0;
+  const label = document.getElementById("inv-subcat-label");
+  if (!label) return;
+  if (sel.length === 0 || sel.length === total) {
+    label.textContent = "All";
+  } else {
+    const unchecked = total - sel.length;
+    label.textContent = `${unchecked} excluded`;
+  }
+}
+
+function invBuildReorderDropdown(levels) {
+  const container = document.getElementById("inv-reorder-dropdown");
+  if (!container) return;
+  container.innerHTML = "";
+
+  const controls = document.createElement("div");
+  controls.style.cssText = "display: flex; justify-content: space-between; align-items: center; padding: 0.375rem 0.75rem; border-bottom: 2px solid var(--border-color); gap: 0.25rem;";
+  controls.innerHTML = `
+    <div style="display: flex; gap: 0.375rem;">
+      <button type="button" class="btn btn-secondary" onclick="invReorderCheckAll(true)" style="font-size: 0.625rem; padding: 0.15rem 0.4rem;">All</button>
+      <button type="button" class="btn btn-secondary" onclick="invReorderCheckAll(false)" style="font-size: 0.625rem; padding: 0.15rem 0.4rem;">None</button>
+    </div>
+  `;
+  container.appendChild(controls);
+
+  levels.forEach((lvl) => {
+    const label = document.createElement("label");
+    label.style.cssText = "display: flex; align-items: center; gap: 0.5rem; padding: 0.375rem 0.75rem; cursor: pointer; font-size: 0.8125rem; border-bottom: 1px solid var(--border-color);";
+    label.innerHTML = `<input type="checkbox" class="inv-reorder-cb" value="${lvl}" checked onchange="onInvReorderChange()"> ${lvl}`;
+    container.appendChild(label);
+  });
+  invState.selectedReorderLevels = [...levels];
+}
+
+function invReorderCheckAll(checked) {
+  document.querySelectorAll(".inv-reorder-cb").forEach((cb) => (cb.checked = checked));
+  onInvReorderChange();
+}
+
+function invToggleReorderDropdown() {
+  const dd = document.getElementById("inv-reorder-dropdown");
+  if (dd.style.display === "none") {
+    const trigger = document.getElementById("inv-reorder-trigger");
+    const rect = trigger.getBoundingClientRect();
+    dd.style.position = "fixed";
+    dd.style.top = (rect.bottom + 2) + "px";
+    dd.style.left = rect.left + "px";
+    dd.style.display = "block";
+  } else {
+    dd.style.display = "none";
+  }
+}
+
+function onInvReorderChange() {
+  invState.selectedReorderLevels = Array.from(document.querySelectorAll(".inv-reorder-cb:checked")).map((cb) => Number(cb.value));
+  invUpdateReorderLabel();
+  applyInvFilters();
+}
+
+function invUpdateReorderLabel() {
+  const sel = invState.selectedReorderLevels || [];
+  const allLevels = [...new Set(invState.allProducts.map(p => p.reorder_level || 0))];
+  const total = allLevels.length;
+  const label = document.getElementById("inv-reorder-label");
+  if (!label) return;
+  if (sel.length === 0 || sel.length === total) {
+    label.textContent = "All";
+  } else {
+    const unchecked = total - sel.length;
+    label.textContent = `${unchecked} excluded`;
+  }
+}
+
+document.addEventListener("click", (e) => {
+  const trigger = document.getElementById("inv-subcat-trigger");
+  const dropdown = document.getElementById("inv-subcat-dropdown");
+  if (trigger && dropdown && !trigger.contains(e.target) && !dropdown.contains(e.target)) {
+    dropdown.style.display = "none";
+  }
+  const reorderTrigger = document.getElementById("inv-reorder-trigger");
+  const reorderDropdown = document.getElementById("inv-reorder-dropdown");
+  if (reorderTrigger && reorderDropdown && !reorderTrigger.contains(e.target) && !reorderDropdown.contains(e.target)) {
+    reorderDropdown.style.display = "none";
+  }
+});
+
+// ===== End BOV Inventory tab =====

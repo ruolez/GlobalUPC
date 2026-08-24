@@ -3335,7 +3335,8 @@ body.no-scroll {
   color: var(--text-primary);
 }
 
-.sales-toggle-group {
+.sales-toggle-group,
+.inv-toggle-group {
   display: flex;
   gap: 0;
   border: 1px solid var(--border-color);
@@ -3344,7 +3345,8 @@ body.no-scroll {
   width: fit-content;
 }
 
-.sales-toggle-btn {
+.sales-toggle-btn,
+.inv-toggle-btn {
   padding: 0.35rem 0.875rem;
   font-size: 0.75rem;
   font-weight: 500;
@@ -3355,12 +3357,14 @@ body.no-scroll {
   transition: var(--transition);
 }
 
-.sales-toggle-btn:hover {
+.sales-toggle-btn:hover,
+.inv-toggle-btn:hover {
   background: var(--bg-hover);
   color: var(--text-primary);
 }
 
-.sales-toggle-btn.active {
+.sales-toggle-btn.active,
+.inv-toggle-btn.active {
   background: var(--accent-primary);
   color: #fff;
 }
