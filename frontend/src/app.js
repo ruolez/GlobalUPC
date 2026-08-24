@@ -18824,7 +18824,7 @@ function bovSavePrefs() {
 // Lifecycle
 // ---------------------------------------------------------------------------
 
-const BOV_SECTIONS = ["overview", "quotations", "products", "invoices", "purchasing", "shopify", "month-end", "inventory"];
+const BOV_SECTIONS = ["overview", "quotations", "products", "invoices", "purchasing", "shopify", "inventory", "month-end"];
 const BOV_CARD_SECTION = {
   "bov-trend-card": "overview", "bov-margin-card": "overview", "bov-top-card": "overview", "bov-kpi-strip": "overview",
   "bov-quotations-card": "quotations", "bov-products-card": "products", "bov-invoices-card": "invoices",
@@ -24191,8 +24191,7 @@ let invState = {
   allSubcategories: [],
   selectedSubcategories: [],
   excludedSubcategories: [],
-  upcFilter: "",
-  descFilter: "",
+  searchFilter: "",
   selectedReorderLevels: [],
   binsFilter: "",
   hiddenColumns: JSON.parse(localStorage.getItem("inv_hidden_columns") || "[]"),
@@ -24436,8 +24435,7 @@ function displayInventoryResults(data) {
   const activeBtn = document.querySelector(`.inv-toggle-btn[data-view="${invState.viewMode}"]`);
   if (activeBtn) activeBtn.classList.add("active");
 
-  invState.upcFilter = localStorage.getItem("inv_filter_upc") || "";
-  invState.descFilter = localStorage.getItem("inv_filter_desc") || "";
+  invState.searchFilter = localStorage.getItem("inv_filter_search") || "";
 
   const savedReorder = JSON.parse(localStorage.getItem("inv_filter_reorder") || "[]");
   if (savedReorder.length > 0) {
@@ -24483,10 +24481,8 @@ function toggleInventoryView(mode) {
 }
 
 function applyInvFilters() {
-  const upcEl = document.getElementById("inv-filter-upc");
-  const descEl = document.getElementById("inv-filter-desc");
-  const upcFilter = upcEl ? upcEl.value.toLowerCase().trim() : (invState.upcFilter || "");
-  const descFilter = descEl ? descEl.value.toLowerCase().trim() : (invState.descFilter || "");
+  const searchEl = document.getElementById("inv-filter-search");
+  const searchFilter = searchEl ? searchEl.value.toLowerCase().trim() : (invState.searchFilter || "");
   const subcatFilters = invState.selectedSubcategories || [];
   const reorderFilters = invState.selectedReorderLevels || [];
   const instockEl = document.getElementById("inv-filter-instock");
@@ -24494,12 +24490,10 @@ function applyInvFilters() {
   const instockOnly = instockEl ? instockEl.checked : false;
   const binsFilter = binsEl ? binsEl.value : (invState.binsFilter || "");
 
-  invState.upcFilter = upcFilter;
-  invState.descFilter = descFilter;
+  invState.searchFilter = searchFilter;
   invState.binsFilter = binsFilter;
 
-  localStorage.setItem("inv_filter_upc", upcFilter);
-  localStorage.setItem("inv_filter_desc", descFilter);
+  localStorage.setItem("inv_filter_search", searchFilter);
   localStorage.setItem("inv_filter_reorder", JSON.stringify(reorderFilters));
   localStorage.setItem("inv_filter_subcategories", JSON.stringify(subcatFilters));
   localStorage.setItem("inv_filter_instock", instockOnly ? "1" : "0");
@@ -24509,8 +24503,7 @@ function applyInvFilters() {
   const reorderActive = reorderFilters.length > 0 && reorderFilters.length < allReorderLevels.length;
 
   const matchesFilters = (p) => {
-    if (upcFilter && !p.upc.toLowerCase().includes(upcFilter)) return false;
-    if (descFilter && !p.description.toLowerCase().includes(descFilter)) return false;
+    if (searchFilter && !p.upc.toLowerCase().includes(searchFilter) && !p.description.toLowerCase().includes(searchFilter)) return false;
     if (subcatFilters.length > 0 && !subcatFilters.includes(p.subcategory || "")) return false;
     if (reorderActive && !reorderFilters.includes(p.reorder_level || 0)) return false;
     return true;
@@ -24549,13 +24542,10 @@ function applyInvFilters() {
 }
 
 function clearInvFilters() {
-  invState.upcFilter = "";
-  invState.descFilter = "";
+  invState.searchFilter = "";
   invState.binsFilter = "";
-  const upcEl = document.getElementById("inv-filter-upc");
-  const descEl = document.getElementById("inv-filter-desc");
-  if (upcEl) upcEl.value = "";
-  if (descEl) descEl.value = "";
+  const searchEl = document.getElementById("inv-filter-search");
+  if (searchEl) searchEl.value = "";
   invState.selectedSubcategories = [...(invState.subcategories || [])];
   document.querySelectorAll(".inv-subcat-cb").forEach((cb) => (cb.checked = true));
   invUpdateSubcatLabel();
@@ -24567,8 +24557,7 @@ function clearInvFilters() {
   const binsEl = document.getElementById("inv-filter-bins");
   if (instockEl) instockEl.checked = false;
   if (binsEl) binsEl.value = "";
-  localStorage.removeItem("inv_filter_upc");
-  localStorage.removeItem("inv_filter_desc");
+  localStorage.removeItem("inv_filter_search");
   localStorage.removeItem("inv_filter_reorder");
   localStorage.removeItem("inv_filter_subcategories");
   localStorage.removeItem("inv_filter_instock");
@@ -24671,12 +24660,17 @@ function renderInvTable() {
     <div id="inv-reorder-dropdown" style="display: none; position: fixed; z-index: 100; max-height: 500px; overflow-y: auto; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-md); box-shadow: var(--shadow-md); min-width: 180px;"></div>`;
 
     let filterHtml = `<td style="width: 20px;"></td>`;
+    let searchPlaced = false;
     visibleCols.forEach(col => {
       const w = col.width ? `width: ${col.width};` : "";
-      if (col.key === "upc") {
-        filterHtml += `<td style="${w}"><input type="text" id="inv-filter-upc" class="dark-input" placeholder="Filter..." oninput="applyInvFilters()"></td>`;
-      } else if (col.key === "description") {
-        filterHtml += `<td style="${w}"><input type="text" id="inv-filter-desc" class="dark-input" placeholder="Filter..." oninput="applyInvFilters()"></td>`;
+      if (col.key === "upc" || col.key === "description") {
+        // One combined UPC/Description search field, in the first of the two that is visible
+        if (!searchPlaced) {
+          filterHtml += `<td style="${w}"><input type="text" id="inv-filter-search" class="dark-input" placeholder="UPC / Description..." oninput="applyInvFilters()"></td>`;
+          searchPlaced = true;
+        } else {
+          filterHtml += `<td style="${w}"></td>`;
+        }
       } else if (col.key === "subcategory") {
         filterHtml += `<td style="${w}">${subcatTrigger}</td>`;
       } else if (col.key === "reorder_level") {
@@ -24692,10 +24686,8 @@ function renderInvTable() {
     filterRow.innerHTML = filterHtml;
 
     // Restore filter input values from state
-    const upcEl = document.getElementById("inv-filter-upc");
-    const descEl = document.getElementById("inv-filter-desc");
-    if (upcEl) upcEl.value = invState.upcFilter || "";
-    if (descEl) descEl.value = invState.descFilter || "";
+    const searchEl = document.getElementById("inv-filter-search");
+    if (searchEl) searchEl.value = invState.searchFilter || "";
 
     // Rebuild subcategory dropdown, preserving any saved selections
     const savedSubcats = invState.selectedSubcategories ? [...invState.selectedSubcategories] : [];
