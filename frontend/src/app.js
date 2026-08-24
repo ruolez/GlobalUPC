@@ -24167,6 +24167,7 @@ const INV_COLUMNS = [
   { key: "reorder_level",  label: "Reorder",     soldOnly: false, baseWidth: 6,  align: "right", thStyle: "text-align: right;",  tdStyle: "text-align: right; font-size: 0.8125rem",                                                                           hasFilter: true },
   { key: "quant_on_hand",  label: "On Hand",     soldOnly: false, baseWidth: 7,  align: "right", thStyle: "text-align: right;",  tdStyle: "text-align: right; font-size: 0.8125rem",                                                                           hasFilter: false },
   { key: "s2s_cost",       label: "S2S Cost",    soldOnly: false, baseWidth: 7,  align: "right", thStyle: "text-align: right;",  tdStyle: "text-align: right; font-size: 0.8125rem",                                                                           hasFilter: false, money: true },
+  { key: "total_cost",     label: "Total Cost",  soldOnly: false, baseWidth: 7,  align: "right", thStyle: "text-align: right;",  tdStyle: "text-align: right; font-size: 0.8125rem; font-weight: 600",                                                         hasFilter: false, money: true },
   { key: "total_sold",     label: "Sold",        soldOnly: true,  baseWidth: 6,  align: "right", thStyle: "text-align: right;",  tdStyle: "text-align: right; font-size: 0.8125rem",                                                                           hasFilter: false },
   { key: "total_returned", label: "Returns",     soldOnly: true,  baseWidth: 6,  align: "right", thStyle: "text-align: right;",  tdStyle: "text-align: right; font-size: 0.8125rem; color: var(--warning)",                                                    hasFilter: false },
   { key: "net_sold",       label: "Net Sold",    soldOnly: true,  baseWidth: 7,  align: "right", thStyle: "text-align: right;",  tdStyle: "text-align: right; font-size: 0.8125rem; font-weight: 600",                                                         hasFilter: false },
@@ -24418,6 +24419,9 @@ function invAddProgressItem(container, text, color) {
 
 function displayInventoryResults(data) {
   invState.hasData = true;
+  data.products.forEach((p) => {
+    p.total_cost = (p.quant_on_hand || 0) * (p.s2s_cost || 0);
+  });
   invState.allProducts = data.products;
   invState.summary = data.summary;
   invState.stores = data.stores || [];
@@ -24752,7 +24756,7 @@ function renderInvTable() {
   tfoot.innerHTML = "";
   if (pageData.length > 0) {
     const t = invComputeTotals();
-    const totalsMap = { quant_on_hand: t.onHand, s2s_cost: t.value, total_sold: t.sold, total_returned: t.returned, net_sold: t.net };
+    const totalsMap = { quant_on_hand: t.onHand, total_cost: t.value, total_sold: t.sold, total_returned: t.returned, net_sold: t.net };
     const hasDesc = visibleCols.some(c => c.key === "description");
 
     let footHtml = `<td></td>`;
@@ -24766,8 +24770,8 @@ function renderInvTable() {
         labelPlaced = true;
       } else if (totalsMap[col.key] !== undefined) {
         const colorStyle = col.key === "total_returned" ? " color: var(--warning);" : "";
-        const display = col.key === "s2s_cost" ? bovMoney(totalsMap[col.key]) : totalsMap[col.key].toLocaleString();
-        const titleAttr = col.key === "s2s_cost" ? ' title="Inventory Value = Σ On Hand × S2S Cost"' : "";
+        const display = col.key === "total_cost" ? bovMoney(totalsMap[col.key]) : totalsMap[col.key].toLocaleString();
+        const titleAttr = col.key === "total_cost" ? ' title="Inventory Value = Σ On Hand × S2S Cost"' : "";
         footHtml += `<td style="text-align: right; font-size: 0.8125rem;${colorStyle}"${titleAttr}>${display}</td>`;
       } else {
         footHtml += `<td></td>`;
@@ -24820,7 +24824,7 @@ function exportInventoryReport() {
   );
 
   const t = invComputeTotals();
-  const totalsMap = { quant_on_hand: t.onHand, s2s_cost: t.value, total_sold: t.sold, total_returned: t.returned, net_sold: t.net };
+  const totalsMap = { quant_on_hand: t.onHand, total_cost: t.value, total_sold: t.sold, total_returned: t.returned, net_sold: t.net };
   const totalsRow = visibleCols.map(col => {
     if (col.key === "description") return "Totals";
     if (totalsMap[col.key] !== undefined) return totalsMap[col.key];
