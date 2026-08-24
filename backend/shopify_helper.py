@@ -2402,6 +2402,7 @@ query LostCustomers($q: String!, $after: String) {
       firstName
       lastName
       email
+      emailMarketingConsent { marketingState }
       createdAt
       numberOfOrders
       tags
@@ -2675,6 +2676,14 @@ def _normalize_lost_customer(node: Dict[str, Any]) -> Dict[str, Any]:
         "last_name": node.get("lastName") or "",
         # May be null when protected customer data is not approved.
         "email": node.get("email"),
+        # Tri-state: True/False when Shopify reported a marketing state, None
+        # when the field was absent (unapproved app, or a pre-consent record).
+        "subscribed": (
+            ((node.get("emailMarketingConsent") or {}).get("marketingState") or "").upper()
+            == "SUBSCRIBED"
+            if (node.get("emailMarketingConsent") or {}).get("marketingState")
+            else None
+        ),
         "customer_since": node.get("createdAt"),
         # UnsignedInt64 serializes as a JSON string.
         "orders_count": int(node.get("numberOfOrders") or 0),

@@ -87,6 +87,7 @@ SELECT
     c.shopify_id, c.shopify_gid, c.display_name, c.first_name, c.last_name,
     c.email, c.created_at AS customer_created_at, c.number_of_orders,
     c.amount_spent, c.currency, c.default_address_zip,
+    c.raw #>> '{{emailMarketingConsent,marketingState}}' AS marketing_state,
     lo.shopify_gid AS lo_gid, lo.name AS lo_name, lo.created_at AS lo_created_at,
     lo.fulfillment_status AS lo_fulfillment_status,
     lo.ship_province_code, lo.ship_province, lo.ship_country_code, lo.ship_zip,
@@ -126,6 +127,13 @@ def _scan_store_sync(store_id: int, tz: Optional[str], history_from: Optional[st
             "first_name": r["first_name"] or "",
             "last_name": r["last_name"] or "",
             "email": r["email"],
+            # Same tri-state as the live path; NULL until the store's raw
+            # payloads carry the consent field (i.e. after its next sync).
+            "subscribed": (
+                (r["marketing_state"] or "").upper() == "SUBSCRIBED"
+                if r["marketing_state"]
+                else None
+            ),
             "customer_since": _iso(r["customer_created_at"]),
             "orders_count": int(r["number_of_orders"] or 0),
             "amount_spent": float(r["amount_spent"] or 0),

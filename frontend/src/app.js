@@ -14375,6 +14375,9 @@ function loadLostCustomersPanel() {
     sacrState.filter.month = "";
     rerender();
   });
+  document
+    .getElementById("sacr-export-btn")
+    ?.addEventListener("click", sacrExportExcel);
 
   // Sorting
   document.getElementById("sacr-table")?.addEventListener("click", (e) => {
@@ -15390,6 +15393,47 @@ function renderSacrBanner() {
     items.join("") +
     "</ul>";
   el.hidden = false;
+}
+
+// Exports what the table currently shows — every filter applies, all pages.
+function sacrExportExcel() {
+  const rows = sacrFilteredRows();
+  if (!rows.length) {
+    showToast("Nothing to export — run the report first", "warning");
+    return;
+  }
+  const header = ["Name", "Email", "Last Order", "Subscribed", "Days Silent", "Last Order Date"];
+  const data = rows.map((r) => [
+    r.name || "",
+    r.email || "",
+    r.last_order_name || "",
+    // Tri-state: blank when the store's data does not carry consent yet.
+    r.subscribed === true ? "Yes" : r.subscribed === false ? "No" : "",
+    typeof r.days_silent === "number" ? r.days_silent : "",
+    r.last_order_local || "",
+  ]);
+  const fname = `lost-customers-${new Date().toISOString().slice(0, 10)}`;
+  if (typeof XLSX !== "undefined" && XLSX.utils) {
+    const ws = XLSX.utils.aoa_to_sheet([header, ...data]);
+    ws["!cols"] = [28, 32, 14, 11, 11, 15].map((w) => ({ wch: w }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Lost customers");
+    XLSX.writeFile(wb, `${fname}.xlsx`);
+    showToast(`Exported ${rows.length} customers to Excel`, "success");
+    return;
+  }
+  // Offline fallback: CSV (the BOM is what makes Excel decode UTF-8 names).
+  const csv = [header, ...data]
+    .map((row) => row.map((v) => `"${String(v == null ? "" : v).replace(/"/g, '""')}"`).join(","))
+    .join("\n");
+  const blob = new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `${fname}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+  showToast(`Exported ${rows.length} customers to CSV`, "success");
 }
 
 function renderSacrTable() {

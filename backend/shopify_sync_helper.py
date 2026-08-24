@@ -70,6 +70,7 @@ _CUSTOMER_NODE_FIELDS = """
         firstName
         lastName
         email
+        emailMarketingConsent { marketingState }
         verifiedEmail
         phone
         state

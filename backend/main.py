@@ -6643,7 +6643,7 @@ _LOST_EVENT_NAMES = {"rows": "rows"}
 # per-month state column, shipping_method_raw the method tooltip, and
 # days_to_fulfil/days_to_deliver both the table and the slow-order filter.
 _LOST_ROW_FIELDS = (
-    "customer_id", "name", "email", "state", "state_name", "country",
+    "customer_id", "name", "email", "subscribed", "state", "state_name", "country",
     "orders_count", "orders_count_all", "orders_count_exact",
     "amount_spent", "currency", "first_order_local", "last_order_local",
     "last_order_name", "last_order_id", "days_silent",
