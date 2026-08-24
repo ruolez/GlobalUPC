@@ -7730,7 +7730,7 @@ document
   ?.addEventListener("click", showPriceUpdatesConfigSection);
 document
   .getElementById("price-updates-search-btn")
-  ?.addEventListener("click", searchPriceUpdates);
+  ?.addEventListener("click", () => searchPriceUpdates());
 document
   .getElementById("price-updates-reset-btn")
   ?.addEventListener("click", () => {
