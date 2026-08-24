@@ -27,6 +27,9 @@
   --danger: #ef4444;
   --info: #3b82f6;
 
+  --scrollbar-thumb: #f59e0b;
+  --scrollbar-thumb-hover: #fbbf24;
+
   --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.3);
   --shadow-md:
     0 4px 6px -1px rgba(0, 0, 0, 0.4), 0 2px 4px -1px rgba(0, 0, 0, 0.3);
@@ -182,6 +185,9 @@
   --warning: #c67700;
   --danger: #c53030;
   --info: #2b6cb0;
+
+  --scrollbar-thumb: #2d9d5c;
+  --scrollbar-thumb-hover: #23814a;
 }
 
 html {
@@ -1870,8 +1876,8 @@ body {
 
 /* Scrollbar */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 12px;
+  height: 12px;
 }
 
 ::-webkit-scrollbar-track {
@@ -1879,12 +1885,17 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--bg-hover);
+  background: var(--scrollbar-thumb);
   border-radius: var(--radius-sm);
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--border-focus);
+  background: var(--scrollbar-thumb-hover);
+}
+
+html,
+body {
+  scrollbar-color: var(--scrollbar-thumb) var(--bg-primary);
 }
 
 /* Theme Selector */
@@ -3920,7 +3931,7 @@ body.no-scroll {
 .qip-list-body::-webkit-scrollbar,
 .qip-detail::-webkit-scrollbar,
 .qip-ms-popover::-webkit-scrollbar {
-  width: 8px;
+  width: 12px;
 }
 .qip-list-body::-webkit-scrollbar-track,
 .qip-detail::-webkit-scrollbar-track,
@@ -3930,12 +3941,12 @@ body.no-scroll {
 .qip-list-body::-webkit-scrollbar-thumb,
 .qip-detail::-webkit-scrollbar-thumb,
 .qip-ms-popover::-webkit-scrollbar-thumb {
-  background: var(--border-color);
+  background: var(--scrollbar-thumb);
   border-radius: 4px;
 }
 .qip-list-body::-webkit-scrollbar-thumb:hover,
 .qip-detail::-webkit-scrollbar-thumb:hover {
-  background: var(--text-tertiary);
+  background: var(--scrollbar-thumb-hover);
 }
 
 /* ---------- Card (compact) ---------- */

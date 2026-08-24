@@ -1777,10 +1777,12 @@ function setTheme(themeName) {
 
   // Remove current theme
   body.removeAttribute("data-theme");
+  document.documentElement.removeAttribute("data-theme");
 
   // Set new theme (if not 'current')
   if (themeName !== "current") {
     body.setAttribute("data-theme", themeName);
+    document.documentElement.setAttribute("data-theme", themeName);
   }
 
   // Save to localStorage
