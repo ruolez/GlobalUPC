@@ -2130,7 +2130,8 @@ def get_aggregated_sales(
             query += " AND h.InvoiceDate >= ?"
             params.append(date_from)
         if date_to:
-            query += " AND h.InvoiceDate <= ?"
+            # InvoiceDate carries a time component; <= 'YYYY-MM-DD' would cut at midnight
+            query += " AND h.InvoiceDate < DATEADD(day, 1, ?)"
             params.append(date_to)
         if excluded_names:
             placeholders = ",".join(["?" for _ in excluded_names])
@@ -2214,7 +2215,8 @@ def get_aggregated_returns(
             query += " AND h.CmemoDate >= ?"
             params.append(date_from)
         if date_to:
-            query += " AND h.CmemoDate <= ?"
+            # CmemoDate carries a time component; <= 'YYYY-MM-DD' would cut at midnight
+            query += " AND h.CmemoDate < DATEADD(day, 1, ?)"
             params.append(date_to)
         if excluded_names:
             placeholders = ",".join(["?" for _ in excluded_names])
