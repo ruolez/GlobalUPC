@@ -24660,16 +24660,15 @@ function renderInvTable() {
     <div id="inv-reorder-dropdown" style="display: none; position: fixed; z-index: 100; max-height: 500px; overflow-y: auto; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-md); box-shadow: var(--shadow-md); min-width: 180px;"></div>`;
 
     let filterHtml = `<td style="width: 20px;"></td>`;
+    // One combined UPC/Description search field spanning both columns when visible
+    const searchSpan = visibleCols.filter(c => c.key === "upc" || c.key === "description").length;
     let searchPlaced = false;
     visibleCols.forEach(col => {
       const w = col.width ? `width: ${col.width};` : "";
       if (col.key === "upc" || col.key === "description") {
-        // One combined UPC/Description search field, in the first of the two that is visible
         if (!searchPlaced) {
-          filterHtml += `<td style="${w}"><input type="text" id="inv-filter-search" class="dark-input" placeholder="UPC / Description..." oninput="applyInvFilters()"></td>`;
+          filterHtml += `<td colspan="${searchSpan}"><input type="text" id="inv-filter-search" class="dark-input" placeholder="UPC / Description..." oninput="applyInvFilters()" style="width: 100%;"></td>`;
           searchPlaced = true;
-        } else {
-          filterHtml += `<td style="${w}"></td>`;
         }
       } else if (col.key === "subcategory") {
         filterHtml += `<td style="${w}">${subcatTrigger}</td>`;
