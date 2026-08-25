@@ -2054,3 +2054,84 @@ class MonthEndResponse(BaseModel):
     limit: int = 0
     truncated: bool = False
     timings: Dict[str, float] = {}               # per-stage seconds: fetch / cost_lookup / parcels
+
+
+# ============================================================================
+# QuickBooks Online
+# ============================================================================
+
+class QuickBooksConnectionUpdate(BaseModel):
+    client_id: Optional[str] = None
+    client_secret: Optional[str] = None          # blank/None => keep current
+    environment: Optional[Literal["production", "sandbox"]] = None
+    redirect_uri: Optional[str] = None
+    refresh_minutes: Optional[int] = Field(None, ge=1, le=1440)
+
+
+# Standalone (never carries client_secret or tokens).
+class QuickBooksConnectionResponse(BaseModel):
+    configured: bool = False
+    status: str = "disconnected"
+    client_id: Optional[str] = None
+    has_client_secret: bool = False
+    environment: str = "production"
+    redirect_uri: Optional[str] = None
+    refresh_minutes: int = 15
+    realm_id: Optional[str] = None
+    company_name: Optional[str] = None
+    connected_at: Optional[datetime] = None
+    last_synced_at: Optional[datetime] = None
+    access_token_expires_at: Optional[datetime] = None
+    refresh_token_expires_at: Optional[datetime] = None
+    last_error: Optional[str] = None
+    pending_state: bool = False                  # a Connect was started and awaits the pasted URL
+    warning: Optional[str] = None
+
+
+class QuickBooksConnectStartResponse(BaseModel):
+    authorize_url: str
+    state: str
+    redirect_uri: str
+
+
+class QuickBooksConnectCompleteRequest(BaseModel):
+    callback: str                                # full redirected URL or its query string
+
+
+class QuickBooksAccountResponse(BaseModel):
+    qbo_id: str
+    name: str
+    fully_qualified_name: Optional[str] = None
+    account_type: str
+    account_sub_type: Optional[str] = None
+    balance: float = 0
+    balance_with_sub_accounts: Optional[float] = None
+    sub_account: bool = False
+    parent_qbo_id: Optional[str] = None
+    currency: Optional[str] = None
+    active: bool = True
+    hidden: bool = False
+    synced_at: Optional[datetime] = None
+
+
+class QuickBooksAccountUpdate(BaseModel):
+    hidden: bool
+
+
+class BOVBankTotals(BaseModel):
+    cash: float = 0
+    credit_card_debt: float = 0                  # QBO reports a credit card's balance positive = owed
+    net: float = 0
+    hidden_count: int = 0
+
+
+class BOVBankBalancesBlock(BOVBlockStatus):
+    status: str = "disconnected"
+    company_name: Optional[str] = None
+    environment: Optional[str] = None
+    realm_id: Optional[str] = None
+    refresh_minutes: int = 15
+    synced_at: Optional[str] = None
+    stale: bool = False
+    accounts: List[QuickBooksAccountResponse] = []
+    totals: BOVBankTotals = BOVBankTotals()

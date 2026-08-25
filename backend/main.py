@@ -16,10 +16,11 @@ import math
 import statistics
 import uuid
 import os
+import secrets
 
-from database import get_db, engine
+from database import get_db, engine, SessionLocal
 from shopify_oauth_helper import fetch_client_credentials_token, apply_token
-from models import Store, MSSQLConnection, ShopifyConnection, Setting, StoreType, StoreCategory, UPCUpdateHistory, UPCExclusion, ItemTrackerConfig, ItemTrackerExclusion, PriceUpdateHistory, StoreMirror, SalesConfig, SalesExclusion, BusinessOverviewConfig, BusinessOverviewShopifyExclusion, BusinessOverviewPoProductExclusion
+from models import Store, MSSQLConnection, ShopifyConnection, Setting, StoreType, StoreCategory, UPCUpdateHistory, UPCExclusion, ItemTrackerConfig, ItemTrackerExclusion, PriceUpdateHistory, StoreMirror, SalesConfig, SalesExclusion, BusinessOverviewConfig, BusinessOverviewShopifyExclusion, BusinessOverviewPoProductExclusion, QuickBooksConnection, QuickBooksAccount
 from schemas import (
     MSSQLStoreCreate, ShopifyStoreCreate, ShipperStoreCreate, MSSQLStoreUpdate, ShopifyStoreUpdate, ShipperStoreUpdate, StoreResponse, StoreNameUpdate, StoreCategoryUpdate,
     SettingCreate, SettingUpdate, SettingResponse,
@@ -79,6 +80,9 @@ from schemas import (
     BOVShopifyStoreOpen, BOVShopifyOpenOrdersBlock, BOVSalesSummaryBlock,
     BusinessOverviewSummaryResponse,
     MonthEndRow, MonthEndTotals, MonthEndStoreStatus, MonthEndShipperStatus, MonthEndResponse,
+    QuickBooksConnectionUpdate, QuickBooksConnectionResponse, QuickBooksConnectStartResponse,
+    QuickBooksConnectCompleteRequest, QuickBooksAccountResponse, QuickBooksAccountUpdate,
+    BOVBankTotals, BOVBankBalancesBlock,
 )
 from mssql_helper import (
     test_mssql_connection, search_upc_across_mssql_stores, search_products_by_upc,
@@ -133,10 +137,14 @@ from checked_orders_helper import (
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from shopify_oauth_helper import token_refresh_loop
+    from quickbooks_helper import keepalive_loop as quickbooks_keepalive_loop
     oauth_refresh_task = asyncio.create_task(token_refresh_loop())
+    quickbooks_task = asyncio.create_task(quickbooks_keepalive_loop())
     yield
     print("[SHUTDOWN] Cancelling Shopify OAuth token refresh loop...")
     oauth_refresh_task.cancel()
+    print("[SHUTDOWN] Cancelling QuickBooks keep-alive loop...")
+    quickbooks_task.cancel()
     print("[SHUTDOWN] Disposing database connections...")
     engine.dispose()
     print("[SHUTDOWN] Shutting down MSSQL thread pool...")
@@ -12266,6 +12274,161 @@ async def stream_month_end(date_from: Optional[str] = None, date_to: Optional[st
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "Connection": "keep-alive",
                                       "X-Accel-Buffering": "no"})
+
+
+# ============================================================================
+# QuickBooks Online — Intuit app keys, paste-back OAuth connect, bank balances
+# ============================================================================
+
+import quickbooks_helper as qb
+
+
+def _qb_connection_response(conn, warning: Optional[str] = None) -> QuickBooksConnectionResponse:
+    if conn is None:
+        return QuickBooksConnectionResponse(warning=warning)
+    return QuickBooksConnectionResponse(
+        configured=qb.is_configured(conn),
+        status=conn.status or qb.STATUS_DISCONNECTED,
+        client_id=conn.client_id,
+        has_client_secret=bool(conn.client_secret),
+        environment=conn.environment or "production",
+        redirect_uri=conn.redirect_uri,
+        refresh_minutes=int(conn.refresh_minutes or 15),
+        realm_id=conn.realm_id,
+        company_name=conn.company_name,
+        connected_at=conn.connected_at,
+        last_synced_at=conn.last_synced_at,
+        access_token_expires_at=conn.access_token_expires_at,
+        refresh_token_expires_at=conn.refresh_token_expires_at,
+        last_error=conn.last_error,
+        pending_state=bool(conn.oauth_state),
+        warning=warning,
+    )
+
+
+@app.get("/api/quickbooks/connection", response_model=QuickBooksConnectionResponse)
+def get_quickbooks_connection(db: Session = Depends(get_db)):
+    return _qb_connection_response(qb.get_conn(db))
+
+
+@app.put("/api/quickbooks/connection", response_model=QuickBooksConnectionResponse)
+def update_quickbooks_connection(body: QuickBooksConnectionUpdate, db: Session = Depends(get_db)):
+    conn = qb.get_or_create_conn(db)
+    warning = None
+    identity_changed = False
+    if body.client_id is not None:
+        new_id = body.client_id.strip()
+        if new_id != (conn.client_id or ""):
+            identity_changed = True
+        conn.client_id = new_id or None
+    if body.client_secret is not None and body.client_secret.strip():
+        conn.client_secret = body.client_secret.strip()
+    if body.environment is not None and body.environment != (conn.environment or "production"):
+        conn.environment = body.environment
+        identity_changed = True
+    if body.redirect_uri is not None:
+        uri = body.redirect_uri.strip()
+        env = conn.environment or "production"
+        if uri and not uri.startswith("https://") and not (env == "sandbox" and uri.startswith("http://localhost")):
+            raise HTTPException(
+                status_code=400,
+                detail="Redirect URI must start with https:// (Intuit only allows http://localhost for sandbox apps)",
+            )
+        conn.redirect_uri = uri or None
+    if body.refresh_minutes is not None:
+        conn.refresh_minutes = int(body.refresh_minutes)
+    if identity_changed and conn.status != qb.STATUS_DISCONNECTED:
+        qb.disconnect(db, conn, revoke_remote=False)
+        warning = "Client ID or environment changed — the previous QuickBooks connection was reset; connect again."
+    db.commit()
+    return _qb_connection_response(conn, warning)
+
+
+@app.post("/api/quickbooks/connect/start", response_model=QuickBooksConnectStartResponse)
+def start_quickbooks_connect(db: Session = Depends(get_db)):
+    conn = qb.get_conn(db)
+    if not qb.is_configured(conn):
+        raise HTTPException(status_code=400, detail="Save the Intuit Client ID and Client Secret first")
+    if not conn.redirect_uri:
+        raise HTTPException(status_code=400, detail="Save the Redirect URI registered in the Intuit developer portal first")
+    state = secrets.token_urlsafe(24)
+    conn.oauth_state = state
+    conn.oauth_state_created_at = datetime.now(timezone.utc)
+    conn.last_error = None
+    db.commit()
+    return QuickBooksConnectStartResponse(
+        authorize_url=qb.build_authorize_url(conn, state),
+        state=state,
+        redirect_uri=conn.redirect_uri,
+    )
+
+
+def _qb_complete_sync(callback_text: str) -> Tuple[bool, Optional[str], Optional[QuickBooksConnectionResponse]]:
+    db = SessionLocal()
+    try:
+        conn = qb.get_conn(db)
+        if not qb.is_configured(conn):
+            return False, "Save the Intuit Client ID and Client Secret first", None
+        parsed = qb.parse_callback_input(callback_text)
+        ok, err = qb.complete_connection(db, conn, parsed)
+        return ok, err, _qb_connection_response(conn)
+    except ValueError as e:
+        return False, str(e), None
+    except Exception as e:
+        db.rollback()
+        return False, f"Connection failed: {e}", None
+    finally:
+        db.close()
+
+
+@app.post("/api/quickbooks/connect/complete", response_model=QuickBooksConnectionResponse)
+async def complete_quickbooks_connect(body: QuickBooksConnectCompleteRequest):
+    ok, err, resp = await asyncio.to_thread(_qb_complete_sync, body.callback)
+    if not ok:
+        raise HTTPException(status_code=400, detail=err or "Connection failed")
+    return resp
+
+
+def _qb_disconnect_sync() -> QuickBooksConnectionResponse:
+    db = SessionLocal()
+    try:
+        conn = qb.get_conn(db)
+        if conn is not None:
+            qb.disconnect(db, conn, revoke_remote=True)
+        return _qb_connection_response(conn)
+    finally:
+        db.close()
+
+
+@app.post("/api/quickbooks/disconnect", response_model=QuickBooksConnectionResponse)
+async def disconnect_quickbooks():
+    return await asyncio.to_thread(_qb_disconnect_sync)
+
+
+@app.post("/api/quickbooks/sync", response_model=BOVBankBalancesBlock)
+async def sync_quickbooks_balances():
+    return BOVBankBalancesBlock(**(await asyncio.to_thread(qb.get_balances_block, None, True)))
+
+
+@app.get("/api/quickbooks/accounts", response_model=List[QuickBooksAccountResponse])
+def list_quickbooks_accounts(db: Session = Depends(get_db)):
+    return [QuickBooksAccountResponse(**a) for a in qb.list_accounts(db)]
+
+
+@app.patch("/api/quickbooks/accounts/{qbo_id}", response_model=QuickBooksAccountResponse)
+def update_quickbooks_account(qbo_id: str, body: QuickBooksAccountUpdate, db: Session = Depends(get_db)):
+    acct = db.query(QuickBooksAccount).filter(QuickBooksAccount.qbo_id == qbo_id).first()
+    if acct is None:
+        raise HTTPException(status_code=404, detail="Account not found in the QuickBooks cache — sync first")
+    acct.hidden = bool(body.hidden)
+    db.commit()
+    db.refresh(acct)
+    return QuickBooksAccountResponse(**qb._account_dict(acct))
+
+
+@app.get("/api/business-overview/bank-balances", response_model=BOVBankBalancesBlock)
+async def get_business_overview_bank_balances(max_age_minutes: Optional[float] = Query(None, ge=0)):
+    return BOVBankBalancesBlock(**(await asyncio.to_thread(qb.get_balances_block, max_age_minutes, False)))
 
 
 if __name__ == "__main__":

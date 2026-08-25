@@ -402,6 +402,55 @@ CREATE TABLE IF NOT EXISTS business_overview_po_product_exclusions (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_bov_po_excl_unique
     ON business_overview_po_product_exclusions (store_id, product_id);
 
+-- QuickBooks Online connection (singleton; migration 025)
+CREATE TABLE IF NOT EXISTS quickbooks_connection (
+    id SERIAL PRIMARY KEY,
+    client_id VARCHAR(255),
+    client_secret VARCHAR(255),
+    environment VARCHAR(20) NOT NULL DEFAULT 'production',
+    redirect_uri TEXT,
+    realm_id VARCHAR(64),
+    company_name TEXT,
+    access_token TEXT,
+    access_token_expires_at TIMESTAMPTZ,
+    refresh_token TEXT,
+    refresh_token_expires_at TIMESTAMPTZ,
+    oauth_state VARCHAR(128),
+    oauth_state_created_at TIMESTAMPTZ,
+    status VARCHAR(30) NOT NULL DEFAULT 'disconnected',
+    last_error TEXT,
+    refresh_minutes INTEGER NOT NULL DEFAULT 15,
+    connected_at TIMESTAMPTZ,
+    last_synced_at TIMESTAMPTZ,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_quickbooks_connection_singleton
+    ON quickbooks_connection ((true));
+
+CREATE TRIGGER update_quickbooks_connection_updated_at
+    BEFORE UPDATE ON quickbooks_connection
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- QuickBooks Online account balance cache (migration 025)
+CREATE TABLE IF NOT EXISTS quickbooks_accounts (
+    id SERIAL PRIMARY KEY,
+    qbo_id VARCHAR(64) NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    fully_qualified_name TEXT,
+    account_type VARCHAR(50) NOT NULL,
+    account_sub_type VARCHAR(80),
+    current_balance NUMERIC(16,2) NOT NULL DEFAULT 0,
+    current_balance_with_sub_accounts NUMERIC(16,2),
+    sub_account BOOLEAN NOT NULL DEFAULT FALSE,
+    parent_qbo_id VARCHAR(64),
+    currency VARCHAR(10),
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    hidden BOOLEAN NOT NULL DEFAULT FALSE,
+    synced_at TIMESTAMPTZ
+);
+
 -- Insert default settings
 INSERT INTO settings (key, value, description) VALUES
     ('app_name', 'Global UPC', 'Application name'),

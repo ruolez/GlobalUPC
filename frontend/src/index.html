@@ -343,6 +343,23 @@
               </section>
               <section class="bov-kpi-grid" id="bov-kpi-strip" aria-label="Key figures"></section>
 
+            <!-- Bank & credit cards (QuickBooks Online) -->
+            <div class="bov-grid-ops" id="bov-bank-row">
+              <div class="dashboard-card bov-card" id="bov-bank-card">
+                <div class="dashboard-card-header bov-card-head">
+                  <div class="bov-card-title-wrap">
+                    <h3>Bank &amp; credit cards</h3>
+                    <span class="dashboard-card-meta" id="bov-bank-meta"></span>
+                  </div>
+                  <div class="bov-card-controls">
+                    <button type="button" class="btn btn-secondary bov-btn-xs bov-card-link-btn" data-bov-action="quickbooks-sync" title="Pull current balances from QuickBooks now">Refresh</button>
+                  </div>
+                </div>
+                <div class="bov-card-body" id="bov-bank-body"></div>
+                <div class="bov-card-foot" id="bov-bank-foot"></div>
+              </div>
+            </div>
+
             <!-- Trend row (full width) -->
             <div class="bov-grid-trend">
               <div class="sancm-chart-card bov-card bov-chart-card" id="bov-trend-card">
@@ -1152,6 +1169,88 @@
                     </select>
                     <button type="button" class="btn btn-primary" id="shopify-sales-s2s-store-save">Save</button>
                   </div>
+                </div>
+
+                <!-- QuickBooks Online (bank balances) -->
+                <div class="role-card role-card-wide" id="qb-settings-card">
+                  <div class="role-card-head">
+                    <span class="role-card-icon" aria-hidden="true">
+                      <svg width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <rect x="2" y="4.5" width="14" height="9.5" rx="1.5" stroke="currentColor" stroke-width="1.6"/>
+                        <path d="M2 8h14" stroke="currentColor" stroke-width="1.6"/>
+                        <path d="M5 11.25h3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                      </svg>
+                    </span>
+                    <div class="role-card-title-block">
+                      <div class="role-card-title">QuickBooks Online — Bank balances</div>
+                      <p class="role-card-help">
+                        Connects one QuickBooks company so Business Overview can show bank and
+                        credit-card balances. Enter the Intuit app keys and save, then
+                        <strong>Connect to QuickBooks</strong>: approve in the new tab, copy the URL
+                        you land on (it contains <code>code=</code>, <code>state=</code>,
+                        <code>realmId=</code>) and paste it back here. Tokens renew automatically
+                        afterwards. Not included in config export.
+                      </p>
+                    </div>
+                  </div>
+                  <div class="role-card-control qb-form">
+                    <div class="form-group" style="margin: 0;">
+                      <label for="qb-client-id" style="font-size: 0.75rem;">Client ID</label>
+                      <input type="text" id="qb-client-id" autocomplete="off" spellcheck="false" />
+                    </div>
+                    <div class="form-group" style="margin: 0;">
+                      <label for="qb-client-secret" style="font-size: 0.75rem;">Client Secret</label>
+                      <input type="password" id="qb-client-secret" autocomplete="new-password" placeholder="Client secret" />
+                    </div>
+                    <div class="form-group qb-form-narrow" style="margin: 0;">
+                      <label for="qb-environment" style="font-size: 0.75rem;">Environment</label>
+                      <select id="qb-environment">
+                        <option value="production">Production</option>
+                        <option value="sandbox">Sandbox</option>
+                      </select>
+                    </div>
+                    <div class="form-group qb-form-narrow" style="margin: 0;">
+                      <label for="qb-refresh-minutes" style="font-size: 0.75rem;">Refresh every (min)</label>
+                      <input type="number" id="qb-refresh-minutes" min="1" max="1440" step="1" placeholder="15" />
+                    </div>
+                    <div class="form-group qb-form-full" style="margin: 0;">
+                      <label for="qb-redirect-uri" style="font-size: 0.75rem;">Redirect URI — must be https and match the Intuit portal exactly</label>
+                      <input type="url" id="qb-redirect-uri" placeholder="https://your-placeholder-page.example.com/quickbooks" autocomplete="off" spellcheck="false" />
+                    </div>
+                    <button type="button" class="btn btn-primary" id="qb-settings-save" style="align-self: flex-end;">Save</button>
+                  </div>
+                  <div id="qb-status" class="test-status qb-status"></div>
+                  <div class="qb-connect-row">
+                    <button type="button" class="btn btn-primary" id="qb-connect-btn">Connect to QuickBooks</button>
+                    <button type="button" class="btn btn-secondary" id="qb-sync-now" hidden>Sync balances now</button>
+                    <button type="button" class="btn btn-secondary" id="qb-disconnect-btn" hidden>Disconnect</button>
+                  </div>
+                  <div id="qb-paste-block" class="qb-paste-block" hidden>
+                    <label for="qb-callback-input">Paste the URL Intuit redirected you to after approving</label>
+                    <textarea id="qb-callback-input" rows="3" spellcheck="false" placeholder="https://…?code=…&amp;state=…&amp;realmId=…"></textarea>
+                    <div class="qb-paste-actions">
+                      <button type="button" class="btn btn-primary" id="qb-connect-complete">Complete connection</button>
+                      <a id="qb-authorize-link" class="qb-link" href="#" target="_blank" rel="noopener" hidden>Open the QuickBooks approval page again</a>
+                    </div>
+                  </div>
+                  <div id="qb-accounts-wrap" class="qb-accounts" hidden>
+                    <div class="qb-accounts-head">
+                      <strong>Accounts</strong>
+                      <span class="dashboard-card-meta" id="qb-accounts-meta"></span>
+                    </div>
+                    <div id="qb-accounts"></div>
+                    <p class="role-card-help">Unchecked accounts are hidden from the dashboard and left out of its totals.</p>
+                  </div>
+                  <details class="qb-howto">
+                    <summary>How to get the Intuit app keys</summary>
+                    <ol>
+                      <li>Sign in at <code>developer.intuit.com</code> → <strong>My Apps</strong> → <strong>Create an app</strong> → QuickBooks Online and Payments. Add only the <strong>Accounting</strong> scope (scopes can't be removed later).</li>
+                      <li>Open <strong>Keys &amp; credentials</strong>. <em>Development</em> keys work with a sandbox company right away (and accept <code>http://localhost</code> redirects). <em>Production</em> keys unlock after you fill in the app settings: EULA and privacy-policy URLs (placeholder pages you own are fine for a private app), host domain, launch and disconnect URLs, and the short app questionnaire.</li>
+                      <li>Under the same tab, add a <strong>Redirect URI</strong>. It must be <code>https://</code> and can point at any page you own — this app never receives the redirect; you copy the URL you land on and paste it above. Enter the exact same URI in the field above.</li>
+                      <li>Copy the Client ID and Client Secret into the fields above, pick the matching environment, and <strong>Save</strong>. Sandbox and production use different keys — switching environment means re-entering keys and connecting again.</li>
+                      <li>Click <strong>Connect to QuickBooks</strong>, sign in as the company admin, choose the company, approve, then paste the resulting URL and click <strong>Complete connection</strong>.</li>
+                    </ol>
+                  </details>
                 </div>
 
                 <!-- Store Mirrors -->

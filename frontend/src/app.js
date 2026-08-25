@@ -401,6 +401,7 @@ async function loadSettings() {
   await loadAdminStoreSetting();
   await loadInventoryTimeSettings();
   await loadCheckedOrdersSettings();
+  await loadQuickBooksSettings();
 
   // Set dropdown value to saved preference
   const savedLandingPage = getDefaultLandingPage();
@@ -18205,6 +18206,296 @@ document
   .getElementById("checked-orders-settings-save")
   ?.addEventListener("click", saveCheckedOrdersSettings);
 
+// ===== QuickBooks Online settings =====
+//
+// Paste-back OAuth: "Connect" opens Intuit in a new tab; the user pastes the
+// URL they land on (code/state/realmId) and the backend exchanges it. The
+// connection row never returns the secret or tokens — only flags.
+
+const qbState = { conn: null, accounts: [] };
+
+function qbSetStatus(text, cls) {
+  const el = document.getElementById("qb-status");
+  if (!el) return;
+  el.className = `test-status qb-status${cls ? ` ${cls}` : ""}`;
+  el.textContent = text || "";
+}
+
+function qbFillForm(c) {
+  const set = (id, v) => {
+    const el = document.getElementById(id);
+    if (el) el.value = v == null ? "" : String(v);
+  };
+  set("qb-client-id", c.client_id);
+  set("qb-environment", c.environment || "production");
+  set("qb-redirect-uri", c.redirect_uri);
+  set("qb-refresh-minutes", c.refresh_minutes || 15);
+  const secret = document.getElementById("qb-client-secret");
+  if (secret) {
+    secret.value = "";
+    secret.placeholder = c.has_client_secret ? "•••••••• (unchanged)" : "Client secret";
+  }
+  const link = document.getElementById("qb-authorize-link");
+  if (link && !c.pending_state) link.hidden = true;
+}
+
+function renderQuickBooksStatus() {
+  const c = qbState.conn;
+  const connectBtn = document.getElementById("qb-connect-btn");
+  const disconnectBtn = document.getElementById("qb-disconnect-btn");
+  const syncBtn = document.getElementById("qb-sync-now");
+  const paste = document.getElementById("qb-paste-block");
+  const acctWrap = document.getElementById("qb-accounts-wrap");
+  if (!c) return;
+  const connected = c.status === "connected";
+  const needs = c.status === "needs_reconnect";
+  if (connectBtn) {
+    connectBtn.textContent = connected ? "Reconnect" : "Connect to QuickBooks";
+    connectBtn.disabled = !c.configured || !c.redirect_uri;
+    connectBtn.title = !c.configured
+      ? "Save the Client ID and Client Secret first"
+      : !c.redirect_uri ? "Save the Redirect URI first" : "";
+  }
+  if (disconnectBtn) disconnectBtn.hidden = !(connected || needs);
+  if (syncBtn) syncBtn.hidden = !connected;
+  if (paste) paste.hidden = !c.pending_state;
+  if (acctWrap) acctWrap.hidden = !(connected || needs);
+  const env = c.environment === "sandbox" ? "sandbox" : "production";
+  if (c.pending_state) {
+    qbSetStatus("Waiting for the pasted URL — approve in the QuickBooks tab, then paste the URL you land on below.", "loading");
+  } else if (connected) {
+    const parts = [`Connected to ${c.company_name || "QuickBooks company"}`, env, `realm ${c.realm_id || "—"}`];
+    if (c.last_synced_at) parts.push(`balances synced ${formatRelative(c.last_synced_at)}`);
+    if (c.refresh_token_expires_at) {
+      parts.push(`refresh token valid until ${new Date(c.refresh_token_expires_at).toLocaleDateString()}`);
+    }
+    if (c.last_error) parts.push(`last error: ${c.last_error}`);
+    qbSetStatus(parts.join(" · "), c.last_error ? "error" : "success");
+  } else if (needs) {
+    qbSetStatus(
+      `Needs reconnect${c.company_name ? ` (${c.company_name})` : ""}: ${c.last_error || "the refresh token was rejected"}. Click Connect to QuickBooks and paste the new URL.`,
+      "error",
+    );
+  } else if (!c.configured) {
+    qbSetStatus("Not configured — enter the Intuit Client ID and Client Secret, then Save.", "loading");
+  } else {
+    qbSetStatus(`Not connected (${env}). Click Connect to QuickBooks.`, "loading");
+  }
+}
+
+async function qbRequest(path, opts = {}) {
+  const resp = await fetch(`${API_BASE}/quickbooks${path}`, {
+    headers: { "Content-Type": "application/json" },
+    ...opts,
+  });
+  let data = null;
+  try {
+    data = await resp.json();
+  } catch {
+    data = null;
+  }
+  if (!resp.ok) throw new Error((data && (data.detail || data.message)) || `HTTP ${resp.status}`);
+  return data;
+}
+
+async function loadQuickBooksSettings() {
+  if (!document.getElementById("qb-settings-card")) return;
+  try {
+    qbState.conn = await qbRequest("/connection");
+    qbFillForm(qbState.conn);
+    renderQuickBooksStatus();
+    if (qbState.conn.status !== "disconnected") await loadQuickBooksAccounts();
+    else renderQuickBooksAccounts([]);
+  } catch (e) {
+    qbSetStatus(`QuickBooks settings unavailable: ${e.message || e}`, "error");
+  }
+}
+
+async function saveQuickBooksSettings(opts = {}) {
+  const body = {
+    client_id: (document.getElementById("qb-client-id")?.value || "").trim(),
+    environment: document.getElementById("qb-environment")?.value || "production",
+    redirect_uri: (document.getElementById("qb-redirect-uri")?.value || "").trim(),
+    refresh_minutes: Number(document.getElementById("qb-refresh-minutes")?.value) || 15,
+  };
+  const secret = (document.getElementById("qb-client-secret")?.value || "").trim();
+  if (secret) body.client_secret = secret;
+  try {
+    qbState.conn = await qbRequest("/connection", { method: "PUT", body: JSON.stringify(body) });
+    qbFillForm(qbState.conn);
+    renderQuickBooksStatus();
+    if (qbState.conn.warning) {
+      showToast(`⚠ ${qbState.conn.warning}`, "warning");
+      renderQuickBooksAccounts([]);
+      qbRefreshDashboard();
+    } else if (!opts.quiet) {
+      showToast("✓ QuickBooks settings saved", "success");
+    }
+    return true;
+  } catch (e) {
+    showToast(`✗ ${e.message || e}`, "error");
+    return false;
+  }
+}
+
+async function quickBooksConnectStart() {
+  if (!(await saveQuickBooksSettings({ quiet: true }))) return;
+  try {
+    const data = await qbRequest("/connect/start", { method: "POST" });
+    window.open(data.authorize_url, "_blank", "noopener");
+    const link = document.getElementById("qb-authorize-link");
+    if (link) {
+      link.href = data.authorize_url;
+      link.hidden = false;
+    }
+    qbState.conn = { ...qbState.conn, pending_state: true };
+    renderQuickBooksStatus();
+    const ta = document.getElementById("qb-callback-input");
+    if (ta) {
+      ta.value = "";
+      ta.focus();
+    }
+  } catch (e) {
+    showToast(`✗ ${e.message || e}`, "error");
+  }
+}
+
+async function quickBooksConnectComplete() {
+  const ta = document.getElementById("qb-callback-input");
+  const text = (ta?.value || "").trim();
+  if (!text) {
+    showToast("Paste the URL from the QuickBooks tab first", "warning");
+    ta?.focus();
+    return;
+  }
+  const btn = document.getElementById("qb-connect-complete");
+  if (btn) btn.disabled = true;
+  qbSetStatus("Exchanging the authorization code with Intuit…", "loading");
+  try {
+    qbState.conn = await qbRequest("/connect/complete", {
+      method: "POST",
+      body: JSON.stringify({ callback: text }),
+    });
+    if (ta) ta.value = "";
+    qbFillForm(qbState.conn);
+    renderQuickBooksStatus();
+    showToast(`✓ Connected to ${qbState.conn.company_name || "QuickBooks"}`, "success");
+    await loadQuickBooksAccounts();
+    qbRefreshDashboard();
+  } catch (e) {
+    qbSetStatus(`Connection failed: ${e.message || e}`, "error");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function quickBooksDisconnect() {
+  if (!confirm("Disconnect QuickBooks? Cached balances are cleared; the app keys stay saved.")) return;
+  try {
+    qbState.conn = await qbRequest("/disconnect", { method: "POST" });
+    qbFillForm(qbState.conn);
+    renderQuickBooksStatus();
+    renderQuickBooksAccounts([]);
+    showToast("✓ QuickBooks disconnected", "success");
+    qbRefreshDashboard();
+  } catch (e) {
+    showToast(`✗ ${e.message || e}`, "error");
+  }
+}
+
+async function loadQuickBooksAccounts() {
+  try {
+    qbState.accounts = await qbRequest("/accounts");
+  } catch {
+    qbState.accounts = [];
+  }
+  renderQuickBooksAccounts(qbState.accounts);
+}
+
+function renderQuickBooksAccounts(accounts) {
+  const el = document.getElementById("qb-accounts");
+  const meta = document.getElementById("qb-accounts-meta");
+  if (!el) return;
+  const rows = accounts || [];
+  if (meta) {
+    const newest = rows.map((a) => a.synced_at).filter(Boolean).sort().slice(-1)[0];
+    meta.textContent = rows.length
+      ? `${rows.length} account${rows.length === 1 ? "" : "s"} · synced ${newest ? formatRelative(newest) : "—"}`
+      : "";
+  }
+  if (!rows.length) {
+    el.innerHTML = `<div class="settings-empty-state qb-accounts-empty">No bank or credit-card accounts synced yet.</div>`;
+    return;
+  }
+  const body = rows
+    .map((a) => {
+      const type = `${a.account_sub_type || a.account_type}${a.currency && a.currency !== "USD" ? ` · ${a.currency}` : ""}`;
+      return `<tr class="${a.hidden ? "is-hidden" : ""}">
+          <td>${escapeHtml(a.fully_qualified_name || a.name)}</td>
+          <td>${escapeHtml(type)}</td>
+          <td class="bov-num">${escapeHtml(formatCurrency(a.balance))}</td>
+          <td class="qb-col-show"><input type="checkbox" data-qb-account="${escapeHtml(a.qbo_id)}"${a.hidden ? "" : " checked"} aria-label="Show ${escapeHtml(a.name)} on the dashboard"></td>
+        </tr>`;
+    })
+    .join("");
+  el.innerHTML = `<table class="data-table qb-accounts-table"><thead><tr><th>Account</th><th>Type</th><th class="bov-num">Balance</th><th class="qb-col-show">Show on dashboard</th></tr></thead><tbody>${body}</tbody></table>`;
+}
+
+async function toggleQuickBooksAccountHidden(qboId, hidden) {
+  try {
+    const updated = await qbRequest(`/accounts/${encodeURIComponent(qboId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ hidden }),
+    });
+    qbState.accounts = qbState.accounts.map((a) => (a.qbo_id === qboId ? updated : a));
+    renderQuickBooksAccounts(qbState.accounts);
+    qbRefreshDashboard();
+  } catch (e) {
+    showToast(`✗ ${e.message || e}`, "error");
+    renderQuickBooksAccounts(qbState.accounts);
+  }
+}
+
+async function quickBooksSyncNow() {
+  const btn = document.getElementById("qb-sync-now");
+  if (btn) btn.disabled = true;
+  try {
+    const block = await qbRequest("/sync", { method: "POST" });
+    if (block.error) showToast(`⚠ QuickBooks sync: ${block.error}`, "warning");
+    else showToast(`✓ Synced ${(block.accounts || []).length} QuickBooks account(s)`, "success");
+    await loadQuickBooksSettings();
+    qbRefreshDashboard(block);
+  } catch (e) {
+    showToast(`✗ ${e.message || e}`, "error");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// Keep the Business Overview widget in step with Settings changes.
+function qbRefreshDashboard(block) {
+  if (!bovState.bound) return;
+  if (block && bovState.widgets.bankBalances) {
+    const w = bovState.widgets.bankBalances;
+    w.data = block;
+    w.error = null;
+    w.loadedAt = Date.now();
+    bovRenderBankBalances();
+  } else {
+    bovFetchAll({ only: ["bankBalances"], silent: true });
+  }
+}
+
+document.getElementById("qb-settings-save")?.addEventListener("click", () => saveQuickBooksSettings());
+document.getElementById("qb-connect-btn")?.addEventListener("click", quickBooksConnectStart);
+document.getElementById("qb-connect-complete")?.addEventListener("click", quickBooksConnectComplete);
+document.getElementById("qb-disconnect-btn")?.addEventListener("click", quickBooksDisconnect);
+document.getElementById("qb-sync-now")?.addEventListener("click", quickBooksSyncNow);
+document.getElementById("qb-accounts")?.addEventListener("change", (e) => {
+  const cb = e.target.closest("input[data-qb-account]");
+  if (cb) toggleQuickBooksAccountHidden(cb.dataset.qbAccount, !cb.checked);
+});
+
 // ============================================================================
 // Shopify Data Sync (Shopify Analytics > Data Sync)
 //
@@ -18518,7 +18809,7 @@ async function sacrUpdateDataSourceNote() {
 // offline-capable and theme-aware.
 
 const BOV_AUTOREFRESH_MS = 60000;
-const BOV_LIVE_WIDGETS = ["summary", "quotations", "invoicesPeriod", "invoicesOpen", "purchasesIncoming", "shopifyOrders", "shopifyOrders_list", "alerts"];
+const BOV_LIVE_WIDGETS = ["summary", "quotations", "invoicesPeriod", "invoicesOpen", "purchasesIncoming", "shopifyOrders", "shopifyOrders_list", "alerts", "bankBalances"];
 const BOV_SHOPIFY_WIDGETS = ["summary", "top", "shopifyOrders", "shopifyOrders_list", "alerts"];
 // Rule keys with the form fields they carry (mirror of BOV_DEFAULT_ALERT_RULES).
 const BOV_ALERT_RULE_FIELDS = {
@@ -18608,6 +18899,7 @@ const bovState = {
     monthEnd: { key: "date", dir: "desc" },
     invoiceLines: { key: null, dir: "desc" },        // null = original line order
     shopifyOrderLines: { key: null, dir: "desc" },
+    bankBalances: { key: null, dir: "desc" },        // null = QuickBooks order (type, then name)
   },
   widgets: {
     summary: bovEmptyWidget(),
@@ -18623,9 +18915,11 @@ const bovState = {
     shopifyOrders: bovEmptyWidget(),
     shopifyOrders_list: bovEmptyWidget(),
     alerts: bovEmptyWidget(),
+    bankBalances: bovEmptyWidget(),
   },
   seq: 0,
   shopifyRefreshing: false,
+  qbRefreshing: false,     // manual QuickBooks balance refresh in flight
   lastShopifyRefreshAt: 0,
   shopifySyncNote: null,   // {text, tone} shown under "Updated …"
   modalCache: { quotation: new Map(), invoice: new Map(), po: new Map(), shopifyOrder: new Map() },
@@ -20036,6 +20330,12 @@ const BOV_WIDGET_DEFS = {
       bovRerenderLists();
     },
   },
+  bankBalances: {
+    // QuickBooks balances are cached server-side and ignore the period/store filters.
+    card: "bov-bank-card",
+    request: () => ["/bank-balances", {}],
+    render: () => bovRenderBankBalances(),
+  },
 };
 
 async function bovFetchAll(opts = {}) {
@@ -20151,6 +20451,7 @@ function bovPaintSkeleton(key) {
     shopifyOrders: "bov-shopify-body",
     shopifyOrders_list: "bov-shopifyorders-body",
     alerts: "bov-attention-body",
+    bankBalances: "bov-bank-body",
   }[key];
   const el = bodyId && document.getElementById(bodyId);
   if (!el) return;
@@ -20205,6 +20506,12 @@ function bovHandleAction(action, el) {
     bovOpenMissingCostModal();
   } else if (action === "shopify-sync") {
     bovRefreshShopify({ maxAgeMinutes: 0 });
+  } else if (action === "quickbooks-sync") {
+    bovRefreshQuickBooks();
+  } else if (action === "settings-quickbooks") {
+    navigateTo("settings");
+    activateSettingsTab("roles");
+    setTimeout(() => document.getElementById("qb-settings-card")?.scrollIntoView({ behavior: "smooth", block: "start" }), 80);
   } else if (action === "exclusions") {
     bovOpenConfigEdit();
     setTimeout(() => {
@@ -21115,6 +21422,131 @@ function bovRenderShopifyOrders() {
     const left = `Mirror as of ${newest ? escapeHtml(formatRelative(newest)) : "—"} · live buckets straight from Shopify${d.skipped_stores && d.skipped_stores.length ? ` · not synced: ${escapeHtml(d.skipped_stores.join(", "))}` : ""}`;
     const busy = bovState.shopifyRefreshing;
     foot.innerHTML = `<span class="bov-foot-left">${left}</span><button type="button" class="bov-link-btn" data-bov-action="shopify-sync"${busy ? " disabled" : ""}>${busy ? "Syncing…" : "Sync now"}</button>`;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Bank & credit cards (QuickBooks Online)
+// ---------------------------------------------------------------------------
+
+function bovRenderBankBalances() {
+  const body = document.getElementById("bov-bank-body");
+  const meta = document.getElementById("bov-bank-meta");
+  const foot = document.getElementById("bov-bank-foot");
+  const key = "bankBalances";
+  if (!body) return;
+  const w = bovState.widgets[key];
+  if (!w.data && !w.error) {
+    if (!w.loading) bovPaintSkeleton(key);
+    return;
+  }
+  if (foot) foot.innerHTML = "";
+  if (meta) meta.textContent = "";
+  if (w.error && !w.data) {
+    body.innerHTML = bovInlineErrorHtml(key, w.error, "Bank balances could not load");
+    return;
+  }
+  const d = w.data;
+  if (!d.configured) {
+    body.innerHTML = bovUnconfiguredHtml(
+      "QuickBooks not connected",
+      "Add your Intuit app keys and connect a company under Settings → Roles & Mirrors.",
+      "settings-quickbooks",
+      "Open QuickBooks settings",
+    );
+    return;
+  }
+  const accounts = d.accounts || [];
+  const rows = bovSortRows(accounts.filter((a) => !a.hidden), bovState.sort[key]);
+  const t = d.totals || {};
+  let html = "";
+  if (d.status === "needs_reconnect") {
+    // Keep the last known numbers under the warning — never blank the card.
+    html += bovUnconfiguredHtml(
+      "QuickBooks needs reconnecting",
+      d.error || "The refresh token was rejected — approve the app again.",
+      "settings-quickbooks",
+      "Reconnect",
+    );
+  } else if (d.error && !accounts.length) {
+    body.innerHTML = bovInlineErrorHtml(key, d.error, "Bank balances unavailable");
+    return;
+  }
+  if (meta) meta.textContent = [d.company_name, d.environment === "sandbox" ? "sandbox" : null].filter(Boolean).join(" · ");
+  const tile = (label, value, sub, cls) =>
+    `<div class="me-tile${cls ? ` ${cls}` : ""}"><div class="me-tile-label">${escapeHtml(label)}</div>` +
+    `<div class="me-tile-value">${escapeHtml(value)}</div>${sub ? `<div class="me-tile-sub">${escapeHtml(sub)}</div>` : ""}</div>`;
+  const cash = Number(t.cash || 0);
+  const debt = Number(t.credit_card_debt || 0);
+  const net = Number(t.net || 0);
+  const nBank = rows.filter((r) => r.account_type === "Bank").length;
+  const nCard = rows.length - nBank;
+  html += `<div class="me-summary bov-bank-tiles">${
+    tile("Cash in bank", bovMoney(cash), `${nBank} account${nBank === 1 ? "" : "s"}`, cash < 0 ? "is-neg" : "")
+  }${
+    tile("Credit cards", bovMoney(debt), `owed · ${nCard} card${nCard === 1 ? "" : "s"}`, debt > 0 ? "is-owed" : "")
+  }${
+    tile("Net", bovMoney(net), "cash − credit cards", net < 0 ? "is-neg" : "")
+  }</div>`;
+  if (!rows.length) {
+    html += bovEmptyHtml(
+      accounts.length
+        ? "All accounts are hidden — show some under Settings → QuickBooks Online."
+        : "No bank or credit-card accounts returned by QuickBooks.",
+      true,
+    );
+  } else {
+    html += bovTableHtml(key, [
+      { key: "name", label: "Account", render: (r) => bovCustomerCell(r.name, r.sub_account ? r.fully_qualified_name : null) },
+      { key: "account_type", label: "Type", width: "22%",
+        render: (r) => escapeHtml(`${r.account_sub_type || r.account_type}${r.currency && r.currency !== "USD" ? ` · ${r.currency}` : ""}`) },
+      { key: "balance", label: "Balance", num: true, width: "18%",
+        render: (r) => {
+          const tip = r.balance_with_sub_accounts != null && r.balance_with_sub_accounts !== r.balance
+            ? ` title="incl. sub-accounts: ${escapeHtml(bovMoney(r.balance_with_sub_accounts))}"` : "";
+          return `<span class="${r.account_type === "Credit Card" ? "bov-bank-owed" : ""}"${tip}>${escapeHtml(bovMoney(r.balance))}</span>`;
+        } },
+    ], rows, { plainRows: true, numbered: false });
+  }
+  body.innerHTML = html;
+  if (foot) {
+    const parts = [`Updated ${d.synced_at ? escapeHtml(formatRelative(d.synced_at)) : "—"}`];
+    if (t.hidden_count) parts.push(`${bovInt(t.hidden_count)} hidden`);
+    if (d.stale && d.status === "connected") {
+      parts.push(`<span class="bov-bank-stale">⚠ QuickBooks unreachable — showing last known values${d.error ? `: ${escapeHtml(d.error)}` : ""}</span>`);
+    }
+    const busy = bovState.qbRefreshing;
+    foot.innerHTML = `<span class="bov-foot-left">${parts.join(" · ")}</span><button type="button" class="bov-link-btn" data-bov-action="quickbooks-sync"${busy ? " disabled" : ""}>${busy ? "Refreshing…" : "Refresh now"}</button>`;
+  }
+}
+
+async function bovRefreshQuickBooks() {
+  if (bovState.qbRefreshing) return;
+  bovState.qbRefreshing = true;
+  const card = document.getElementById("bov-bank-card");
+  card?.classList.add("is-loading");
+  bovRenderBankBalances();
+  try {
+    const resp = await fetch(`${API_BASE}/quickbooks/sync`, { method: "POST" });
+    if (!resp.ok) {
+      let detail = `HTTP ${resp.status}`;
+      try { detail = (await resp.json()).detail || detail; } catch { /* keep status */ }
+      throw new Error(detail);
+    }
+    const data = await resp.json();
+    const w = bovState.widgets.bankBalances;
+    w.data = data;
+    w.error = null;
+    w.loadedAt = Date.now();
+    if (!data.configured) showToast("QuickBooks is not connected — set it up under Settings", "warning");
+    else if (data.error) showToast(`⚠ QuickBooks: ${data.error}`, "warning");
+    else showToast("✓ QuickBooks balances refreshed", "success");
+  } catch (e) {
+    showToast(`⚠ QuickBooks refresh failed: ${e.message || e}`, "warning");
+  } finally {
+    bovState.qbRefreshing = false;
+    card?.classList.remove("is-loading");
+    bovRenderBankBalances();
   }
 }
 
@@ -22098,6 +22530,7 @@ function bovRenderCard(key) {
   else if (key === "invoices" || key.startsWith("invoices")) bovRenderInvoices();
   else if (key === "purchases" || key.startsWith("purchases")) bovRenderPurchases();
   else if (key === "shopifyorders" || key === "shopifyOrders_list") bovRenderShopifyOrdersList();
+  else if (key === "bankBalances") bovRenderBankBalances();
 }
 
 function bovSortRows(rows, sort) {

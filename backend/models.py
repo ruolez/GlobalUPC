@@ -194,6 +194,49 @@ class BusinessOverviewPoProductExclusion(Base):
 
     store = relationship("Store")
 
+class QuickBooksConnection(Base):
+    """Singleton: Intuit app keys + OAuth 2.0 tokens for the one QBO company."""
+    __tablename__ = "quickbooks_connection"
+
+    id = Column(Integer, primary_key=True, index=True)
+    client_id = Column(String(255), nullable=True)
+    client_secret = Column(String(255), nullable=True)
+    environment = Column(String(20), nullable=False, server_default="production")
+    redirect_uri = Column(Text, nullable=True)
+    realm_id = Column(String(64), nullable=True)
+    company_name = Column(Text, nullable=True)
+    access_token = Column(Text, nullable=True)
+    access_token_expires_at = Column(DateTime(timezone=True), nullable=True)
+    refresh_token = Column(Text, nullable=True)
+    refresh_token_expires_at = Column(DateTime(timezone=True), nullable=True)
+    oauth_state = Column(String(128), nullable=True)
+    oauth_state_created_at = Column(DateTime(timezone=True), nullable=True)
+    status = Column(String(30), nullable=False, server_default="disconnected")
+    last_error = Column(Text, nullable=True)
+    refresh_minutes = Column(Integer, nullable=False, server_default="15")
+    connected_at = Column(DateTime(timezone=True), nullable=True)
+    last_synced_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+class QuickBooksAccount(Base):
+    __tablename__ = "quickbooks_accounts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    qbo_id = Column(String(64), nullable=False, unique=True, index=True)
+    name = Column(Text, nullable=False)
+    fully_qualified_name = Column(Text, nullable=True)
+    account_type = Column(String(50), nullable=False)
+    account_sub_type = Column(String(80), nullable=True)
+    current_balance = Column(Numeric(16, 2), nullable=False, server_default="0")
+    current_balance_with_sub_accounts = Column(Numeric(16, 2), nullable=True)
+    sub_account = Column(Boolean, nullable=False, server_default="false")
+    parent_qbo_id = Column(String(64), nullable=True)
+    currency = Column(String(10), nullable=True)
+    active = Column(Boolean, nullable=False, server_default="true")
+    hidden = Column(Boolean, nullable=False, server_default="false")
+    synced_at = Column(DateTime(timezone=True), nullable=True)
+
 class PriceUpdateHistory(Base):
     __tablename__ = "price_update_history"
 
