@@ -431,6 +431,21 @@ def list_accounts(db) -> List[Dict[str, Any]]:
     return [_account_dict(a) for a in rows]
 
 
+def set_accounts_hidden(db, changes: Dict[str, bool]) -> Tuple[List[str], List[Dict[str, Any]]]:
+    """Apply hidden flags in one transaction. Returns (missing_ids, full account list)."""
+    from models import QuickBooksAccount
+    ids = list(changes.keys())
+    rows = db.query(QuickBooksAccount).filter(QuickBooksAccount.qbo_id.in_(ids)).all()
+    found = {r.qbo_id: r for r in rows}
+    missing = [i for i in ids if i not in found]
+    if missing:
+        return missing, []
+    for qbo_id, hidden in changes.items():
+        found[qbo_id].hidden = bool(hidden)
+    db.commit()
+    return [], list_accounts(db)
+
+
 def _block_from_cache(db, conn, error: Optional[str]) -> Dict[str, Any]:
     accounts = list_accounts(db)
     visible = [a for a in accounts if not a["hidden"]]

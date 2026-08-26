@@ -82,6 +82,7 @@ from schemas import (
     MonthEndRow, MonthEndTotals, MonthEndStoreStatus, MonthEndShipperStatus, MonthEndResponse,
     QuickBooksConnectionUpdate, QuickBooksConnectionResponse, QuickBooksConnectStartResponse,
     QuickBooksConnectCompleteRequest, QuickBooksAccountResponse, QuickBooksAccountUpdate,
+    QuickBooksAccountVisibilityUpdate,
     BOVBankTotals, BOVBankBalancesBlock,
 )
 from mssql_helper import (
@@ -12424,6 +12425,15 @@ def update_quickbooks_account(qbo_id: str, body: QuickBooksAccountUpdate, db: Se
     db.commit()
     db.refresh(acct)
     return QuickBooksAccountResponse(**qb._account_dict(acct))
+
+
+@app.put("/api/quickbooks/accounts/visibility", response_model=List[QuickBooksAccountResponse])
+def update_quickbooks_accounts_visibility(body: QuickBooksAccountVisibilityUpdate, db: Session = Depends(get_db)):
+    changes = {item.qbo_id: item.hidden for item in body.accounts}
+    missing, accounts = qb.set_accounts_hidden(db, changes)
+    if missing:
+        raise HTTPException(status_code=404, detail=f"Not in the QuickBooks cache — sync first: {', '.join(missing)}")
+    return [QuickBooksAccountResponse(**a) for a in accounts]
 
 
 @app.get("/api/business-overview/bank-balances", response_model=BOVBankBalancesBlock)

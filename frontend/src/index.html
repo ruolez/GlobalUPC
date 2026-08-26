@@ -5282,59 +5282,140 @@
       </main>
     </div>
 
-    <!-- Business Overview: data sources modal -->
+    <!-- Business Overview: settings modal (tabbed) -->
     <div id="bov-config-modal" class="modal bov-modal">
-      <div class="modal-content bov-modal-content" style="max-width: 980px; width: 96%">
-        <div class="modal-header">
+      <div class="modal-content bov-modal-content bov-cfg-modal" style="max-width: 1040px; width: 96%">
+        <div class="modal-header bov-cfg-header">
           <div class="bov-list-modal-title-wrap">
-            <h3 id="bov-config-modal-title">Data sources</h3>
-            <span class="dashboard-card-meta" id="bov-config-modal-meta">Where the overview reads from</span>
+            <h3 id="bov-config-modal-title">Business Overview settings</h3>
+            <span class="dashboard-card-meta" id="bov-config-modal-meta">Sources, bank accounts, alerts and exclusions</span>
           </div>
-          <div class="bov-modal-head-actions">
-            <button type="button" class="btn btn-secondary bov-btn-xs" id="bov-config-edit-btn">Edit</button>
-            <button type="button" class="modal-close" data-bov-close="bov-config-modal" aria-label="Close">&times;</button>
-          </div>
+          <button type="button" class="modal-close" data-bov-close="bov-config-modal" aria-label="Close">&times;</button>
         </div>
-        <div class="modal-body bov-modal-body" id="bov-config-modal-body">
-          <div class="bov-config-details" id="bov-config-details"></div>
-          <div id="bov-config-setup" class="bov-config-setup" hidden>
-            <div class="dashboard-card">
-              <div class="dashboard-card-header">
-                <h3 id="bov-config-title">Set up Business Overview</h3>
-                <span class="dashboard-card-meta">Pick where each part of the overview reads from</span>
+        <div class="modal-body bov-modal-body bov-cfg-shell" id="bov-config-modal-body">
+          <nav class="bov-cfg-nav" id="bov-cfg-nav" role="tablist" aria-label="Settings sections">
+            <button type="button" class="bov-cfg-nav-item active" role="tab" aria-selected="true" data-cfg-tab="sources" id="bov-cfg-tab-sources">
+              <svg width="16" height="16" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <ellipse cx="9" cy="4" rx="6" ry="2" stroke="currentColor" stroke-width="1.6"/>
+                <path d="M3 4v10c0 1.1 2.69 2 6 2s6-.9 6-2V4" stroke="currentColor" stroke-width="1.6"/>
+                <path d="M3 9c0 1.1 2.69 2 6 2s6-.9 6-2" stroke="currentColor" stroke-width="1.6"/>
+              </svg>
+              <span class="bov-cfg-nav-label">Sources</span>
+              <span class="bov-cfg-nav-badge" id="bov-cfg-badge-sources" hidden></span>
+            </button>
+            <button type="button" class="bov-cfg-nav-item" role="tab" aria-selected="false" data-cfg-tab="bank" id="bov-cfg-tab-bank">
+              <svg width="16" height="16" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <rect x="2" y="4.5" width="14" height="9.5" rx="1.5" stroke="currentColor" stroke-width="1.6"/>
+                <path d="M2 8h14" stroke="currentColor" stroke-width="1.6"/>
+                <path d="M5 11.25h3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+              </svg>
+              <span class="bov-cfg-nav-label">Bank accounts</span>
+              <span class="bov-cfg-nav-badge" id="bov-cfg-badge-bank" hidden></span>
+            </button>
+            <button type="button" class="bov-cfg-nav-item" role="tab" aria-selected="false" data-cfg-tab="alerts" id="bov-cfg-tab-alerts">
+              <svg width="16" height="16" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <path d="M4.5 12.5V8a4.5 4.5 0 0 1 9 0v4.5l1.25 1.5H3.25l1.25-1.5Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+                <path d="M7.5 15.5a1.5 1.5 0 0 0 3 0" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+              </svg>
+              <span class="bov-cfg-nav-label">Alerts</span>
+              <span class="bov-cfg-nav-badge" id="bov-cfg-badge-alerts" hidden></span>
+            </button>
+            <button type="button" class="bov-cfg-nav-item" role="tab" aria-selected="false" data-cfg-tab="exclusions" id="bov-cfg-tab-exclusions">
+              <svg width="16" height="16" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <path d="M2.5 3.5h13l-5 6v4.5l-3 1.5V9.5l-5-6Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+              </svg>
+              <span class="bov-cfg-nav-label">Exclusions</span>
+              <span class="bov-cfg-nav-badge" id="bov-cfg-badge-exclusions" hidden></span>
+            </button>
+          </nav>
+
+          <div class="bov-cfg-panels" id="bov-cfg-panels">
+
+            <!-- Sources -->
+            <section class="bov-cfg-panel" data-cfg-panel="sources" role="tabpanel" aria-labelledby="bov-cfg-tab-sources">
+              <div class="bov-cfg-panel-head">
+                <h4>Data sources</h4>
+                <p>Pick where each part of the overview reads from. Widgets whose source is not set are switched off.</p>
               </div>
-              <div class="bov-config-grid">
-                <div class="bov-field">
-                  <span class="bov-field-label">Sales &amp; invoices sources</span>
-                  <div id="bov-cfg-sales" class="bov-pill-row"></div>
-                  <small class="bov-field-help">MSSQL BackOffice stores for revenue, margin, open and shipped invoices — pick as many as you like; figures are combined across them. Product cost for Shopify sales comes from the Item Tracker S2S store (else the first store here).</small>
-                </div>
-                <div class="bov-field">
-                  <label class="bov-field-label" for="bov-cfg-purchases">Purchases source</label>
-                  <select id="bov-cfg-purchases" class="dark-input"></select>
-                  <small class="bov-field-help">MSSQL BackOffice holding the purchase orders.</small>
-                </div>
-                <div class="bov-field">
-                  <label class="bov-field-label" for="bov-cfg-admin">Admin DB for quotations in progress</label>
-                  <select id="bov-cfg-admin" class="dark-input"></select>
-                  <small class="bov-field-help">DB_ADMIN store (QuotationsInProgress / QuotationsStatus). Shared with the In Progress page.</small>
-                </div>
-                <div class="bov-field">
-                  <span class="bov-field-label">Shopify stores</span>
-                  <div id="bov-cfg-shopify" class="bov-pill-row"></div>
-                  <small class="bov-field-help">Only stores with a completed Data Sync contribute to sales; unsynced stores are skipped.</small>
-                </div>
-                <div class="bov-field">
-                  <span class="bov-field-label">Quotation statuses counted as in progress</span>
-                  <div id="bov-cfg-statuses" class="bov-pill-row"></div>
-                  <div class="bov-inline-add">
-                    <input type="text" id="bov-cfg-status-add" class="dark-input" placeholder="Add a status…" autocomplete="off">
-                    <button type="button" class="btn btn-secondary bov-btn-sm" id="bov-cfg-status-add-btn">Add</button>
+
+              <div class="bov-cfg-card">
+                <div class="bov-cfg-card-head"><strong>BackOffice</strong><span class="bov-field-help">MSSQL stores for revenue, invoices, purchase orders and quotations.</span></div>
+                <div class="bov-config-grid">
+                  <div class="bov-field bov-field-wide">
+                    <span class="bov-field-label">Sales &amp; invoices</span>
+                    <div id="bov-cfg-sales" class="bov-pill-row"></div>
+                    <small class="bov-field-help">Pick as many stores as you like — revenue, margin, open and shipped invoices are combined across them.</small>
+                    <small class="bov-field-help bov-cfg-note" id="bov-cfg-cost-note"></small>
+                  </div>
+                  <div class="bov-field">
+                    <label class="bov-field-label" for="bov-cfg-purchases">Purchases</label>
+                    <select id="bov-cfg-purchases" class="dark-input"></select>
+                    <small class="bov-field-help">BackOffice holding the purchase orders.</small>
+                  </div>
+                  <div class="bov-field">
+                    <label class="bov-field-label" for="bov-cfg-admin">Admin DB for quotations</label>
+                    <select id="bov-cfg-admin" class="dark-input"></select>
+                    <small class="bov-field-help">DB_ADMIN store (QuotationsInProgress / QuotationsStatus). Shared with the In Progress page.</small>
                   </div>
                 </div>
-                <fieldset class="bov-field bov-rules" id="bov-cfg-rules">
-                  <legend class="bov-field-label">Alerts &amp; thresholds</legend>
-                  <small class="bov-field-help">Rules feed the “Attention” strip on the Overview. Untick a rule to silence it; thresholds use the business timezone.</small>
+              </div>
+
+              <div class="bov-cfg-card">
+                <div class="bov-cfg-card-head"><strong>Shopify</strong><span class="bov-field-help">Only stores with a completed Data Sync contribute; unsynced stores are skipped.</span></div>
+                <div class="bov-field">
+                  <span class="bov-field-label">Stores</span>
+                  <div id="bov-cfg-shopify" class="bov-pill-row"></div>
+                </div>
+              </div>
+
+              <div class="bov-cfg-card">
+                <div class="bov-cfg-card-head"><strong>Quotations &amp; time</strong><span class="bov-field-help">Which quotation statuses count as “in progress”, and the timezone behind “today”, weeks and months.</span></div>
+                <div class="bov-config-grid">
+                  <div class="bov-field bov-field-wide">
+                    <span class="bov-field-label">Statuses counted as in progress</span>
+                    <div id="bov-cfg-statuses" class="bov-pill-row"></div>
+                    <div class="bov-inline-add">
+                      <input type="text" id="bov-cfg-status-add" class="dark-input" placeholder="Add a status…" autocomplete="off">
+                      <button type="button" class="btn btn-secondary bov-btn-sm" id="bov-cfg-status-add-btn">Add</button>
+                    </div>
+                  </div>
+                  <div class="bov-field">
+                    <label class="bov-field-label" for="bov-cfg-tz">Business timezone</label>
+                    <input type="text" id="bov-cfg-tz" class="dark-input" list="bov-tz-list" placeholder="America/Chicago" autocomplete="off">
+                    <datalist id="bov-tz-list">
+                      <option value="America/Chicago"></option>
+                      <option value="America/New_York"></option>
+                      <option value="America/Denver"></option>
+                      <option value="America/Los_Angeles"></option>
+                      <option value="America/Phoenix"></option>
+                      <option value="UTC"></option>
+                    </datalist>
+                    <small class="bov-field-help">Used to resolve “today”, weeks and months on the server.</small>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <!-- Bank accounts -->
+            <section class="bov-cfg-panel" data-cfg-panel="bank" role="tabpanel" aria-labelledby="bov-cfg-tab-bank" hidden>
+              <div class="bov-cfg-panel-head">
+                <h4>Bank &amp; credit-card accounts</h4>
+                <p>Tick the QuickBooks accounts to monitor on the overview. Unticked accounts are hidden and left out of the totals. Changes apply when you press Save.</p>
+              </div>
+              <div id="bov-cfg-bank" class="bov-cfg-bank"></div>
+            </section>
+
+            <!-- Alerts -->
+            <section class="bov-cfg-panel" data-cfg-panel="alerts" role="tabpanel" aria-labelledby="bov-cfg-tab-alerts" hidden>
+              <div class="bov-cfg-panel-head">
+                <h4>Alerts &amp; thresholds</h4>
+                <p>Rules feed the “Attention” strip on the Overview. Untick a rule to silence it; thresholds use the business timezone.</p>
+                <p class="bov-cfg-alerts-summary" id="bov-cfg-alerts-summary"></p>
+              </div>
+              <fieldset class="bov-rules" id="bov-cfg-rules">
+                <legend class="bov-cfg-legend-sr">Alert rules</legend>
+                <div class="bov-cfg-card">
+                  <div class="bov-cfg-card-head"><strong>Fulfilment</strong><span class="bov-field-help">Invoices, quotations and purchase orders from BackOffice.</span></div>
                   <div class="bov-rule-rows">
                     <div class="bov-rule-row" data-rule="unshipped_cutoff">
                       <label class="bov-rule-main"><input type="checkbox" id="bov-rule-unshipped_cutoff-enabled"> <span>Unshipped past cutoff</span></label>
@@ -5358,6 +5439,11 @@
                       <span class="bov-rule-ctl">placed over <input type="number" id="bov-rule-po_overdue-days" class="dark-input" min="0" max="365" step="1"> days ago</span>
                       <small class="bov-rule-help">Incoming POs (Status 0, quantity outstanding) older than this.</small>
                     </div>
+                  </div>
+                </div>
+                <div class="bov-cfg-card">
+                  <div class="bov-cfg-card-head"><strong>Shopify</strong><span class="bov-field-help">From the local Shopify mirror.</span></div>
+                  <div class="bov-rule-rows">
                     <div class="bov-rule-row" data-rule="shopify_on_hold">
                       <label class="bov-rule-main"><input type="checkbox" id="bov-rule-shopify_on_hold-enabled"> <span>Shopify orders on hold</span></label>
                       <span class="bov-rule-ctl">any</span>
@@ -5373,6 +5459,11 @@
                       <span class="bov-rule-ctl">older than <input type="number" id="bov-rule-shopify_sync_stale-days" class="dark-input" min="0" max="90" step="0.5"> days</span>
                       <small class="bov-rule-help">A store never synced, whose last sync failed, or whose mirror is older than this.</small>
                     </div>
+                  </div>
+                </div>
+                <div class="bov-cfg-card">
+                  <div class="bov-cfg-card-head"><strong>Money</strong><span class="bov-field-help">Margin and revenue over the selected period.</span></div>
+                  <div class="bov-rule-rows">
                     <div class="bov-rule-row" data-rule="margin_floor">
                       <label class="bov-rule-main"><input type="checkbox" id="bov-rule-margin_floor-enabled"> <span>Margin below floor</span></label>
                       <span class="bov-rule-ctl">below <input type="number" id="bov-rule-margin_floor-pct" class="dark-input" min="0" max="100" step="0.5"> % <label class="bov-rule-sub"><input type="checkbox" id="bov-rule-margin_floor-per_store"> per store too</label></span>
@@ -5385,27 +5476,17 @@
                       <small class="bov-rule-help">Period revenue down more than this against the previous period.</small>
                     </div>
                   </div>
-                </fieldset>
-                <div class="bov-field">
-                  <label class="bov-field-label" for="bov-cfg-tz">Business timezone</label>
-                  <input type="text" id="bov-cfg-tz" class="dark-input" list="bov-tz-list" placeholder="America/Chicago" autocomplete="off">
-                  <datalist id="bov-tz-list">
-                    <option value="America/Chicago"></option>
-                    <option value="America/New_York"></option>
-                    <option value="America/Denver"></option>
-                    <option value="America/Los_Angeles"></option>
-                    <option value="America/Phoenix"></option>
-                    <option value="UTC"></option>
-                  </datalist>
-                  <small class="bov-field-help">Used to resolve “today”, weeks and months on the server.</small>
                 </div>
+              </fieldset>
+            </section>
+
+            <!-- Exclusions -->
+            <section class="bov-cfg-panel" data-cfg-panel="exclusions" role="tabpanel" aria-labelledby="bov-cfg-tab-exclusions" hidden>
+              <div class="bov-cfg-panel-head">
+                <h4>Excluded customers</h4>
+                <p>Removed from BackOffice sales, profit and margin totals (shared with the Sales report). Exclusions are saved immediately — no need to press Save.</p>
               </div>
-              <div class="bov-config-ro" id="bov-config-ro"></div>
-              <div id="bov-excl-manager" class="bov-excl-manager" hidden>
-                <div class="bov-excl-head">
-                  <strong>Excluded customers</strong>
-                  <span class="dashboard-card-meta">Removed from BackOffice sales, profit and margin totals (shared with the Sales report).</span>
-                </div>
+              <div id="bov-excl-manager" class="bov-excl-manager">
                 <div class="bov-excl-add">
                   <div class="bov-excl-input-wrap">
                     <input type="text" id="bov-excl-name" class="dark-input" placeholder="Business / account name…" autocomplete="off">
@@ -5419,13 +5500,15 @@
                 </div>
                 <div id="bov-excl-list" class="bov-excl-list"></div>
               </div>
-              <div class="bov-config-actions">
-                <button type="button" class="btn btn-primary bov-btn-sm" id="bov-config-save">Save</button>
-                <button type="button" class="btn btn-secondary bov-btn-sm" id="bov-config-cancel">Cancel</button>
-              </div>
-            </div>
+            </section>
           </div>
-
+        </div>
+        <div class="bov-cfg-footer">
+          <span class="bov-cfg-footer-status" id="bov-cfg-footer-status" aria-live="polite"></span>
+          <div class="bov-cfg-footer-actions">
+            <button type="button" class="btn btn-secondary bov-btn-sm" id="bov-config-cancel">Cancel</button>
+            <button type="button" class="btn btn-primary bov-btn-sm" id="bov-config-save">Save</button>
+          </div>
         </div>
       </div>
     </div>

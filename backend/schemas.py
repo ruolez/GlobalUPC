@@ -2118,6 +2118,15 @@ class QuickBooksAccountUpdate(BaseModel):
     hidden: bool
 
 
+class QuickBooksAccountVisibilityItem(BaseModel):
+    qbo_id: str
+    hidden: bool
+
+
+class QuickBooksAccountVisibilityUpdate(BaseModel):
+    accounts: List[QuickBooksAccountVisibilityItem] = Field(..., min_length=1)
+
+
 class BOVBankTotals(BaseModel):
     cash: float = 0
     credit_card_debt: float = 0                  # QBO reports a credit card's balance positive = owed

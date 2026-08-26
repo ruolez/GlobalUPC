@@ -18427,18 +18427,38 @@ function renderQuickBooksAccounts(accounts) {
     el.innerHTML = `<div class="settings-empty-state qb-accounts-empty">No bank or credit-card accounts synced yet.</div>`;
     return;
   }
-  const body = rows
-    .map((a) => {
-      const type = `${a.account_sub_type || a.account_type}${a.currency && a.currency !== "USD" ? ` · ${a.currency}` : ""}`;
-      return `<tr class="${a.hidden ? "is-hidden" : ""}">
-          <td>${escapeHtml(a.fully_qualified_name || a.name)}</td>
-          <td>${escapeHtml(type)}</td>
-          <td class="bov-num">${escapeHtml(formatCurrency(a.balance))}</td>
-          <td class="qb-col-show"><input type="checkbox" data-qb-account="${escapeHtml(a.qbo_id)}"${a.hidden ? "" : " checked"} aria-label="Show ${escapeHtml(a.name)} on the dashboard"></td>
-        </tr>`;
+  el.innerHTML = `<div class="qb-acct-list">${qbAccountsListHtml(rows)}</div>`;
+}
+
+// Grouped account rows (Bank / Credit cards) with a checkbox per account.
+// Shared by the Settings card (immediate toggles) and the Business Overview
+// settings modal (staged toggles via opts.hiddenOf).
+function qbAccountsListHtml(accounts, opts = {}) {
+  const hiddenOf = opts.hiddenOf || ((a) => !!a.hidden);
+  const verb = opts.ariaVerb || "Show";
+  const list = accounts || [];
+  const groups = [["Bank", "Bank"], ["Credit Card", "Credit cards"]];
+  const other = list.filter((a) => !groups.some(([t]) => t === a.account_type));
+  if (other.length) groups.push([null, "Other"]);
+  return groups
+    .map(([type, label]) => {
+      const rows = type ? list.filter((a) => a.account_type === type) : other;
+      if (!rows.length) return "";
+      const body = rows
+        .map((a) => {
+          const off = hiddenOf(a);
+          const sub = `${a.account_sub_type || a.account_type}${a.currency && a.currency !== "USD" ? ` · ${a.currency}` : ""}`;
+          return `<label class="qb-acct-row${off ? " is-off" : ""}${a.sub_account ? " is-sub" : ""}">` +
+            `<input type="checkbox" data-qb-account="${escapeHtml(a.qbo_id)}"${off ? "" : " checked"} aria-label="${escapeHtml(verb)} ${escapeHtml(a.name)}">` +
+            `<span class="qb-acct-main"><span class="qb-acct-name">${escapeHtml(a.name)}</span>${a.sub_account && a.fully_qualified_name ? `<span class="qb-acct-sub">${escapeHtml(a.fully_qualified_name)}</span>` : ""}</span>` +
+            `<span class="qb-acct-type">${escapeHtml(sub)}</span>` +
+            `<span class="qb-acct-bal bov-num${a.account_type === "Credit Card" ? " bov-bank-owed" : ""}">${escapeHtml(formatCurrency(a.balance || 0))}</span>` +
+            `</label>`;
+        })
+        .join("");
+      return `<div class="qb-acct-group"><div class="qb-acct-group-title">${escapeHtml(label)} <span>${rows.length}</span></div>${body}</div>`;
     })
     .join("");
-  el.innerHTML = `<table class="data-table qb-accounts-table"><thead><tr><th>Account</th><th>Type</th><th class="bov-num">Balance</th><th class="qb-col-show">Show on dashboard</th></tr></thead><tbody>${body}</tbody></table>`;
 }
 
 async function toggleQuickBooksAccountHidden(qboId, hidden) {
@@ -18859,7 +18879,12 @@ const bovState = {
   bound: false,
   config: null,
   options: null,
-  configEditing: false,
+  configEditing: false,  // settings modal open
+  cfgTab: "sources",     // active settings-modal tab (persisted)
+  cfgDirty: false,       // unsaved form / bank-account changes
+  cfgFirstRun: false,    // modal opened from the empty state
+  cfgExclLoaded: false,  // exclusions fetched during this modal session
+  cfgBank: { loaded: false, loading: false, syncing: false, error: null, dirty: new Map() },  // qbo_id -> staged hidden
   exclusions: [],
   preset: "today",
   customFrom: null,
@@ -19123,6 +19148,7 @@ function bovLoadPrefs() {
     if (p && typeof p.openInRange === "boolean") bovState.openInRange = p.openInRange;
     if (p && ["default", "s2s"].includes(p.costMode)) bovState.costMode = p.costMode;
     if (p && typeof p.estShipping === "boolean") bovState.estShipping = p.estShipping;
+    if (p && BOV_CFG_TABS.includes(p.cfgTab)) bovState.cfgTab = p.cfgTab;
     if (p && p.collapsed && typeof p.collapsed === "object") {
       bovState.collapsedCards = {};
       Object.keys(p.collapsed).forEach((k) => { if (BOV_COLLAPSIBLE_CARDS.includes(k) && p.collapsed[k]) bovState.collapsedCards[k] = true; });
@@ -19151,6 +19177,7 @@ function bovSavePrefs() {
         estShipping: bovState.estShipping,
         collapsed: bovState.collapsedCards,
         section: bovState.section,
+        cfgTab: bovState.cfgTab,
       }),
     );
   } catch (e) {
@@ -19711,20 +19738,58 @@ function bovBindOnce() {
     bovRefreshShopify({ maxAgeMinutes: 0 });
   });
 
-  // Config (Sources pill → modal; Edit → form inside the modal)
-  document.getElementById("bov-config-edit-btn")?.addEventListener("click", (e) => {
-    e.stopPropagation();
-    bovOpenConfigEdit();
-  });
-  document.getElementById("bov-config-head")?.addEventListener("click", () => bovToggleConfigDetails());
-  document.querySelector('[data-bov-close="bov-config-modal"]')?.addEventListener("click", () => bovCancelConfigEdit({ close: true }));
+  // Settings modal (Sources pill → tabbed modal)
+  document.getElementById("bov-config-head")?.addEventListener("click", () => bovOpenConfigEdit());
+  document.querySelector('[data-bov-close="bov-config-modal"]')?.addEventListener("click", () => bovCancelConfigEdit());
   document.getElementById("bov-config-save")?.addEventListener("click", () => bovSaveConfig());
   document.getElementById("bov-config-cancel")?.addEventListener("click", () => bovCancelConfigEdit());
-  document.getElementById("bov-cfg-status-add-btn")?.addEventListener("click", () => bovAddStatusPill());
+  document.getElementById("bov-cfg-nav")?.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-cfg-tab]");
+    if (b) bovCfgSetTab(b.dataset.cfgTab);
+  });
+  // Any edit inside the modal marks it dirty — except exclusions, which save on their own.
+  const cfgBody = document.getElementById("bov-config-modal-body");
+  ["change", "input"].forEach((ev) => cfgBody?.addEventListener(ev, (e) => {
+    if (e.target.closest("#bov-excl-manager")) return;
+    bovCfgMarkDirty();
+    bovCfgRenderBadges();
+    if (e.target.closest("#bov-cfg-rules")) bovCfgRenderAlertsSummary();
+  }));
+  document.getElementById("bov-cfg-bank")?.addEventListener("change", (e) => {
+    const cb = e.target.closest("input[data-qb-account]");
+    if (cb) bovCfgToggleBank(cb.dataset.qbAccount, !cb.checked, cb);
+  });
+  document.getElementById("bov-cfg-bank")?.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-cfg-bank]");
+    if (b) {
+      e.preventDefault();
+      bovCfgBankAction(b.dataset.cfgBank);
+    }
+  });
+  // Links inside the modal that lead elsewhere (e.g. QuickBooks setup in Settings).
+  document.getElementById("bov-config-modal")?.addEventListener("click", (e) => {
+    const a = e.target.closest("[data-bov-action]");
+    if (!a) return;
+    e.preventDefault();
+    if (bovCancelConfigEdit()) bovHandleAction(a.dataset.bovAction, a);
+  });
+  // Backdrop clicks must go through the dirty check (the generic .modal handler
+  // near the top of the file closes immediately) — intercept in the capture phase.
+  document.addEventListener("click", (e) => {
+    if (e.target && e.target.id === "bov-config-modal") {
+      e.stopPropagation();
+      bovCancelConfigEdit();
+    }
+  }, true);
+  document.getElementById("bov-cfg-status-add-btn")?.addEventListener("click", () => {
+    bovAddStatusPill();
+    bovCfgMarkDirty();
+  });
   document.getElementById("bov-cfg-status-add")?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       e.preventDefault();
       bovAddStatusPill();
+      bovCfgMarkDirty();
     }
   });
   // Per-store override lists follow the sales-store pills; opting a store out dims its row.
@@ -19740,6 +19805,7 @@ function bovBindOnce() {
     const rm = e.target.closest("[data-bov-remove-status]");
     if (rm) {
       rm.closest(".bov-pill-check")?.remove();
+      bovCfgMarkDirty();
     }
   });
 
@@ -19901,7 +19967,8 @@ function bovBindOnce() {
   });
 
   // Modals
-  document.querySelectorAll("[data-bov-close]").forEach((btn) => {
+  // (the settings modal's × is bound above, through the unsaved-changes check)
+  document.querySelectorAll('[data-bov-close]:not([data-bov-close="bov-config-modal"])').forEach((btn) => {
     btn.addEventListener("click", () => closeModal(btn.dataset.bovClose));
   });
   document.addEventListener("keydown", (e) => {
@@ -20073,7 +20140,6 @@ function bovSetRefreshSpinner(active) {
 }
 
 function bovShowSetup(show) {
-  const setup = document.getElementById("bov-config-setup");
   const content = document.getElementById("bov-content");
   const bar = document.getElementById("bov-config-bar");
   const empty = document.getElementById("bov-setup-empty");
@@ -20082,32 +20148,275 @@ function bovShowSetup(show) {
   if (bar) bar.hidden = show;
   if (empty) empty.hidden = !show;
   if (nav) nav.hidden = show;
-  if (show) {
-    bovState.configEditing = true;
-    if (setup) setup.hidden = false;
-    bovPopulateConfigForm(bovState.config, { firstRun: true });
-    bovOpenConfigModal({ editing: true, firstRun: true });
-  } else if (setup && !bovState.configEditing) {
-    setup.hidden = true;
-  }
+  if (show) bovOpenConfigModal({ firstRun: true });
 }
+
+// ---------------------------------------------------------------------------
+// Settings modal — tabbed (Sources / Bank accounts / Alerts / Exclusions)
+// ---------------------------------------------------------------------------
+
+const BOV_CFG_TABS = ["sources", "bank", "alerts", "exclusions"];
 
 function bovOpenConfigModal(opts = {}) {
   const modal = document.getElementById("bov-config-modal");
-  const setup = document.getElementById("bov-config-setup");
-  const details = document.getElementById("bov-config-details");
-  const editBtn = document.getElementById("bov-config-edit-btn");
+  if (!modal) return;
+  const empty = document.getElementById("bov-setup-empty");
+  const firstRun = opts.firstRun != null ? !!opts.firstRun : !!(empty && !empty.hidden);
+  bovState.configEditing = true;
+  bovState.cfgFirstRun = firstRun;
+  bovState.cfgDirty = false;
+  bovState.cfgExclLoaded = false;
+  bovState.cfgBank.dirty.clear();
+  bovState.cfgBank.loaded = false;
+  bovState.cfgBank.error = null;
+  bovPopulateConfigForm(bovState.config);
   const title = document.getElementById("bov-config-modal-title");
   const meta = document.getElementById("bov-config-modal-meta");
-  if (!modal) return;
-  const editing = !!opts.editing;
-  if (setup) setup.hidden = !editing;
-  if (details) details.hidden = editing;
-  if (editBtn) editBtn.hidden = editing;
-  if (title) title.textContent = opts.firstRun ? "Set up Business Overview" : "Data sources";
-  if (meta) meta.textContent = editing ? "Pick where each part of the overview reads from" : "Where the overview reads from";
+  const cancel = document.getElementById("bov-config-cancel");
+  if (title) title.textContent = firstRun ? "Set up Business Overview" : "Business Overview settings";
+  if (meta) {
+    meta.textContent = firstRun
+      ? "Pick the stores this page reads from — bank accounts, alerts and exclusions can be set now or later."
+      : "Sources, bank accounts, alerts and exclusions";
+  }
+  if (cancel) cancel.hidden = firstRun;
   document.getElementById("bov-config-head")?.setAttribute("aria-expanded", "true");
+  bovCfgSetTab(firstRun ? "sources" : (opts.tab || bovState.cfgTab), { remember: !firstRun });
+  bovCfgRenderBadges();
+  bovCfgRenderFooter();
   if (!modal.classList.contains("active")) openModal("bov-config-modal");
+}
+
+function bovOpenConfigEdit(tab) {
+  bovOpenConfigModal({ tab });
+}
+
+function bovCloseConfigModal() {
+  closeModal("bov-config-modal");
+  bovState.configEditing = false;
+  bovState.cfgDirty = false;
+  bovHideExclAutocomplete();
+  document.getElementById("bov-config-head")?.setAttribute("aria-expanded", "false");
+}
+
+// Returns false when the user chose to keep editing.
+function bovCancelConfigEdit() {
+  if (bovState.cfgDirty && !confirm("Discard unsaved changes?")) return false;
+  bovCloseConfigModal();
+  return true;
+}
+
+function bovCfgSetTab(tab, opts = {}) {
+  if (!BOV_CFG_TABS.includes(tab)) tab = "sources";
+  document.querySelectorAll("#bov-cfg-nav [data-cfg-tab]").forEach((b) => {
+    const on = b.dataset.cfgTab === tab;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-selected", on ? "true" : "false");
+  });
+  document.querySelectorAll("#bov-cfg-panels .bov-cfg-panel").forEach((p) => {
+    p.hidden = p.dataset.cfgPanel !== tab;
+  });
+  const panels = document.getElementById("bov-cfg-panels");
+  if (panels) panels.scrollTop = 0;
+  if (opts.remember !== false) {
+    bovState.cfgTab = tab;
+    bovSavePrefs();
+  }
+  if (tab === "bank" && !bovState.cfgBank.loaded && !bovState.cfgBank.loading) bovCfgLoadBank();
+  if (tab === "exclusions" && !bovState.cfgExclLoaded) {
+    bovState.cfgExclLoaded = true;
+    bovLoadExclusions();
+  }
+  if (tab === "alerts") bovCfgRenderAlertsSummary();
+}
+
+function bovCfgFormFlags() {
+  return {
+    sales: !!document.querySelector(".bov-cfg-sales-cb:checked"),
+    purchases: !!(document.getElementById("bov-cfg-purchases")?.value),
+    shopify: !!document.querySelector(".bov-cfg-shopify-cb:checked"),
+    admin: !!(document.getElementById("bov-cfg-admin")?.value),
+  };
+}
+
+function bovCfgSetBadge(tab, text, warn) {
+  const el = document.getElementById(`bov-cfg-badge-${tab}`);
+  if (!el) return;
+  el.hidden = !text;
+  el.textContent = text || "";
+  el.classList.toggle("is-warn", !!warn);
+}
+
+// Rail badges are computed from the live form so they track unsaved edits.
+function bovCfgRenderBadges() {
+  const flags = bovCfgFormFlags();
+  const missing = Object.values(flags).filter((ok) => !ok).length;
+  bovCfgSetBadge("sources", missing ? `${missing} not set` : "", missing > 0);
+  const conn = qbState.conn;
+  if (!bovState.cfgBank.loaded) {
+    bovCfgSetBadge("bank", "");
+  } else if (!conn || !conn.configured || conn.status === "disconnected") {
+    bovCfgSetBadge("bank", "Off");
+  } else {
+    const total = (qbState.accounts || []).length;
+    const on = (qbState.accounts || []).filter((a) => !bovCfgEffectiveHidden(a)).length;
+    bovCfgSetBadge("bank", total ? `${on} of ${total}` : "None", conn.status === "needs_reconnect");
+  }
+  const keys = Object.keys(BOV_ALERT_RULE_FIELDS);
+  const on = keys.filter((k) => document.getElementById(`bov-rule-${k}-enabled`)?.checked).length;
+  bovCfgSetBadge("alerts", `${on}/${keys.length}`);
+  const n = (bovState.config && bovState.config.sales_exclusions_count) || 0;
+  bovCfgSetBadge("exclusions", n ? String(n) : "");
+}
+
+function bovCfgRenderAlertsSummary() {
+  const el = document.getElementById("bov-cfg-alerts-summary");
+  if (el) el.textContent = bovAlertRulesSummary(bovCollectAlertRules());
+}
+
+function bovCfgMarkDirty() {
+  bovState.cfgDirty = true;
+  bovCfgRenderFooter();
+}
+
+function bovCfgRenderFooter(hint) {
+  const save = document.getElementById("bov-config-save");
+  const status = document.getElementById("bov-cfg-footer-status");
+  if (save) save.disabled = !bovState.cfgDirty && !bovState.cfgFirstRun;
+  if (status) {
+    status.textContent = hint || (bovState.cfgDirty ? "Unsaved changes" : "");
+    status.classList.toggle("is-warn", !!hint);
+  }
+}
+
+// ----- Bank accounts tab (QuickBooks) — toggles are staged until Save -----
+
+function bovCfgEffectiveHidden(a) {
+  const d = bovState.cfgBank.dirty;
+  return d.has(a.qbo_id) ? d.get(a.qbo_id) : !!a.hidden;
+}
+
+async function bovCfgLoadBank(opts = {}) {
+  const s = bovState.cfgBank;
+  if (s.loading) return;
+  s.loading = true;
+  s.error = null;
+  bovCfgRenderBank();
+  try {
+    qbState.conn = await qbRequest("/connection");
+    qbState.accounts = qbState.conn.status === "disconnected" ? [] : await qbRequest("/accounts");
+    s.loaded = true;
+    if (opts.force) s.dirty.clear();
+  } catch (e) {
+    s.error = e.message || String(e);
+  } finally {
+    s.loading = false;
+    bovCfgRenderBank();
+    bovCfgRenderBadges();
+  }
+}
+
+function bovCfgRenderBank() {
+  const el = document.getElementById("bov-cfg-bank");
+  if (!el) return;
+  const s = bovState.cfgBank;
+  if (s.loading && !s.loaded) {
+    el.innerHTML = bovSkeletonHtml(3);
+    return;
+  }
+  if (s.error && !s.loaded) {
+    el.innerHTML = `<div class="bov-inline-error" role="alert"><div><strong>Could not load QuickBooks accounts</strong><div class="bov-inline-error-msg">${escapeHtml(s.error)}</div></div><button type="button" class="btn btn-secondary bov-btn-xs" data-cfg-bank="reload">Retry</button></div>`;
+    return;
+  }
+  const conn = qbState.conn || {};
+  const accounts = qbState.accounts || [];
+  if (!conn.configured || conn.status === "disconnected") {
+    el.innerHTML = `<div class="bov-cfg-bank-empty"><div class="dashboard-empty-state bov-empty is-muted">QuickBooks is not connected.<br><small>Add the Intuit app keys and connect a company under Settings → Roles &amp; Mirrors.</small></div><button type="button" class="btn btn-secondary bov-btn-sm" data-bov-action="settings-quickbooks">Set up QuickBooks in Settings</button></div>`;
+    return;
+  }
+  let html = "";
+  if (conn.status === "needs_reconnect") {
+    html += bovUnconfiguredHtml("QuickBooks needs reconnecting", conn.last_error || "The refresh token was rejected — approve the app again.", "settings-quickbooks", "Reconnect in Settings");
+  }
+  const busy = s.syncing;
+  const syncBtn = (cls, label) => `<button type="button" class="${cls}" data-cfg-bank="sync"${busy ? " disabled" : ""}>${busy ? "Syncing…" : label}</button>`;
+  if (!accounts.length) {
+    html += `<div class="bov-cfg-bank-empty"><div class="dashboard-empty-state bov-empty is-muted">No bank or credit-card accounts have been synced from ${escapeHtml(conn.company_name || "QuickBooks")} yet.</div>${syncBtn("btn btn-secondary bov-btn-sm", "Sync accounts now")}</div>`;
+    el.innerHTML = html;
+    return;
+  }
+  const on = accounts.filter((a) => !bovCfgEffectiveHidden(a)).length;
+  html +=
+    `<div class="bov-cfg-bank-head"><span class="bov-cfg-bank-company">${escapeHtml(conn.company_name || "QuickBooks")}${conn.environment === "sandbox" ? " · sandbox" : ""} · synced ${conn.last_synced_at ? escapeHtml(formatRelative(conn.last_synced_at)) : "—"} · ${syncBtn("bov-link-btn", "Sync now")}</span>` +
+    `<span class="bov-cfg-bank-count" id="bov-cfg-bank-count">Monitored: ${on} of ${accounts.length}</span></div>` +
+    `<div class="bov-cfg-bank-actions"><button type="button" class="bov-link-btn" data-cfg-bank="all">Select all</button><button type="button" class="bov-link-btn" data-cfg-bank="none">Select none</button></div>` +
+    `<div class="qb-acct-list" id="bov-cfg-bank-list">${qbAccountsListHtml(accounts, { hiddenOf: bovCfgEffectiveHidden, ariaVerb: "Monitor" })}</div>`;
+  el.innerHTML = html;
+}
+
+function bovCfgUpdateBankCount() {
+  const el = document.getElementById("bov-cfg-bank-count");
+  if (!el) return;
+  const accounts = qbState.accounts || [];
+  const on = accounts.filter((a) => !bovCfgEffectiveHidden(a)).length;
+  el.textContent = `Monitored: ${on} of ${accounts.length}`;
+}
+
+function bovCfgStageBank(qboId, hidden) {
+  const orig = (qbState.accounts || []).find((a) => a.qbo_id === qboId);
+  if (!orig) return;
+  if (!!orig.hidden === !!hidden) bovState.cfgBank.dirty.delete(qboId);
+  else bovState.cfgBank.dirty.set(qboId, !!hidden);
+}
+
+function bovCfgToggleBank(qboId, hidden, cb) {
+  bovCfgStageBank(qboId, hidden);
+  cb?.closest(".qb-acct-row")?.classList.toggle("is-off", !!hidden);
+  bovCfgUpdateBankCount();
+  bovCfgMarkDirty();
+  bovCfgRenderBadges();
+}
+
+async function bovCfgBankAction(kind) {
+  const s = bovState.cfgBank;
+  if (kind === "all" || kind === "none") {
+    (qbState.accounts || []).forEach((a) => bovCfgStageBank(a.qbo_id, kind === "none"));
+    bovCfgRenderBank();
+    bovCfgMarkDirty();
+    bovCfgRenderBadges();
+  } else if (kind === "reload") {
+    bovCfgLoadBank({ force: true });
+  } else if (kind === "sync") {
+    if (s.syncing) return;
+    s.syncing = true;
+    bovCfgRenderBank();
+    try {
+      const block = await qbRequest("/sync", { method: "POST" });
+      if (block.error) showToast(`⚠ QuickBooks sync: ${block.error}`, "warning");
+      else showToast(`✓ Synced ${(block.accounts || []).length} QuickBooks account(s)`, "success");
+      qbRefreshDashboard(block);
+    } catch (e) {
+      showToast(`✗ ${e.message || e}`, "error");
+    } finally {
+      s.syncing = false;
+      s.loaded = false;
+      await bovCfgLoadBank();   // staged toggles survive; pruned accounts are dropped on Save
+    }
+  }
+}
+
+async function bovCfgApplyBank() {
+  const d = bovState.cfgBank.dirty;
+  if (!d.size) return;
+  const known = new Set((qbState.accounts || []).map((a) => a.qbo_id));
+  const accounts = Array.from(d, ([qbo_id, hidden]) => ({ qbo_id, hidden })).filter((x) => known.has(x.qbo_id));
+  if (!accounts.length) {
+    d.clear();
+    return;
+  }
+  qbState.accounts = await qbRequest("/accounts/visibility", { method: "PUT", body: JSON.stringify({ accounts }) });
+  d.clear();
+  renderQuickBooksAccounts(qbState.accounts);   // keeps the Settings card in step
 }
 
 // ---------------------------------------------------------------------------
@@ -20497,11 +20806,13 @@ function bovFilteredOutHtml() {
 
 function bovHandleAction(action, el) {
   if (action === "config") {
-    bovOpenConfigEdit();
+    bovOpenConfigModal({ tab: "sources" });
   } else if (action === "settings-roles") {
     // Admin DB is edited in-page now (config form select).
-    bovOpenConfigEdit();
+    bovOpenConfigModal({ tab: "sources" });
     setTimeout(() => document.getElementById("bov-cfg-admin")?.focus(), 60);
+  } else if (action === "bank-accounts") {
+    bovOpenConfigModal({ tab: "bank" });
   } else if (action === "missing-cost") {
     bovOpenMissingCostModal();
   } else if (action === "shopify-sync") {
@@ -20513,14 +20824,7 @@ function bovHandleAction(action, el) {
     activateSettingsTab("roles");
     setTimeout(() => document.getElementById("qb-settings-card")?.scrollIntoView({ behavior: "smooth", block: "start" }), 80);
   } else if (action === "exclusions") {
-    bovOpenConfigEdit();
-    setTimeout(() => {
-      const m = document.getElementById("bov-excl-manager");
-      if (m) {
-        m.hidden = false;
-        m.scrollIntoView({ behavior: "smooth", block: "center" });
-      }
-    }, 30);
+    bovOpenConfigModal({ tab: "exclusions" });
   } else if (action === "scroll") {
     const target = document.getElementById(el?.dataset.bovTarget || "");
     if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -21491,7 +21795,7 @@ function bovRenderBankBalances() {
   if (!rows.length) {
     html += bovEmptyHtml(
       accounts.length
-        ? "All accounts are hidden — show some under Settings → QuickBooks Online."
+        ? "All accounts are hidden — choose which ones to monitor."
         : "No bank or credit-card accounts returned by QuickBooks.",
       true,
     );
@@ -21516,7 +21820,7 @@ function bovRenderBankBalances() {
       parts.push(`<span class="bov-bank-stale">⚠ QuickBooks unreachable — showing last known values${d.error ? `: ${escapeHtml(d.error)}` : ""}</span>`);
     }
     const busy = bovState.qbRefreshing;
-    foot.innerHTML = `<span class="bov-foot-left">${parts.join(" · ")}</span><button type="button" class="bov-link-btn" data-bov-action="quickbooks-sync"${busy ? " disabled" : ""}>${busy ? "Refreshing…" : "Refresh now"}</button>`;
+    foot.innerHTML = `<span class="bov-foot-left">${parts.join(" · ")}</span><span class="bov-foot-actions"><button type="button" class="bov-link-btn" data-bov-action="bank-accounts">Accounts…</button><button type="button" class="bov-link-btn" data-bov-action="quickbooks-sync"${busy ? " disabled" : ""}>${busy ? "Refreshing…" : "Refresh now"}</button></span>`;
   }
 }
 
@@ -23723,54 +24027,18 @@ function bovConfigDot(ok, warnOnly) {
   return `<span class="bov-config-dot ${ok ? "ok" : warnOnly ? "warn" : "off"}" aria-hidden="true"></span>`;
 }
 
+// Topbar "Sources" pill: status dot + "N not set" (the modal's rail badges carry the detail).
 function bovRenderConfigBar() {
   const bar = document.getElementById("bov-config-bar");
   const summary = document.getElementById("bov-config-summary");
-  const details = document.getElementById("bov-config-details");
   const cfg = bovState.config || {};
-  if (!bar || !summary || !details) return;
+  if (!bar || !summary) return;
   bar.hidden = false;
   const shopN = (cfg.shopify_store_ids || []).length;
   const salesN = bovSalesStoreIds(cfg).length;
-  const salesLabel = bovSalesStoreLabel(cfg);
-  const shopTitle = (cfg.shopify_store_names || []).join(", ");
-  const bit = (ok, key, value, title) =>
-    `<span class="bov-config-bit${ok ? "" : " is-off"}"${title ? ` title="${escapeHtml(title)}"` : ""}>${bovConfigDot(ok, !ok)}<span class="bov-config-bit-key">${escapeHtml(key)}</span><span class="bov-config-bit-val">${escapeHtml(value)}</span></span>`;
-  const bits = [
-    bit(salesN > 0, "Sales", salesN > 2 ? `${salesN} stores` : (salesLabel || "not set"), salesLabel),
-    bit(!!cfg.purchases_store_id, "Purchases", cfg.purchases_store_name || "not set"),
-    bit(shopN > 0, "Shopify", shopN ? `${shopN} store${shopN === 1 ? "" : "s"}` : "none", shopTitle),
-    bit(!!cfg.admin_store_id, "Admin DB", cfg.admin_store_name || "not set"),
-    bit(true, "Exclusions", `${bovInt(cfg.sales_exclusions_count || 0)} account${cfg.sales_exclusions_count === 1 ? "" : "s"}`),
-  ];
   const issues = [salesN > 0, !!cfg.purchases_store_id, shopN > 0, !!cfg.admin_store_id].filter((ok) => !ok).length;
   summary.innerHTML = `${bovConfigDot(issues === 0, issues > 0)}<span class="bov-config-pill-text">Sources</span>${issues ? `<span class="bov-config-pill-issues">${issues} not set</span>` : ""}`;
   document.getElementById("bov-config-head")?.classList.toggle("is-warn", issues > 0);
-  const modalMeta = document.getElementById("bov-config-modal-meta");
-  if (modalMeta && details && !details.hidden) modalMeta.textContent = bits.length ? "Where the overview reads from" : "";
-
-  // Per-store sync state comes from /config/options (loaded with the config).
-  const optShop = ((bovState.options && bovState.options.shopify_stores) || []);
-  const shopNames = (cfg.shopify_store_ids || []).map((id, i) => {
-    const name = (cfg.shopify_store_names || [])[i] || `Store ${id}`;
-    const o = optShop.find((x) => Number(x.id) === Number(id));
-    if (!o) return name;
-    return o.synced ? `${name} (synced${o.last_synced_at ? ` ${formatRelative(o.last_synced_at)}` : ""})` : `${name} (not synced — run Data Sync in Shopify Analytics)`;
-  }).join(", ");
-  const rows = [
-    ["Sales & invoices", salesLabel || "Not set — revenue, margin and invoice widgets are off", salesN > 0],
-    ["Purchases", cfg.purchases_store_name || "Not set — purchase-order widgets are off", !!cfg.purchases_store_id],
-    ["Shopify", shopNames || "None — Shopify revenue is not included", shopN > 0],
-    ["Quotation statuses", (cfg.quotation_statuses || []).join(", ") || "All statuses", true],
-    ["Admin DB (quotations)", cfg.admin_store_name || "Not set — pick it under Edit sources", !!cfg.admin_store_id],
-    ["Cost source for Shopify", cfg.cost_store_name || "Not resolved (Item Tracker S2S or first sales store)", !!cfg.cost_store_id],
-    ["Alerts", bovAlertRulesSummary(cfg.alert_rules), true],
-    ["Timezone", cfg.timezone || "America/Chicago", true],
-    ["Excluded customers", `${bovInt(cfg.sales_exclusions_count || 0)} account${cfg.sales_exclusions_count === 1 ? "" : "s"} removed from BackOffice sales totals`, true],
-  ];
-  details.innerHTML =
-    `<div class="bov-config-rows">${rows.map(([k, v, ok]) => `<div class="bov-config-row${ok ? "" : " is-warn"}">${bovConfigDot(ok, !ok)}<span class="bov-config-row-key">${escapeHtml(k)}</span><span class="bov-config-row-val">${escapeHtml(v)}</span></div>`).join("")}</div>` +
-    `<div class="bov-config-links"><a href="#" data-bov-action="config">Edit sources</a><a href="#" data-bov-action="exclusions">Manage exclusions</a><a href="#" data-bov-action="settings-roles">Admin DB</a></div>`;
 }
 
 function bovAlertRulesSummary(rules) {
@@ -23895,54 +24163,15 @@ function bovCollectAlertRules() {
   return out;
 }
 
-function bovToggleConfigDetails() {
-  // The Sources pill opens the modal in read mode (status rows + Edit).
-  bovRenderConfigBar();
-  bovOpenConfigModal({ editing: false });
-}
-
-function bovOpenConfigEdit() {
-  bovState.configEditing = true;
-  const title = document.getElementById("bov-config-title");
-  const cancel = document.getElementById("bov-config-cancel");
-  if (title) title.textContent = "Data sources";
-  if (cancel) cancel.hidden = false;
-  bovPopulateConfigForm(bovState.config, { firstRun: false });
-  bovOpenConfigModal({ editing: true });
-  const body = document.getElementById("bov-config-modal-body");
-  if (body) body.scrollTop = 0;
-}
-
-function bovCancelConfigEdit(opts = {}) {
-  const cfg = bovState.config || {};
-  const hasAnything = !!(bovSalesStoreIds(cfg).length || cfg.purchases_store_id || (cfg.shopify_store_ids || []).length);
-  bovState.configEditing = false;
-  document.getElementById("bov-config-head")?.setAttribute("aria-expanded", "false");
-  if (!hasAnything) {
-    // First run: nothing to go back to — leave the empty state + button behind.
-    closeModal("bov-config-modal");
-    bovState.configEditing = true;
-    return;
-  }
-  const setup = document.getElementById("bov-config-setup");
-  if (setup) setup.hidden = true;
-  if (opts.close) closeModal("bov-config-modal");
-  else bovOpenConfigModal({ editing: false });
-}
-
 function bovPillCheck(cls, value, label, checked, extraHtml) {
   return `<label class="bov-pill-check"><input type="checkbox" class="${cls}" value="${escapeHtml(String(value))}"${checked ? " checked" : ""}> <span>${escapeHtml(label)}</span>${extraHtml || ""}</label>`;
 }
 
-function bovPopulateConfigForm(cfg, opts = {}) {
+function bovPopulateConfigForm(cfg) {
   cfg = cfg || {};
   const options = bovState.options || {};
   const mssql = (options.mssql_stores || []).filter((s) => s.is_active !== false);
   const shopify = (options.shopify_stores || []).filter((s) => s.is_active !== false);
-  const title = document.getElementById("bov-config-title");
-  const cancel = document.getElementById("bov-config-cancel");
-  if (title) title.textContent = opts.firstRun ? "Set up Business Overview" : "Data sources";
-  if (cancel) cancel.hidden = !!opts.firstRun;
 
   const fill = (id, selectedId) => {
     const sel = document.getElementById(id);
@@ -23986,20 +24215,12 @@ function bovPopulateConfigForm(cfg, opts = {}) {
   if (tz) tz.value = cfg.timezone || "America/Chicago";
   bovPopulateAlertRules(cfg.alert_rules);
 
-  const ro = document.getElementById("bov-config-ro");
-  if (ro) {
-    ro.innerHTML =
-      `<div class="bov-config-row">${bovConfigDot(true)}<span class="bov-config-row-key">Excluded customers</span><span class="bov-config-row-val">${bovInt(cfg.sales_exclusions_count || 0)} account${cfg.sales_exclusions_count === 1 ? "" : "s"} · <a href="#" id="bov-excl-toggle-link">Manage</a></span></div>`;
-    document.getElementById("bov-excl-toggle-link")?.addEventListener("click", (e) => {
-      e.preventDefault();
-      const m = document.getElementById("bov-excl-manager");
-      if (!m) return;
-      m.hidden = !m.hidden;
-      if (!m.hidden) bovLoadExclusions();
-    });
+  const costNote = document.getElementById("bov-cfg-cost-note");
+  if (costNote) {
+    costNote.textContent = cfg.cost_store_name
+      ? `Product cost for Shopify sales comes from ${cfg.cost_store_name}.`
+      : "Product cost for Shopify sales comes from the Item Tracker S2S store, else the first sales store here.";
   }
-  const m = document.getElementById("bov-excl-manager");
-  if (m && !m.hidden) bovLoadExclusions();
 }
 
 function bovStatusPillHtml(status, checked) {
@@ -24029,7 +24250,16 @@ async function bovSaveConfig() {
   const statuses = Array.from(document.querySelectorAll(".bov-cfg-status-cb:checked")).map((cb) => cb.value.trim()).filter(Boolean);
   const tz = (document.getElementById("bov-cfg-tz")?.value || "").trim() || "America/Chicago";
   if (!salesIds.length && !purchId && !shopIds.length) {
+    bovCfgSetTab("sources");
+    bovCfgRenderFooter("Pick at least one BackOffice or Shopify source");
     showToast("Pick at least one data source", "warning");
+    return;
+  }
+  const badInput = document.querySelector("#bov-cfg-rules input:invalid");
+  if (badInput) {
+    bovCfgSetTab("alerts");
+    bovCfgRenderFooter("Check the highlighted threshold");
+    try { badInput.reportValidity(); } catch (e) { /* ignore */ }
     return;
   }
   const payload = {
@@ -24061,14 +24291,25 @@ async function bovSaveConfig() {
     }
     bovState.config = await resp.json();
     try { bovState.options = await bovFetchJson("/config/options"); } catch (e) { /* keep old options */ }
+    // Staged bank-account toggles go last: the sources are already saved by now.
+    let bankErr = null;
+    try { await bovCfgApplyBank(); } catch (e) { bankErr = e; }
     bovValidateStoreFilter();
     bovSavePrefs();
     bovRenderStoreChips();
-    showToast("✓ Overview sources saved", "success");
-    bovState.configEditing = false;
-    document.getElementById("bov-config-setup").hidden = true;
-    closeModal("bov-config-modal");
-    document.getElementById("bov-config-head")?.setAttribute("aria-expanded", "false");
+    if (bankErr) {
+      const msg = `Sources saved, but bank accounts failed: ${bankErr.message || bankErr}`;
+      showToast(`⚠ ${msg}`, "warning");
+      bovState.cfgFirstRun = false;
+      bovState.cfgDirty = true;
+      const cancel = document.getElementById("bov-config-cancel");
+      if (cancel) cancel.hidden = false;
+      bovCfgSetTab("bank");
+      bovCfgRenderFooter(msg);
+    } else {
+      showToast("✓ Overview settings saved", "success");
+      bovCloseConfigModal();
+    }
     bovShowSetup(false);
     bovRenderConfigBar();
     // Reset widget state so unconfigured→configured transitions repaint from a skeleton.
@@ -24113,6 +24354,7 @@ async function bovLoadExclusions() {
     if (bovState.config) bovState.config.sales_exclusions_count = data.total != null ? data.total : bovState.exclusions.length;
     bovRenderExclusions();
     bovRenderConfigBar();
+    bovCfgRenderBadges();
   } catch (e) {
     list.innerHTML = `<p class="bov-modal-note bov-modal-error">Could not load exclusions: ${escapeHtml(e.message || e)}</p>`;
   }
