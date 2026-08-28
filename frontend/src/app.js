@@ -22918,21 +22918,30 @@ function bovXlsNum(v, digits = 2) {
   return Math.round(Number(v) * f) / f;
 }
 
+// Rows arrive from monthEndVisibleRows(), so with the "Est. shipping" toggle on
+// the Ship cost / Profit / Profit % of rows without a real cost already carry the
+// estimate; those rows are flagged ESTIMATED with the reasoning in the note.
 function meExportSheet(rows) {
-  const basis = (r) => {
-    if (r._estimated) return "estimated";
-    if (r.shipping_cost == null) return r.shipping_missing ? "no parcel" : "";
-    if (r.source === "shopify" && bovNum(r.shipping_cost) === 0) return "no cost recorded";
+  const type = (r) => {
+    if (r._estimated) return "ESTIMATED";
+    if (r.shipping_cost == null) return r.shipping_missing ? "unknown — no parcel" : (r.source === "shopify" ? "unknown" : "");
+    if (r.source === "shopify" && bovNum(r.shipping_cost) === 0) return "unknown — no cost recorded";
     return "actual";
+  };
+  const note = (r) => {
+    if (r._estimated) return `${meShipEstimateWhy(r)}. Ship cost, Profit and Profit % use the estimate, not an actual cost.`;
+    if (r.source === "shopify" && r.shipping_missing) return "No parcel found in the shipper database — Ship cost blank, Profit assumes $0 shipping.";
+    if (r.source === "shopify" && r.shipping_cost != null && bovNum(r.shipping_cost) === 0) return "Parcel matched but no cost recorded — Profit assumes $0 shipping.";
+    return "";
   };
   return {
     sheet: "Month End",
-    header: ["Date", "Number", "Type", "Store", "Customer", "State", "Status", "Total", "Ship collected", "Ship cost", "Ship cost basis", "Profit", "Profit %"],
-    widths: [11, 12, 11, 18, 28, 7, 10, 12, 13, 11, 15, 12, 10],
+    header: ["Date", "Number", "Type", "Store", "Customer", "State", "Status", "Total", "Ship collected", "Ship cost", "Ship cost type", "Shipping note", "Profit", "Profit %"],
+    widths: [11, 12, 11, 18, 28, 7, 10, 12, 13, 11, 22, 60, 12, 10],
     data: rows.map((r) => [
       r.date || "", r.number || "", r.source === "shopify" ? "Shopify" : "BackOffice", r.store_name || "", r.customer || "",
       String(r.ship_state || "").trim().toUpperCase(), r.status || "",
-      bovXlsNum(r.total), bovXlsNum(r.shipping_collected), bovXlsNum(r.shipping_cost), basis(r),
+      bovXlsNum(r.total), bovXlsNum(r.shipping_collected), bovXlsNum(r.shipping_cost), type(r), note(r),
       bovXlsNum(r.profit), bovXlsNum(r.profit_pct),
     ]),
   };
@@ -25017,14 +25026,19 @@ function meShipCollectedCell(r) {
   return bovMoney(r.shipping_collected);
 }
 
+// Why a Shopify row's shipping cost is an estimate (table tooltip + export note).
+function meShipEstimateWhy(r) {
+  const scope = r.shipping_estimate_cross ? "across all stores" : "same store";
+  const basis = r.shipping_estimate_near
+    ? `the ${bovInt(r.shipping_estimate_n || 0)} order${r.shipping_estimate_n === 1 ? "" : "s"} closest by total — no comparable within ±$10/±10%`
+    : `${bovInt(r.shipping_estimate_n || 0)} similar order${r.shipping_estimate_n === 1 ? "" : "s"} (total ±$10 or ±10%)`;
+  const reason = r.shipping_missing ? "no parcel found for this order" : "the matched parcel has no recorded cost";
+  return `Estimated from ${basis}, ${scope}, shipped to ${r.ship_state || "any state"}, last 90 days — ${reason}`;
+}
+
 function meShipCostCell(r) {
   if (r._estimated) {
-    const scope = r.shipping_estimate_cross ? "across all stores" : "same store";
-    const basis = r.shipping_estimate_near
-      ? `the ${bovInt(r.shipping_estimate_n || 0)} order${r.shipping_estimate_n === 1 ? "" : "s"} closest by total — no comparable within ±$10/±10%`
-      : `${bovInt(r.shipping_estimate_n || 0)} similar order${r.shipping_estimate_n === 1 ? "" : "s"} (total ±$10 or ±10%)`;
-    const reason = r.shipping_missing ? "no parcel found for this order" : "the matched parcel has no recorded cost";
-    const why = `Estimated from ${basis}, ${scope}, shipped to ${r.ship_state || "any state"}, last 90 days — ${reason}`;
+    const why = meShipEstimateWhy(r);
     const tags = [`est · ${bovInt(r.shipping_estimate_n || 0)}`];
     if (r.shipping_estimate_near) tags.push("nearest");
     if (r.shipping_estimate_cross) tags.push("all stores");
