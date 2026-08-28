@@ -255,12 +255,12 @@
                     <div class="bov-popover-hint">Every figure below is limited to the selected sources.</div>
                   </div>
                 </div>
-                <!-- Cost basis toggle -->
-                <label class="bov-cost-toggle" id="bov-cost-toggle" title="Off: BackOffice cost = each store's own Items_tbl.UnitCost, Shopify cost = Item Tracker S2S Items_tbl.UnitPriceC. On: every sale is re-costed from the Item Tracker S2S Items_tbl.UnitCost and profit / margin recalculated.">
-                  <input type="checkbox" id="bov-cost-s2s" />
-                  <span class="bov-cost-toggle-track" aria-hidden="true"></span>
-                  <span class="bov-cost-toggle-text">S2S Cost</span>
-                </label>
+                <!-- Cost basis selector: Sale (invoice line cost) · Current (Items_tbl) · S2S -->
+                <div class="bov-cost-seg" id="bov-cost-toggle" role="radiogroup" aria-label="Cost basis">
+                  <button type="button" class="bov-cost-seg-btn" data-bov-cost="sale" role="radio" aria-checked="false" title="Cost stamped on each invoice line when it was sold (InvoicesDetails.UnitCost); a blank or $0 line cost falls back to the current cost. Shopify: Item Tracker S2S Items_tbl.UnitPriceC.">Sale cost</button>
+                  <button type="button" class="bov-cost-seg-btn" data-bov-cost="current" role="radio" aria-checked="false" title="Today's cost: each store's own Items_tbl.UnitCost by UPC (invoice line cost when the item is missing). Shopify: Item Tracker S2S Items_tbl.UnitPriceC.">Current cost</button>
+                  <button type="button" class="bov-cost-seg-btn" data-bov-cost="s2s" role="radio" aria-checked="false" title="Every sale re-costed from the Item Tracker S2S Items_tbl.UnitCost and profit / margin recalculated.">S2S cost</button>
+                </div>
                 <!-- Estimate shipping toggle (shared: Overview profit + Month End) -->
                 <label class="bov-cost-toggle" id="bov-ship-toggle" title="Estimate shipping cost for Shopify orders whose parcel is missing or has a $0 recorded cost: average of same-store orders shipped to the same state with a total within ±$10 or ±10% (last 90 days); falls back to other stores, then nearest totals. Applies to the Overview profit and the Month End tab.">
                   <input type="checkbox" id="bov-estship" />

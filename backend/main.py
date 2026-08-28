@@ -9598,14 +9598,23 @@ def _bov_cost_conn(db: Session, cfg: Optional[BusinessOverviewConfig]):
     return _resolve_item_tracker_s2s_conn(db)
 
 
-BOV_COST_MODES = ("default", "s2s")
+BOV_COST_MODES = ("sale", "current", "s2s")
 
 
 def _bov_cost_mode(cost_mode: Optional[str]) -> str:
-    m = (cost_mode or "default").strip().lower()
+    """sale (default) = invoice line cost; current = store Items_tbl.UnitCost; s2s = S2S Items_tbl.UnitCost.
+    'default' is accepted as a legacy alias of 'current'."""
+    m = (cost_mode or "sale").strip().lower()
+    if m == "default":
+        m = "current"
     if m not in BOV_COST_MODES:
-        raise HTTPException(status_code=400, detail="cost_mode must be default or s2s")
+        raise HTTPException(status_code=400, detail="cost_mode must be sale, current or s2s")
     return m
+
+
+def _bov_local_cost_mode(cost_mode: str) -> str:
+    """Basis of the store-local cost columns (Products tab): sale or current; s2s shows current."""
+    return "sale" if cost_mode == "sale" else "current"
 
 
 def _bov_shopify_cost_field(cost_mode: str) -> str:
@@ -9871,7 +9880,7 @@ async def get_business_overview_config_options(db: Session = Depends(get_db)):
 
 async def _bov_quotations_block(db: Session, cfg, include_list: bool, limit: int = 500,
                                 sort_by: str = "start_date", sort_order: str = "desc",
-                                only_ids: Optional[Set[int]] = None, cost_mode: str = "default") -> Dict[str, Any]:
+                                only_ids: Optional[Set[int]] = None, cost_mode: str = "sale") -> Dict[str, Any]:
     admin_store = _resolve_admin_store_soft(db)
     statuses = list((cfg.quotation_statuses if cfg else BOV_DEFAULT_QUOTATION_STATUSES) or [])
     if admin_store is None:
@@ -9983,7 +9992,7 @@ def _bov_multi_base(stores: List[Store], results, extra: Optional[Dict[str, Any]
 
 async def _bov_open_invoices_block(db: Session, cfg, include_list: bool, date_from=None, date_to=None,
                                    limit: int = 500, sort_by: str = "invoice_date", sort_order: str = "desc",
-                                   only_ids: Optional[Set[int]] = None, cost_mode: str = "default") -> Dict[str, Any]:
+                                   only_ids: Optional[Set[int]] = None, cost_mode: str = "sale") -> Dict[str, Any]:
     if not _bov_sales_stores(db, cfg):
         return {"configured": False}
     stores = _bov_sales_stores(db, cfg, only_ids)
@@ -10047,7 +10056,7 @@ def _bov_range_block_from_daily(daily: Dict[Any, Dict[str, float]], period: bov.
 
 async def _bov_shipped_block(db: Session, cfg, period: bov.Period, bucket: str, include_list: bool,
                              limit: int = 500, sort_by: str = "ship_date", sort_order: str = "desc",
-                             only_ids: Optional[Set[int]] = None, cost_mode: str = "default") -> Dict[str, Any]:
+                             only_ids: Optional[Set[int]] = None, cost_mode: str = "sale") -> Dict[str, Any]:
     if not _bov_sales_stores(db, cfg):
         return {"configured": False, "period": period.as_dict()}
     stores = _bov_sales_stores(db, cfg, only_ids)
@@ -10212,7 +10221,7 @@ def _bov_apply_ship_cost(res: Dict[str, Any], day_costs: Optional[Dict[Any, floa
 
 async def _bov_sales_trend(db: Session, cfg, period: bov.Period, bucket: str,
                            sources: List[str], only_ids: Optional[Set[int]] = None,
-                           cost_mode: str = "default", est_shipping: bool = False) -> Dict[str, Any]:
+                           cost_mode: str = "sale", est_shipping: bool = False) -> Dict[str, Any]:
     """
     Shared by /summary (sales block) and /sales/trend.
     cost_mode 'default': BackOffice = each store's own Items_tbl.UnitCost, Shopify = S2S Items_tbl.UnitPriceC.
@@ -10526,7 +10535,7 @@ async def get_business_overview_summary(
     date_to: Optional[str] = None,
     store_ids: Optional[str] = None,
     open_scope: str = "range",
-    cost_mode: str = "default",
+    cost_mode: str = "sale",
     est_shipping: str = "0",
     db: Session = Depends(get_db),
 ):
@@ -10593,7 +10602,7 @@ async def get_business_overview_summary(
 @app.get("/api/business-overview/quotations", response_model=BOVQuotationsResponse)
 async def get_business_overview_quotations(
     limit: int = 500, sort_by: str = "start_date", sort_order: str = "desc",
-    store_ids: Optional[str] = None, cost_mode: str = "default",
+    store_ids: Optional[str] = None, cost_mode: str = "sale",
     db: Session = Depends(get_db),
 ):
     cfg = _bov_config(db)
@@ -10606,7 +10615,7 @@ async def get_business_overview_quotations(
 async def get_business_overview_open_invoices(
     date_from: Optional[str] = None, date_to: Optional[str] = None,
     limit: int = 500, sort_by: str = "invoice_date", sort_order: str = "desc",
-    store_ids: Optional[str] = None, cost_mode: str = "default",
+    store_ids: Optional[str] = None, cost_mode: str = "sale",
     db: Session = Depends(get_db),
 ):
     if (date_from and not date_to) or (date_to and not date_from):
@@ -10627,7 +10636,7 @@ async def get_business_overview_open_invoices(
 async def get_business_overview_invoices_period(
     preset: Optional[str] = None, date_from: Optional[str] = None, date_to: Optional[str] = None,
     limit: int = 500, sort_by: str = "invoice_date", sort_order: str = "desc",
-    store_ids: Optional[str] = None, cost_mode: str = "default",
+    store_ids: Optional[str] = None, cost_mode: str = "sale",
     db: Session = Depends(get_db),
 ):
     """
@@ -10677,7 +10686,7 @@ async def get_business_overview_invoices_period(
 async def get_business_overview_shipped_invoices(
     preset: Optional[str] = None, date_from: Optional[str] = None, date_to: Optional[str] = None,
     bucket: str = "day", limit: int = 500, sort_by: str = "ship_date", sort_order: str = "desc",
-    store_ids: Optional[str] = None, cost_mode: str = "default",
+    store_ids: Optional[str] = None, cost_mode: str = "sale",
     db: Session = Depends(get_db),
 ):
     cfg = _bov_config(db)
@@ -10690,7 +10699,7 @@ async def get_business_overview_shipped_invoices(
 
 @app.get("/api/business-overview/invoices/{invoice_id}", response_model=BOVInvoiceDetailResponse)
 async def get_business_overview_invoice_detail(invoice_id: int, store_id: Optional[int] = None,
-                                               cost_mode: str = "default",
+                                               cost_mode: str = "sale",
                                                db: Session = Depends(get_db)):
     cfg = _bov_config(db)
     cmode = _bov_cost_mode(cost_mode)
@@ -10711,9 +10720,8 @@ async def get_business_overview_invoice_detail(invoice_id: int, store_id: Option
     if not payload.get("header"):
         raise HTTPException(status_code=404, detail=f"Invoice {invoice_id} not found")
     lines = payload.get("lines") or []
-    cost_basis = "local"
+    cost_basis = cmode
     if cmode == "s2s":
-        cost_basis = "s2s"
         lookup = _bov_make_cost_lookup(db, cfg, "unit_cost")
         upcs = sorted({(l.get("product_upc") or "").strip() for l in lines if (l.get("product_upc") or "").strip()})
         unit_costs = await lookup(upcs) if (upcs and getattr(lookup, "configured", False)) else {}
@@ -10847,7 +10855,7 @@ async def get_business_overview_purchase_order_detail(po_id: int, db: Session = 
 async def get_business_overview_sales_trend(
     preset: Optional[str] = None, date_from: Optional[str] = None, date_to: Optional[str] = None,
     bucket: str = "day", sources: str = "backoffice,shopify",
-    store_ids: Optional[str] = None, cost_mode: str = "default",
+    store_ids: Optional[str] = None, cost_mode: str = "sale",
     est_shipping: str = "0",
     db: Session = Depends(get_db),
 ):
@@ -10880,7 +10888,7 @@ async def get_business_overview_sales_trend(
 async def get_business_overview_sales_breakdown(
     preset: Optional[str] = None, date_from: Optional[str] = None, date_to: Optional[str] = None,
     by: str = "customer", source: str = "all", limit: int = 10,
-    store_ids: Optional[str] = None, cost_mode: str = "default",
+    store_ids: Optional[str] = None, cost_mode: str = "sale",
     db: Session = Depends(get_db),
 ):
     """
@@ -11052,7 +11060,7 @@ async def get_business_overview_sales_breakdown(
 @app.get("/api/business-overview/products", response_model=BOVProductsResponse)
 async def get_business_overview_products(
     preset: Optional[str] = None, date_from: Optional[str] = None, date_to: Optional[str] = None,
-    store_ids: Optional[str] = None, limit: Optional[int] = None,
+    store_ids: Optional[str] = None, limit: Optional[int] = None, cost_mode: str = "sale",
     db: Session = Depends(get_db),
 ):
     """
@@ -11060,11 +11068,13 @@ async def get_business_overview_products(
     store (BackOffice sales stores + synced Shopify mirrors), with BOTH cost
     bases side by side — local cost (own Items_tbl.UnitCost for BackOffice,
     S2S UnitPriceC for Shopify) and S2S cost (S2S Items_tbl.UnitCost) — plus
-    the margin each implies. Ignores cost_mode by design.
+    the margin each implies. The local pair follows cost_mode (sale = invoice
+    line cost, current = own Items_tbl.UnitCost; s2s shows it on the current basis).
     """
     cfg = _bov_config(db)
     period = _bov_period(cfg, preset, date_from, date_to)
     only = _bov_parse_store_ids(store_ids)
+    local_mode = _bov_local_cost_mode(_bov_cost_mode(cost_mode))
     try:
         max_rows = max(1, min(int(limit or bov.MAX_LIST_LIMIT), bov.MAX_LIST_LIMIT))
     except (TypeError, ValueError):
@@ -11085,7 +11095,7 @@ async def get_business_overview_products(
         excl_sales, _ = _bov_excluded_names(db)
         results = await _bov_fanout(bo_stores, lambda st: bov.backoffice_products_sold_async(
             **_bov_conn_kwargs(st), date_from=period.start.isoformat(), date_to_excl=period.end_excl,
-            excluded_sales_names=excl_sales))
+            excluded_sales_names=excl_sales, cost_mode=local_mode))
         for st, ok, err, payload in results:
             st_rows = payload if isinstance(payload, list) else []
             statuses.append({"store_id": st.id, "store_name": st.name, "error": (None if ok else (err or "failed")),
@@ -11218,7 +11228,7 @@ async def get_business_overview_products(
         warnings=warnings, truncated=len(rows) > len(out),
         cost_store_id=(cost_store.id if cost_store else None),
         cost_store_name=(cost_store.name if cost_store else None),
-        stores=[BOVStoreStatus(**s) for s in statuses], error=err_msg,
+        stores=[BOVStoreStatus(**s) for s in statuses], error=err_msg, cost_mode=local_mode,
     )
 
 
@@ -11227,7 +11237,7 @@ async def get_business_overview_product_lines(
     store_id: int,
     upc: Optional[str] = None, variant_id: Optional[int] = None, title: Optional[str] = None,
     preset: Optional[str] = None, date_from: Optional[str] = None, date_to: Optional[str] = None,
-    limit: Optional[int] = None,
+    limit: Optional[int] = None, cost_mode: str = "sale",
     db: Session = Depends(get_db),
 ):
     """
@@ -11244,7 +11254,8 @@ async def get_business_overview_product_lines(
     except (TypeError, ValueError):
         max_rows = bov.MAX_LIST_LIMIT
     upc = (upc or "").strip() or None
-    base = {"period": BOVPeriod(**period.as_dict()), "store_id": store_id, "upc": upc}
+    local_mode = _bov_local_cost_mode(_bov_cost_mode(cost_mode))
+    base = {"period": BOVPeriod(**period.as_dict()), "store_id": store_id, "upc": upc, "cost_mode": local_mode}
 
     bo = _bov_sales_stores(db, cfg, {store_id})
     sh = _bov_shopify_stores(db, cfg, {store_id})
@@ -11260,7 +11271,7 @@ async def get_business_overview_product_lines(
         excl_sales, _ = _bov_excluded_names(db)
         ok, err, payload = await bov.backoffice_product_lines_async(
             **_bov_conn_kwargs(bo[0]), date_from=period.start.isoformat(), date_to_excl=period.end_excl,
-            upc=upc, excluded_sales_names=excl_sales, limit=max_rows)
+            upc=upc, excluded_sales_names=excl_sales, limit=max_rows, cost_mode=local_mode)
         if not ok:
             return BOVProductLinesResponse(configured=True, store_type=store_type, store_name=store_name,
                                            error=err or "failed", **base)
@@ -11570,7 +11581,7 @@ async def get_business_overview_shopify_order_detail(store_id: int, shopify_id: 
 @app.get("/api/business-overview/shopify/missing-cost", response_model=BOVMissingCostResponse)
 async def get_business_overview_shopify_missing_cost(
     preset: Optional[str] = None, date_from: Optional[str] = None, date_to: Optional[str] = None,
-    store_ids: Optional[str] = None, cost_mode: str = "default",
+    store_ids: Optional[str] = None, cost_mode: str = "sale",
     db: Session = Depends(get_db),
 ):
     """
@@ -12107,12 +12118,14 @@ _MONTH_END_MAX_ROWS = 20000
 
 
 async def _month_end_payload(db: Session, date_from: Optional[str], date_to: Optional[str],
-                             limit: int, store_ids: Optional[str] = None, progress=None) -> Dict[str, Any]:
+                             limit: int, store_ids: Optional[str] = None, progress=None,
+                             cost_mode: str = "sale") -> Dict[str, Any]:
     async def note(msg: str):
         if progress:
             await progress(msg)
 
     cfg = _bov_config(db)
+    cmode = _bov_cost_mode(cost_mode)
     tz = _bov_tz(cfg)
     if not date_from and not date_to:
         date_from, date_to = _month_end_default_range(tz)
@@ -12148,7 +12161,7 @@ async def _month_end_payload(db: Session, date_from: Optional[str], date_to: Opt
         return await bov.invoices_in_period_async(
             **_bov_conn_kwargs(st), date_from=period.start.isoformat(), date_to_excl=period.end_excl,
             limit=min(limit, bov.MAX_LIST_LIMIT), sort_by="invoice_date", sort_order="desc", include_list=True,
-            today=period.today, excluded_names=excl_sales, cost_mode="default")
+            today=period.today, excluded_names=excl_sales, cost_mode=cmode)
 
     est_start = (period.start - timedelta(days=bov.SHIP_EST_LOOKBACK_DAYS)).isoformat()
 
@@ -12173,6 +12186,9 @@ async def _month_end_payload(db: Session, date_from: Optional[str], date_to: Opt
         asyncio.gather(*[_sh(st) for st in usable_shopify], return_exceptions=True),
     )
     timings["fetch"] = round(time.monotonic() - t_fetch, 2)
+    if cmode == "s2s":
+        # Same S2S re-cost as /invoices/period; recost_rows_s2s refreshes net_profit per invoice.
+        await _bov_recost_invoice_results(db, cfg, bo_results)
 
     stores_status: List[Dict[str, Any]] = []
     rows: List[Dict[str, Any]] = []
@@ -12374,15 +12390,15 @@ async def _month_end_payload(db: Session, date_from: Optional[str], date_to: Opt
 @app.get("/api/business-overview/month-end", response_model=MonthEndResponse)
 async def get_month_end(date_from: Optional[str] = None, date_to: Optional[str] = None,
                         limit: int = _MONTH_END_MAX_ROWS, store_ids: Optional[str] = None,
-                        db: Session = Depends(get_db)):
-    payload = await _month_end_payload(db, date_from, date_to, limit, store_ids)
+                        cost_mode: str = "sale", db: Session = Depends(get_db)):
+    payload = await _month_end_payload(db, date_from, date_to, limit, store_ids, cost_mode=cost_mode)
     return MonthEndResponse(**payload)
 
 
 @app.get("/api/business-overview/month-end/stream")
 async def stream_month_end(date_from: Optional[str] = None, date_to: Optional[str] = None,
                            limit: int = _MONTH_END_MAX_ROWS, store_ids: Optional[str] = None,
-                           db: Session = Depends(get_db)):
+                           cost_mode: str = "sale", db: Session = Depends(get_db)):
     """SSE twin of /month-end: progress events while the report is computed,
     then one `result` event carrying the full payload."""
     queue: asyncio.Queue = asyncio.Queue()
@@ -12392,7 +12408,7 @@ async def stream_month_end(date_from: Optional[str] = None, date_to: Optional[st
 
     async def runner():
         try:
-            payload = await _month_end_payload(db, date_from, date_to, limit, store_ids, progress=progress)
+            payload = await _month_end_payload(db, date_from, date_to, limit, store_ids, progress=progress, cost_mode=cost_mode)
             await queue.put(("result", payload))
         except HTTPException as e:
             await queue.put(("error", {"message": str(e.detail)}))

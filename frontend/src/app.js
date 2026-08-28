@@ -18895,7 +18895,7 @@ const bovState = {
   splitSources: false,
   storeFilter: [],      // store ids; [] = all configured sources
   chartsOpen: false,    // revenue/margin charts collapsed by default
-  costMode: "default",  // "default" (local UnitCost / S2S UnitPriceC) | "s2s" (S2S UnitCost everywhere)
+  costMode: "sale",     // "sale" (invoice line cost) | "current" (store Items_tbl.UnitCost) | "s2s" (S2S UnitCost everywhere)
   estShipping: false,   // shared Est. shipping toggle (Overview profit + Month End rows)
   collapsedCards: {},   // cardId -> true when the user collapsed it
   section: "overview",  // active section tab
@@ -19148,7 +19148,8 @@ function bovLoadPrefs() {
     if (p && Array.isArray(p.storeIds)) bovState.storeFilter = p.storeIds.map(Number).filter((n) => !isNaN(n));
     if (p && typeof p.charts === "boolean") bovState.chartsOpen = p.charts;
     if (p && typeof p.openInRange === "boolean") bovState.openInRange = p.openInRange;
-    if (p && ["default", "s2s"].includes(p.costMode)) bovState.costMode = p.costMode;
+    if (p && BOV_COST_MODES.includes(p.costMode)) bovState.costMode = p.costMode;
+    else if (p && p.costMode === "default") bovState.costMode = "current";   // legacy pref value
     if (p && typeof p.estShipping === "boolean") bovState.estShipping = p.estShipping;
     if (p && BOV_CFG_TABS.includes(p.cfgTab)) bovState.cfgTab = p.cfgTab;
     if (p && p.collapsed && typeof p.collapsed === "object") {
@@ -19526,33 +19527,60 @@ function bovStoreParams() {
   return {};
 }
 
+const BOV_COST_MODES = ["sale", "current", "s2s"];
+
 function bovCostParams() {
-  return bovState.costMode === "s2s" ? { cost_mode: "s2s" } : {};
+  return { cost_mode: BOV_COST_MODES.includes(bovState.costMode) ? bovState.costMode : "sale" };
+}
+
+// Basis of the store-local cost pair (Products tab, product drill-in): the
+// selector's Sale / Current choice; S2S mode shows the pair on the Current basis.
+function bovLocalBasis() {
+  const sale = bovState.costMode === "sale";
+  return {
+    key: sale ? "sale" : "current",
+    short: sale ? "Sale" : "Current",
+    label: sale ? "Sale cost" : "Current cost",
+    title: sale
+      ? "Cost stamped on the invoice line when it was sold (blank/$0 → current Items_tbl.UnitCost)"
+      : "This store's Items_tbl.UnitCost by UPC today (invoice line cost when the item is missing)",
+  };
 }
 
 function bovShipParams() {
   return bovState.estShipping ? { est_shipping: "1" } : {};
 }
 
-// Widgets whose figures depend on the cost basis (S2S Cost toggle).
-const BOV_COST_WIDGETS = ["summary", "trend", "top", "quotations", "invoicesPeriod", "invoicesOpen"];
+// Widgets whose figures depend on the cost basis selector.
+const BOV_COST_WIDGETS = ["summary", "trend", "top", "quotations", "invoicesPeriod", "invoicesOpen", "products"];
 // Widgets whose figures depend on the Est. shipping toggle.
 const BOV_SHIP_WIDGETS = ["summary", "trend"];
 
 function bovSyncCostToggle() {
-  const cb = document.getElementById("bov-cost-s2s");
-  if (cb) cb.checked = bovState.costMode === "s2s";
-  document.getElementById("bov-cost-toggle")?.classList.toggle("is-on", bovState.costMode === "s2s");
+  document.querySelectorAll("#bov-cost-toggle [data-bov-cost]").forEach((b) => {
+    const on = b.dataset.bovCost === bovState.costMode;
+    b.classList.toggle("is-active", on);
+    b.setAttribute("aria-checked", on ? "true" : "false");
+  });
 }
 
 function bovSetCostMode(mode) {
-  const next = mode === "s2s" ? "s2s" : "default";
+  const next = BOV_COST_MODES.includes(mode) ? mode : "sale";
   if (bovState.costMode === next) return;
   bovState.costMode = next;
   bovSavePrefs();
   bovSyncCostToggle();
   bovState.modalCache.invoice.clear();
+  bovState.modalCache.product.clear();
   bovFetchAll({ only: BOV_COST_WIDGETS });
+  bovInvalidateMonthEnd();
+}
+
+// Month End is fetched on its own (SSE) and carries the cost basis too.
+function bovInvalidateMonthEnd() {
+  if (!monthEndState.initialized) return;
+  monthEndState.data = null;
+  if (bovState.section === "month-end") fetchMonthEnd();
 }
 
 function bovSyncShipToggle() {
@@ -19572,9 +19600,9 @@ function bovSetEstShipping(on) {
 }
 
 function bovCostBasisLabel() {
-  return bovState.costMode === "s2s"
-    ? "S2S cost — every sale costed from the Item Tracker S2S Items_tbl.UnitCost"
-    : "BackOffice: each store's own Items_tbl.UnitCost · Shopify: S2S Items_tbl.UnitPriceC";
+  if (bovState.costMode === "s2s") return "S2S cost — every sale costed from the Item Tracker S2S Items_tbl.UnitCost";
+  if (bovState.costMode === "current") return "Current cost — BackOffice: each store's own Items_tbl.UnitCost today · Shopify: S2S Items_tbl.UnitPriceC";
+  return "Sale cost — BackOffice: the cost stamped on each invoice line (blank/$0 → current cost) · Shopify: S2S Items_tbl.UnitPriceC";
 }
 
 function bovFilteredStoreNames() {
@@ -19801,9 +19829,10 @@ function bovBindOnce() {
     bovRenderTrendChart();
   });
 
-  // Cost basis (S2S Cost)
-  document.getElementById("bov-cost-s2s")?.addEventListener("change", (e) => {
-    bovSetCostMode(e.target.checked ? "s2s" : "default");
+  // Cost basis selector (Sale / Current / S2S)
+  document.getElementById("bov-cost-toggle")?.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-bov-cost]");
+    if (b) bovSetCostMode(b.dataset.bovCost);
   });
 
   // Estimate shipping (shared: Overview profit + Month End rows)
@@ -20674,9 +20703,10 @@ const BOV_WIDGET_DEFS = {
     render: () => bovRenderQuotationsTable(),
   },
   products: {
-    // Both cost bases (local + S2S) come back side by side — no cost_mode param.
+    // Both cost bases come back side by side: the local pair on the selector's
+    // Sale / Current basis (cost_mode), the S2S pair always.
     card: "bov-products-card",
-    request: () => ["/products", { ...bovRangeParams(), ...bovStoreParams() }],
+    request: () => ["/products", { ...bovRangeParams(), ...bovStoreParams(), ...bovCostParams() }],
     render: () => {
       bovRenderProductsTable();
       // The margin-floor alert is evaluated per product from this data.
@@ -20752,10 +20782,7 @@ async function bovFetchAll(opts = {}) {
   if (!silent) bovSetRefreshSpinner(true);
   // Month End shares the topbar period: a full refetch invalidates it too —
   // reload now if its tab is open, otherwise lazily on the next tab open.
-  if (!opts.only && monthEndState.initialized) {
-    monthEndState.data = null;
-    if (bovState.section === "month-end") fetchMonthEnd();
-  }
+  if (!opts.only) bovInvalidateMonthEnd();
   // Inventory shares the topbar period the same way.
   if (!opts.only && invState.initialized) {
     invState.hasData = false;
@@ -21221,7 +21248,7 @@ function bovRenderKpis() {
         value: "—",
         delta: { cls: "is-flat", glyph: "•", text: "cost unavailable" },
         note: bovState.costMode === "s2s"
-          ? "S2S Cost needs the Item Tracker S2S store — set it in Item Tracker settings"
+          ? "S2S cost needs the Item Tracker S2S store — set it in Item Tracker settings"
           : "No cost source for these sales — Shopify cost needs the Item Tracker S2S store (Items_tbl.UnitPriceC)",
         noteTone: "warn",
         state: "warn",
@@ -22954,7 +22981,7 @@ function meExportSheet(rows) {
 function bovProductsExportSheet(rows) {
   return {
     sheet: "Products sold",
-    header: ["Product", "SKU", "UPC", "Store", "Qty", "Avg price", "Revenue", "Local cost", "S2S cost", "Local margin %", "S2S margin %"],
+    header: ["Product", "SKU", "UPC", "Store", "Qty", "Avg price", "Revenue", bovLocalBasis().label, "S2S cost", `${bovLocalBasis().short} margin %`, "S2S margin %"],
     widths: [40, 14, 14, 18, 8, 10, 12, 11, 11, 13, 13],
     data: rows.map((r) => [
       r.description || "", r.sku || "", r.upc || "", r.store_name || "",
@@ -23620,6 +23647,7 @@ function bovProductMarginCell(r, pctKey, profitKey) {
 }
 
 function bovProductCols() {
+  const lb = bovLocalBasis();
   return [
     { key: "description", label: "Product", width: "22%", render: (r) => bovCustomerCell(r.description, r.sku && r.sku !== r.upc ? `SKU ${r.sku}` : null) },
     { key: "upc", label: "UPC", width: "10%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.upc || "—")}</span>` },
@@ -23627,9 +23655,9 @@ function bovProductCols() {
     { key: "units", label: "Qty", num: true, width: "5%", render: (r) => bovInt(r.units) },
     { key: "avg_price", label: "Avg price", num: true, width: "7%", render: (r) => escapeHtml(r.avg_price != null ? bovMoney(r.avg_price) : "—") },
     { key: "revenue", label: "Revenue", num: true, width: "8%", render: (r) => escapeHtml(bovMoney(r.revenue)) },
-    { key: "local_unit_cost", label: "Local cost", num: true, width: "9%", render: (r) => bovProductCostCell(r, "local_unit_cost", "local_cost") },
+    { key: "local_unit_cost", label: `${lb.short} cost`, num: true, width: "9%", render: (r) => bovProductCostCell(r, "local_unit_cost", "local_cost") },
     { key: "s2s_unit_cost", label: "S2S cost", num: true, width: "9%", render: (r) => bovProductCostCell(r, "s2s_unit_cost", "s2s_cost") },
-    { key: "local_margin_pct", label: "Local mgn", num: true, width: "8%", render: (r) => bovProductMarginCell(r, "local_margin_pct", "local_profit") },
+    { key: "local_margin_pct", label: `${lb.short} mgn`, num: true, width: "8%", render: (r) => bovProductMarginCell(r, "local_margin_pct", "local_profit") },
     { key: "s2s_margin_pct", label: "S2S mgn", num: true, width: "8%", render: (r) => bovProductMarginCell(r, "s2s_margin_pct", "s2s_profit") },
   ];
 }
@@ -24172,8 +24200,10 @@ function bovRenderInvoiceModal(data) {
       return `<strong class="bov-profit${bovNum(net) < 0 ? " is-neg" : ""}">${escapeHtml(bovMoney(net))}</strong>${netPct != null ? ` <span class="sa-kpi-pct">${escapeHtml(bovPct(netPct))}</span>` : ""}<span class="bov-cell-sub">${escapeHtml(`product ${bovMoney(h.profit)} − shipping ${bovMoney(h.shipping_cost || 0)}`)}</span>`;
     })()),
     bovKv("Cost basis", data.cost_basis === "s2s"
-      ? `<span class="bov-cost-basis is-s2s" title="S2S Cost is on — every line costed from the Item Tracker S2S Items_tbl.UnitCost by UPC">S2S UnitCost</span>`
-      : `<span class="bov-cost-basis" title="Each line costed from this store's Items_tbl.UnitCost by UPC (invoice line cost when the item is missing)">Store UnitCost</span>`),
+      ? `<span class="bov-cost-basis is-s2s" title="S2S cost is on — every line costed from the Item Tracker S2S Items_tbl.UnitCost by UPC">S2S UnitCost</span>`
+      : data.cost_basis === "current"
+        ? `<span class="bov-cost-basis" title="Each line costed from this store's Items_tbl.UnitCost by UPC today (invoice line cost when the item is missing)">Current cost (Items_tbl)</span>`
+        : `<span class="bov-cost-basis" title="Each line costed from the cost stamped on the invoice line when it was sold (blank/$0 → current Items_tbl.UnitCost)">Sale cost (invoice line)</span>`),
   ].join("");
   const tfoot = `<tfoot><tr><td class="bov-num bov-line-no"></td><td>${bovInt(lines.length)} lines</td>` +
     `<td class="bov-num">${bovInt(lines.reduce((a, l) => a + bovNum(l.qty_shipped), 0))}</td><td></td>` +
@@ -24245,14 +24275,14 @@ async function bovOpenProductModal(idx) {
     ].filter(Boolean).join(" · ");
   }
   openModal("bov-product-modal");
-  const cacheKey = `${row.store_id}:${row.store_type}:${row.upc || ""}:${row.variant_shopify_id || ""}:${row.upc ? "" : (row.description || "")}:${period.start || ""}:${period.end || ""}`;
+  const cacheKey = `${row.store_id}:${row.store_type}:${row.upc || ""}:${row.variant_shopify_id || ""}:${row.upc ? "" : (row.description || "")}:${period.start || ""}:${period.end || ""}:${bovState.costMode}`;
   const cache = bovState.modalCache.product;
   if (cache.has(cacheKey)) {
     bovRenderProductModal(cache.get(cacheKey));
     return;
   }
   bovModalLoading(body, row.store_type === "shopify" ? "Loading order lines…" : "Loading invoice lines…");
-  const params = { store_id: row.store_id, ...bovRangeParams() };
+  const params = { store_id: row.store_id, ...bovRangeParams(), ...bovCostParams() };
   if (row.upc) params.upc = row.upc;
   else {
     if (row.variant_shopify_id) params.variant_id = row.variant_shopify_id;
@@ -24294,16 +24324,17 @@ function bovRenderProductModal(data) {
   }
   const rows = data.rows || [];
   const t = data.totals || {};
+  const lb = bovLocalBasis();
   const kv = [
     bovKv("Qty sold", `<strong>${bovInt(t.units)}</strong><span class="bov-cell-sub">${bovInt(t.lines)} line${t.lines === 1 ? "" : "s"} on ${bovInt(t.orders)} ${docWord}${t.orders === 1 ? "" : "s"}</span>`),
     bovKv("Revenue", `<strong>${escapeHtml(bovMoney(t.revenue))}</strong>${t.avg_price != null ? `<span class="bov-cell-sub">avg ${escapeHtml(bovMoney(t.avg_price))} / unit</span>` : ""}`),
-    bovProductBasisKv("Local cost", t.local_cost, t.local_profit, t.local_margin_pct, row.local_unit_cost,
+    bovProductBasisKv(shop ? "Local cost" : lb.label, t.local_cost, t.local_profit, t.local_margin_pct, row.local_unit_cost,
       shop ? "S2S UnitPriceC not found for this barcode" : "No cost on this store's items table or invoice lines"),
     bovProductBasisKv("S2S cost", t.s2s_cost, t.s2s_profit, t.s2s_margin_pct, row.s2s_unit_cost,
       data.cost_store_name ? `UPC not found on ${data.cost_store_name}` : "Item Tracker S2S store is not configured"),
     bovKv("Cost basis", shop
       ? `<span class="bov-cost-basis" title="Local = Item Tracker S2S Items_tbl.UnitPriceC by barcode; S2S = Items_tbl.UnitCost">UnitPriceC / UnitCost</span>${data.cost_store_name ? `<span class="bov-cell-sub">${escapeHtml(data.cost_store_name)}</span>` : ""}`
-      : `<span class="bov-cost-basis" title="Local = this store's Items_tbl.UnitCost by UPC (invoice line cost when the item is missing); S2S = Item Tracker S2S Items_tbl.UnitCost">Store UnitCost / S2S UnitCost</span>${data.cost_store_name ? `<span class="bov-cell-sub">S2S: ${escapeHtml(data.cost_store_name)}</span>` : ""}`),
+      : `<span class="bov-cost-basis" title="${escapeHtml(`${lb.short} = ${lb.title}; S2S = Item Tracker S2S Items_tbl.UnitCost`)}">${escapeHtml(lb.key === "sale" ? "Invoice line cost / S2S UnitCost" : "Store UnitCost / S2S UnitCost")}</span>${data.cost_store_name ? `<span class="bov-cell-sub">S2S: ${escapeHtml(data.cost_store_name)}</span>` : ""}`),
   ].join("");
   const notes = [];
   if (data.truncated) notes.push(`Showing the first ${bovInt(rows.length)} lines — narrow the period to see the rest.`);
@@ -24318,7 +24349,7 @@ function bovRenderProductModal(data) {
   body.innerHTML =
     `<div class="bov-kv-grid">${kv}</div>` +
     (rows.length
-      ? bovTableHtml("productLines", bovProductLineCols(shop), bovSortRows(rows, bovState.sort.productLines), {
+      ? bovTableHtml("productLines", bovProductLineCols(shop, lb), bovSortRows(rows, bovState.sort.productLines), {
           tfoot,
           rowAttrs: (l) => `data-bov-open="${openKind}" data-bov-id="${escapeHtml(l.doc_id)}" data-bov-store="${data.store_id}" title="Open ${docWord}"`,
         })
@@ -24326,8 +24357,9 @@ function bovRenderProductModal(data) {
     (notes.length ? `<p class="bov-modal-note">${notes.map(escapeHtml).join(" · ")}</p>` : "");
 }
 
-function bovProductLineCols(shop) {
+function bovProductLineCols(shop, lb) {
   const docLabel = shop ? "Order" : "Invoice";
+  const loc = shop ? "Local" : lb.short;
   return [
     { key: "doc_date", label: "Date", width: "7%", render: (l) => escapeHtml(bovDateMdy(l.doc_date)) },
     { key: "doc_number", label: docLabel, width: "8%", render: (l) => `<span class="bov-cell-main bov-cell-mono">${escapeHtml(l.doc_number || l.doc_id || "—")}</span><span class="bov-cell-sub">${escapeHtml(shop ? (l.status || "") : (l.shipped ? "Shipped" : "Not shipped"))}</span>` },
@@ -24342,28 +24374,24 @@ function bovProductLineCols(shop) {
       return main;
     } },
     { key: "revenue", label: "Revenue", num: true, width: "7%", render: (l) => escapeHtml(bovMoney(l.revenue)) },
-    { key: "local_cost", label: "Local unit cost", num: true, width: "10%", render: (l) => bovProductLineCostCell(l, "local_unit_cost", "local_cost", !shop) },
-    { key: "local_profit", label: "Local profit", num: true, width: "8%", render: (l) => bovLineProfitCell(l.local_profit) },
-    { key: "local_margin_pct", label: "Local mgn", num: true, width: "8%", render: (l) => bovLineMarginCell(l.local_margin_pct) },
-    { key: "s2s_cost", label: "S2S unit cost", num: true, width: "10%", render: (l) => bovProductLineCostCell(l, "s2s_unit_cost", "s2s_cost", false) },
+    { key: "local_cost", label: `${loc} unit cost`, num: true, width: "10%", render: (l) => bovProductLineCostCell(l, "local_unit_cost", "local_cost") },
+    { key: "local_profit", label: `${loc} profit`, num: true, width: "8%", render: (l) => bovLineProfitCell(l.local_profit) },
+    { key: "local_margin_pct", label: `${loc} mgn`, num: true, width: "8%", render: (l) => bovLineMarginCell(l.local_margin_pct) },
+    { key: "s2s_cost", label: "S2S unit cost", num: true, width: "10%", render: (l) => bovProductLineCostCell(l, "s2s_unit_cost", "s2s_cost") },
     { key: "s2s_profit", label: "S2S profit", num: true, width: "8%", render: (l) => bovLineProfitCell(l.s2s_profit) },
     { key: "s2s_margin_pct", label: "S2S mgn", num: true, width: "8%", render: (l) => bovLineMarginCell(l.s2s_margin_pct) },
   ];
 }
 
-// Unit cost leads (that is what a single item cost); the line total sits under
-// it, and BackOffice local cost adds the cost stamped on the invoice line when
-// it differs from the items-table cost.
-function bovProductLineCostCell(l, unitKey, totalKey, showLineCost) {
+// Unit cost leads (that is what a single item cost); the line total sits
+// under it. Cost/profit always use the items-table cost, never the cost
+// stamped on the invoice line (that only backs a UPC missing from Items_tbl).
+function bovProductLineCostCell(l, unitKey, totalKey) {
   if (l[totalKey] == null) return `<span class="bov-cell-muted">—</span>`;
   const unit = l[unitKey];
-  const main = unit != null ? escapeHtml(bovMoney(unit)) : escapeHtml(bovMoney(l[totalKey]));
-  const subs = [];
-  if (unit != null) subs.push(`<span class="bov-cell-sub" title="Line cost = qty × unit cost">${escapeHtml(bovMoney(l[totalKey]))} total</span>`);
-  if (showLineCost && l.line_unit_cost != null && unit != null && Math.abs(bovNum(l.line_unit_cost) - bovNum(unit)) > 0.004) {
-    subs.push(`<span class="bov-cell-sub" title="Cost stamped on the invoice line (differs from the items-table cost)">line ${escapeHtml(bovMoney(l.line_unit_cost))}</span>`);
-  }
-  return `<span class="bov-cell-main" title="Unit cost">${main}</span>${subs.join("")}`;
+  if (unit == null) return escapeHtml(bovMoney(l[totalKey]));
+  return `<span class="bov-cell-main" title="Unit cost">${escapeHtml(bovMoney(unit))}</span>` +
+    `<span class="bov-cell-sub" title="Line cost = qty × unit cost">${escapeHtml(bovMoney(l[totalKey]))} total</span>`;
 }
 
 async function bovOpenPoModal(poId) {
@@ -24978,7 +25006,7 @@ function meSavePrefs() {
 // Month End follows the period AND store filter selected in the Business
 // Overview topbar — unselected stores are not queried at all.
 function monthEndPeriodParams() {
-  return { ...bovRangeParams(), ...bovStoreParams() };
+  return { ...bovRangeParams(), ...bovStoreParams(), ...bovCostParams() };
 }
 
 function loadMonthEndPage() {

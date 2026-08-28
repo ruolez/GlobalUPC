@@ -7770,6 +7770,38 @@ tr.bov-line-void td { opacity: 0.55; text-decoration: line-through; }
 .bov-cost-toggle.is-on .bov-cost-toggle-track { background: var(--accent-primary); border-color: var(--accent-primary); }
 .bov-cost-toggle.is-on .bov-cost-toggle-track::after { transform: translateX(12px); background: #fff; }
 .bov-cost-toggle input:focus-visible + .bov-cost-toggle-track { outline: 2px solid var(--accent-primary); outline-offset: 2px; }
+/* --- Cost basis selector (Sale / Current / S2S) --- */
+.bov-cost-seg {
+  display: inline-flex;
+  align-items: stretch;
+  height: 38px;
+  padding: 3px;
+  gap: 2px;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  background: var(--bg-secondary);
+  user-select: none;
+}
+.bov-cost-seg-btn {
+  border: 0;
+  border-radius: 999px;
+  padding: 0 0.7rem;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.bov-cost-seg-btn:hover { color: var(--text-primary); background: var(--bg-hover); }
+.bov-cost-seg-btn.is-active {
+  color: var(--accent-primary);
+  background: color-mix(in srgb, var(--accent-primary) 14%, var(--bg-secondary));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-primary) 45%, var(--border-color));
+}
+.bov-cost-seg-btn:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 1px; }
 .bov-cost-basis {
   display: inline-block;
   padding: 0.05rem 0.5rem;
@@ -8448,7 +8480,7 @@ tr.bov-line-void td { opacity: 0.55; text-decoration: line-through; }
 .nav-item .nav-lock { margin-left: auto; color: var(--text-tertiary); flex: 0 0 auto; }
 .nav-item .nav-lock.is-open { opacity: 0.45; }
 /* Limited views (secondary passwords) hide inline-flex chrome via [hidden]. */
-.bov-subnav-item[hidden], .me-chip[hidden], .bov-cost-toggle[hidden], .bov-view-badge[hidden] { display: none; }
+.bov-subnav-item[hidden], .me-chip[hidden], .bov-cost-toggle[hidden], .bov-cost-seg[hidden], .bov-view-badge[hidden] { display: none; }
 .bov-view-badge {
   display: inline-flex; align-items: center; gap: 0.5rem; vertical-align: middle;
   margin-left: 0.5rem; padding: 0.15rem 0.35rem 0.15rem 0.6rem; border-radius: 999px;

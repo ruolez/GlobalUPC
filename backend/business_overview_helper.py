@@ -373,17 +373,38 @@ def _tables_present(cursor, names: List[str]) -> Dict[str, bool]:
     return {n: (n in found) for n in names}
 
 
-# BackOffice unit cost: the store's own Items_tbl.UnitCost by UPC (current cost),
-# falling back to the cost stamped on the invoice line when the item is missing.
+# BackOffice cost bases (cost_mode):
+#   sale    — the cost stamped on the invoice line when it was sold (InvoicesDetails.UnitCost);
+#             a blank or $0 line cost falls back to the current cost.
+#   current — the store's own Items_tbl.UnitCost by UPC today, falling back to the
+#             line cost when the item is missing.
+#   s2s     — SQL computes "current"; the caller re-costs every row from the S2S store.
+COST_MODES = ("sale", "current", "s2s")
 _LOCAL_COST_APPLY = """
     OUTER APPLY (SELECT TOP 1 i.UnitCost AS ItemUnitCost
                  FROM Items_tbl i
                  WHERE i.ProductUPC = d.ProductUPC AND d.ProductUPC IS NOT NULL AND LTRIM(RTRIM(d.ProductUPC)) <> '') ic
 """
 _LOCAL_COST_EXPR = "ISNULL(d.QtyShipped, 0) * ISNULL(ic.ItemUnitCost, ISNULL(d.UnitCost, 0))"
+_SALE_COST_EXPR = "ISNULL(d.QtyShipped, 0) * COALESCE(NULLIF(d.UnitCost, 0), ic.ItemUnitCost, 0)"
+_LINE_COST_EXPR = "ISNULL(d.QtyShipped, 0) * ISNULL(d.UnitCost, 0)"
 
 
-def _invoice_joins(present: Dict[str, bool]) -> Dict[str, str]:
+def _cost_sql(present: Dict[str, bool], cost_mode: str = "sale") -> Tuple[str, str]:
+    """(OUTER APPLY fragment, per-line cost expression) for the store-local basis."""
+    if not present.get("Items_tbl"):
+        return "", _LINE_COST_EXPR
+    return _LOCAL_COST_APPLY, (_SALE_COST_EXPR if cost_mode == "sale" else _LOCAL_COST_EXPR)
+
+
+def _unit_cost_for(cost_mode: str, line_cost: Optional[float], item_cost: Optional[float]) -> Optional[float]:
+    """Python twin of _cost_sql for per-line rows already fetched."""
+    if cost_mode == "sale":
+        return line_cost if line_cost else item_cost
+    return item_cost if item_cost is not None else line_cost
+
+
+def _invoice_joins(present: Dict[str, bool], cost_mode: str = "sale") -> Dict[str, str]:
     j: Dict[str, str] = {}
     if present.get("Employees_tbl"):
         j["rep_join"] = "LEFT JOIN Employees_tbl e ON e.EmployeeID = h.SalesRepID AND h.SalesRepID <> 0"
@@ -407,10 +428,8 @@ def _invoice_joins(present: Dict[str, bool]) -> Dict[str, str]:
         j["term_expr"] = "CAST(NULL AS nvarchar(50))"
     if present.get("InvoicesDetails_tbl"):
         j["revenue_expr"] = "(SELECT SUM(ISNULL(d.ExtendedPrice,0)) FROM InvoicesDetails_tbl d WHERE d.InvoiceID = h.InvoiceID)"
-        if present.get("Items_tbl"):
-            j["cost_expr"] = f"(SELECT SUM({_LOCAL_COST_EXPR}) FROM InvoicesDetails_tbl d {_LOCAL_COST_APPLY} WHERE d.InvoiceID = h.InvoiceID)"
-        else:
-            j["cost_expr"] = "(SELECT SUM(ISNULL(d.QtyShipped,0)*ISNULL(d.UnitCost,0)) FROM InvoicesDetails_tbl d WHERE d.InvoiceID = h.InvoiceID)"
+        cost_apply, cost_expr = _cost_sql(present, cost_mode)
+        j["cost_expr"] = f"(SELECT SUM({cost_expr}) FROM InvoicesDetails_tbl d {cost_apply} WHERE d.InvoiceID = h.InvoiceID)"
     else:
         j["revenue_expr"] = "CAST(NULL AS money)"
         j["cost_expr"] = "CAST(NULL AS money)"
@@ -861,7 +880,7 @@ def _open_invoices_sync(
     include_list: bool = True,
     today: Optional[date] = None,
     excluded_names: Optional[List[str]] = None,
-    cost_mode: str = "default",
+    cost_mode: str = "sale",
 ) -> Tuple[bool, Optional[str], Dict[str, Any]]:
     limit = _clamp_limit(limit)
     today = today or date.today()
@@ -883,7 +902,7 @@ def _open_invoices_sync(
             present = _tables_present(cur, ["Invoices_tbl", "InvoicesDetails_tbl", "Items_tbl", "Employees_tbl", "Shippers_tbl"])
             if not present.get("Invoices_tbl"):
                 return False, "Table Invoices_tbl not found on this store", {}
-            j = _invoice_joins(present)
+            j = _invoice_joins(present, cost_mode)
             cur.execute(f"""
                 SELECT COUNT(*) AS invoices, SUM(ISNULL(h.InvoiceTotal,0)) AS total_amount,
                        SUM(ISNULL(h.TotQtyOrd,0)) AS total_qty, MIN(h.InvoiceDate) AS oldest_invoice_date
@@ -980,7 +999,7 @@ def _shipped_invoices_sync(
     sort_order: str = "desc",
     include_list: bool = True,
     excluded_names: Optional[List[str]] = None,
-    cost_mode: str = "default",
+    cost_mode: str = "sale",
 ) -> Tuple[bool, Optional[str], Dict[str, Any]]:
     """List = shipped in [date_from, date_to_excl); daily = [series_from, date_to_excl)."""
     limit = _clamp_limit(limit)
@@ -992,7 +1011,7 @@ def _shipped_invoices_sync(
             present = _tables_present(cur, ["Invoices_tbl", "InvoicesDetails_tbl", "Items_tbl", "Employees_tbl", "Shippers_tbl"])
             if not present.get("Invoices_tbl"):
                 return False, "Table Invoices_tbl not found on this store", {}
-            j = _invoice_joins(present)
+            j = _invoice_joins(present, cost_mode)
             cur.execute(f"""
                 SELECT CAST(h.InvoiceDate AS date) AS d,
                        COUNT(*) AS invoices,
@@ -1051,7 +1070,7 @@ def _invoices_in_period_sync(
     include_list: bool = True,
     today: Optional[date] = None,
     excluded_names: Optional[List[str]] = None,
-    cost_mode: str = "default",
+    cost_mode: str = "sale",
 ) -> Tuple[bool, Optional[str], Dict[str, Any]]:
     """
     Every non-void invoice dated (InvoiceDate) in [date_from, date_to_excl),
@@ -1071,7 +1090,7 @@ def _invoices_in_period_sync(
             present = _tables_present(cur, ["Invoices_tbl", "InvoicesDetails_tbl", "Items_tbl", "Employees_tbl", "Shippers_tbl"])
             if not present.get("Invoices_tbl"):
                 return False, "Table Invoices_tbl not found on this store", {}
-            j = _invoice_joins(present)
+            j = _invoice_joins(present, cost_mode)
             cur.execute(f"""
                 SELECT COUNT(*) AS invoices,
                        SUM(CASE WHEN {tracking_blank} THEN 1 ELSE 0 END)                       AS open_count,
@@ -1120,7 +1139,7 @@ def _invoices_in_period_sync(
 
 
 def _invoice_detail_sync(host, port, database, username, password, invoice_id: int,
-                         cost_mode: str = "default") -> Tuple[bool, Optional[str], Dict[str, Any]]:
+                         cost_mode: str = "sale") -> Tuple[bool, Optional[str], Dict[str, Any]]:
     try:
         with _connect(host, port, database, username, password) as conn:
             cur = conn.cursor()
@@ -1171,22 +1190,22 @@ def _invoice_detail_sync(host, port, database, username, password, invoice_id: i
             })
             lines: List[Dict[str, Any]] = []
             if present.get("InvoicesDetails_tbl"):
-                local_cost = present.get("Items_tbl") and cost_mode != "s2s"
+                has_items = bool(present.get("Items_tbl"))
                 cur.execute(f"""
                     SELECT d.LineID, d.ProductID, d.ProductSKU, d.ProductUPC, d.ProductDescription,
                            d.UnitDesc, d.UnitQty, d.QtyOrdered, d.QtyShipped, d.UnitPrice, d.UnitCost,
                            d.Discount, d.ds_Percent, d.ExtendedPrice, d.ExtendedCost, ISNULL(d.Void,0) AS Void
-                           {", ic.ItemUnitCost" if local_cost else ", CAST(NULL AS money) AS ItemUnitCost"}
+                           {", ic.ItemUnitCost" if has_items else ", CAST(NULL AS money) AS ItemUnitCost"}
                     FROM InvoicesDetails_tbl d
-                    {_LOCAL_COST_APPLY if local_cost else ""}
+                    {_LOCAL_COST_APPLY if has_items else ""}
                     WHERE d.InvoiceID = ?
                     ORDER BY d.LineID
                 """, [int(invoice_id)])
                 for r in _rows(cur):
                     qty = _f(r.get("QtyShipped"))
-                    # unit cost basis: this store's Items_tbl.UnitCost, else the invoice line cost;
+                    # unit cost basis per cost_mode (sale = stamped line cost, current = Items_tbl);
                     # in S2S mode the caller overwrites unit_cost from the S2S lookup.
-                    ucost = _fo(r.get("ItemUnitCost")) if local_cost and r.get("ItemUnitCost") is not None else _fo(r.get("UnitCost"))
+                    ucost = _unit_cost_for(cost_mode, _fo(r.get("UnitCost")), _fo(r.get("ItemUnitCost")))
                     ext_price = _fo(r.get("ExtendedPrice"))
                     line_cost = qty * (ucost or 0.0)
                     line_profit = (ext_price - line_cost) if ext_price is not None else None
@@ -1203,6 +1222,7 @@ def _invoice_detail_sync(host, port, database, username, password, invoice_id: i
                         "unit_price": _fo(r.get("UnitPrice")),
                         "unit_cost": ucost,
                         "line_unit_cost": _fo(r.get("UnitCost")),
+                        "item_unit_cost": _fo(r.get("ItemUnitCost")),
                         "discount": _fo(r.get("Discount")),
                         "ds_percent": (bool(r.get("ds_Percent")) if r.get("ds_Percent") is not None else None),
                         "extended_price": ext_price,
@@ -1631,10 +1651,11 @@ def _backoffice_daily_sales_sync(
     date_to_excl: str,
     excluded_sales_names: Optional[List[str]] = None,
     excluded_return_names: Optional[List[str]] = None,
-    cost_mode: str = "default",
+    cost_mode: str = "sale",
 ) -> Tuple[bool, Optional[str], Dict[str, Any]]:
     """
-    cost_mode 'default': cost = qty × this store's Items_tbl.UnitCost (fallback line cost).
+    cost_mode 'sale': cost = qty × the cost stamped on the invoice line (blank/$0 → Items_tbl.UnitCost).
+    cost_mode 'current': cost = qty × this store's Items_tbl.UnitCost (fallback line cost).
     cost_mode 's2s': the caller re-costs from the S2S store, so units per (day, UPC)
     are returned in `units_by_upc` and `cost` is left at 0.
     """
@@ -1646,9 +1667,7 @@ def _backoffice_daily_sales_sync(
             present = _tables_present(cur, ["Invoices_tbl", "InvoicesDetails_tbl", "Items_tbl", "CreditMemos_tbl", "CreditMemosDetails_tbl"])
             if not (present.get("Invoices_tbl") and present.get("InvoicesDetails_tbl")):
                 return False, "Invoices_tbl / InvoicesDetails_tbl not found on this store", {}
-            local_cost = present.get("Items_tbl") and cost_mode != "s2s"
-            cost_apply = _LOCAL_COST_APPLY if local_cost else ""
-            cost_expr = _LOCAL_COST_EXPR if local_cost else ("0" if cost_mode == "s2s" else "ISNULL(d.QtyShipped, 0) * ISNULL(d.UnitCost, 0)")
+            cost_apply, cost_expr = ("", "0") if cost_mode == "s2s" else _cost_sql(present, cost_mode)
             cur.execute(f"""
                 SELECT CAST(h.InvoiceDate AS date)                          AS d,
                        COUNT(DISTINCT h.InvoiceID)                          AS invoices,
@@ -1746,7 +1765,7 @@ def _backoffice_breakdown_sync(
     by: str = "customer",
     limit: int = 10,
     excluded_sales_names: Optional[List[str]] = None,
-    cost_mode: str = "default",
+    cost_mode: str = "sale",
 ) -> Tuple[bool, Optional[str], List[Dict[str, Any]]]:
     excl_sql, excl_params = _excl_clause(excluded_sales_names or [])
     limit = max(1, min(int(limit or 10), 200))
@@ -1757,9 +1776,7 @@ def _backoffice_breakdown_sync(
             if not (present.get("Invoices_tbl") and present.get("InvoicesDetails_tbl")):
                 return False, "Invoices_tbl / InvoicesDetails_tbl not found on this store", []
             j = _invoice_joins(present)
-            local_cost = present.get("Items_tbl") and cost_mode != "s2s"
-            cost_apply = _LOCAL_COST_APPLY if local_cost else ""
-            cost_expr = _LOCAL_COST_EXPR if local_cost else ("NULL" if cost_mode == "s2s" else "ISNULL(d.QtyShipped,0)*ISNULL(d.UnitCost,0)")
+            cost_apply, cost_expr = ("", "NULL") if cost_mode == "s2s" else _cost_sql(present, cost_mode)
             base_where = f"ISNULL(h.Void,0)=0 AND h.InvoiceDate >= ? AND h.InvoiceDate < ? {excl_sql}"
             params = [limit, date_from, date_to_excl] + excl_params
             if by == "rep":
@@ -1833,11 +1850,13 @@ def _backoffice_products_sold_sync(
     date_from: str,
     date_to_excl: str,
     excluded_sales_names: Optional[List[str]] = None,
+    cost_mode: str = "sale",
 ) -> Tuple[bool, Optional[str], List[Dict[str, Any]]]:
     """
     Every product sold in the period, grouped by trimmed UPC, with the store's
-    own local cost (qty × Items_tbl.UnitCost, fallback line cost). No TOP clamp —
-    the Products tab wants the full list; the endpoint applies the limit.
+    local cost on the `cost_mode` basis (sale = stamped line cost, current =
+    Items_tbl.UnitCost; s2s is costed by the caller). No TOP clamp — the
+    Products tab wants the full list; the endpoint applies the limit.
     """
     excl_sql, excl_params = _excl_clause(excluded_sales_names or [])
     try:
@@ -1846,9 +1865,7 @@ def _backoffice_products_sold_sync(
             present = _tables_present(cur, ["Invoices_tbl", "InvoicesDetails_tbl", "Items_tbl"])
             if not (present.get("Invoices_tbl") and present.get("InvoicesDetails_tbl")):
                 return False, "Invoices_tbl / InvoicesDetails_tbl not found on this store", []
-            local_cost = bool(present.get("Items_tbl"))
-            cost_apply = _LOCAL_COST_APPLY if local_cost else ""
-            cost_expr = _LOCAL_COST_EXPR if local_cost else "ISNULL(d.QtyShipped,0)*ISNULL(d.UnitCost,0)"
+            cost_apply, cost_expr = _cost_sql(present, cost_mode)
             cur.execute(f"""
                 SELECT LTRIM(RTRIM(d.ProductUPC))       AS upc,
                        MAX(d.ProductDescription)        AS name,
@@ -1891,6 +1908,7 @@ def _backoffice_product_lines_sync(
     upc: Optional[str] = None,
     excluded_sales_names: Optional[List[str]] = None,
     limit: int = MAX_LIST_LIMIT,
+    cost_mode: str = "sale",
 ) -> Tuple[bool, Optional[str], Dict[str, Any]]:
     """
     Every invoice line for ONE product in the period — the drill-in behind a
@@ -1909,15 +1927,15 @@ def _backoffice_product_lines_sync(
             present = _tables_present(cur, ["Invoices_tbl", "InvoicesDetails_tbl", "Items_tbl"])
             if not (present.get("Invoices_tbl") and present.get("InvoicesDetails_tbl")):
                 return False, "Invoices_tbl / InvoicesDetails_tbl not found on this store", {}
-            local_cost = bool(present.get("Items_tbl"))
+            has_items = bool(present.get("Items_tbl"))
             cur.execute(f"""
                 SELECT TOP (?) h.InvoiceID, h.InvoiceNumber, h.InvoiceDate, h.BusinessName, h.ShipState, h.TrackingNo,
                        d.LineID, d.ProductDescription, d.ProductSKU, d.UnitDesc,
                        d.QtyShipped, d.UnitPrice, d.ExtendedPrice, d.UnitCost
-                       {", ic.ItemUnitCost" if local_cost else ", CAST(NULL AS money) AS ItemUnitCost"}
+                       {", ic.ItemUnitCost" if has_items else ", CAST(NULL AS money) AS ItemUnitCost"}
                 FROM InvoicesDetails_tbl d
                 INNER JOIN Invoices_tbl h ON h.InvoiceID = d.InvoiceID
-                {_LOCAL_COST_APPLY if local_cost else ""}
+                {_LOCAL_COST_APPLY if has_items else ""}
                 WHERE ISNULL(h.Void, 0) = 0
                   AND h.InvoiceDate >= ?
                   AND h.InvoiceDate <  ?
@@ -1932,7 +1950,7 @@ def _backoffice_product_lines_sync(
             qty = _f(r.get("QtyShipped"))
             item_cost = _fo(r.get("ItemUnitCost"))
             line_cost = _fo(r.get("UnitCost"))
-            local_unit = item_cost if item_cost is not None else line_cost
+            local_unit = _unit_cost_for(cost_mode, line_cost, item_cost)
             rows.append({
                 "kind": "invoice",
                 "doc_id": str(_io(r.get("InvoiceID"))),
@@ -1950,6 +1968,7 @@ def _backoffice_product_lines_sync(
                 "list_price": None,
                 "revenue": round(_f(r.get("ExtendedPrice")), 2),
                 "line_unit_cost": line_cost,
+                "item_unit_cost": item_cost,
                 "local_unit_cost": local_unit,
                 "local_cost": (round(qty * local_unit, 2) if local_unit is not None else None),
             })
