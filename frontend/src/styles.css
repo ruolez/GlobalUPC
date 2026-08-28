@@ -8409,6 +8409,22 @@ tr.bov-line-void td { opacity: 0.55; text-decoration: line-through; }
 /* Business Overview — password gate + nav lock */
 .nav-item .nav-lock { margin-left: auto; color: var(--text-tertiary); flex: 0 0 auto; }
 .nav-item .nav-lock.is-open { opacity: 0.45; }
+/* Limited views (secondary passwords) hide inline-flex chrome via [hidden]. */
+.bov-subnav-item[hidden], .me-chip[hidden], .bov-cost-toggle[hidden], .bov-view-badge[hidden] { display: none; }
+.bov-view-badge {
+  display: inline-flex; align-items: center; gap: 0.5rem; vertical-align: middle;
+  margin-left: 0.5rem; padding: 0.15rem 0.35rem 0.15rem 0.6rem; border-radius: 999px;
+  font-size: 0.6875rem; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase;
+  color: var(--accent-primary); background: color-mix(in srgb, var(--accent-primary) 12%, var(--bg-tertiary));
+  border: 1px solid color-mix(in srgb, var(--accent-primary) 35%, var(--border-color));
+}
+.bov-view-lock {
+  border: 0; border-radius: 999px; padding: 0.15rem 0.5rem; font: inherit; font-size: 0.6875rem; font-weight: 600;
+  text-transform: none; letter-spacing: 0; cursor: pointer;
+  color: var(--text-secondary); background: var(--bg-primary);
+}
+.bov-view-lock:hover { color: var(--text-primary); background: var(--bg-hover); }
+.bov-view-lock:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 1px; }
 .bov-lock { display: flex; justify-content: center; padding: 4rem 1rem; }
 .bov-lock[hidden] { display: none; }
 .bov-lock-card {

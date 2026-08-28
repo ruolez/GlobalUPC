@@ -11225,25 +11225,40 @@ async def get_business_overview_products(
 
 BOV_PASSWORD_SETTING_KEY = "business_overview_password"
 BOV_DEFAULT_PASSWORD = "admin1972"
+# Second password: opens the limited Shopify view (Products / Shopify / Month End,
+# Shopify stores only). Same settings-row override mechanism as the full password.
+BOV_SHOPIFY_PASSWORD_SETTING_KEY = "business_overview_shopify_password"
+BOV_DEFAULT_SHOPIFY_PASSWORD = "shopify"
 
 
 class BOVUnlockRequest(BaseModel):
     password: str
 
 
+def _bov_password_setting(db: Session, key: str, default: str) -> str:
+    row = db.query(Setting).filter(Setting.key == key).first()
+    return str(row.value) if row and row.value else default
+
+
 @app.post("/api/business-overview/unlock")
 def business_overview_unlock(data: BOVUnlockRequest, db: Session = Depends(get_db)):
     """
-    Check the Overview password. The password lives in settings
-    (`business_overview_password`; default admin1972) so it can be changed
-    without a deploy. Returns 401 on mismatch; the client keeps a session flag.
+    Check the Overview password and return the role it grants. Both passwords
+    live in settings (`business_overview_password`, default admin1972 → full
+    dashboard; `business_overview_shopify_password`, default shopify → the
+    Shopify-only view) so they can be changed without a deploy. Returns 401 on
+    mismatch; the client keeps a session flag with the role. Like the full
+    gate, the restriction is applied client-side.
     """
-    row = db.query(Setting).filter(Setting.key == BOV_PASSWORD_SETTING_KEY).first()
-    expected = (row.value if row and row.value else BOV_DEFAULT_PASSWORD)
     import hmac
-    if not hmac.compare_digest(str(data.password or ""), str(expected)):
-        raise HTTPException(status_code=401, detail="Incorrect password")
-    return {"ok": True}
+    given = str(data.password or "")
+    full = _bov_password_setting(db, BOV_PASSWORD_SETTING_KEY, BOV_DEFAULT_PASSWORD)
+    if hmac.compare_digest(given, full):
+        return {"ok": True, "role": "full"}
+    shopify = _bov_password_setting(db, BOV_SHOPIFY_PASSWORD_SETTING_KEY, BOV_DEFAULT_SHOPIFY_PASSWORD)
+    if hmac.compare_digest(given, shopify):
+        return {"ok": True, "role": "shopify"}
+    raise HTTPException(status_code=401, detail="Incorrect password")
 
 
 # ---- Shopify: order flow + catch-up sync ------------------------------------

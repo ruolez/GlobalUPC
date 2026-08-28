@@ -217,7 +217,7 @@
           <div class="bov-sticky">
             <header class="bov-topbar">
               <div class="bov-topbar-title">
-                <h2>Business Overview</h2>
+                <h2>Business Overview <span class="bov-view-badge" id="bov-view-badge" hidden><span id="bov-view-badge-text"></span><button type="button" class="bov-view-lock" id="bov-view-lock" title="Lock the Overview and go back to the password screen">Lock</button></span></h2>
                 <p class="bov-range-label" id="bov-range-label">Today's numbers, trends and what is in motion</p>
               </div>
               <div class="bov-topbar-controls">
@@ -324,9 +324,11 @@
           <!-- First-run empty state -->
           <div id="bov-setup-empty" class="bov-setup-empty" hidden>
             <div class="dashboard-empty-state bov-setup-empty-box">
-              <h3>Choose your data sources</h3>
-              <p>Pick the BackOffice stores for sales and purchases, the Shopify stores to include and the Admin DB for quotations. Everything on this page reads from those.</p>
-              <button type="button" class="btn btn-primary" data-bov-action="config">Set up data sources</button>
+              <h3 data-bov-view-full>Choose your data sources</h3>
+              <p data-bov-view-full>Pick the BackOffice stores for sales and purchases, the Shopify stores to include and the Admin DB for quotations. Everything on this page reads from those.</p>
+              <button type="button" class="btn btn-primary" data-bov-action="config" data-bov-view-full>Set up data sources</button>
+              <h3 data-bov-view-limited hidden>No Shopify stores configured</h3>
+              <p data-bov-view-limited hidden>This view reads the Shopify stores selected for the Business Overview — ask an administrator to add them under Data sources.</p>
             </div>
           </div>
 

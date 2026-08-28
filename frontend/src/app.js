@@ -19197,7 +19197,9 @@ const BOV_CARD_SECTION = {
 };
 
 function bovSetSection(id, opts = {}) {
-  if (!BOV_SECTIONS.includes(id)) id = "overview";
+  const view = bovView();
+  const allowed = view ? view.sections : BOV_SECTIONS;
+  if (!allowed.includes(id)) id = view ? view.home : "overview";
   const changed = bovState.section !== id;
   bovState.section = id;
   document.querySelectorAll("#bov-subnav [data-bov-section]").forEach((b) => {
@@ -19315,8 +19317,68 @@ function bovRenderDateTrigger() {
 
 const BOV_UNLOCK_KEY = "bov_unlocked";
 
+// Limited views unlocked by the secondary passwords. A view lists the tabs it
+// exposes, the topbar store types it may query and the widgets it fetches;
+// everything else on the page consults it through bovView(). null = full.
+const BOV_VIEWS = {
+  shopify: {
+    label: "Shopify view",
+    sections: ["products", "shopify", "month-end"],
+    home: "shopify",
+    storeTypes: ["Shopify"],
+    widgets: ["products", "shopifyOrders", "shopifyOrders_list"],
+  },
+};
+
+// Role kept in sessionStorage: "full" | "shopify"; legacy "1" = full.
+function bovRole() {
+  try {
+    const v = sessionStorage.getItem(BOV_UNLOCK_KEY);
+    if (v === "1" || v === "full") return "full";
+    return BOV_VIEWS[v] ? v : null;
+  } catch (e) { return null; }
+}
+
+function bovView() {
+  return BOV_VIEWS[bovRole()] || null;
+}
+
 function bovIsUnlocked() {
-  try { return sessionStorage.getItem(BOV_UNLOCK_KEY) === "1"; } catch (e) { return false; }
+  return !!bovRole();
+}
+
+function bovLock() {
+  try { sessionStorage.removeItem(BOV_UNLOCK_KEY); } catch (e) { /* ignore */ }
+  stopBovAutoRefresh();
+  bovShowLock(true);
+}
+
+// Chrome pass for the active view: hides the tabs, toggles and settings entry
+// points a limited view must not expose. Idempotent — runs on every unlock.
+function bovApplyView() {
+  const view = bovView();
+  const page = document.getElementById("business-overview-page");
+  page?.classList.toggle("is-bov-restricted", !!view);
+  document.querySelectorAll("#bov-subnav [data-bov-section]").forEach((b) => {
+    b.hidden = !!view && !view.sections.includes(b.dataset.bovSection);
+  });
+  const costToggle = document.getElementById("bov-cost-toggle");
+  if (costToggle) costToggle.hidden = !!view;
+  const split = document.getElementById("bov-split-toggle")?.closest("label");
+  if (split) split.hidden = !!view;
+  const bar = document.getElementById("bov-config-bar");
+  if (bar && view) bar.hidden = true;
+  const boChip = document.querySelector('#me-type-chips [data-me-type="backoffice"]');
+  if (boChip) boChip.hidden = !!view;
+  if (view && monthEndState.filters.type === "backoffice") {
+    monthEndState.filters.type = "all";
+    document.querySelectorAll("#me-type-chips [data-me-type]").forEach((x) =>
+      x.classList.toggle("is-active", x.dataset.meType === "all"));
+  }
+  const badge = document.getElementById("bov-view-badge");
+  const badgeText = document.getElementById("bov-view-badge-text");
+  if (badge) badge.hidden = !view;
+  if (badgeText) badgeText.textContent = view ? view.label : "";
 }
 
 function bovShowLock(locked) {
@@ -19349,7 +19411,12 @@ function bovBindLockOnce() {
         if (input) { input.value = ""; input.focus(); }
         return;
       }
-      try { sessionStorage.setItem(BOV_UNLOCK_KEY, "1"); } catch (e2) { /* ignore */ }
+      let role = "full";
+      try {
+        const body = await resp.json();
+        if (body && BOV_VIEWS[body.role]) role = body.role;
+      } catch (e2) { /* plain ok → full */ }
+      try { sessionStorage.setItem(BOV_UNLOCK_KEY, role); } catch (e2) { /* ignore */ }
       if (input) input.value = "";
       bovShowLock(false);
       loadBusinessOverviewPage();
@@ -19359,6 +19426,7 @@ function bovBindLockOnce() {
       if (btn) btn.disabled = false;
     }
   });
+  document.getElementById("bov-view-lock")?.addEventListener("click", () => bovLock());
 }
 
 async function loadBusinessOverviewPage() {
@@ -19371,11 +19439,14 @@ async function loadBusinessOverviewPage() {
   bovShowLock(false);
   bovBindOnce();
   bovLoadPrefs();
+  const view = bovView();
+  bovApplyView();
   bovSyncCostToggle();
   bovSyncShipToggle();
   BOV_COLLAPSIBLE_CARDS.forEach(bovApplyCollapsed);
-  bovState.section = "overview";           // always land on the Overview tab
-  bovSetSection("overview", { silent: true });
+  const home = view ? view.home : "overview";   // always land on the home tab
+  bovState.section = home;
+  bovSetSection(home, { silent: true });
   bovRenderPresetChips();
   bovRenderBucketButtons();
   const splitEl = document.getElementById("bov-split-toggle");
@@ -19391,14 +19462,16 @@ async function loadBusinessOverviewPage() {
 
   await bovLoadConfig();
   const cfg = bovState.config;
-  const hasAnything = !!(cfg && (bovSalesStoreIds(cfg).length || cfg.purchases_store_id || (cfg.shopify_store_ids || []).length));
+  const hasAnything = view
+    ? !!(cfg && bovFilterableStores(cfg).length)
+    : !!(cfg && (bovSalesStoreIds(cfg).length || cfg.purchases_store_id || (cfg.shopify_store_ids || []).length));
 
   if (!hasAnything) {
     bovShowSetup(true);
     return;
   }
   bovShowSetup(false);
-  bovRenderConfigBar();
+  if (!view) bovRenderConfigBar();
   bovValidateStoreFilter();
   bovRenderStoreChips();
   bovApplyPreset(bovState.preset, { fetch: false });
@@ -19429,7 +19502,8 @@ function bovFilterableStores(cfg) {
   sIds.forEach((id, i) => push(id, sNames[i], "BackOffice"));
   if (cfg.purchases_store_id) push(cfg.purchases_store_id, cfg.purchases_store_name, "Purchases");
   (cfg.shopify_store_ids || []).forEach((id, i) => push(id, (cfg.shopify_store_names || [])[i], "Shopify"));
-  return out;
+  const view = bovView();
+  return view ? out.filter((s) => view.storeTypes.includes(s.type)) : out;
 }
 
 function bovValidateStoreFilter() {
@@ -19440,7 +19514,14 @@ function bovValidateStoreFilter() {
 }
 
 function bovStoreParams() {
-  return bovState.storeFilter.length ? { store_ids: bovState.storeFilter.join(",") } : {};
+  if (bovState.storeFilter.length) return { store_ids: bovState.storeFilter.join(",") };
+  // A limited view always pins the request to its own stores — "all stores"
+  // must never fall through to the server default (every configured source).
+  if (bovView()) {
+    const ids = bovFilterableStores().map((s) => s.id);
+    return ids.length ? { store_ids: ids.join(",") } : {};
+  }
+  return {};
 }
 
 function bovCostParams() {
@@ -20144,11 +20225,17 @@ function bovShowSetup(show) {
   const bar = document.getElementById("bov-config-bar");
   const empty = document.getElementById("bov-setup-empty");
   const nav = document.getElementById("bov-subnav");
+  const view = bovView();
   if (content) content.hidden = show;
-  if (bar) bar.hidden = show;
+  if (bar) bar.hidden = show || !!view;
   if (empty) empty.hidden = !show;
   if (nav) nav.hidden = show;
-  if (show) bovOpenConfigModal({ firstRun: true });
+  const box = document.querySelector("#bov-setup-empty .bov-setup-empty-box");
+  if (box) {
+    box.querySelectorAll("[data-bov-view-full]").forEach((el) => { el.hidden = !!view; });
+    box.querySelectorAll("[data-bov-view-limited]").forEach((el) => { el.hidden = !view; });
+  }
+  if (show && !view) bovOpenConfigModal({ firstRun: true });
 }
 
 // ---------------------------------------------------------------------------
@@ -20158,6 +20245,7 @@ function bovShowSetup(show) {
 const BOV_CFG_TABS = ["sources", "bank", "alerts", "exclusions"];
 
 function bovOpenConfigModal(opts = {}) {
+  if (bovView()) return;   // limited views never edit the configuration
   const modal = document.getElementById("bov-config-modal");
   if (!modal) return;
   const empty = document.getElementById("bov-setup-empty");
@@ -20648,7 +20736,8 @@ const BOV_WIDGET_DEFS = {
 };
 
 async function bovFetchAll(opts = {}) {
-  const keys = opts.only || Object.keys(BOV_WIDGET_DEFS);
+  const view = bovView();
+  const keys = (opts.only || Object.keys(BOV_WIDGET_DEFS)).filter((k) => !view || view.widgets.includes(k));
   const silent = !!opts.silent;
   if (!bovState.range) bovState.range = bovPresetToDates(bovState.preset, bovState.customFrom, bovState.customTo) || bovPresetToDates("today");
   bovState.seq += 1;
@@ -20804,7 +20893,13 @@ function bovFilteredOutHtml() {
   return bovEmptyHtml("Not in the current store filter", true);
 }
 
+const BOV_ADMIN_ACTIONS = ["config", "settings-roles", "bank-accounts", "exclusions", "settings-quickbooks", "quickbooks-sync"];
+
 function bovHandleAction(action, el) {
+  if (bovView() && BOV_ADMIN_ACTIONS.includes(action)) {
+    showToast(`Not available in the ${bovView().label}.`, "warning");
+    return;
+  }
   if (action === "config") {
     bovOpenConfigModal({ tab: "sources" });
   } else if (action === "settings-roles") {
@@ -24033,6 +24128,7 @@ function bovRenderConfigBar() {
   const summary = document.getElementById("bov-config-summary");
   const cfg = bovState.config || {};
   if (!bar || !summary) return;
+  if (bovView()) { bar.hidden = true; return; }   // limited views never expose the sources
   bar.hidden = false;
   const shopN = (cfg.shopify_store_ids || []).length;
   const salesN = bovSalesStoreIds(cfg).length;
