@@ -24275,7 +24275,8 @@ function bovProductBasisKv(label, cost, profit, pct, unit, hint) {
   const m = pct != null ? bovNum(pct) : null;
   const tone = m == null ? "" : (m < 0 ? " is-neg" : (m < 15 ? " is-low" : ""));
   return bovKv(label,
-    `<strong>${escapeHtml(bovMoney(cost))}</strong>${unit != null ? ` <span class="bov-cell-sub" style="display:inline">@ ${escapeHtml(bovMoney(unit))}</span>` : ""}` +
+    `<strong>${escapeHtml(bovMoney(cost))}</strong>` +
+    `${unit != null ? `<span class="bov-cell-sub">${escapeHtml(bovMoney(unit))} / unit</span>` : ""}` +
     `<span class="bov-cell-sub">profit <span class="bov-profit${p < 0 ? " is-neg" : ""}">${escapeHtml(bovMoney(p))}</span>` +
     `${m != null ? ` · <span class="bov-margin${tone}">${escapeHtml(bovPct(m))}</span>` : ""}</span>`);
 }
@@ -24341,25 +24342,28 @@ function bovProductLineCols(shop) {
       return main;
     } },
     { key: "revenue", label: "Revenue", num: true, width: "7%", render: (l) => escapeHtml(bovMoney(l.revenue)) },
-    { key: "local_cost", label: "Local cost", num: true, width: "8%", render: (l) => bovProductLineCostCell(l, "local_unit_cost", "local_cost", !shop) },
-    { key: "local_profit", label: "Local profit", num: true, width: "9%", render: (l) => bovLineProfitCell(l.local_profit) },
+    { key: "local_cost", label: "Local unit cost", num: true, width: "10%", render: (l) => bovProductLineCostCell(l, "local_unit_cost", "local_cost", !shop) },
+    { key: "local_profit", label: "Local profit", num: true, width: "8%", render: (l) => bovLineProfitCell(l.local_profit) },
     { key: "local_margin_pct", label: "Local mgn", num: true, width: "8%", render: (l) => bovLineMarginCell(l.local_margin_pct) },
-    { key: "s2s_cost", label: "S2S cost", num: true, width: "8%", render: (l) => bovProductLineCostCell(l, "s2s_unit_cost", "s2s_cost", false) },
-    { key: "s2s_profit", label: "S2S profit", num: true, width: "9%", render: (l) => bovLineProfitCell(l.s2s_profit) },
+    { key: "s2s_cost", label: "S2S unit cost", num: true, width: "10%", render: (l) => bovProductLineCostCell(l, "s2s_unit_cost", "s2s_cost", false) },
+    { key: "s2s_profit", label: "S2S profit", num: true, width: "8%", render: (l) => bovLineProfitCell(l.s2s_profit) },
     { key: "s2s_margin_pct", label: "S2S mgn", num: true, width: "8%", render: (l) => bovLineMarginCell(l.s2s_margin_pct) },
   ];
 }
 
-// Cost total with the unit cost underneath; BackOffice local cost also shows the
-// cost stamped on the invoice line when it differs from the items-table cost.
+// Unit cost leads (that is what a single item cost); the line total sits under
+// it, and BackOffice local cost adds the cost stamped on the invoice line when
+// it differs from the items-table cost.
 function bovProductLineCostCell(l, unitKey, totalKey, showLineCost) {
   if (l[totalKey] == null) return `<span class="bov-cell-muted">—</span>`;
   const unit = l[unitKey];
-  let sub = unit != null ? `@ ${bovMoney(unit)}` : "";
+  const main = unit != null ? escapeHtml(bovMoney(unit)) : escapeHtml(bovMoney(l[totalKey]));
+  const subs = [];
+  if (unit != null) subs.push(`<span class="bov-cell-sub" title="Line cost = qty × unit cost">${escapeHtml(bovMoney(l[totalKey]))} total</span>`);
   if (showLineCost && l.line_unit_cost != null && unit != null && Math.abs(bovNum(l.line_unit_cost) - bovNum(unit)) > 0.004) {
-    sub += `${sub ? " · " : ""}line ${bovMoney(l.line_unit_cost)}`;
+    subs.push(`<span class="bov-cell-sub" title="Cost stamped on the invoice line (differs from the items-table cost)">line ${escapeHtml(bovMoney(l.line_unit_cost))}</span>`);
   }
-  return `${escapeHtml(bovMoney(l[totalKey]))}${sub ? `<span class="bov-cell-sub" title="Unit cost${showLineCost ? " (and the cost stamped on the invoice line when it differs)" : ""}">${escapeHtml(sub)}</span>` : ""}`;
+  return `<span class="bov-cell-main" title="Unit cost">${main}</span>${subs.join("")}`;
 }
 
 async function bovOpenPoModal(poId) {
