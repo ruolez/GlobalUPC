@@ -22936,11 +22936,11 @@ function meExportSheet(rows) {
   };
   return {
     sheet: "Month End",
-    header: ["Date", "Number", "Type", "Store", "Customer", "State", "Status", "Total", "Ship collected", "Ship cost", "Ship cost type", "Shipping note", "Profit", "Profit %"],
-    widths: [11, 12, 11, 18, 28, 7, 10, 12, 13, 11, 22, 60, 12, 10],
+    header: ["Date", "Number", "Type", "Store", "Customer", "Sales rep", "State", "Status", "Total", "Ship collected", "Ship cost", "Ship cost type", "Shipping note", "Profit", "Profit %"],
+    widths: [11, 12, 11, 18, 28, 14, 7, 10, 12, 13, 11, 22, 60, 12, 10],
     data: rows.map((r) => [
       r.date || "", r.number || "", r.source === "shopify" ? "Shopify" : "BackOffice", r.store_name || "", r.customer || "",
-      String(r.ship_state || "").trim().toUpperCase(), r.status || "",
+      r.sales_rep || "", String(r.ship_state || "").trim().toUpperCase(), r.status || "",
       bovXlsNum(r.total), bovXlsNum(r.shipping_collected), bovXlsNum(r.shipping_cost), type(r), note(r),
       bovXlsNum(r.profit), bovXlsNum(r.profit_pct),
     ]),
@@ -24787,7 +24787,8 @@ const monthEndState = {
   initialized: false,
   loading: false,
   data: null,
-  filters: { type: "all", stores: new Set(), search: "" }, // empty stores set = all
+  filters: { type: "all", stores: new Set(), search: "", reps: null }, // empty stores set = all · reps null = all
+  repOptions: [],
   abort: null,
   progressLog: [],
 };
@@ -24844,6 +24845,15 @@ function loadMonthEndPage() {
       const sel = monthEndState.filters.stores;
       if (sel.has(id)) sel.delete(id); else sel.add(id);
       renderMonthEnd();
+    });
+
+    document.getElementById("me-reps-trigger")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      bovTogglePopover("me-reps-popover");
+    });
+    document.getElementById("me-reps-list")?.addEventListener("click", (e) => {
+      const item = e.target.closest("[data-me-rep]");
+      if (item) meToggleRep(item.dataset.meRep);
     });
 
     let searchTimer = null;
@@ -24985,6 +24995,7 @@ function monthEndVisibleRows() {
   const f = monthEndState.filters;
   if (f.type !== "all") rows = rows.filter((r) => r.source === f.type);
   if (f.stores.size) rows = rows.filter((r) => f.stores.has(r.store_id));
+  if (f.type === "backoffice" && f.reps != null) rows = rows.filter((r) => f.reps.includes(bovRepKey(r)));
   if (f.search) {
     rows = rows.filter((r) =>
       String(r.number || "").toLowerCase().includes(f.search) ||
@@ -24992,6 +25003,71 @@ function monthEndVisibleRows() {
       String(r.ship_state || "").toLowerCase() === f.search);
   }
   return bovSortRows(rows, bovState.sort.monthEnd);
+}
+
+// Sales-rep multiselect: BackOffice invoices only (Employees_tbl.FirstName via
+// SalesRepID), so it is shown just while the BackOffice chip is active and reset
+// otherwise. Options come from the loaded rows within the current store chips.
+function meRenderRepFilter(d) {
+  const bar = document.getElementById("me-rep-filter");
+  const list = document.getElementById("me-reps-list");
+  if (!bar || !list) return;
+  const f = monthEndState.filters;
+  const boRows = f.type === "backoffice"
+    ? ((d && d.rows) || []).filter((r) => r.source === "backoffice" && (!f.stores.size || f.stores.has(r.store_id)))
+    : [];
+  const counts = new Map();
+  boRows.forEach((r) => { const k = bovRepKey(r); counts.set(k, (counts.get(k) || 0) + 1); });
+  const options = Array.from(counts.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+  monthEndState.repOptions = options.map(([name]) => name);
+  const val = document.getElementById("me-reps-value");
+  const cnt = document.getElementById("me-reps-count");
+  const trig = document.getElementById("me-reps-trigger");
+  if (!options.length) {
+    f.reps = null;
+    bar.hidden = true;
+    list.innerHTML = "";
+    if (val) val.textContent = "All reps";
+    if (cnt) cnt.hidden = true;
+    trig?.classList.remove("has-selection");
+    return;
+  }
+  bar.hidden = false;
+  if (f.reps != null) {
+    f.reps = f.reps.filter((n) => counts.has(n));
+    if (f.reps.length >= options.length) f.reps = null;
+  }
+  const isAll = f.reps == null;
+  const item = (value, label, on, n) =>
+    `<button type="button" class="bov-ms-item${on ? " active" : ""}" role="checkbox" aria-checked="${on}" data-me-rep="${escapeHtml(value)}" title="${escapeHtml(label)}">` +
+    `<span class="bov-ms-check" aria-hidden="true"></span><span class="bov-ms-label">${escapeHtml(label)}</span><span class="bov-store-chip-tag">${bovInt(n)}</span></button>`;
+  list.innerHTML = [item("all", "All reps", isAll, options.length)]
+    .concat(options.map(([name, n]) => item(name, name === "—" ? "No rep" : name, isAll || f.reps.includes(name), n)))
+    .join("");
+  if (val) {
+    if (isAll) val.textContent = "All reps";
+    else if (f.reps.length <= 2) val.textContent = f.reps.map((n) => (n === "—" ? "No rep" : n)).join(", ") || "None";
+    else val.textContent = `${f.reps.length} of ${options.length} reps`;
+  }
+  if (cnt) {
+    cnt.hidden = isAll;
+    cnt.textContent = isAll ? "0" : String(f.reps.length);
+  }
+  trig?.classList.toggle("has-selection", !isAll);
+}
+
+function meToggleRep(value) {
+  const f = monthEndState.filters;
+  const options = monthEndState.repOptions || [];
+  if (value === "all") {
+    f.reps = f.reps == null ? [] : null;   // select-all toggle: all checked <-> none checked
+  } else {
+    const cur = f.reps == null ? options.slice() : f.reps.slice();
+    const i = cur.indexOf(value);
+    if (i >= 0) cur.splice(i, 1); else cur.push(value);
+    f.reps = cur.length >= options.length ? null : cur;
+  }
+  renderMonthEnd();
 }
 
 function meTotals(rows) {
@@ -25216,6 +25292,7 @@ function renderMonthEnd() {
     return;
   }
   meRenderStoreChips(d);
+  meRenderRepFilter(d);
   bovRenderExportBar("monthEnd");
   const rows = monthEndVisibleRows();
   const t = meTotals(rows);

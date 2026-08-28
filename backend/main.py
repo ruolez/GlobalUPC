@@ -12072,6 +12072,8 @@ async def _month_end_payload(db: Session, date_from: Optional[str], date_to: Opt
                 "shipping_cost": inv.get("shipping_cost"),
                 "shipping_missing": False,
                 "ship_state": inv.get("ship_state"),
+                "sales_rep_id": inv.get("sales_rep_id"),
+                "sales_rep": inv.get("sales_rep"),
                 "parcels": None,
                 "profit": inv.get("net_profit"),
                 "cost_coverage": inv.get("cost_coverage"),

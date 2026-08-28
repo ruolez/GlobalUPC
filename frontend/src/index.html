@@ -581,6 +581,16 @@
                     <button type="button" class="me-chip" data-me-type="shopify">Shopify</button>
                   </div>
                   <div class="me-toolbar-group" id="me-store-chips" aria-label="Stores"></div>
+                  <div class="me-toolbar-group bov-filter" id="me-rep-filter" hidden>
+                    <button type="button" class="bov-filter-trigger" id="me-reps-trigger" aria-haspopup="listbox" aria-expanded="false" aria-controls="me-reps-popover" title="Filter BackOffice invoices by sales rep">
+                      <span class="bov-filter-text"><span class="bov-filter-key">Rep</span><span class="bov-filter-value" id="me-reps-value">All reps</span></span>
+                      <span class="qip-ms-count" id="me-reps-count" hidden>0</span>
+                      <svg class="bov-filter-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true"><polyline points="6 9 12 15 18 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    </button>
+                    <div class="bov-popover" id="me-reps-popover" role="dialog" aria-label="Filter by sales rep" hidden>
+                      <div class="bov-popover-list" id="me-reps-list" role="group" aria-label="Sales rep filter"></div>
+                    </div>
+                  </div>
                   <div class="me-toolbar-group me-toolbar-right">
                     <input type="search" id="me-search" placeholder="Search number, customer or state…" />
                     <span id="me-export-bar" class="bov-export-slot"></span>
