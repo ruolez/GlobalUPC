@@ -76,7 +76,7 @@ from schemas import (
     BOVPurchaseOrderLine, BOVPurchaseOrderHeader, BOVPurchaseOrderDetailResponse,
     BOVPlacedPurchasesBlock, BOVPlacedPurchasesResponse,
     BOVSalesSourceTotals, BOVSalesBucket, BOVSalesSourceStatus, BOVSalesTrendResponse,
-    BOVBreakdownRow, BOVSalesBreakdownResponse, BOVStoreStatus, BOVInvoicesPeriodResponse, BOVAlert, BOVAlertAction, BOVAlertsResponse, BOVShopifyOrderRow, BOVShopifyOrdersListResponse, BOVShopifyOrderLine, BOVShopifyOrderHeader, BOVShopifyOrderDetailResponse, BOVMissingCostRow, BOVMissingCostResponse, BOVProductRow, BOVProductsTotals, BOVProductsResponse, BOVShopifyExclusionCreate, BOVShopifyExclusion, BOVShopifyExclusionList, BOVPoExclusionCreate, BOVPoExclusion, BOVPoExclusionList, bov_merge_alert_rules, bov_validate_alert_rules, BOVShopifyStoreOrders, BOVShopifyOrdersResponse, BOVShopifyRefreshResult, BOVShopifyRefreshResponse,
+    BOVBreakdownRow, BOVSalesBreakdownResponse, BOVStoreStatus, BOVInvoicesPeriodResponse, BOVAlert, BOVAlertAction, BOVAlertsResponse, BOVShopifyOrderRow, BOVShopifyOrdersListResponse, BOVShopifyOrderLine, BOVShopifyOrderHeader, BOVShopifyOrderDetailResponse, BOVMissingCostRow, BOVMissingCostResponse, BOVProductRow, BOVProductsTotals, BOVProductsResponse, BOVProductLineRow, BOVProductLinesTotals, BOVProductLinesResponse, BOVShopifyExclusionCreate, BOVShopifyExclusion, BOVShopifyExclusionList, BOVPoExclusionCreate, BOVPoExclusion, BOVPoExclusionList, bov_merge_alert_rules, bov_validate_alert_rules, BOVShopifyStoreOrders, BOVShopifyOrdersResponse, BOVShopifyRefreshResult, BOVShopifyRefreshResponse,
     BOVShopifyStoreOpen, BOVShopifyOpenOrdersBlock, BOVSalesSummaryBlock,
     BusinessOverviewSummaryResponse,
     MonthEndRow, MonthEndTotals, MonthEndStoreStatus, MonthEndShipperStatus, MonthEndResponse,
@@ -11130,6 +11130,7 @@ async def get_business_overview_products(
                     "revenue": round(float(r.get("revenue") or 0), 2),
                     "units": float(r.get("units") or 0),
                     "local_cost": None,   # filled from the S2S lookup (UnitPriceC) below
+                    "variant_shopify_id": r.get("variant_shopify_id"),
                     "store_id": st["id"], "store_name": st["name"], "store_type": "shopify",
                 })
 
@@ -11218,6 +11219,135 @@ async def get_business_overview_products(
         cost_store_id=(cost_store.id if cost_store else None),
         cost_store_name=(cost_store.name if cost_store else None),
         stores=[BOVStoreStatus(**s) for s in statuses], error=err_msg,
+    )
+
+
+@app.get("/api/business-overview/products/lines", response_model=BOVProductLinesResponse)
+async def get_business_overview_product_lines(
+    store_id: int,
+    upc: Optional[str] = None, variant_id: Optional[int] = None, title: Optional[str] = None,
+    preset: Optional[str] = None, date_from: Optional[str] = None, date_to: Optional[str] = None,
+    limit: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Drill-in behind one Products-tab row: every invoice line (BackOffice) or
+    completed-order line (Shopify mirror) for that product in the period, each
+    with the same two cost bases as the Products tab (local + S2S) so the lines
+    reconcile with the aggregate row. Blank-UPC Shopify rows are matched by
+    `variant_id` (then `title`); blank-UPC BackOffice rows by the blank UPC itself.
+    """
+    cfg = _bov_config(db)
+    period = _bov_period(cfg, preset, date_from, date_to)
+    try:
+        max_rows = max(1, min(int(limit or bov.MAX_LIST_LIMIT), bov.MAX_LIST_LIMIT))
+    except (TypeError, ValueError):
+        max_rows = bov.MAX_LIST_LIMIT
+    upc = (upc or "").strip() or None
+    base = {"period": BOVPeriod(**period.as_dict()), "store_id": store_id, "upc": upc}
+
+    bo = _bov_sales_stores(db, cfg, {store_id})
+    sh = _bov_shopify_stores(db, cfg, {store_id})
+    if not bo and not sh:
+        raise HTTPException(status_code=404, detail="Store is not a Business Overview sales or Shopify source")
+
+    warnings: List[str] = []
+    rows: List[Dict[str, Any]] = []
+    truncated = False
+    store_type = "backoffice" if bo else "shopify"
+    store_name = bo[0].name if bo else sh[0]["name"]
+    if bo:
+        excl_sales, _ = _bov_excluded_names(db)
+        ok, err, payload = await bov.backoffice_product_lines_async(
+            **_bov_conn_kwargs(bo[0]), date_from=period.start.isoformat(), date_to_excl=period.end_excl,
+            upc=upc, excluded_sales_names=excl_sales, limit=max_rows)
+        if not ok:
+            return BOVProductLinesResponse(configured=True, store_type=store_type, store_name=store_name,
+                                           error=err or "failed", **base)
+        rows = payload.get("rows") or []
+        truncated = bool(payload.get("truncated"))
+    else:
+        st = sh[0]
+        synced = await asyncio.to_thread(shopify_sync.get_synced_stores)
+        if st["id"] not in synced:
+            return BOVProductLinesResponse(configured=True, store_type=store_type, store_name=store_name,
+                                           error="not synced", **base)
+        tz = (synced.get(st["id"]) or {}).get("shop_timezone") or _bov_tz(cfg)
+        try:
+            payload = await bov.shopify_product_lines(
+                st["id"], tz, period.start.isoformat(), period.end_excl, _bov_shopify_exclusions(db),
+                barcode=upc, variant_shopify_id=variant_id, title=title, limit=max_rows)
+        except Exception as e:
+            return BOVProductLinesResponse(configured=True, store_type=store_type, store_name=store_name,
+                                           error=str(e), **base)
+        rows = payload.get("rows") or []
+        truncated = bool(payload.get("truncated"))
+
+    # ---- One S2S lookup for this UPC: UnitCost (S2S basis) + UnitPriceC (Shopify local basis)
+    conn = _bov_cost_conn(db, cfg)
+    cost_store = db.query(Store).filter(Store.id == conn.store_id).first() if conn else None
+    rec: Dict[str, Any] = {}
+    if conn is not None and upc:
+        ok, err, found = await get_item_prices_batch_async(host=conn.host, port=conn.port, database=conn.database_name,
+                                                          username=conn.username, password=conn.password,
+                                                          upcs=[upc], include_discontinued=True)
+        if ok and isinstance(found, dict):
+            rec = found.get(upc) or {}
+        else:
+            warnings.append(f"S2S cost lookup failed: {err or 'cost lookup failed'}")
+    if conn is None:
+        warnings.append("Item Tracker S2S store is not configured — S2S cost unavailable")
+
+    def _num(field: str) -> Optional[float]:
+        v = rec.get(field)
+        try:
+            return float(v) if v is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    s2s_unit = _num("unit_cost")
+    delivery_unit = _num("unit_delivery_b")
+    for r in rows:
+        qty = float(r.get("qty") or 0)
+        rev = float(r.get("revenue") or 0)
+        if store_type == "shopify":
+            r["local_unit_cost"] = delivery_unit
+            r["local_cost"] = (round(delivery_unit * qty, 2) if delivery_unit is not None else None)
+        local_total = r.get("local_cost")
+        r["local_profit"] = (round(rev - local_total, 2) if local_total is not None else None)
+        r["local_margin_pct"] = (bov.margin_pct(rev, local_total) if local_total is not None else None)
+        s2s_total = (round(s2s_unit * qty, 2) if s2s_unit is not None else None)
+        r["s2s_unit_cost"] = s2s_unit
+        r["s2s_cost"] = s2s_total
+        r["s2s_profit"] = (round(rev - s2s_total, 2) if s2s_total is not None else None)
+        r["s2s_margin_pct"] = (bov.margin_pct(rev, s2s_total) if s2s_total is not None else None)
+
+    tot_units = sum(float(r.get("qty") or 0) for r in rows)
+    tot_rev = sum(float(r.get("revenue") or 0) for r in rows)
+
+    def _basis(cost_key: str) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+        known = [r for r in rows if r.get(cost_key) is not None]
+        if not known:
+            return None, None, None
+        cost = sum(float(r[cost_key]) for r in known)
+        rev_known = sum(float(r.get("revenue") or 0) for r in known)
+        return round(cost, 2), round(rev_known - cost, 2), bov.margin_pct(rev_known, cost)
+
+    lc, lp, lm = _basis("local_cost")
+    sc, sp, sm = _basis("s2s_cost")
+    totals = BOVProductLinesTotals(
+        lines=len(rows), orders=len({r["doc_id"] for r in rows}),
+        units=round(tot_units, 2), revenue=round(tot_rev, 2),
+        avg_price=(round(tot_rev / tot_units, 2) if tot_units else None),
+        local_cost=lc, local_profit=lp, local_margin_pct=lm,
+        s2s_cost=sc, s2s_profit=sp, s2s_margin_pct=sm,
+    )
+    first = rows[0] if rows else {}
+    return BOVProductLinesResponse(
+        configured=True, store_type=store_type, store_name=store_name,
+        description=(first.get("description") or title), sku=first.get("sku"),
+        rows=[BOVProductLineRow(**r) for r in rows], totals=totals, truncated=truncated,
+        cost_store_name=(cost_store.name if cost_store else None), warnings=warnings, **base,
     )
 
 

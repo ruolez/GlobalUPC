@@ -1854,6 +1854,7 @@ class BOVProductRow(BaseModel):
     s2s_cost: Optional[float] = None
     s2s_profit: Optional[float] = None
     s2s_margin_pct: Optional[float] = None
+    variant_shopify_id: Optional[int] = None  # Shopify rows: drill key when the barcode is blank
 
 
 class BOVProductsTotals(BaseModel):
@@ -1879,6 +1880,60 @@ class BOVProductsResponse(BOVBlockStatus):
     truncated: bool = False
     cost_store_id: Optional[int] = None
     cost_store_name: Optional[str] = None
+
+
+class BOVProductLineRow(BaseModel):
+    kind: str                                 # invoice | shopify_order
+    doc_id: str                               # InvoiceID / Shopify order id (as string)
+    doc_number: Optional[str] = None          # InvoiceNumber / order name
+    doc_date: Optional[str] = None
+    customer: Optional[str] = None
+    ship_state: Optional[str] = None
+    shipped: bool = False
+    status: Optional[str] = None              # Shopify: financial · fulfillment
+    line_id: Optional[int] = None
+    description: Optional[str] = None
+    sku: Optional[str] = None
+    qty: float = 0.0
+    unit_price: Optional[float] = None        # BackOffice UnitPrice / Shopify discounted revenue ÷ qty
+    list_price: Optional[float] = None        # Shopify original unit price
+    revenue: float = 0.0
+    line_unit_cost: Optional[float] = None    # BackOffice: cost stamped on the invoice line
+    local_unit_cost: Optional[float] = None
+    local_cost: Optional[float] = None
+    local_profit: Optional[float] = None
+    local_margin_pct: Optional[float] = None
+    s2s_unit_cost: Optional[float] = None
+    s2s_cost: Optional[float] = None
+    s2s_profit: Optional[float] = None
+    s2s_margin_pct: Optional[float] = None
+
+
+class BOVProductLinesTotals(BaseModel):
+    lines: int = 0
+    orders: int = 0
+    units: float = 0.0
+    revenue: float = 0.0
+    avg_price: Optional[float] = None
+    local_cost: Optional[float] = None
+    local_profit: Optional[float] = None
+    local_margin_pct: Optional[float] = None
+    s2s_cost: Optional[float] = None
+    s2s_profit: Optional[float] = None
+    s2s_margin_pct: Optional[float] = None
+
+
+class BOVProductLinesResponse(BOVBlockStatus):
+    period: Optional[BOVPeriod] = None
+    store_type: Optional[str] = None          # backoffice | shopify
+    upc: Optional[str] = None
+    description: Optional[str] = None
+    sku: Optional[str] = None
+    rows: List[BOVProductLineRow] = []
+    totals: Optional[BOVProductLinesTotals] = None
+    truncated: bool = False
+    cost_store_name: Optional[str] = None
+    warnings: List[str] = []
 
 
 class BOVShopifyExclusionCreate(BaseModel):

@@ -1884,6 +1884,80 @@ def _backoffice_products_sold_sync(
         return False, str(e), []
 
 
+def _backoffice_product_lines_sync(
+    host, port, database, username, password,
+    date_from: str,
+    date_to_excl: str,
+    upc: Optional[str] = None,
+    excluded_sales_names: Optional[List[str]] = None,
+    limit: int = MAX_LIST_LIMIT,
+) -> Tuple[bool, Optional[str], Dict[str, Any]]:
+    """
+    Every invoice line for ONE product in the period — the drill-in behind a
+    Products-tab row. Same filters as _backoffice_products_sold_sync (non-void,
+    InvoiceDate window, business-name exclusions, blank UPCs grouped together)
+    so the lines add up to the aggregate row. Fetches limit+1 to flag truncation.
+    """
+    excl_sql, excl_params = _excl_clause(excluded_sales_names or [])
+    upc = (upc or "").strip()
+    upc_sql = "LTRIM(RTRIM(d.ProductUPC)) = ?" if upc else "(d.ProductUPC IS NULL OR LTRIM(RTRIM(d.ProductUPC)) = '')"
+    upc_params: List[Any] = [upc] if upc else []
+    limit = max(1, int(limit or MAX_LIST_LIMIT))
+    try:
+        with _connect(host, port, database, username, password) as conn:
+            cur = conn.cursor()
+            present = _tables_present(cur, ["Invoices_tbl", "InvoicesDetails_tbl", "Items_tbl"])
+            if not (present.get("Invoices_tbl") and present.get("InvoicesDetails_tbl")):
+                return False, "Invoices_tbl / InvoicesDetails_tbl not found on this store", {}
+            local_cost = bool(present.get("Items_tbl"))
+            cur.execute(f"""
+                SELECT TOP (?) h.InvoiceID, h.InvoiceNumber, h.InvoiceDate, h.BusinessName, h.ShipState, h.TrackingNo,
+                       d.LineID, d.ProductDescription, d.ProductSKU, d.UnitDesc,
+                       d.QtyShipped, d.UnitPrice, d.ExtendedPrice, d.UnitCost
+                       {", ic.ItemUnitCost" if local_cost else ", CAST(NULL AS money) AS ItemUnitCost"}
+                FROM InvoicesDetails_tbl d
+                INNER JOIN Invoices_tbl h ON h.InvoiceID = d.InvoiceID
+                {_LOCAL_COST_APPLY if local_cost else ""}
+                WHERE ISNULL(h.Void, 0) = 0
+                  AND h.InvoiceDate >= ?
+                  AND h.InvoiceDate <  ?
+                  {excl_sql}
+                  AND {upc_sql}
+                ORDER BY h.InvoiceDate DESC, h.InvoiceID DESC, d.LineID
+            """, [limit + 1, date_from, date_to_excl] + excl_params + upc_params)
+            raw = _rows(cur)
+        truncated = len(raw) > limit
+        rows: List[Dict[str, Any]] = []
+        for r in raw[:limit]:
+            qty = _f(r.get("QtyShipped"))
+            item_cost = _fo(r.get("ItemUnitCost"))
+            line_cost = _fo(r.get("UnitCost"))
+            local_unit = item_cost if item_cost is not None else line_cost
+            rows.append({
+                "kind": "invoice",
+                "doc_id": str(_io(r.get("InvoiceID"))),
+                "doc_number": _s(r.get("InvoiceNumber")),
+                "doc_date": _iso(r.get("InvoiceDate")),
+                "customer": _s(r.get("BusinessName")),
+                "ship_state": _s(r.get("ShipState")),
+                "shipped": has_tracking(r.get("TrackingNo")),
+                "status": None,
+                "line_id": _io(r.get("LineID")),
+                "description": _s(r.get("ProductDescription")),
+                "sku": _s(r.get("ProductSKU")),
+                "qty": qty,
+                "unit_price": _fo(r.get("UnitPrice")),
+                "list_price": None,
+                "revenue": round(_f(r.get("ExtendedPrice")), 2),
+                "line_unit_cost": line_cost,
+                "local_unit_cost": local_unit,
+                "local_cost": (round(qty * local_unit, 2) if local_unit is not None else None),
+            })
+        return True, None, {"rows": rows, "truncated": truncated}
+    except Exception as e:
+        return False, str(e), {}
+
+
 def recost_backoffice_days(payload: Dict[str, Any], unit_costs: Dict[str, float]) -> Dict[str, Any]:
     """
     S2S mode: replace each day's cost with Σ units × S2S unit cost from
@@ -2376,6 +2450,89 @@ async def shopify_products_sold(store_id: int, tz: str, date_from: str, date_to_
     return await asyncio.to_thread(_shopify_products_sold_sync, store_id, tz, date_from, date_to_excl, exclusions)
 
 
+def _shopify_product_lines_sync(store_id: int, tz: str, date_from: str, date_to_excl: str,
+                                exclusions: Optional[List[Dict[str, Any]]] = None,
+                                barcode: Optional[str] = None, variant_shopify_id: Optional[int] = None,
+                                title: Optional[str] = None, limit: int = MAX_LIST_LIMIT) -> Dict[str, Any]:
+    """
+    Every completed-order line for ONE product in the period (the drill-in behind
+    a Products-tab Shopify row). Matches the aggregate's grouping: by barcode when
+    the row has one, otherwise barcode-less lines of the same variant (title as a
+    last resort). Same window / completed rule / exclusions as
+    _shopify_products_sold_sync so the lines add up to the row.
+    """
+    tz = _safe_tz(tz)
+    excl_sql, excl_params = _shopify_excl_clause(store_id, exclusions)
+    excl_where = f"AND NOT {excl_sql}" if excl_sql else ""
+    params: Dict[str, Any] = {"sid": store_id, "tz": tz, "start": date_from, "end_excl": date_to_excl,
+                              "lim": max(1, int(limit or MAX_LIST_LIMIT)) + 1, **excl_params}
+    bc = (barcode or "").strip()
+    if bc:
+        match = "NULLIF(BTRIM(li.barcode),'') = :barcode"
+        params["barcode"] = bc
+    elif variant_shopify_id:
+        match = "NULLIF(BTRIM(li.barcode),'') IS NULL AND li.variant_shopify_id = :vid"
+        params["vid"] = int(variant_shopify_id)
+    else:
+        match = "NULLIF(BTRIM(li.barcode),'') IS NULL AND li.variant_shopify_id IS NULL AND COALESCE(li.product_title, li.title, '') = :title"
+        params["title"] = title or ""
+    sql = f"""
+        SELECT o.shopify_id, o.name, o.created_at, o.financial_status, o.fulfillment_status, o.ship_province_code,
+               c.display_name AS customer_name, o.email,
+               li.shopify_id AS line_id, li.title, li.variant_title, li.sku,
+               li.quantity, li.current_quantity, li.original_unit_price, li.discounted_total
+        FROM shopify_orders o
+        JOIN shopify_order_line_items li ON li.store_id = o.store_id AND li.order_shopify_id = o.shopify_id
+        LEFT JOIN shopify_customers c ON c.store_id = o.store_id AND c.shopify_id = o.customer_shopify_id
+        WHERE o.store_id = :sid AND {_SHOPIFY_COMPLETED}
+          AND o.created_at >= (CAST(:start AS date)::timestamp AT TIME ZONE :tz)
+          AND o.created_at <  (CAST(:end_excl AS date)::timestamp AT TIME ZONE :tz)
+          {excl_where}
+          AND {match}
+        ORDER BY o.created_at DESC, li.id
+        LIMIT :lim
+    """
+    with engine.connect() as conn:
+        raw = conn.execute(text(sql), params).mappings().all()
+    lim = params["lim"] - 1
+    truncated = len(raw) > lim
+    rows: List[Dict[str, Any]] = []
+    for r in raw[:lim]:
+        qty = _f(r["current_quantity"] if r["current_quantity"] is not None else r["quantity"])
+        rev = round(_f(r["discounted_total"]), 2)
+        t = (r["title"] or "").strip()
+        v = (r["variant_title"] or "").strip()
+        rows.append({
+            "kind": "shopify_order",
+            "doc_id": str(r["shopify_id"]),
+            "doc_number": r["name"],
+            "doc_date": _iso(r["created_at"]),
+            "customer": r["customer_name"] or r["email"],
+            "ship_state": r["ship_province_code"],
+            "shipped": (r["fulfillment_status"] or "").upper() == "FULFILLED",
+            "status": " · ".join(x for x in [r["financial_status"], r["fulfillment_status"]] if x) or None,
+            "line_id": _io(r["line_id"]),
+            "description": (f"{t} — {v}" if t and v else (t or v or None)),
+            "sku": r["sku"],
+            "qty": qty,
+            "unit_price": (round(rev / qty, 2) if qty else None),
+            "list_price": _fo(r["original_unit_price"]),
+            "revenue": rev,
+            "line_unit_cost": None,
+            "local_unit_cost": None,   # S2S UnitPriceC, filled by the endpoint
+            "local_cost": None,
+        })
+    return {"rows": rows, "truncated": truncated}
+
+
+async def shopify_product_lines(store_id: int, tz: str, date_from: str, date_to_excl: str,
+                                exclusions: Optional[List[Dict[str, Any]]] = None,
+                                barcode: Optional[str] = None, variant_shopify_id: Optional[int] = None,
+                                title: Optional[str] = None, limit: int = MAX_LIST_LIMIT) -> Dict[str, Any]:
+    return await asyncio.to_thread(_shopify_product_lines_sync, store_id, tz, date_from, date_to_excl, exclusions,
+                                   barcode, variant_shopify_id, title, limit)
+
+
 async def shopify_orders_list(store_id: int, kind: str, older_than_hours: float = 0.0, limit: int = 500) -> List[Dict[str, Any]]:
     return await asyncio.to_thread(_shopify_orders_list_sync, store_id, kind, older_than_hours, limit)
 
@@ -2861,6 +3018,10 @@ async def backoffice_breakdown_async(**kw):
 
 async def backoffice_products_sold_async(**kw):
     return await _run(_backoffice_products_sold_sync, **kw)
+
+
+async def backoffice_product_lines_async(**kw):
+    return await _run(_backoffice_product_lines_sync, **kw)
 
 
 async def shopify_open_orders_local(store_id: int) -> Dict[str, float]:

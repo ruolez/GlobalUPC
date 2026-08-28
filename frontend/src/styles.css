@@ -7485,6 +7485,44 @@ tr.bov-line-void td { opacity: 0.55; text-decoration: line-through; }
 .bov-modal .bov-modal-table { min-width: 40rem; }
 .bov-modal .bov-table-scroll table { min-width: 40rem; }
 .bov-modal .data-table thead th { position: sticky; top: 0; z-index: 1; }
+.bov-modal .data-table thead th { background: var(--bg-tertiary); }
+
+/* `.qip-sortable` is styled under `.sa-page`; the drill-in modals live outside
+   the page, so restate the sortable header look for their tables. */
+.bov-modal .data-table thead th.qip-sortable {
+  cursor: pointer;
+  user-select: none;
+  position: sticky;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+.bov-modal .data-table thead th.qip-sortable:hover {
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--accent-primary) 6%, var(--bg-tertiary));
+}
+.bov-modal .data-table thead th.qip-sortable .qip-sort-arrow {
+  display: inline-block;
+  width: 0;
+  height: 0;
+  margin-left: 0.4rem;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid var(--text-tertiary);
+  opacity: 0.35;
+  transition: opacity 0.12s ease, border-color 0.12s ease, transform 0.12s ease;
+  vertical-align: middle;
+}
+.bov-modal .data-table thead th.qip-sortable:hover .qip-sort-arrow { opacity: 0.7; }
+.bov-modal .data-table thead th.qip-sort-asc .qip-sort-arrow,
+.bov-modal .data-table thead th.qip-sort-desc .qip-sort-arrow {
+  opacity: 1;
+  border-top-color: var(--accent-primary);
+}
+.bov-modal .data-table thead th.qip-sort-asc .qip-sort-arrow { transform: rotate(180deg); }
+.bov-modal .data-table thead th.qip-sort-asc,
+.bov-modal .data-table thead th.qip-sort-desc { color: var(--accent-primary); }
+
+/* Product drill-in: 13 columns — let the table scroll sideways instead of crushing. */
+#bov-product-modal .bov-table-scroll table { min-width: 80rem; }
 
 /* --- Responsive ----------------------------------------------------------- */
 @media (max-width: 1100px) {

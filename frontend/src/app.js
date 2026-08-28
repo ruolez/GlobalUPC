@@ -18924,6 +18924,7 @@ const bovState = {
     monthEnd: { key: "date", dir: "desc" },
     invoiceLines: { key: null, dir: "desc" },        // null = original line order
     shopifyOrderLines: { key: null, dir: "desc" },
+    productLines: { key: "doc_date", dir: "desc" },   // product drill-in (Products tab row → its invoice/order lines)
     bankBalances: { key: null, dir: "desc" },        // null = QuickBooks order (type, then name)
   },
   widgets: {
@@ -18947,7 +18948,8 @@ const bovState = {
   qbRefreshing: false,     // manual QuickBooks balance refresh in flight
   lastShopifyRefreshAt: 0,
   shopifySyncNote: null,   // {text, tone} shown under "Updated …"
-  modalCache: { quotation: new Map(), invoice: new Map(), po: new Map(), shopifyOrder: new Map() },
+  modalCache: { quotation: new Map(), invoice: new Map(), po: new Map(), shopifyOrder: new Map(), product: new Map() },
+  productModalData: null,  // last-rendered product drill-in (re-rendered on sort)
   poModalData: null,       // last-rendered PO detail (for the exclude/include line actions)
   refreshTimer: null,
   updatedTimer: null,
@@ -19815,6 +19817,7 @@ function bovBindOnce() {
     bovState.modalCache.quotation.clear();
     bovState.modalCache.invoice.clear();
     bovState.modalCache.po.clear();
+    bovState.modalCache.product.clear();
     bovFetchAll();
     bovRefreshShopify({ maxAgeMinutes: 0 });
   });
@@ -23121,7 +23124,7 @@ function bovToggleSort(widgetKey, colKey) {
     s.dir = s.dir === "asc" ? "desc" : "asc";
   } else {
     s.key = colKey;
-    s.dir = ["business_name", "quotation_number", "invoice_number", "po_number", "sales_rep", "status", "packer", "store_name", "description", "upc", "sku", "number", "customer", "title", "product_description", "ship_state"].includes(colKey) ? "asc" : "desc";
+    s.dir = ["business_name", "quotation_number", "invoice_number", "po_number", "sales_rep", "status", "packer", "store_name", "description", "upc", "sku", "number", "customer", "title", "product_description", "ship_state", "doc_number", "customer"].includes(colKey) ? "asc" : "desc";
   }
   bovRenderCard(widgetKey);
 }
@@ -23131,6 +23134,7 @@ function bovRenderCard(key) {
   if (key === "invoiceLines") { if (bovState.invoiceModalData) bovRenderInvoiceModal(bovState.invoiceModalData); return; }
   if (key === "shopifyOrderLines") { if (bovState.shopifyOrderModalData) bovRenderShopifyOrderModal(bovState.shopifyOrderModalData); return; }
   if (key === "missingCost") { if (bovState.missingCost) bovRenderMissingCostModal(bovState.missingCost); return; }
+  if (key === "productLines") { if (bovState.productModalData) bovRenderProductModal(bovState.productModalData); return; }
   if (key === "quotations") bovRenderQuotationsTable();
   else if (key === "products") bovRenderProductsTable();
   else if (key === "invoices" || key.startsWith("invoices")) bovRenderInvoices();
@@ -23526,7 +23530,10 @@ function bovRenderProductsTable() {
   // Server totals cover every row (even beyond the limit); once a chip/search
   // narrows the list, the totals row follows what's visible.
   const totals = (!bovCardFiltersActive("products") && d.totals) ? d.totals : bovProductsComputeTotals(rows);
-  body.innerHTML = bovTableHtml("products", bovProductCols(), rows, { tfoot: bovProductsTfootHtml(totals), select: { keyOf: BOV_EXPORTS.products.keyOf } });
+  // Rows open the product drill-in by index into the server list (the key
+  // string may contain quotes, so it is not safe as an attribute value).
+  (d.rows || []).forEach((r, i) => { r._idx = i; });
+  body.innerHTML = bovTableHtml("products", bovProductCols(), rows, { tfoot: bovProductsTfootHtml(totals), select: { keyOf: BOV_EXPORTS.products.keyOf }, rowAttrs: bovProductRowAttrs });
   if (foot) {
     const notes = [];
     if (d.truncated) notes.push(`showing top ${bovInt(allRows.length)} of ${bovInt(d.count)} by revenue`);
@@ -24001,6 +24008,7 @@ function bovOpenRow(rowEl) {
   const id = rowEl.dataset.bovId;
   if (!kind || id == null) return;
   if (kind === "quotation") bovOpenQuotationModal(id);
+  else if (kind === "product") bovOpenProductModal(parseInt(id, 10));
   else if (kind === "invoice") bovOpenInvoiceModal(parseInt(id, 10), rowEl.dataset.bovStore ? parseInt(rowEl.dataset.bovStore, 10) : null);
   else if (kind === "po") bovOpenPoModal(parseInt(id, 10));
   else if (kind === "shopify-order") {
@@ -24203,6 +24211,155 @@ function bovInvoiceLineCols() {
     { key: "line_profit", label: "Profit", num: true, width: "12%", render: (l) => bovLineProfitCell(l.line_profit) },
     { key: "margin_pct", label: "Margin", num: true, width: "9%", render: (l) => bovLineMarginCell(l.margin_pct) },
   ];
+}
+
+// ---- Product drill-in (Products tab row → every invoice / order line) -------
+
+function bovProductRowAttrs(r) {
+  return r._idx == null ? "" : `data-bov-open="product" data-bov-id="${r._idx}"`;
+}
+
+// The range the request will carry (bovRangeParams), so the cache key and the
+// header label always match the lines fetched — not the widget's last period.
+function bovProductPeriod() {
+  const r = bovState.range || bovPresetToDates("today");
+  return { start: r.from, end: r.to };
+}
+
+async function bovOpenProductModal(idx) {
+  const title = document.getElementById("bov-product-title");
+  const meta = document.getElementById("bov-product-meta");
+  const body = document.getElementById("bov-product-body");
+  if (!body) return;
+  const row = ((bovState.widgets.products.data || {}).rows || [])[idx];
+  if (!row) return;
+  const period = bovProductPeriod();
+  bovState.productModalData = null;
+  if (title) title.textContent = row.description || row.sku || row.upc || "Product";
+  if (meta) {
+    meta.textContent = [
+      bovStoreShort(row.store_name),
+      row.upc ? `UPC ${row.upc}` : "no UPC",
+      row.sku && row.sku !== row.upc ? `SKU ${row.sku}` : null,
+      period.start ? bovFmtRangeLabel(period.start, period.end) : null,
+    ].filter(Boolean).join(" · ");
+  }
+  openModal("bov-product-modal");
+  const cacheKey = `${row.store_id}:${row.store_type}:${row.upc || ""}:${row.variant_shopify_id || ""}:${row.upc ? "" : (row.description || "")}:${period.start || ""}:${period.end || ""}`;
+  const cache = bovState.modalCache.product;
+  if (cache.has(cacheKey)) {
+    bovRenderProductModal(cache.get(cacheKey));
+    return;
+  }
+  bovModalLoading(body, row.store_type === "shopify" ? "Loading order lines…" : "Loading invoice lines…");
+  const params = { store_id: row.store_id, ...bovRangeParams() };
+  if (row.upc) params.upc = row.upc;
+  else {
+    if (row.variant_shopify_id) params.variant_id = row.variant_shopify_id;
+    // Shopify blank-barcode rows without a variant id are matched by product title.
+    if (row.store_type === "shopify" && !row.variant_shopify_id) params.title = (row.description || "").split(" — ")[0];
+  }
+  try {
+    const data = await bovFetchJson("/products/lines", params);
+    data._row = row;
+    cache.set(cacheKey, data);
+    bovRenderProductModal(data);
+  } catch (e) {
+    bovModalError(body, `Could not load the lines for this product: ${e.message || e}`);
+  }
+}
+
+function bovProductBasisKv(label, cost, profit, pct, unit, hint) {
+  if (cost == null) return bovKv(label, `<span class="bov-cell-muted" title="${escapeHtml(hint || "")}">—</span>`);
+  const p = bovNum(profit);
+  const m = pct != null ? bovNum(pct) : null;
+  const tone = m == null ? "" : (m < 0 ? " is-neg" : (m < 15 ? " is-low" : ""));
+  return bovKv(label,
+    `<strong>${escapeHtml(bovMoney(cost))}</strong>${unit != null ? ` <span class="bov-cell-sub" style="display:inline">@ ${escapeHtml(bovMoney(unit))}</span>` : ""}` +
+    `<span class="bov-cell-sub">profit <span class="bov-profit${p < 0 ? " is-neg" : ""}">${escapeHtml(bovMoney(p))}</span>` +
+    `${m != null ? ` · <span class="bov-margin${tone}">${escapeHtml(bovPct(m))}</span>` : ""}</span>`);
+}
+
+function bovRenderProductModal(data) {
+  const body = document.getElementById("bov-product-body");
+  if (!body) return;
+  bovState.productModalData = data;
+  const row = data._row || {};
+  const shop = data.store_type === "shopify";
+  const docWord = shop ? "order" : "invoice";
+  if (data.error) {
+    bovModalError(body, data.error === "not synced" ? `${data.store_name || "This store"} has no local Shopify mirror yet — run a Data Sync first.` : data.error);
+    return;
+  }
+  const rows = data.rows || [];
+  const t = data.totals || {};
+  const kv = [
+    bovKv("Qty sold", `<strong>${bovInt(t.units)}</strong><span class="bov-cell-sub">${bovInt(t.lines)} line${t.lines === 1 ? "" : "s"} on ${bovInt(t.orders)} ${docWord}${t.orders === 1 ? "" : "s"}</span>`),
+    bovKv("Revenue", `<strong>${escapeHtml(bovMoney(t.revenue))}</strong>${t.avg_price != null ? `<span class="bov-cell-sub">avg ${escapeHtml(bovMoney(t.avg_price))} / unit</span>` : ""}`),
+    bovProductBasisKv("Local cost", t.local_cost, t.local_profit, t.local_margin_pct, row.local_unit_cost,
+      shop ? "S2S UnitPriceC not found for this barcode" : "No cost on this store's items table or invoice lines"),
+    bovProductBasisKv("S2S cost", t.s2s_cost, t.s2s_profit, t.s2s_margin_pct, row.s2s_unit_cost,
+      data.cost_store_name ? `UPC not found on ${data.cost_store_name}` : "Item Tracker S2S store is not configured"),
+    bovKv("Cost basis", shop
+      ? `<span class="bov-cost-basis" title="Local = Item Tracker S2S Items_tbl.UnitPriceC by barcode; S2S = Items_tbl.UnitCost">UnitPriceC / UnitCost</span>${data.cost_store_name ? `<span class="bov-cell-sub">${escapeHtml(data.cost_store_name)}</span>` : ""}`
+      : `<span class="bov-cost-basis" title="Local = this store's Items_tbl.UnitCost by UPC (invoice line cost when the item is missing); S2S = Item Tracker S2S Items_tbl.UnitCost">Store UnitCost / S2S UnitCost</span>${data.cost_store_name ? `<span class="bov-cell-sub">S2S: ${escapeHtml(data.cost_store_name)}</span>` : ""}`),
+  ].join("");
+  const notes = [];
+  if (data.truncated) notes.push(`Showing the first ${bovInt(rows.length)} lines — narrow the period to see the rest.`);
+  (data.warnings || []).forEach((w) => notes.push(w));
+  const cell = (v) => v == null ? `<span class="bov-cell-muted">—</span>` : escapeHtml(bovMoney(v));
+  const tfoot = `<tfoot><tr><td class="bov-num bov-line-no"></td><td>${bovInt(t.lines)} line${t.lines === 1 ? "" : "s"}</td>` +
+    `<td>${bovInt(t.orders)} ${docWord}${t.orders === 1 ? "" : "s"}</td><td></td><td></td>` +
+    `<td class="bov-num">${bovInt(t.units)}</td><td class="bov-num">${cell(t.avg_price)}</td><td class="bov-num">${cell(t.revenue)}</td>` +
+    `<td class="bov-num">${cell(t.local_cost)}</td><td class="bov-num">${bovLineProfitCell(t.local_profit)}</td><td class="bov-num">${bovLineMarginCell(t.local_margin_pct)}</td>` +
+    `<td class="bov-num">${cell(t.s2s_cost)}</td><td class="bov-num">${bovLineProfitCell(t.s2s_profit)}</td><td class="bov-num">${bovLineMarginCell(t.s2s_margin_pct)}</td></tr></tfoot>`;
+  const openKind = shop ? "shopify-order" : "invoice";
+  body.innerHTML =
+    `<div class="bov-kv-grid">${kv}</div>` +
+    (rows.length
+      ? bovTableHtml("productLines", bovProductLineCols(shop), bovSortRows(rows, bovState.sort.productLines), {
+          tfoot,
+          rowAttrs: (l) => `data-bov-open="${openKind}" data-bov-id="${escapeHtml(l.doc_id)}" data-bov-store="${data.store_id}" title="Open ${docWord}"`,
+        })
+      : bovEmptyHtml(`No ${docWord} lines for this product in the period.`)) +
+    (notes.length ? `<p class="bov-modal-note">${notes.map(escapeHtml).join(" · ")}</p>` : "");
+}
+
+function bovProductLineCols(shop) {
+  const docLabel = shop ? "Order" : "Invoice";
+  return [
+    { key: "doc_date", label: "Date", width: "7%", render: (l) => escapeHtml(bovDateMdy(l.doc_date)) },
+    { key: "doc_number", label: docLabel, width: "8%", render: (l) => `<span class="bov-cell-main bov-cell-mono">${escapeHtml(l.doc_number || l.doc_id || "—")}</span><span class="bov-cell-sub">${escapeHtml(shop ? (l.status || "") : (l.shipped ? "Shipped" : "Not shipped"))}</span>` },
+    { key: "customer", label: "Customer", width: "11%", render: (l) => bovCustomerCell(l.customer, l.sku && l.sku !== ((bovState.productModalData || {})._row || {}).sku ? `SKU ${l.sku}` : null) },
+    { key: "ship_state", label: "State", width: "5%", render: (l) => `<span class="bov-cell-mono">${escapeHtml(l.ship_state || "—")}</span>` },
+    { key: "qty", label: "Qty", num: true, width: "4%", render: (l) => bovInt(l.qty) },
+    { key: "unit_price", label: "Price", num: true, width: "7%", render: (l) => {
+      const main = l.unit_price != null ? escapeHtml(bovMoney(l.unit_price)) : `<span class="bov-cell-muted">—</span>`;
+      if (shop && l.list_price != null && l.unit_price != null && Math.abs(bovNum(l.list_price) - bovNum(l.unit_price)) > 0.004) {
+        return `${main}<span class="bov-cell-sub" title="Original unit price before discounts">list ${escapeHtml(bovMoney(l.list_price))}</span>`;
+      }
+      return main;
+    } },
+    { key: "revenue", label: "Revenue", num: true, width: "7%", render: (l) => escapeHtml(bovMoney(l.revenue)) },
+    { key: "local_cost", label: "Local cost", num: true, width: "8%", render: (l) => bovProductLineCostCell(l, "local_unit_cost", "local_cost", !shop) },
+    { key: "local_profit", label: "Local profit", num: true, width: "9%", render: (l) => bovLineProfitCell(l.local_profit) },
+    { key: "local_margin_pct", label: "Local mgn", num: true, width: "8%", render: (l) => bovLineMarginCell(l.local_margin_pct) },
+    { key: "s2s_cost", label: "S2S cost", num: true, width: "8%", render: (l) => bovProductLineCostCell(l, "s2s_unit_cost", "s2s_cost", false) },
+    { key: "s2s_profit", label: "S2S profit", num: true, width: "9%", render: (l) => bovLineProfitCell(l.s2s_profit) },
+    { key: "s2s_margin_pct", label: "S2S mgn", num: true, width: "8%", render: (l) => bovLineMarginCell(l.s2s_margin_pct) },
+  ];
+}
+
+// Cost total with the unit cost underneath; BackOffice local cost also shows the
+// cost stamped on the invoice line when it differs from the items-table cost.
+function bovProductLineCostCell(l, unitKey, totalKey, showLineCost) {
+  if (l[totalKey] == null) return `<span class="bov-cell-muted">—</span>`;
+  const unit = l[unitKey];
+  let sub = unit != null ? `@ ${bovMoney(unit)}` : "";
+  if (showLineCost && l.line_unit_cost != null && unit != null && Math.abs(bovNum(l.line_unit_cost) - bovNum(unit)) > 0.004) {
+    sub += `${sub ? " · " : ""}line ${bovMoney(l.line_unit_cost)}`;
+  }
+  return `${escapeHtml(bovMoney(l[totalKey]))}${sub ? `<span class="bov-cell-sub" title="Unit cost${showLineCost ? " (and the cost stamped on the invoice line when it differs)" : ""}">${escapeHtml(sub)}</span>` : ""}`;
 }
 
 async function bovOpenPoModal(poId) {

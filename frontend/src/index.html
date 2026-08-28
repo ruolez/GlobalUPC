@@ -5529,6 +5529,22 @@
 
     <!-- Business Overview drill-ins -->
 
+    <!-- Declared first so the invoice / Shopify order modals it opens stack above it (same z-index, DOM order wins; Escape closes the last active one). -->
+    <div id="bov-product-modal" class="modal bov-modal">
+      <div class="modal-content bov-modal-content" style="max-width: 1340px; width: 96%">
+        <div class="modal-header">
+          <div class="bov-list-modal-title-wrap">
+            <h3 id="bov-product-title">Product</h3>
+            <span class="dashboard-card-meta" id="bov-product-meta"></span>
+          </div>
+          <div class="bov-modal-head-actions">
+            <button type="button" class="modal-close" data-bov-close="bov-product-modal" aria-label="Close">&times;</button>
+          </div>
+        </div>
+        <div class="modal-body bov-modal-body" id="bov-product-body"></div>
+      </div>
+    </div>
+
     <div id="bov-quotation-modal" class="modal bov-modal">
       <div class="modal-content" style="max-width: 940px; width: 95%">
         <div class="modal-header">
