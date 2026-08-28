@@ -23070,7 +23070,7 @@ function bovRenderShopifyOrderModal(data) {
     ] : []),
   ].join("");
   const totalQty = lines.reduce((a, l) => a + bovNum(l.current_quantity != null ? l.current_quantity : l.quantity), 0);
-  const totalLines = lines.reduce((a, l) => a + bovNum(l.discounted_total), 0);
+  const totalLines = lines.reduce((a, l) => a + bovNum(l.line_revenue != null ? l.line_revenue : l.discounted_total), 0);
   const tfoot = `<tfoot><tr><td class="bov-num bov-line-no"></td><td>${bovInt(lines.length)} line${lines.length === 1 ? "" : "s"}</td>` +
     `<td class="bov-num">${bovInt(totalQty)}</td><td></td><td class="bov-num">${bovMoney(totalLines)}</td>` +
     `<td class="bov-num">${h.cost != null ? bovMoney(h.cost) : "—"}</td>` +
@@ -23097,7 +23097,11 @@ function bovShopifyOrderLineCols() {
         ? `${bovInt(l.current_quantity)} <span class="bov-cell-sub">of ${bovInt(l.quantity)}</span>` : bovInt(qty || 0);
     } },
     { key: "unit_price", label: "Price", num: true, width: "10%", render: (l) => bovMoney(l.unit_price) },
-    { key: "discounted_total", label: "Line total", num: true, width: "12%", render: (l) => bovMoney(l.discounted_total) },
+    { key: "line_revenue", label: "Line total", num: true, width: "12%", render: (l) => {
+      const net = l.line_revenue != null ? l.line_revenue : l.discounted_total;
+      return l.line_revenue != null && l.discounted_total != null && Math.abs(bovNum(l.line_revenue) - bovNum(l.discounted_total)) >= 0.005
+        ? `${bovMoney(net)} <span class="bov-cell-sub" title="Refunded units carry no revenue">of ${bovMoney(l.discounted_total)}</span>` : bovMoney(net);
+    } },
     { key: "unit_cost", label: "Cost", num: true, width: "11%", render: (l) => l.unit_cost != null ? bovMoney(l.unit_cost) : `<span class="bov-cell-muted" title="Barcode not found in the S2S items table">—</span>` },
     { key: "line_profit", label: "Profit", num: true, width: "12%", render: (l) => bovLineProfitCell(l.line_profit) },
     { key: "margin_pct", label: "Margin", num: true, width: "9%", render: (l) => bovLineMarginCell(l.margin_pct) },

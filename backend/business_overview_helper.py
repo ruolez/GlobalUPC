@@ -2113,6 +2113,27 @@ def totals_change(cur: Dict[str, Any], prev: Dict[str, Any]) -> Dict[str, Option
 
 _SHOPIFY_COMPLETED = "o.cancelled_at IS NULL AND o.financial_status IS DISTINCT FROM 'REFUNDED'"
 
+# Line units still on the order after refunds/removals (NULL current_quantity =
+# rows synced before migration 018, ordered qty). discounted_total covers the
+# ORIGINAL quantity, so every line-level revenue figure pro-rates it by the
+# remaining units: refunded units carry no revenue anywhere in the overview.
+_SHOPIFY_LINE_UNITS = "COALESCE(li.current_quantity, li.quantity, 0)"
+_SHOPIFY_LINE_REVENUE = (
+    "CASE WHEN COALESCE(li.quantity, 0) > 0 "
+    f"THEN COALESCE(li.discounted_total, 0) * {_SHOPIFY_LINE_UNITS} / li.quantity "
+    "ELSE COALESCE(li.discounted_total, 0) END"
+)
+
+
+def shopify_line_net_revenue(discounted_total: Any, quantity: Any, current_quantity: Any) -> float:
+    """Python twin of _SHOPIFY_LINE_REVENUE for rows fetched unaggregated."""
+    total = _f(discounted_total)
+    ordered = _f(quantity)
+    if ordered <= 0:
+        return total
+    units = _f(current_quantity) if current_quantity is not None else ordered
+    return total * units / ordered
+
 
 def _safe_tz(tz: Optional[str]) -> str:
     try:
@@ -2176,7 +2197,7 @@ def _shopify_excluded_revenue_by_bucket_sync(store_id: int, tz: str, date_from: 
     tz = _safe_tz(tz)
     sql = f"""
         SELECT date_trunc('{bucket}', o.created_at AT TIME ZONE :tz)::date AS b,
-               SUM(COALESCE(li.discounted_total, 0)) AS revenue
+               SUM({_SHOPIFY_LINE_REVENUE}) AS revenue
         FROM shopify_orders o
         JOIN shopify_order_line_items li ON li.store_id = o.store_id AND li.order_shopify_id = o.shopify_id
         WHERE o.store_id = :sid AND {_SHOPIFY_COMPLETED}
@@ -2234,8 +2255,8 @@ def _shopify_bucketed_line_items_sync(store_id: int, tz: str, date_from: str, da
     sql = f"""
         SELECT date_trunc('{bucket}', o.created_at AT TIME ZONE :tz)::date AS b,
                NULLIF(BTRIM(li.barcode), '')                        AS barcode,
-               SUM(COALESCE(li.current_quantity, li.quantity, 0))   AS units,
-               SUM(COALESCE(li.discounted_total, 0))                AS line_revenue
+               SUM({_SHOPIFY_LINE_UNITS})   AS units,
+               SUM({_SHOPIFY_LINE_REVENUE}) AS line_revenue
         FROM shopify_orders o
         JOIN shopify_order_line_items li
           ON li.store_id = o.store_id AND li.order_shopify_id = o.shopify_id
@@ -2445,8 +2466,8 @@ def _shopify_products_sold_sync(store_id: int, tz: str, date_from: str, date_to_
                MAX(COALESCE(li.product_title, li.title)) AS title, MAX(li.variant_title) AS variant_title,
                MAX(li.product_shopify_id) AS product_shopify_id, MAX(li.variant_shopify_id) AS variant_shopify_id,
                COUNT(DISTINCT o.shopify_id) AS orders,
-               SUM(COALESCE(li.discounted_total,0)) AS revenue,
-               SUM(COALESCE(li.current_quantity, li.quantity, 0)) AS units
+               SUM({_SHOPIFY_LINE_REVENUE}) AS revenue,
+               SUM({_SHOPIFY_LINE_UNITS}) AS units
         FROM shopify_orders o
         JOIN shopify_order_line_items li ON li.store_id = o.store_id AND li.order_shopify_id = o.shopify_id
         WHERE o.store_id = :sid AND {_SHOPIFY_COMPLETED}
@@ -2454,7 +2475,7 @@ def _shopify_products_sold_sync(store_id: int, tz: str, date_from: str, date_to_
           AND o.created_at <  (CAST(:end_excl AS date)::timestamp AT TIME ZONE :tz)
           {excl_where}
         GROUP BY 1, 2
-        HAVING SUM(COALESCE(li.current_quantity, li.quantity, 0)) > 0
+        HAVING SUM({_SHOPIFY_LINE_UNITS}) > 0
         ORDER BY revenue DESC
     """
     with engine.connect() as conn:
@@ -2518,7 +2539,7 @@ def _shopify_product_lines_sync(store_id: int, tz: str, date_from: str, date_to_
     rows: List[Dict[str, Any]] = []
     for r in raw[:lim]:
         qty = _f(r["current_quantity"] if r["current_quantity"] is not None else r["quantity"])
-        rev = round(_f(r["discounted_total"]), 2)
+        rev = round(shopify_line_net_revenue(r["discounted_total"], r["quantity"], r["current_quantity"]), 2)
         t = (r["title"] or "").strip()
         v = (r["variant_title"] or "").strip()
         rows.append({
@@ -2583,8 +2604,8 @@ def _shopify_top_products_sync(store_id: int, tz: str, date_from: str, date_to_e
         SELECT NULLIF(BTRIM(li.barcode),'') AS upc, MAX(li.sku) AS sku,
                MAX(COALESCE(li.product_title, li.title)) AS name,
                COUNT(DISTINCT o.shopify_id) AS orders,
-               SUM(COALESCE(li.discounted_total,0)) AS revenue,
-               SUM(COALESCE(li.current_quantity, li.quantity, 0)) AS units
+               SUM({_SHOPIFY_LINE_REVENUE}) AS revenue,
+               SUM({_SHOPIFY_LINE_UNITS}) AS units
         FROM shopify_orders o
         JOIN shopify_order_line_items li ON li.store_id = o.store_id AND li.order_shopify_id = o.shopify_id
         WHERE o.store_id = :sid AND {_SHOPIFY_COMPLETED}
@@ -2736,8 +2757,8 @@ def _month_end_shopify_lines_sync(store_id: int, tz: str, date_from: str, date_t
     excl_where = f"AND NOT {excl_sql}" if excl_sql else ""
     sql = f"""
         SELECT li.order_shopify_id, NULLIF(BTRIM(li.barcode), '') AS barcode,
-               SUM(COALESCE(li.current_quantity, li.quantity, 0)) AS units,
-               SUM(COALESCE(li.discounted_total, 0))              AS revenue
+               SUM({_SHOPIFY_LINE_UNITS})   AS units,
+               SUM({_SHOPIFY_LINE_REVENUE}) AS revenue
         FROM shopify_orders o
         JOIN shopify_order_line_items li ON li.store_id = o.store_id AND li.order_shopify_id = o.shopify_id
         WHERE o.store_id = :sid AND {_SHOPIFY_COMPLETED} AND o.fulfillment_status = 'FULFILLED'

@@ -11557,7 +11557,8 @@ async def get_business_overview_shopify_order_detail(store_id: int, shopify_id: 
     revenue = cost = units = known = 0.0
     for l in lines:
         qty = float(l["current_quantity"] if l.get("current_quantity") is not None else (l.get("quantity") or 0))
-        rev = float(l.get("discounted_total") or 0)
+        rev = bov.shopify_line_net_revenue(l.get("discounted_total"), l.get("quantity"), l.get("current_quantity"))
+        l["line_revenue"] = round(rev, 2)
         uc = unit_costs.get((l.get("barcode") or "").strip()) if cost_known else None
         l["unit_cost"] = (float(uc) if uc is not None else None)
         l["line_cost"] = (round(qty * float(uc), 4) if uc is not None else None)
