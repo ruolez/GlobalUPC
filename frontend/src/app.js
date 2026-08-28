@@ -22914,7 +22914,7 @@ function bovToggleSort(widgetKey, colKey) {
     s.dir = s.dir === "asc" ? "desc" : "asc";
   } else {
     s.key = colKey;
-    s.dir = ["business_name", "quotation_number", "invoice_number", "po_number", "sales_rep", "status", "packer", "store_name", "description", "upc", "sku", "number", "customer", "title", "product_description"].includes(colKey) ? "asc" : "desc";
+    s.dir = ["business_name", "quotation_number", "invoice_number", "po_number", "sales_rep", "status", "packer", "store_name", "description", "upc", "sku", "number", "customer", "title", "product_description", "ship_state"].includes(colKey) ? "asc" : "desc";
   }
   bovRenderCard(widgetKey);
 }
@@ -24738,35 +24738,48 @@ function meApplyEstimate(r) {
   return { ...r, shipping_cost: r.shipping_estimate, profit, _estimated: true };
 }
 
+// Profit % = net profit ÷ order total (invoice total / Shopify total_price), as a
+// real numeric key on the row so the generic column sort orders it correctly.
+function meProfitPct(profit, total) {
+  return profit != null && bovNum(total) > 0 ? Math.round((bovNum(profit) / bovNum(total)) * 10000) / 100 : null;
+}
+
+function meDerive(r) {
+  return { ...r, profit_pct: meProfitPct(r.profit, r.total) };
+}
+
 function monthEndVisibleRows() {
   const d = monthEndState.data;
   let rows = (d && d.rows) || [];
   if (bovState.estShipping) rows = rows.map(meApplyEstimate);
+  rows = rows.map(meDerive);
   const f = monthEndState.filters;
   if (f.type !== "all") rows = rows.filter((r) => r.source === f.type);
   if (f.stores.size) rows = rows.filter((r) => f.stores.has(r.store_id));
   if (f.search) {
     rows = rows.filter((r) =>
       String(r.number || "").toLowerCase().includes(f.search) ||
-      String(r.customer || "").toLowerCase().includes(f.search));
+      String(r.customer || "").toLowerCase().includes(f.search) ||
+      String(r.ship_state || "").toLowerCase() === f.search);
   }
   return bovSortRows(rows, bovState.sort.monthEnd);
 }
 
 function meTotals(rows) {
   const t = { orders: rows.length, total: 0, revenue: 0, product_profit: 0,
-              shipping_collected: 0, shipping_cost: 0, profit: 0, profit_known: 0, ship_missing: 0,
-              est_orders: 0, est_amount: 0 };
+              shipping_collected: 0, shipping_cost: 0, profit: 0, profit_known: 0, profit_base: 0,
+              profit_pct: null, ship_missing: 0, est_orders: 0, est_amount: 0 };
   rows.forEach((r) => {
     t.total += bovNum(r.total);
     t.revenue += bovNum(r.revenue);
     t.product_profit += bovNum(r.product_profit);
     t.shipping_collected += bovNum(r.shipping_collected);
     t.shipping_cost += bovNum(r.shipping_cost);
-    if (r.profit != null) { t.profit += bovNum(r.profit); t.profit_known++; }
+    if (r.profit != null) { t.profit += bovNum(r.profit); t.profit_known++; t.profit_base += bovNum(r.total); }
     if (r.shipping_missing) t.ship_missing++;
     if (r._estimated) { t.est_orders++; t.est_amount += bovNum(r.shipping_cost); }
   });
+  t.profit_pct = t.profit_known ? meProfitPct(t.profit, t.profit_base) : null;
   return t;
 }
 
@@ -24828,16 +24841,40 @@ function meProfitCell(r) {
   return `<span class="bov-profit${n < 0 ? " is-neg" : ""}" title="${escapeHtml(breakdown)}">${escapeHtml(bovMoney(n))}</span>${est}${cov}`;
 }
 
+function meProfitPctTone(pct) {
+  const m = bovNum(pct);
+  return m < 0 ? " is-neg" : (m < 15 ? " is-low" : "");
+}
+
+function meProfitPctCell(r) {
+  if (r.profit_pct == null) {
+    const why = r.profit == null
+      ? (r.revenue != null && r.cost == null ? "Product cost unknown — the order's barcodes were not found in the S2S items table" : "")
+      : "Order total is zero";
+    return `<span class="bov-cell-muted" title="${escapeHtml(why)}">—</span>`;
+  }
+  const title = `Profit ${bovMoney(r.profit)} on order total ${bovMoney(r.total)}${r._estimated ? " (estimated shipping)" : ""}`;
+  const est = r._estimated ? `<span class="bov-cell-sub">est. shipping</span>` : "";
+  return `<span class="bov-margin${meProfitPctTone(r.profit_pct)}" title="${escapeHtml(title)}">${escapeHtml(bovPct(r.profit_pct))}</span>${est}`;
+}
+
+function meStateCell(r) {
+  const st = String(r.ship_state || "").trim();
+  return st ? `<span class="bov-cell-mono">${escapeHtml(st.toUpperCase())}</span>` : `<span class="bov-cell-muted">—</span>`;
+}
+
 function meColumns() {
   return [
-    { key: "date", label: "Date", width: "9%", render: (r) => escapeHtml(bovDateMdy(r.date)) },
-    { key: "number", label: "Number", width: "11%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.number || "—")}</span>` },
-    { key: "store_name", label: "Store", width: "13%", render: meStoreCell },
-    { key: "customer", label: "Customer", width: "21%", render: (r) => escapeHtml(r.customer || "—") },
+    { key: "date", label: "Date", width: "8%", render: (r) => escapeHtml(bovDateMdy(r.date)) },
+    { key: "number", label: "Number", width: "10%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.number || "—")}</span>` },
+    { key: "store_name", label: "Store", width: "12%", render: meStoreCell },
+    { key: "customer", label: "Customer", width: "17%", render: (r) => escapeHtml(r.customer || "—") },
+    { key: "ship_state", label: "State", width: "6%", render: meStateCell },
     { key: "total", label: "Total", num: true, width: "10%", render: (r) => bovMoney(r.total) },
-    { key: "shipping_collected", label: "Ship collected", num: true, width: "11%", render: meShipCollectedCell },
-    { key: "shipping_cost", label: "Ship cost", num: true, width: "11%", render: meShipCostCell },
-    { key: "profit", label: "Profit", num: true, width: "11%", render: meProfitCell },
+    { key: "shipping_collected", label: "Ship collected", num: true, width: "10%", render: meShipCollectedCell },
+    { key: "shipping_cost", label: "Ship cost", num: true, width: "10%", render: meShipCostCell },
+    { key: "profit", label: "Profit", num: true, width: "10%", render: meProfitCell },
+    { key: "profit_pct", label: "Profit %", num: true, width: "7%", render: meProfitPctCell },
   ];
 }
 
@@ -24856,11 +24893,12 @@ function meRowAttrs(r) {
 function meTfootHtml(t) {
   return `<tfoot><tr>` +
     `<td class="bov-num bov-line-no"></td>` +
-    `<td colspan="4">${bovInt(t.orders)} orders${t.profit_known < t.orders ? ` · profit known for ${bovInt(t.profit_known)}` : ""}</td>` +
+    `<td colspan="5">${bovInt(t.orders)} orders${t.profit_known < t.orders ? ` · profit known for ${bovInt(t.profit_known)}` : ""}</td>` +
     `<td class="bov-num">${bovMoney(t.total)}</td>` +
     `<td class="bov-num">${bovMoney(t.shipping_collected)}</td>` +
     `<td class="bov-num">${bovMoney(t.shipping_cost)}</td>` +
     `<td class="bov-num"><span class="bov-profit${t.profit < 0 ? " is-neg" : ""}">${escapeHtml(bovMoney(t.profit))}</span></td>` +
+    `<td class="bov-num">${t.profit_pct != null ? `<span class="bov-margin${meProfitPctTone(t.profit_pct)}" title="${escapeHtml(`Profit ${bovMoney(t.profit)} on ${bovMoney(t.profit_base)} of orders with a known profit`)}">${escapeHtml(bovPct(t.profit_pct))}</span>` : "—"}</td>` +
     `</tr></tfoot>`;
 }
 
@@ -24876,6 +24914,9 @@ function meSummaryHtml(t) {
       t.est_orders ? `incl. ~${bovMoney(t.est_amount)} estimated on ${bovInt(t.est_orders)} order${t.est_orders === 1 ? "" : "s"}` : ""),
     tile("Profit", `<span class="bov-profit${t.profit < 0 ? " is-neg" : ""}">${escapeHtml(bovMoney(t.profit))}</span>`,
       t.profit_known < t.orders ? `${bovInt(t.orders - t.profit_known)} orders without a known profit` : ""),
+    tile("Profit %", t.profit_pct != null
+      ? `<span class="bov-margin${meProfitPctTone(t.profit_pct)}">${escapeHtml(bovPct(t.profit_pct))}</span>` : "—",
+      t.profit_pct != null && t.profit_known < t.orders ? `of ${bovMoney(t.profit_base)} in orders with a known profit` : ""),
   ].join("");
 }
 
