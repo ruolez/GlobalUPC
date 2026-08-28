@@ -4640,7 +4640,7 @@
         <div id="shopify-sales-page" class="page" style="display: none">
           <header class="page-header">
             <h2>Shopify Sales</h2>
-            <p class="subtitle">View fulfilled order sales reports from Shopify stores</p>
+            <p class="subtitle">Product sales from orders placed in a date range across Shopify stores</p>
           </header>
 
           <div class="card" style="margin-bottom: 1.5rem">
@@ -4669,7 +4669,7 @@
                   <button type="button" class="btn btn-secondary" data-range="last-month" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Last Month</button>
                 </div>
                 <small style="color: var(--text-tertiary); font-size: 0.75rem; margin-top: 0.5rem; display: block;">
-                  Filters by fulfillment date. Shopify limits to last 60 days unless your app has <code>read_all_orders</code> scope.
+                  Counts orders placed within the date range (store local time) that are fully fulfilled and not cancelled or refunded — the same rule as Business Overview → Month End. Shopify limits to last 60 days unless your app has <code>read_all_orders</code> scope.
                 </small>
               </div>
 
@@ -4699,7 +4699,7 @@
           </div>
 
           <div id="shopify-sales-empty" style="display: none; text-align: center; padding: 3rem 1rem; color: var(--text-secondary);">
-            <p>No fulfilled orders found for the selected date range.</p>
+            <p>No fulfilled orders were placed in the selected date range.</p>
           </div>
 
           <div id="shopify-sales-results" style="display: none;">

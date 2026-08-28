@@ -9764,7 +9764,8 @@ function displayShopifySalesResults(data) {
   const shippingVal = parseFloat(summary.total_shipping || 0);
   const shippingPart = shippingVal > 0 ? ` · $${shippingVal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} shipping` : "";
   const sourcePart = summary.data_source === "local" ? " · local data" : "";
-  let summaryHtml = `<div>${summary.total_items} products · ${summary.total_quantity?.toLocaleString()} units sold · $${parseFloat(summary.total_revenue || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} total revenue${shippingPart} · ${summary.stores_searched} store(s) · ${summary.date_range?.start} to ${summary.date_range?.end}${sourcePart}</div>`;
+  const ordersPart = summary.total_orders != null ? `${summary.total_orders.toLocaleString()} orders · ` : "";
+  let summaryHtml = `<div>${ordersPart}${summary.total_items} products · ${summary.total_quantity?.toLocaleString()} units sold · $${parseFloat(summary.total_revenue || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} total revenue${shippingPart} · ${summary.stores_searched} store(s) · ${summary.date_range?.start} to ${summary.date_range?.end}${sourcePart}</div>`;
 
   const skippedStores = summary.skipped_stores || [];
   if (skippedStores.length > 0) {

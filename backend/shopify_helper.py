@@ -3,7 +3,7 @@ import aiohttp
 import asyncio
 import random
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List, Tuple
 from zoneinfo import ZoneInfo
 
@@ -999,10 +999,21 @@ async def fetch_fulfilled_orders(
     admin_api_key: str,
     start_date: str,
     end_date: str,
-    api_version: str = "2025-01"
+    api_version: str = "2025-01",
+    tz: Optional[str] = None,
 ) -> tuple[bool, Optional[str], List[Dict[str, Any]]]:
+    """
+    Line items of the orders that count as sales for [start_date, end_date]:
+    placed on a shop-local day in the range, fully fulfilled, not cancelled,
+    not refunded — the Business Overview → Month End membership rule, so the
+    Shopify Sales / Sales reports and Month End agree on the order set.
+    ``tz`` is the shop's IANA timezone; None resolves it from the shop (a
+    failed lookup falls back to UTC dates).
+    """
     try:
         shop_domain = validate_shop_domain(shop_domain)
+        if tz is None:
+            tz = await fetch_shop_timezone(shop_domain, admin_api_key, api_version)
 
         line_item_fields = """
                       title
@@ -1049,10 +1060,10 @@ async def fetch_fulfilled_orders(
                     currencyCode
                   }}
                 }}
-                fulfillments(first: 10) {{
-                  createdAt
-                  status
-                }}
+                createdAt
+                cancelledAt
+                displayFinancialStatus
+                displayFulfillmentStatus
                 lineItems(first: 100) {{
                   pageInfo {{
                     hasNextPage
@@ -1092,13 +1103,17 @@ async def fetch_fulfilled_orders(
         }}
         """
 
-        # Only a lower updated_at bound: an order fulfilled in range was
-        # necessarily updated on/after start_date, so it is a safe prefilter.
-        # An upper bound is NOT safe — Shopify bumps updated_at on delivery
-        # scans, refunds and tag edits, so it would drop orders that were
-        # touched after the range end (the real date gate is the fulfillment
-        # createdAt check below).
-        query_filter = f"fulfillment_status:shipped updated_at:>={start_date}"
+        # Prefilter only — the exact gate is the per-order check below.
+        # Shopify's search runs created_at on the shop's local day; the
+        # one-day pad on each side is insurance so no boundary order is
+        # missed. Not order_window_filter(): that also drops banned/fraud
+        # tagged orders, which Month End does not.
+        search_lo = (datetime.fromisoformat(start_date) - timedelta(days=1)).date().isoformat()
+        search_hi = (datetime.fromisoformat(end_date) + timedelta(days=2)).date().isoformat()
+        query_filter = (
+            "fulfillment_status:shipped -status:cancelled -financial_status:refunded "
+            f"created_at:>={search_lo} created_at:<{search_hi}"
+        )
         url = f"https://{shop_domain}/admin/api/{api_version}/graphql.json"
         headers = {
             "X-Shopify-Access-Token": admin_api_key,
@@ -1200,19 +1215,15 @@ async def fetch_fulfilled_orders(
                     order = edge.get("node", {})
                     order_name = order.get("name", "")
 
-                    fulfillments = order.get("fulfillments", [])
-                    fulfillment_in_range = False
-                    for f in fulfillments:
-                        if f.get("status") != "SUCCESS":
-                            continue
-                        created_at = f.get("createdAt", "")
-                        if created_at:
-                            f_date = created_at[:10]
-                            if start_date <= f_date <= end_date:
-                                fulfillment_in_range = True
-                                break
-
-                    if not fulfillment_in_range:
+                    # Mirrors shopify_sales_local._FULFILLED_LINES_SQL exactly.
+                    if order.get("cancelledAt") is not None:
+                        continue
+                    if order.get("displayFinancialStatus") == "REFUNDED":
+                        continue
+                    if order.get("displayFulfillmentStatus") != "FULFILLED":
+                        continue
+                    placed_on = local_date(order.get("createdAt"), tz)
+                    if not placed_on or not (start_date <= placed_on <= end_date):
                         continue
 
                     shipping_price_set = order.get("totalShippingPriceSet") or {}

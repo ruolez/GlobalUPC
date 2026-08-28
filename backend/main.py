@@ -4729,10 +4729,15 @@ async def shopify_sales_stream(request: ShopifySalesRequest, db: Session = Depen
         if use_local:
             # Stores without a completed sync are skipped, never silently
             # routed to the live API — the checkbox means "no live order pull".
+            # Order days are the shop's own timezone (captured by the sync),
+            # with the same fallback Month End uses.
+            fallback_tz = _bov_tz(_bov_config(db))
             synced_map = await asyncio.to_thread(shopify_sync.get_synced_stores)
             for sid in list(store_map):
                 if sid not in synced_map:
                     skipped_names.append(store_map.pop(sid)["name"])
+                else:
+                    store_map[sid]["tz"] = synced_map[sid].get("shop_timezone") or fallback_tz
 
         all_line_items = []
         total_stores = len(store_map)
@@ -4756,7 +4761,7 @@ async def shopify_sales_stream(request: ShopifySalesRequest, db: Session = Depen
 
         async def fetch_store_orders_local(store_info):
             success, error, line_items = await shopify_sales_local.fetch_fulfilled_orders_local(
-                store_info["id"], start_date, end_date
+                store_info["id"], start_date, end_date, store_info.get("tz")
             )
             if success and line_items:
                 # Today's Price is the one live value: the mirror has no
@@ -4970,7 +4975,7 @@ async def shopify_sales_stream(request: ShopifySalesRequest, db: Session = Depen
         total_quantity = sum(r["total_quantity"] for r in results)
         total_revenue = sum(float(r["total_revenue"]) for r in results)
 
-        yield f"event: complete\ndata: {json.dumps({'results': results, 'summary': {'total_items': len(results), 'total_quantity': total_quantity, 'total_revenue': f'{total_revenue:.2f}', 'total_shipping': f'{total_shipping:.2f}', 'stores_searched': len(store_map), 'date_range': {'start': start_date, 'end': end_date}, 'excluded_products': excluded_products, 'excluded_total_revenue': f'{excluded_total_revenue:.2f}', 'excluded_total_quantity': excluded_total_quantity, 'data_source': data_source, 'skipped_stores': skipped_names}})}\n\n"
+        yield f"event: complete\ndata: {json.dumps({'results': results, 'summary': {'total_items': len(results), 'total_orders': len(seen_orders), 'total_quantity': total_quantity, 'total_revenue': f'{total_revenue:.2f}', 'total_shipping': f'{total_shipping:.2f}', 'stores_searched': len(store_map), 'date_range': {'start': start_date, 'end': end_date}, 'excluded_products': excluded_products, 'excluded_total_revenue': f'{excluded_total_revenue:.2f}', 'excluded_total_quantity': excluded_total_quantity, 'data_source': data_source, 'skipped_stores': skipped_names}})}\n\n"
 
     async def generate_sales_events_safe() -> AsyncGenerator[str, None]:
         try:

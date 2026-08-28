@@ -9,14 +9,20 @@ aggregation / cost / margin pipeline unchanged. Parity with the live path is
 the design goal, correctness improvements are not: the two modes must diff
 clean on a freshly synced store.
 
-Rules mirrored from the live path (shopify_helper.fetch_fulfilled_orders):
+Order membership is the Business Overview → Month End rule
+(business_overview_helper._month_end_shopify_orders_sync), so the two reports
+agree on which orders — and therefore which products — belong to a period:
 
-- Order prefilter ``fulfillment_status:shipped`` becomes
-  ``fulfillment_status = 'FULFILLED'``. No updated_at bound on either side:
-  Shopify bumps an order's updated_at on delivery/tracking events, so an
-  upper bound would drop most orders of any window not ending today.
-- Real filter: some fulfillment with ``status = 'SUCCESS'`` whose ``createdAt``
-  UTC date slice (``createdAt[:10]``, NOT the shop's local day) is in range.
+- Placed in the period: ``created_at`` in the shop's own timezone falls on a
+  day within [start_date, end_date] (inclusive, whole days).
+- Fully fulfilled: ``fulfillment_status = 'FULFILLED'`` (displayFulfillmentStatus).
+- Not cancelled, not refunded: ``_SHOPIFY_COMPLETED``.
+
+The fulfillment date plays no part any more; an order placed late in the
+period but not yet shipped simply does not appear until it ships.
+
+Line-item rules shared with the live path:
+
 - ``quantity`` = currentQuantity when the sync captured it (0 = fully
   refunded/removed, dropped), else the ordered quantity; ``unit_price`` =
   discounted unit price, falling back to the original unit price.
@@ -29,9 +35,8 @@ Known gaps (accepted):
   by a cent from Shopify's own ``discountedUnitPriceSet`` on discounted
   multi-unit lines.
 - Rows synced before migration 018 have NULL ``current_quantity`` /
-  ``total_shipping`` and no per-fulfillment ``status``: the fallbacks are the
-  ordered quantity, 0 shipping, and a ``displayStatus``-based approximation.
-  A Full resync removes all three.
+  ``total_shipping``: the fallbacks are the ordered quantity and 0 shipping.
+  A Full resync removes both.
 - ``today_price`` is always None here; the endpoint stamps it from a small
   live variant-price lookup.
 """
@@ -42,15 +47,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import text
 
+from business_overview_helper import _SHOPIFY_COMPLETED, _safe_tz
 from database import engine
 
 
-# created_at pruning is not part of the live semantics: a fulfillment cannot be
-# created before its order, so any order with an in-range fulfillment was
-# created before end + 2 days. It lets idx_shoporder_store_created cut the scan
-# instead of walking every order the store ever had. If this is ever slow on a
-# very large store, a GIN index on fulfillments is the escalation path.
-_FULFILLED_LINES_SQL = """
+_FULFILLED_LINES_SQL = f"""
 SELECT o.name AS order_name,
        o.currency,
        COALESCE(o.total_shipping, 0) AS shipping_amount,
@@ -68,16 +69,10 @@ FROM shopify_orders o
 JOIN shopify_order_line_items li
   ON li.store_id = o.store_id AND li.order_shopify_id = o.shopify_id
 WHERE o.store_id = :sid
+  AND {_SHOPIFY_COMPLETED}
   AND o.fulfillment_status = 'FULFILLED'
-  AND o.created_at < ((CAST(:end AS date) + 2)::timestamp AT TIME ZONE 'UTC')
-  AND EXISTS (
-      SELECT 1
-      FROM jsonb_array_elements(coalesce(o.fulfillments, '[]'::jsonb)) f
-      WHERE (f->>'status' = 'SUCCESS'
-             OR (f->>'status' IS NULL
-                 AND coalesce(f->>'displayStatus', '') NOT IN ('CANCELED', 'FAILURE')))
-        AND substr(f->>'createdAt', 1, 10) BETWEEN :start AND :end
-  )
+  AND o.created_at >= (CAST(:start AS date)::timestamp AT TIME ZONE :tz)
+  AND o.created_at <  ((CAST(:end AS date) + 1)::timestamp AT TIME ZONE :tz)
 ORDER BY li.id
 """
 
@@ -91,13 +86,13 @@ def _money_str(value: Any) -> str:
 
 
 def _fetch_fulfilled_orders_local_sync(
-    store_id: int, start_date: str, end_date: str
+    store_id: int, start_date: str, end_date: str, tz: Optional[str]
 ) -> Tuple[bool, Optional[str], List[Dict[str, Any]]]:
     try:
         with engine.connect() as conn:
             rows = conn.execute(
                 text(_FULFILLED_LINES_SQL),
-                {"sid": store_id, "start": start_date, "end": end_date},
+                {"sid": store_id, "start": start_date, "end": end_date, "tz": _safe_tz(tz)},
             ).mappings().all()
     except Exception as e:
         return False, f"Local data error: {e}", []
@@ -134,8 +129,8 @@ def _fetch_fulfilled_orders_local_sync(
 
 
 async def fetch_fulfilled_orders_local(
-    store_id: int, start_date: str, end_date: str
+    store_id: int, start_date: str, end_date: str, tz: Optional[str] = None
 ) -> Tuple[bool, Optional[str], List[Dict[str, Any]]]:
     return await asyncio.to_thread(
-        _fetch_fulfilled_orders_local_sync, store_id, start_date, end_date
+        _fetch_fulfilled_orders_local_sync, store_id, start_date, end_date, tz
     )
