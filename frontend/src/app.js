@@ -19577,11 +19577,16 @@ function bovSetCostMode(mode) {
   bovInvalidateMonthEnd();
 }
 
-// Month End is fetched on its own (SSE) and carries the cost basis too.
+// Month End is fetched on its own (SSE) and carries the cost basis too. It
+// never refetches by itself: a period / store / cost-basis change drops the
+// loaded result and shows the idle panel until the user runs it again.
 function bovInvalidateMonthEnd() {
   if (!monthEndState.initialized) return;
+  if (monthEndState.abort) monthEndState.abort.abort();
+  monthEndState.loading = false;
+  const hadData = !!monthEndState.data;
   monthEndState.data = null;
-  if (bovState.section === "month-end") fetchMonthEnd();
+  meShowIdle(hadData ? "changed" : null);
 }
 
 function bovSyncShipToggle() {
@@ -25021,7 +25026,8 @@ function loadMonthEndPage() {
     document.querySelectorAll('#me-type-chips [data-me-type]').forEach((b) =>
       b.classList.toggle("is-active", b.dataset.meType === monthEndState.filters.type));
 
-    document.getElementById("me-refresh")?.addEventListener("click", () => fetchMonthEnd());
+    document.getElementById("me-run")?.addEventListener("click", () => fetchMonthEnd());
+    document.getElementById("me-idle-run")?.addEventListener("click", () => fetchMonthEnd());
 
     document.getElementById("me-type-chips")?.addEventListener("click", (e) => {
       const b = e.target.closest("[data-me-type]");
@@ -25062,7 +25068,46 @@ function loadMonthEndPage() {
     // Sortable headers ride the Business Overview page delegation:
     // th[data-bov-sort] → bovToggleSort("monthEnd", key) → bovRenderCard("monthEnd").
   }
-  if (!monthEndState.data && !monthEndState.loading) fetchMonthEnd();
+  // Opening the tab never runs the report — it is heavy (every invoice and
+  // Shopify order in the period plus cost and parcel lookups), so it waits
+  // for the Run button.
+  if (!monthEndState.data && !monthEndState.loading) meShowIdle(null);
+}
+
+function meSetRunning(on) {
+  ["me-run", "me-idle-run"].forEach((id) => {
+    const b = document.getElementById(id);
+    if (b) b.disabled = !!on;
+  });
+}
+
+// Idle panel: nothing loaded for the current period / stores / cost basis.
+// `reason` "changed" = a loaded result was discarded by a topbar change.
+function meShowIdle(reason) {
+  const badge = document.getElementById("bov-nav-count-month-end");
+  if (badge) { badge.hidden = true; badge.textContent = ""; }
+  ["me-not-configured", "me-warnings", "me-summary", "me-loading", "me-error", "me-empty", "me-table-card"]
+    .forEach((id) => meShow(id, false));
+  meShow("me-toolbar", true);
+  const rangeEl = document.getElementById("me-range-label");
+  if (rangeEl) {
+    const r = bovRangeParams();
+    rangeEl.textContent = r.date_from ? `${bovDateMdy(r.date_from)} – ${bovDateMdy(r.date_to)}` : "";
+  }
+  const chips = document.getElementById("me-store-chips");
+  if (chips) chips.innerHTML = "";
+  const reps = document.getElementById("me-rep-filter");
+  if (reps) reps.hidden = true;
+  const exportBar = document.getElementById("me-export-bar");
+  if (exportBar) exportBar.innerHTML = "";
+  const title = document.getElementById("me-idle-title");
+  if (title) {
+    title.textContent = reason === "changed"
+      ? "Period, stores or cost basis changed — run the report again"
+      : "Month End has not been run for this period";
+  }
+  meSetRunning(false);
+  meShow("me-idle", true);
 }
 
 function meSetProgress(message) {
@@ -25091,7 +25136,9 @@ async function fetchMonthEnd() {
   const ctl = new AbortController();
   monthEndState.abort = ctl;
   monthEndState.loading = true;
+  meShow("me-idle", false);
   meShow("me-error", false);
+  meSetRunning(true);
   meSetProgress(null);
   meSetProgress("Starting…");
   meShow("me-loading", true);
@@ -25104,6 +25151,7 @@ async function fetchMonthEnd() {
     if (monthEndState.abort === ctl) {
       monthEndState.loading = false;
       meShow("me-loading", false);
+      meSetRunning(false);
     }
   };
   try {

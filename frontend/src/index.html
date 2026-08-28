@@ -594,7 +594,7 @@
                   <div class="me-toolbar-group me-toolbar-right">
                     <input type="search" id="me-search" placeholder="Search number, customer or state…" />
                     <span id="me-export-bar" class="bov-export-slot"></span>
-                    <button type="button" class="btn btn-secondary me-btn-sm" id="me-refresh" title="Reload">Refresh</button>
+                    <button type="button" class="btn btn-primary me-btn-sm" id="me-run" title="Run Month End for the period and stores selected in the topbar">Run report</button>
                   </div>
                 </div>
               </div>
@@ -603,6 +603,15 @@
               <div id="me-summary" class="me-summary" style="display: none;"></div>
               <div id="me-loading" style="display: none; text-align: center; padding: 2.5rem 1rem; color: var(--text-secondary);">Loading orders…</div>
               <div id="me-error" class="qip-error" style="display: none; margin-bottom: 1.5rem;"></div>
+              <div id="me-idle" class="card" style="display: none; margin-bottom: 1.5rem;">
+                <div class="me-idle">
+                  <div class="me-idle-text">
+                    <strong id="me-idle-title">Month End has not been run for this period</strong>
+                    <span id="me-idle-note">It reads every invoice and Shopify order in the period and resolves product and shipping costs, so it only runs when you ask.</span>
+                  </div>
+                  <button type="button" class="btn btn-primary" id="me-idle-run">Run Month End</button>
+                </div>
+              </div>
               <div id="me-empty" style="display: none; text-align: center; padding: 3rem 1rem; color: var(--text-secondary);">
                 <p>No orders in this period.</p>
               </div>
