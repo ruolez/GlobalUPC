@@ -8691,3 +8691,18 @@ tr.bov-line-void td { opacity: 0.55; text-decoration: line-through; }
   .qb-acct-row { grid-template-columns: auto minmax(0, 1fr) auto; }
   .qb-acct-type { display: none; }
 }
+
+/* ===== Business Overview — row selection + Excel export ==================== */
+.bov-export-slot { display: inline-flex; align-items: center; }
+.bov-export-slot-right { margin-left: auto; }
+.bov-export-bar { display: inline-flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.bov-export-count { font-size: 0.75rem; color: var(--text-secondary); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.bov-export-hint { font-size: 0.6875rem; color: var(--text-tertiary); white-space: nowrap; }
+.bov-export-bar .btn[disabled] { opacity: 0.5; cursor: not-allowed; }
+.bov-mini-table th.bov-sel,
+.bov-mini-table td.bov-sel { width: 2.25rem; padding: 0.5rem 0.25rem 0.5rem 0.75rem; text-align: center; cursor: pointer; }
+.bov-mini-table th.bov-sel { cursor: pointer; }
+.bov-mini-table .bov-sel input[type="checkbox"] { width: auto; margin: 0; accent-color: var(--accent-primary); cursor: pointer; vertical-align: middle; }
+.bov-mini-table.is-selecting tbody { user-select: none; }
+.bov-mini-table.is-selecting tbody tr:not([data-bov-open]) { cursor: pointer; }
+.bov-mini-table tr.is-selected td { background: color-mix(in srgb, var(--accent-primary) 10%, transparent); }

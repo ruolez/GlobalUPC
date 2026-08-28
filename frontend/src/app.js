@@ -19977,6 +19977,10 @@ function bovBindOnce() {
       bovToggleSort(sortTh.dataset.bovWidget, sortTh.dataset.bovSort);
       return;
     }
+    const selCell = e.target.closest("td.bov-sel, th.bov-sel");
+    if (selCell) { bovExportSelClick(e, selCell); return; }
+    const selRow = e.target.closest("tr[data-bov-selkey]");
+    if (selRow && !selRow.hasAttribute("data-bov-open")) { bovExportSelClick(e, selRow); return; }
     const row = e.target.closest("[data-bov-open]");
     if (row) bovOpenRow(row);
   });
@@ -20900,7 +20904,9 @@ function bovHandleAction(action, el) {
     showToast(`Not available in the ${bovView().label}.`, "warning");
     return;
   }
-  if (action === "config") {
+  if (action.startsWith("export-")) {
+    bovExportAction(action.slice("export-".length), el?.dataset.bovWidget);
+  } else if (action === "config") {
     bovOpenConfigModal({ tab: "sources" });
   } else if (action === "settings-roles") {
     // Admin DB is edited in-page now (config form select).
@@ -22735,16 +22741,22 @@ function bovExportMissingCost() {
   const data = rows.map((r) => [r.store_name, r.title || "", r.variant_title || "", r.vendor || "", r.sku || "", r.barcode || "",
     bovMissingCostReason(r.reason), r.units, r.orders, r.revenue, r.admin_url || ""]);
   const p = d.period || bovState.period || {};
-  const fname = `shopify-products-without-cost-${p.start || "start"}-to-${p.end || "end"}`;
+  bovDownloadSheet({
+    sheet: "Missing cost", header, data, widths: [14, 44, 18, 16, 16, 16, 26, 10, 8, 12, 50],
+    fname: `shopify-products-without-cost-${p.start || "start"}-to-${p.end || "end"}`,
+  });
+}
+
+// One .xlsx download (SheetJS) with a CSV fallback when the CDN script is unavailable.
+function bovDownloadSheet({ sheet, header, data, widths, fname }) {
   if (typeof XLSX !== "undefined" && XLSX.utils) {
     const ws = XLSX.utils.aoa_to_sheet([header, ...data]);
-    ws["!cols"] = [14, 44, 18, 16, 16, 16, 26, 10, 8, 12, 50].map((w) => ({ wch: w }));
+    if (widths) ws["!cols"] = widths.map((w) => ({ wch: w }));
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Missing cost");
+    XLSX.utils.book_append_sheet(wb, ws, sheet);
     XLSX.writeFile(wb, `${fname}.xlsx`);
     return;
   }
-  // Offline fallback: CSV
   const csv = [header, ...data].map((row) => row.map((v) => `"${String(v == null ? "" : v).replace(/"/g, '""')}"`).join(",")).join("\n");
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
   const a = document.createElement("a");
@@ -22753,6 +22765,192 @@ function bovExportMissingCost() {
   document.body.appendChild(a);
   a.click();
   setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+}
+
+// ---------------------------------------------------------------------------
+// Row selection + Excel export for the Month End and Products tables.
+// "Export…" turns the table into selection mode (checkbox column, header box =
+// every listed row, shift-click = range); "Export N" writes the selected rows
+// in the table's current order. Selection is keyed per row so it survives
+// re-sorts and filter changes; only rows still listed are exported.
+// ---------------------------------------------------------------------------
+
+const BOV_EXPORTS = {
+  monthEnd: {
+    bar: "me-export-bar",
+    keyOf: (r) => r.row_key,
+    rows: () => (monthEndState.data && monthEndState.data.configured && !monthEndState.data.filtered_out ? monthEndVisibleRows() : []),
+    rerender: () => renderMonthEnd(),
+    period: () => (monthEndState.data && monthEndState.data.period) || {},
+    sheet: meExportSheet,
+    fname: "month-end",
+  },
+  products: {
+    bar: "bov-products-export-bar",
+    keyOf: (r) => `${r.store_id}:${r.upc || ""}:${r.sku || ""}:${r.description || ""}`,
+    rows: () => bovProductsVisibleRows(),
+    rerender: () => bovRenderProductsTable(),
+    period: () => (bovState.widgets.products.data && bovState.widgets.products.data.period) || bovState.period || {},
+    sheet: bovProductsExportSheet,
+    fname: "products-sold",
+  },
+};
+
+function bovExportSel(widgetKey) {
+  if (!bovState.exportSel) bovState.exportSel = {};
+  if (!bovState.exportSel[widgetKey]) bovState.exportSel[widgetKey] = { on: false, keys: new Set(), anchor: null };
+  return bovState.exportSel[widgetKey];
+}
+
+function bovExportSelectedRows(widgetKey) {
+  const def = BOV_EXPORTS[widgetKey];
+  const sel = bovExportSel(widgetKey);
+  if (!def || !sel.on || !sel.keys.size) return [];
+  return def.rows().filter((r) => sel.keys.has(String(def.keyOf(r))));
+}
+
+function bovRenderExportBar(widgetKey) {
+  const def = BOV_EXPORTS[widgetKey];
+  const el = def && document.getElementById(def.bar);
+  if (!el) return;
+  const sel = bovExportSel(widgetKey);
+  const w = escapeHtml(widgetKey);
+  if (!sel.on) {
+    el.innerHTML = `<button type="button" class="btn btn-secondary me-btn-sm" data-bov-action="export-start" data-bov-widget="${w}" title="Pick rows and export them to Excel">Export…</button>`;
+    return;
+  }
+  const n = bovExportSelectedRows(widgetKey).length;
+  el.innerHTML = `<span class="bov-export-bar">` +
+    `<span class="bov-export-count">${bovInt(n)} selected</span>` +
+    `<button type="button" class="btn btn-secondary me-btn-sm" data-bov-action="export-all" data-bov-widget="${w}" title="Select every listed row">All</button>` +
+    `<button type="button" class="btn btn-secondary me-btn-sm" data-bov-action="export-none" data-bov-widget="${w}" title="Clear the selection">None</button>` +
+    `<button type="button" class="btn btn-primary me-btn-sm" data-bov-action="export-run" data-bov-widget="${w}"${n ? "" : " disabled"} title="Download the selected rows as an .xlsx file">Export ${bovInt(n)}</button>` +
+    `<button type="button" class="btn btn-secondary me-btn-sm" data-bov-action="export-cancel" data-bov-widget="${w}">Cancel</button>` +
+    `<span class="bov-export-hint">Shift-click selects a range</span>` +
+    `</span>`;
+}
+
+// Push the selection Set onto the rendered checkboxes without rebuilding the table.
+function bovExportSyncDom(widgetKey) {
+  const sel = bovExportSel(widgetKey);
+  const table = document.querySelector(`table[data-bov-selwidget="${CSS.escape(widgetKey)}"]`);
+  if (table) {
+    const boxes = [...table.querySelectorAll("tbody input[data-bov-sel]")];
+    let n = 0;
+    boxes.forEach((b) => {
+      const on = sel.keys.has(b.dataset.bovSel);
+      b.checked = on;
+      b.closest("tr")?.classList.toggle("is-selected", on);
+      if (on) n++;
+    });
+    const all = table.querySelector("thead input[data-bov-sel-all]");
+    if (all) {
+      all.checked = boxes.length > 0 && n === boxes.length;
+      all.indeterminate = n > 0 && n < boxes.length;
+    }
+  }
+  bovRenderExportBar(widgetKey);
+}
+
+// Click on a checkbox cell (or, for tables whose rows open nothing, the row itself).
+// Native checkbox toggling is left alone; the Set is the source of truth and
+// bovExportSyncDom re-applies it, so a direct click and a cell click agree.
+function bovExportSelClick(e, target) {
+  const table = target.closest("table[data-bov-selwidget]");
+  if (!table) return;
+  const widgetKey = table.dataset.bovSelwidget;
+  const sel = bovExportSel(widgetKey);
+  const boxes = [...table.querySelectorAll("tbody input[data-bov-sel]")];
+  if (target.tagName === "TH") {
+    const allOn = boxes.length > 0 && boxes.every((b) => sel.keys.has(b.dataset.bovSel));
+    boxes.forEach((b) => (allOn ? sel.keys.delete(b.dataset.bovSel) : sel.keys.add(b.dataset.bovSel)));
+    sel.anchor = null;
+  } else {
+    const row = target.tagName === "TR" ? target : target.closest("tr");
+    const key = row && row.dataset.bovSelkey;
+    if (key == null) return;
+    const on = !sel.keys.has(key);
+    const idx = boxes.findIndex((b) => b.dataset.bovSel === key);
+    const anchorIdx = e.shiftKey && sel.anchor != null ? boxes.findIndex((b) => b.dataset.bovSel === sel.anchor) : -1;
+    if (idx >= 0 && anchorIdx >= 0) {
+      const [lo, hi] = anchorIdx < idx ? [anchorIdx, idx] : [idx, anchorIdx];
+      for (let i = lo; i <= hi; i++) (on ? sel.keys.add(boxes[i].dataset.bovSel) : sel.keys.delete(boxes[i].dataset.bovSel));
+    } else {
+      on ? sel.keys.add(key) : sel.keys.delete(key);
+    }
+    sel.anchor = key;
+  }
+  bovExportSyncDom(widgetKey);
+}
+
+function bovExportAction(verb, widgetKey) {
+  const def = BOV_EXPORTS[widgetKey];
+  if (!def) return;
+  const sel = bovExportSel(widgetKey);
+  if (verb === "start") {
+    sel.on = true; sel.keys.clear(); sel.anchor = null;
+    def.rerender();
+  } else if (verb === "cancel") {
+    sel.on = false; sel.keys.clear(); sel.anchor = null;
+    def.rerender();
+  } else if (verb === "all") {
+    def.rows().forEach((r) => sel.keys.add(String(def.keyOf(r))));
+    sel.anchor = null;
+    bovExportSyncDom(widgetKey);
+  } else if (verb === "none") {
+    sel.keys.clear(); sel.anchor = null;
+    bovExportSyncDom(widgetKey);
+  } else if (verb === "run") {
+    const rows = bovExportSelectedRows(widgetKey);
+    if (!rows.length) { showToast("Select at least one row to export.", "warning"); return; }
+    const p = def.period();
+    const spec = def.sheet(rows);
+    bovDownloadSheet({ ...spec, fname: `${def.fname}-${p.start || "start"}-to-${p.end || "end"}` });
+    showToast(`Exported ${bovInt(rows.length)} row${rows.length === 1 ? "" : "s"}.`, "success");
+    sel.on = false; sel.keys.clear(); sel.anchor = null;
+    def.rerender();
+  }
+}
+
+function bovXlsNum(v, digits = 2) {
+  if (v == null || !isFinite(Number(v))) return null;
+  const f = Math.pow(10, digits);
+  return Math.round(Number(v) * f) / f;
+}
+
+function meExportSheet(rows) {
+  const basis = (r) => {
+    if (r._estimated) return "estimated";
+    if (r.shipping_cost == null) return r.shipping_missing ? "no parcel" : "";
+    if (r.source === "shopify" && bovNum(r.shipping_cost) === 0) return "no cost recorded";
+    return "actual";
+  };
+  return {
+    sheet: "Month End",
+    header: ["Date", "Number", "Type", "Store", "Customer", "State", "Status", "Total", "Ship collected", "Ship cost", "Ship cost basis", "Profit", "Profit %"],
+    widths: [11, 12, 11, 18, 28, 7, 10, 12, 13, 11, 15, 12, 10],
+    data: rows.map((r) => [
+      r.date || "", r.number || "", r.source === "shopify" ? "Shopify" : "BackOffice", r.store_name || "", r.customer || "",
+      String(r.ship_state || "").trim().toUpperCase(), r.status || "",
+      bovXlsNum(r.total), bovXlsNum(r.shipping_collected), bovXlsNum(r.shipping_cost), basis(r),
+      bovXlsNum(r.profit), bovXlsNum(r.profit_pct),
+    ]),
+  };
+}
+
+// One row per product: the visible columns only (no cost-total / profit sub-lines).
+function bovProductsExportSheet(rows) {
+  return {
+    sheet: "Products sold",
+    header: ["Product", "SKU", "UPC", "Store", "Qty", "Avg price", "Revenue", "Local cost", "S2S cost", "Local margin %", "S2S margin %"],
+    widths: [40, 14, 14, 18, 8, 10, 12, 11, 11, 13, 13],
+    data: rows.map((r) => [
+      r.description || "", r.sku || "", r.upc || "", r.store_name || "",
+      bovXlsNum(r.units, 0), bovXlsNum(r.avg_price), bovXlsNum(r.revenue),
+      bovXlsNum(r.local_unit_cost), bovXlsNum(r.s2s_unit_cost),
+      bovXlsNum(r.local_margin_pct), bovXlsNum(r.s2s_margin_pct),
+    ]),
+  };
 }
 
 async function bovOpenShopifyOrderModal(storeId, shopifyId, meCtx) {
@@ -22956,11 +23154,18 @@ function bovSortRows(rows, sort) {
 }
 
 // columns: [{key,label,num,width,render(row)->html,sortKey}]
+// opts.select = { keyOf(row) } adds a checkbox column while the widget's export
+// selection is on (see bovExportSel); the tfoot gets a matching blank cell.
 function bovTableHtml(widgetKey, columns, rows, opts = {}) {
   const alertMatches = bovActiveMatches(widgetKey);
   const sort = bovState.sort[widgetKey] || {};
   const numbered = opts.numbered !== false;   // running line number in the first column
-  const head = (numbered ? `<th class="bov-num bov-line-no" aria-label="Line">#</th>` : "") + columns
+  const sel = opts.select && bovExportSel(widgetKey).on ? bovExportSel(widgetKey) : null;
+  const keyOf = sel ? opts.select.keyOf : null;
+  const selHead = sel
+    ? `<th class="bov-sel" data-bov-widget="${escapeHtml(widgetKey)}" title="Select all listed rows"><input type="checkbox" data-bov-sel-all="${escapeHtml(widgetKey)}" aria-label="Select all listed rows"></th>`
+    : "";
+  const head = selHead + (numbered ? `<th class="bov-num bov-line-no" aria-label="Line">#</th>` : "") + columns
     .map((c) => {
       const sk = c.sortKey || c.key;
       const cls = ["qip-sortable"];
@@ -22973,11 +23178,18 @@ function bovTableHtml(widgetKey, columns, rows, opts = {}) {
     .map((r, i) => {
       const attrs = opts.rowAttrs ? opts.rowAttrs(r) : "";
       const alerted = bovRowAlerted(widgetKey, r, alertMatches);
-      const rowCls = `${opts.plainRows ? "" : "bov-row-click"}${alerted ? " bov-row-alert" : ""}`;
-      return `<tr class="${rowCls}"${opts.plainRows ? "" : ' tabindex="0"'}${alerted ? ' title="Flagged by the alert you opened"' : ""} ${attrs}>${numbered ? `<td class="bov-num bov-line-no">${i + 1}</td>` : ""}${columns.map((c) => `<td class="${c.num ? "bov-num" : ""}${c.cls ? ` ${c.cls}` : ""}">${c.render ? c.render(r) : escapeHtml(r[c.key] == null ? "—" : String(r[c.key]))}</td>`).join("")}</tr>`;
+      const key = sel ? String(keyOf(r)) : null;
+      const selected = sel ? sel.keys.has(key) : false;
+      const rowCls = `${opts.plainRows ? "" : "bov-row-click"}${alerted ? " bov-row-alert" : ""}${selected ? " is-selected" : ""}`;
+      const selCell = sel
+        ? `<td class="bov-sel" data-bov-widget="${escapeHtml(widgetKey)}"><input type="checkbox" data-bov-sel="${escapeHtml(key)}" aria-label="Select row"${selected ? " checked" : ""}></td>`
+        : "";
+      return `<tr class="${rowCls}"${opts.plainRows ? "" : ' tabindex="0"'}${alerted ? ' title="Flagged by the alert you opened"' : ""}${sel ? ` data-bov-selkey="${escapeHtml(key)}"` : ""} ${attrs}>${selCell}${numbered ? `<td class="bov-num bov-line-no">${i + 1}</td>` : ""}${columns.map((c) => `<td class="${c.num ? "bov-num" : ""}${c.cls ? ` ${c.cls}` : ""}">${c.render ? c.render(r) : escapeHtml(r[c.key] == null ? "—" : String(r[c.key]))}</td>`).join("")}</tr>`;
     })
     .join("");
-  return `${bovFlagBarHtml(widgetKey, rows, alertMatches)}<div class="bov-table-scroll"><table class="data-table bov-mini-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody>${opts.tfoot || ""}</table></div>`;
+  const tfoot = sel && opts.tfoot ? opts.tfoot.replace("<tfoot><tr>", `<tfoot><tr><td class="bov-sel"></td>`) : (opts.tfoot || "");
+  const tableAttrs = sel ? ` data-bov-selwidget="${escapeHtml(widgetKey)}"` : "";
+  return `${bovFlagBarHtml(widgetKey, rows, alertMatches)}<div class="bov-table-scroll"><table class="data-table bov-mini-table${sel ? " is-selecting" : ""}"${tableAttrs}><thead><tr>${head}</tr></thead><tbody>${body}</tbody>${tfoot}</table></div>`;
 }
 
 function bovStatusChip(status) {
@@ -23296,26 +23508,34 @@ function bovRenderProductsTable() {
   const allRows = d.rows || [];
   const st = d.totals || {};
   if (meta) meta.textContent = `${bovInt(d.count || allRows.length)} products · ${bovInt(st.units || 0)} units · ${bovCompactMoney(st.revenue || 0)}`;
-  const rows = bovApplyCardFilters("products", allRows, {
-    storeOf: (r) => r.store_name,
-    searchFields: ["description", "upc", "sku"],
-  });
+  const rows = bovProductsVisibleRows();
+  bovRenderExportBar("products");
   if (!rows.length) {
     body.innerHTML = bovEmptyHtml(allRows.length ? "No products match the filters." : "No products sold in this period.");
     return;
   }
-  const sorted = bovSortRows(rows, bovState.sort.products);
   // Server totals cover every row (even beyond the limit); once a chip/search
   // narrows the list, the totals row follows what's visible.
   const totals = (!bovCardFiltersActive("products") && d.totals) ? d.totals : bovProductsComputeTotals(rows);
-  body.innerHTML = bovTableHtml("products", bovProductCols(), sorted, { tfoot: bovProductsTfootHtml(totals) });
+  body.innerHTML = bovTableHtml("products", bovProductCols(), rows, { tfoot: bovProductsTfootHtml(totals), select: { keyOf: BOV_EXPORTS.products.keyOf } });
   if (foot) {
     const notes = [];
     if (d.truncated) notes.push(`showing top ${bovInt(allRows.length)} of ${bovInt(d.count)} by revenue`);
     if (d.cost_store_name) notes.push(`S2S cost: ${d.cost_store_name}`);
     (d.warnings || []).forEach((msg) => notes.push(msg));
-    foot.innerHTML = bovFootHtml("products", rows.length, sorted.length, escapeHtml(notes.join(" · ")));
+    foot.innerHTML = bovFootHtml("products", rows.length, rows.length, escapeHtml(notes.join(" · ")));
   }
+}
+
+// Filtered + sorted product rows, exactly as listed (shared with the export).
+function bovProductsVisibleRows() {
+  const d = bovState.widgets.products.data;
+  if (!d || !d.configured || d.filtered_out || d.error) return [];
+  const rows = bovApplyCardFilters("products", d.rows || [], {
+    storeOf: (r) => r.store_name,
+    searchFields: ["description", "upc", "sku"],
+  });
+  return bovSortRows(rows, bovState.sort.products);
 }
 
 function bovProductsComputeTotals(rows) {
@@ -24982,6 +25202,7 @@ function renderMonthEnd() {
     return;
   }
   meRenderStoreChips(d);
+  bovRenderExportBar("monthEnd");
   const rows = monthEndVisibleRows();
   const t = meTotals(rows);
   meRenderWarnings(d, t);
@@ -25001,7 +25222,7 @@ function renderMonthEnd() {
     return;
   }
   meShow("me-empty", false);
-  if (table) table.innerHTML = bovTableHtml("monthEnd", meColumns(), rows, { tfoot: meTfootHtml(t), rowAttrs: meRowAttrs });
+  if (table) table.innerHTML = bovTableHtml("monthEnd", meColumns(), rows, { tfoot: meTfootHtml(t), rowAttrs: meRowAttrs, select: { keyOf: BOV_EXPORTS.monthEnd.keyOf } });
   if (foot) {
     const p = d.period || {};
     foot.innerHTML = `<span>${bovInt(rows.length)} of ${bovInt((d.rows || []).length)} orders · ${escapeHtml(p.start || "")} → ${escapeHtml(p.end || "")}</span>`;
