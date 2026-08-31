@@ -6603,31 +6603,7 @@ async def shopify_analytics_new_customers_by_month_stream(
             })
             prev_total = total
 
-        merged_states: Dict[str, Dict[str, Any]] = {}
-        for r in complete:
-            for k, e in (r.get("states") or {}).items():
-                tgt = merged_states.setdefault(
-                    k, {"code": e["code"], "label": e["label"], "lost": 0, "active": 0})
-                tgt["lost"] += e["lost"]
-                tgt["active"] += e["active"]
-        state_rows = []
-        for e in merged_states.values():
-            total = e["lost"] + e["active"]
-            state_rows.append({
-                "code": e["code"],
-                "label": e["label"],
-                "lost": e["lost"],
-                "active": e["active"],
-                "total": total,
-                # Suppressed on tiny samples: 1 of 1 is not a 100% loss rate.
-                "loss_rate": (round(e["lost"] / total * 100, 1)
-                              if total >= _STATE_MIN_CUSTOMERS else None),
-            })
-        state_rows.sort(key=lambda x: (-x["lost"], x["label"]))
-
         payload = {
-            "states": state_rows,
-            "state_min_customers": _STATE_MIN_CUSTOMERS,
             "stores": [{
                 "store_id": s["id"],
                 "store_name": s["name"],
