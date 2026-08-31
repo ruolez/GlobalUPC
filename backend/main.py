@@ -2773,7 +2773,7 @@ async def fetch_gap_events(upc, date_to, show_voided, s2s_conn, s2s_store_name, 
 
 
 @app.post("/api/item-tracker/search/stream")
-async def search_item_tracker_stream(request: ItemTrackerSearchRequest, db: Session = Depends(get_db)):
+async def search_item_tracker_stream(request: ItemTrackerSearchRequest):
     """
     Search for item history by UPC with real-time progress updates.
     Returns Server-Sent Events stream.
@@ -2788,24 +2788,48 @@ async def search_item_tracker_stream(request: ItemTrackerSearchRequest, db: Sess
             yield f"event: error\ndata: {json.dumps({'message': 'UPC is required'})}\n\n"
             return
 
-        # Get Item Tracker config
-        config = db.query(ItemTrackerConfig).first()
+        # All Postgres reads happen in this one short scope; the ORM rows are
+        # used detached for the rest of the stream, so every needed connection
+        # is loaded before the session closes.
+        with db_session() as db:
+            # Get Item Tracker config
+            config = db.query(ItemTrackerConfig).first()
 
-        if not config or not config.s2s_store_id:
-            yield f"event: error\ndata: {json.dumps({'message': 'Item Tracker not configured. Please configure S2S database in Settings.'})}\n\n"
-            return
+            if not config or not config.s2s_store_id:
+                yield f"event: error\ndata: {json.dumps({'message': 'Item Tracker not configured. Please configure S2S database in Settings.'})}\n\n"
+                return
 
-        # Get S2S store connection
-        s2s_store = db.query(Store).filter(
-            Store.id == config.s2s_store_id,
-            Store.store_type == StoreType.mssql
-        ).first()
+            # Get S2S store connection
+            s2s_store = db.query(Store).filter(
+                Store.id == config.s2s_store_id,
+                Store.store_type == StoreType.mssql
+            ).first()
 
-        if not s2s_store or not s2s_store.mssql_connection:
-            yield f"event: error\ndata: {json.dumps({'message': 'S2S database not found or missing connection details'})}\n\n"
-            return
+            if not s2s_store or not s2s_store.mssql_connection:
+                yield f"event: error\ndata: {json.dumps({'message': 'S2S database not found or missing connection details'})}\n\n"
+                return
 
-        s2s_conn = s2s_store.mssql_connection
+            s2s_conn = s2s_store.mssql_connection
+
+            preloaded_sales_stores = []
+            if config.sales_store_ids:
+                preloaded_sales_stores = db.query(Store).options(
+                    joinedload(Store.mssql_connection)
+                ).filter(
+                    Store.id.in_(config.sales_store_ids),
+                    Store.store_type == StoreType.mssql
+                ).all()
+
+            preloaded_inventory_store = None
+            if config.inventory_store_id:
+                preloaded_inventory_store = db.query(Store).options(
+                    joinedload(Store.mssql_connection)
+                ).filter(
+                    Store.id == config.inventory_store_id,
+                    Store.store_type == StoreType.mssql
+                ).first()
+
+            admin_store = _resolve_admin_store_soft(db)
         all_events = []
         event_counts = {
             "purchase": 0,
@@ -2931,10 +2955,7 @@ async def search_item_tracker_stream(request: ItemTrackerSearchRequest, db: Sess
 
             # 4. Get Sales and Customer Returns from Sales Stores
             if config.sales_store_ids:
-                sales_stores = db.query(Store).filter(
-                    Store.id.in_(config.sales_store_ids),
-                    Store.store_type == StoreType.mssql
-                ).all()
+                sales_stores = preloaded_sales_stores
 
                 stores_searched += len(sales_stores)
 
@@ -3032,10 +3053,7 @@ async def search_item_tracker_stream(request: ItemTrackerSearchRequest, db: Sess
 
             # 5. Get Inventory Recounts (if configured)
             if config.inventory_store_id:
-                inventory_store = db.query(Store).filter(
-                    Store.id == config.inventory_store_id,
-                    Store.store_type == StoreType.mssql
-                ).first()
+                inventory_store = preloaded_inventory_store
 
                 if inventory_store and inventory_store.mssql_connection:
                     stores_searched += 1
@@ -3081,7 +3099,6 @@ async def search_item_tracker_stream(request: ItemTrackerSearchRequest, db: Sess
             # NOT contribute to the running balance walk; they are simply
             # surfaced in the timeline at their StartDate so the user can
             # see when the UPC was reserved by a quotation.
-            admin_store = _resolve_admin_store_soft(db)
             if admin_store and admin_store.mssql_connection:
                 stores_searched += 1
                 admin_conn = admin_store.mssql_connection
@@ -3124,7 +3141,8 @@ async def search_item_tracker_stream(request: ItemTrackerSearchRequest, db: Sess
                     yield f"event: progress\ndata: {json.dumps({'status': 'completed', 'message': f'Found {len(in_progress_rows)} in-progress reservations'})}\n\n"
 
             # Filter out excluded business names (void-aware)
-            all_events, event_counts = apply_exclusion_filter(all_events, event_counts, db)
+            with db_session() as db:
+                all_events, event_counts = apply_exclusion_filter(all_events, event_counts, db)
 
             # Sort all events by date (newest first)
             all_events.sort(key=lambda e: e.event_date if e.event_date else datetime.min, reverse=True)
@@ -3133,10 +3151,11 @@ async def search_item_tracker_stream(request: ItemTrackerSearchRequest, db: Sess
             if item_info and item_info.quant_on_hand is not None:
                 balance = item_info.quant_on_hand
                 if date_to and date_to < date.today():
-                    gap_events = await fetch_gap_events(
-                        upc, date_to, show_voided, s2s_conn, s2s_store.name,
-                        sales_stores, inventory_store, db
-                    )
+                    with db_session() as db:
+                        gap_events = await fetch_gap_events(
+                            upc, date_to, show_voided, s2s_conn, s2s_store.name,
+                            sales_stores, inventory_store, db
+                        )
                     balance = compute_adjusted_balance(balance, gap_events)
                 for event in all_events:
                     if event.event_type == "inventory_recount":
@@ -3636,7 +3655,7 @@ async def delete_item_tracker_exclusion(exclusion_id: int, db: Session = Depends
 ## ==================== Price Updates ====================
 
 @app.post("/api/price-updates/fetch-prices/stream")
-async def fetch_prices_stream(request: PriceSearchRequest, db: Session = Depends(get_db)):
+async def fetch_prices_stream(request: PriceSearchRequest):
     async def generate_events() -> AsyncGenerator[str, None]:
         upc = request.upc.strip()
         if not upc:
@@ -3650,11 +3669,16 @@ async def fetch_prices_stream(request: PriceSearchRequest, db: Session = Depends
         prices = []
         sibling_prices = []
 
+        # Stores are read as detached objects for the rest of the stream, so
+        # both connections are eager-loaded before the session closes.
         stores_by_id = {}
-        for store_id in request.store_ids:
-            store = db.query(Store).filter(Store.id == store_id, Store.is_active == True).first()
-            if store:
-                stores_by_id[store_id] = store
+        with db_session() as db:
+            for store_id in request.store_ids:
+                store = db.query(Store).options(
+                    joinedload(Store.mssql_connection), joinedload(Store.shopify_connection)
+                ).filter(Store.id == store_id, Store.is_active == True).first()
+                if store:
+                    stores_by_id[store_id] = store
 
         if request.include_sibling_barcodes:
             # ── PATH A: Siblings checked (parallel) ──
@@ -4134,7 +4158,7 @@ async def fetch_prices_stream(request: PriceSearchRequest, db: Session = Depends
 
 
 @app.post("/api/price-updates/update/stream")
-async def update_prices_stream(request: PriceUpdateRequest, db: Session = Depends(get_db)):
+async def update_prices_stream(request: PriceUpdateRequest):
     async def generate_events() -> AsyncGenerator[str, None]:
         upc = request.upc.strip()
         if not upc:
@@ -4144,13 +4168,18 @@ async def update_prices_stream(request: PriceUpdateRequest, db: Session = Depend
         batch_id = str(uuid.uuid4())
         results = []
 
+        # Stores are used as detached objects for the rest of the stream, so
+        # both connections are eager-loaded before the session closes.
         valid_updates = []
-        for update in request.updates:
-            store = db.query(Store).filter(Store.id == update.store_id, Store.is_active == True).first()
-            if not store:
-                results.append({"store_id": update.store_id, "store_name": "Unknown", "success": False, "error": "Store not found"})
-                continue
-            valid_updates.append((update, store))
+        with db_session() as db:
+            for update in request.updates:
+                store = db.query(Store).options(
+                    joinedload(Store.mssql_connection), joinedload(Store.shopify_connection)
+                ).filter(Store.id == update.store_id, Store.is_active == True).first()
+                if not store:
+                    results.append({"store_id": update.store_id, "store_name": "Unknown", "success": False, "error": "Store not found"})
+                    continue
+                valid_updates.append((update, store))
 
         if not valid_updates:
             yield f"event: complete\ndata: {json.dumps({'results': results, 'batch_id': batch_id})}\n\n"
@@ -4276,8 +4305,9 @@ async def update_prices_stream(request: PriceUpdateRequest, db: Session = Depend
                     error_message=error,
                     created_at=server_time
                 )
-                db.add(history_entry)
-                db.commit()
+                with db_session() as db:
+                    db.add(history_entry)
+                    db.commit()
 
                 if success:
                     yield f"event: progress\ndata: {json.dumps({'status': 'updated', 'message': f'Updated {store.name} ({rows} row(s))'})}\n\n"
@@ -4299,27 +4329,28 @@ async def update_prices_stream(request: PriceUpdateRequest, db: Session = Depend
                     "error": "; ".join(errors) if errors else None,
                 })
 
-                for vu in update.variant_updates:
-                    history_entry = PriceUpdateHistory(
-                        batch_id=batch_id,
-                        store_id=store.id,
-                        store_name=store.name,
-                        store_type=update.store_type,
-                        upc=upc,
-                        product_description=vu.get("product_title"),
-                        variant_id=str(vu.get("variant_id", "")),
-                        variant_title=vu.get("variant_title"),
-                        variant_barcode=vu.get("barcode"),
-                        old_price=vu.get("old_price"),
-                        old_cost=vu.get("old_cost"),
-                        new_price=vu.get("new_price"),
-                        new_cost=vu.get("new_cost"),
-                        success=store_success,
-                        rows_affected=1 if store_success else 0,
-                        error_message="; ".join(errors) if errors else None
-                    )
-                    db.add(history_entry)
-                db.commit()
+                with db_session() as db:
+                    for vu in update.variant_updates:
+                        history_entry = PriceUpdateHistory(
+                            batch_id=batch_id,
+                            store_id=store.id,
+                            store_name=store.name,
+                            store_type=update.store_type,
+                            upc=upc,
+                            product_description=vu.get("product_title"),
+                            variant_id=str(vu.get("variant_id", "")),
+                            variant_title=vu.get("variant_title"),
+                            variant_barcode=vu.get("barcode"),
+                            old_price=vu.get("old_price"),
+                            old_cost=vu.get("old_cost"),
+                            new_price=vu.get("new_price"),
+                            new_cost=vu.get("new_cost"),
+                            success=store_success,
+                            rows_affected=1 if store_success else 0,
+                            error_message="; ".join(errors) if errors else None
+                        )
+                        db.add(history_entry)
+                    db.commit()
 
                 if store_success:
                     yield f"event: progress\ndata: {json.dumps({'status': 'updated', 'message': f'Updated {store.name} ({total_updated} variant(s))'})}\n\n"
@@ -4330,16 +4361,19 @@ async def update_prices_stream(request: PriceUpdateRequest, db: Session = Depend
         # Mirror propagation phase
         successful_store_ids = {r["store_id"] for r in results if r.get("success")}
         if successful_store_ids:
-            mirrors = db.query(StoreMirror).filter(
-                StoreMirror.source_store_id.in_(successful_store_ids)
-            ).all()
-
             active_mirrors = []
-            for m in mirrors:
-                mirror_store = db.query(Store).filter(Store.id == m.mirror_store_id, Store.is_active == True).first()
-                if mirror_store:
-                    source_store = db.query(Store).filter(Store.id == m.source_store_id).first()
-                    active_mirrors.append((m, source_store, mirror_store))
+            with db_session() as db:
+                mirrors = db.query(StoreMirror).filter(
+                    StoreMirror.source_store_id.in_(successful_store_ids)
+                ).all()
+
+                for m in mirrors:
+                    mirror_store = db.query(Store).options(
+                        joinedload(Store.mssql_connection), joinedload(Store.shopify_connection)
+                    ).filter(Store.id == m.mirror_store_id, Store.is_active == True).first()
+                    if mirror_store:
+                        source_store = db.query(Store).filter(Store.id == m.source_store_id).first()
+                        active_mirrors.append((m, source_store, mirror_store))
 
             if active_mirrors:
                 yield f"event: progress\ndata: {json.dumps({'status': 'mirroring', 'message': f'Propagating to {len(active_mirrors)} mirror store(s)...'})}\n\n"
@@ -4398,8 +4432,9 @@ async def update_prices_stream(request: PriceUpdateRequest, db: Session = Depend
                             mirror_source_store_id=source_store.id,
                             created_at=m_server_time,
                         )
-                        db.add(history_entry)
-                        db.commit()
+                        with db_session() as db:
+                            db.add(history_entry)
+                            db.commit()
 
                         mirror_result = {
                             "store_id": mirror_store.id,
@@ -4443,8 +4478,9 @@ async def update_prices_stream(request: PriceUpdateRequest, db: Session = Depend
                                 is_mirror=True,
                                 mirror_source_store_id=source_store.id,
                             )
-                            db.add(history_entry)
-                            db.commit()
+                            with db_session() as db:
+                                db.add(history_entry)
+                                db.commit()
                             results.append({
                                 "store_id": mirror_store.id,
                                 "store_name": mirror_store.name,
@@ -4486,27 +4522,28 @@ async def update_prices_stream(request: PriceUpdateRequest, db: Session = Depend
 
                         shopify_mirror_success = len(mirror_errors) == 0
 
-                        for v in found_variants:
-                            history_entry = PriceUpdateHistory(
-                                batch_id=batch_id,
-                                store_id=mirror_store.id,
-                                store_name=mirror_store.name,
-                                store_type="shopify",
-                                upc=upc,
-                                product_description=v.get("product_title"),
-                                variant_id=str(v.get("variant_id", "")),
-                                variant_title=v.get("variant_title"),
-                                variant_barcode=v.get("barcode"),
-                                new_price=mirror_new_price,
-                                new_cost=mirror_new_cost,
-                                success=shopify_mirror_success,
-                                rows_affected=1 if shopify_mirror_success else 0,
-                                error_message="; ".join(mirror_errors) if mirror_errors else None,
-                                is_mirror=True,
-                                mirror_source_store_id=source_store.id,
-                            )
-                            db.add(history_entry)
-                        db.commit()
+                        with db_session() as db:
+                            for v in found_variants:
+                                history_entry = PriceUpdateHistory(
+                                    batch_id=batch_id,
+                                    store_id=mirror_store.id,
+                                    store_name=mirror_store.name,
+                                    store_type="shopify",
+                                    upc=upc,
+                                    product_description=v.get("product_title"),
+                                    variant_id=str(v.get("variant_id", "")),
+                                    variant_title=v.get("variant_title"),
+                                    variant_barcode=v.get("barcode"),
+                                    new_price=mirror_new_price,
+                                    new_cost=mirror_new_cost,
+                                    success=shopify_mirror_success,
+                                    rows_affected=1 if shopify_mirror_success else 0,
+                                    error_message="; ".join(mirror_errors) if mirror_errors else None,
+                                    is_mirror=True,
+                                    mirror_source_store_id=source_store.id,
+                                )
+                                db.add(history_entry)
+                            db.commit()
 
                         results.append({
                             "store_id": mirror_store.id,
@@ -4539,8 +4576,9 @@ async def update_prices_stream(request: PriceUpdateRequest, db: Session = Depend
                         is_mirror=True,
                         mirror_source_store_id=source_store.id,
                     )
-                    db.add(history_entry)
-                    db.commit()
+                    with db_session() as db:
+                        db.add(history_entry)
+                        db.commit()
                     results.append({
                         "store_id": mirror_store.id,
                         "store_name": mirror_store.name,
@@ -5228,27 +5266,54 @@ def delete_sales_exclusion(exclusion_id: int, db: Session = Depends(get_db)):
 
 
 @app.post("/api/sales/report/stream")
-async def sales_report_stream(request: SalesReportRequest, db: Session = Depends(get_db)):
+async def sales_report_stream(request: SalesReportRequest):
     async def generate_report_events() -> AsyncGenerator[str, None]:
         if not request.mssql_store_ids and not request.shopify_store_ids:
             yield f"event: error\ndata: {json.dumps({'message': 'No stores selected'})}\n\n"
             return
 
-        config = db.query(SalesConfig).first()
-        if not config or not config.s2s_store_id:
-            yield f"event: error\ndata: {json.dumps({'message': 'Sales config not set. Please configure the primary database first.'})}\n\n"
-            return
+        with db_session() as db:
+            config = db.query(SalesConfig).first()
+            if not config or not config.s2s_store_id:
+                yield f"event: error\ndata: {json.dumps({'message': 'Sales config not set. Please configure the primary database first.'})}\n\n"
+                return
 
-        s2s_store = db.query(Store).filter(
-            Store.id == config.s2s_store_id,
-            Store.store_type == StoreType.mssql,
-            Store.is_active == True
-        ).first()
-        if not s2s_store or not s2s_store.mssql_connection:
-            yield f"event: error\ndata: {json.dumps({'message': 'S2S database store not found or inactive'})}\n\n"
-            return
+            s2s_store = db.query(Store).filter(
+                Store.id == config.s2s_store_id,
+                Store.store_type == StoreType.mssql,
+                Store.is_active == True
+            ).first()
+            if not s2s_store or not s2s_store.mssql_connection:
+                yield f"event: error\ndata: {json.dumps({'message': 'S2S database store not found or inactive'})}\n\n"
+                return
 
-        s2s_conn = s2s_store.mssql_connection
+            s2s_conn = s2s_store.mssql_connection
+
+            exclusions = db.query(SalesExclusion).all()
+            excluded_sales_names = []
+            excluded_return_names = []
+            for excl in exclusions:
+                if excl.void_status is None or excl.void_status == 0:
+                    excluded_sales_names.append(excl.business_name)
+                if excl.void_status is None:
+                    excluded_return_names.append(excl.business_name)
+
+            # The per-store loops below run as detached objects (connections
+            # eager-loaded), replacing the former query-per-store round trips.
+            mssql_stores_by_id = {
+                s.id: s for s in db.query(Store).options(joinedload(Store.mssql_connection)).filter(
+                    Store.id.in_(request.mssql_store_ids),
+                    Store.store_type == StoreType.mssql,
+                    Store.is_active == True,
+                ).all()
+            } if request.mssql_store_ids else {}
+            shopify_stores_by_id = {
+                s.id: s for s in db.query(Store).options(joinedload(Store.shopify_connection)).filter(
+                    Store.id.in_(request.shopify_store_ids),
+                    Store.store_type == StoreType.shopify,
+                    Store.is_active == True,
+                ).all()
+            } if request.shopify_store_ids else {}
 
         yield f"event: progress\ndata: {json.dumps({'status': 'fetching_products'})}\n\n"
 
@@ -5283,25 +5348,12 @@ async def sales_report_stream(request: SalesReportRequest, db: Session = Depends
 
         yield f"event: progress\ndata: {json.dumps({'status': 'products_fetched', 'count': len(products_map)})}\n\n"
 
-        exclusions = db.query(SalesExclusion).all()
-        excluded_sales_names = []
-        excluded_return_names = []
-        for excl in exclusions:
-            if excl.void_status is None or excl.void_status == 0:
-                excluded_sales_names.append(excl.business_name)
-            if excl.void_status is None:
-                excluded_return_names.append(excl.business_name)
-
         total_stores = len(request.mssql_store_ids) + len(request.shopify_store_ids)
         completed_count = 0
         store_names = []
 
         for store_id in request.mssql_store_ids:
-            store = db.query(Store).filter(
-                Store.id == store_id,
-                Store.store_type == StoreType.mssql,
-                Store.is_active == True
-            ).first()
+            store = mssql_stores_by_id.get(store_id)
             if not store or not store.mssql_connection:
                 completed_count += 1
                 yield f"event: progress\ndata: {json.dumps({'status': 'error_store', 'store_name': f'Store ID {store_id}', 'message': 'Store not found or inactive', 'completed': completed_count, 'total_stores': total_stores})}\n\n"
@@ -5363,11 +5415,7 @@ async def sales_report_stream(request: SalesReportRequest, db: Session = Depends
                 yield f"event: progress\ndata: {json.dumps({'status': 'error_store', 'store_name': store_name, 'message': str(e), 'completed': completed_count, 'total_stores': total_stores})}\n\n"
 
         for store_id in request.shopify_store_ids:
-            store = db.query(Store).filter(
-                Store.id == store_id,
-                Store.store_type == StoreType.shopify,
-                Store.is_active == True
-            ).first()
+            store = shopify_stores_by_id.get(store_id)
             if not store or not store.shopify_connection:
                 completed_count += 1
                 yield f"event: progress\ndata: {json.dumps({'status': 'error_store', 'store_name': f'Store ID {store_id}', 'message': 'Store not found or inactive', 'completed': completed_count, 'total_stores': total_stores})}\n\n"
