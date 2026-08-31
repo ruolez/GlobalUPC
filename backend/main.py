@@ -596,7 +596,7 @@ async def search_upc(request: UPCSearchRequest, db: Session = Depends(get_db)):
     )
 
 @app.post("/api/upc/update/stream")
-async def update_upc_stream(request: UPCUpdateRequest, db: Session = Depends(get_db)):
+async def update_upc_stream(request: UPCUpdateRequest):
     """
     Update UPC/barcode across all stores with real-time progress updates.
     Returns Server-Sent Events stream.
@@ -649,75 +649,76 @@ async def update_upc_stream(request: UPCUpdateRequest, db: Session = Depends(get
         })
 
         # Process matches and group by store
-        for match in matches:
-            store_id = match.store_id
-            store_name = match.store_name
-            store_type = match.store_type
+        with db_session() as db:
+            for match in matches:
+                store_id = match.store_id
+                store_name = match.store_name
+                store_type = match.store_type
 
-            if store_type == "shopify":
-                # Get store connection details
-                store = db.query(Store).filter(Store.id == store_id).first()
-                if not store or not store.shopify_connection:
-                    continue
+                if store_type == "shopify":
+                    # Get store connection details
+                    store = db.query(Store).filter(Store.id == store_id).first()
+                    if not store or not store.shopify_connection:
+                        continue
 
-                # Initialize store data if needed
-                if shopify_store_updates[store_id]["store_id"] is None:
-                    shopify_store_updates[store_id].update({
-                        "store_id": store_id,
-                        "store_name": store_name,
-                        "shop_domain": store.shopify_connection.shop_domain,
-                        "admin_api_key": store.shopify_connection.admin_api_key,
-                        "api_version": store.shopify_connection.api_version,
-                        "update_sku": store.shopify_connection.update_sku_with_barcode
+                    # Initialize store data if needed
+                    if shopify_store_updates[store_id]["store_id"] is None:
+                        shopify_store_updates[store_id].update({
+                            "store_id": store_id,
+                            "store_name": store_name,
+                            "shop_domain": store.shopify_connection.shop_domain,
+                            "admin_api_key": store.shopify_connection.admin_api_key,
+                            "api_version": store.shopify_connection.api_version,
+                            "update_sku": store.shopify_connection.update_sku_with_barcode
+                        })
+
+                    # Group variants by product_id
+                    product_id = match.product_id
+                    variant_id = match.variant_id
+
+                    shopify_store_updates[store_id]["products"][product_id].append({
+                        "id": variant_id,
+                        "barcode": new_upc
                     })
 
-                # Group variants by product_id
-                product_id = match.product_id
-                variant_id = match.variant_id
+                elif store_type == "mssql":
+                    # Get store connection details
+                    store = db.query(Store).filter(Store.id == store_id).first()
+                    if not store or not store.mssql_connection:
+                        continue
 
-                shopify_store_updates[store_id]["products"][product_id].append({
-                    "id": variant_id,
-                    "barcode": new_upc
-                })
+                    # Initialize store data if needed
+                    if mssql_store_updates[store_id]["store_id"] is None:
+                        mssql_store_updates[store_id].update({
+                            "store_id": store_id,
+                            "store_name": store_name,
+                            "host": store.mssql_connection.host,
+                            "port": store.mssql_connection.port,
+                            "database_name": store.mssql_connection.database_name,
+                            "username": store.mssql_connection.username,
+                            "password": store.mssql_connection.password
+                        })
 
-            elif store_type == "mssql":
-                # Get store connection details
-                store = db.query(Store).filter(Store.id == store_id).first()
-                if not store or not store.mssql_connection:
-                    continue
+                    # Group by table_name
+                    table_name = match.table_name
+                    primary_keys = match.primary_keys
 
-                # Initialize store data if needed
-                if mssql_store_updates[store_id]["store_id"] is None:
-                    mssql_store_updates[store_id].update({
-                        "store_id": store_id,
-                        "store_name": store_name,
-                        "host": store.mssql_connection.host,
-                        "port": store.mssql_connection.port,
-                        "database_name": store.mssql_connection.database_name,
-                        "username": store.mssql_connection.username,
-                        "password": store.mssql_connection.password
-                    })
+                    # Determine primary key field based on table
+                    if table_name == "Items_tbl":
+                        pk_field = "ProductID"
+                    elif table_name in ["QuotationDetails", "Items_BinLocations"]:
+                        pk_field = "id"
+                    else:
+                        pk_field = "LineID"
 
-                # Group by table_name
-                table_name = match.table_name
-                primary_keys = match.primary_keys
+                    if mssql_store_updates[store_id]["tables"][table_name]["table_name"] is None:
+                        mssql_store_updates[store_id]["tables"][table_name].update({
+                            "table_name": table_name,
+                            "primary_key_field": pk_field,
+                            "new_upc": new_upc
+                        })
 
-                # Determine primary key field based on table
-                if table_name == "Items_tbl":
-                    pk_field = "ProductID"
-                elif table_name in ["QuotationDetails", "Items_BinLocations"]:
-                    pk_field = "id"
-                else:
-                    pk_field = "LineID"
-
-                if mssql_store_updates[store_id]["tables"][table_name]["table_name"] is None:
-                    mssql_store_updates[store_id]["tables"][table_name].update({
-                        "table_name": table_name,
-                        "primary_key_field": pk_field,
-                        "new_upc": new_upc
-                    })
-
-                mssql_store_updates[store_id]["tables"][table_name]["primary_keys"].extend(primary_keys)
+                    mssql_store_updates[store_id]["tables"][table_name]["primary_keys"].extend(primary_keys)
 
         all_results = []
         total_updated = 0
@@ -792,8 +793,9 @@ async def update_upc_stream(request: UPCUpdateRequest, db: Session = Depends(get
                         items_updated_count=0,
                         error_message=f"Skipped: UPC '{new_upc}' already exists in this store"
                     )
-                    db.add(history_entry)
-                    db.commit()
+                    with db_session() as db:
+                        db.add(history_entry)
+                        db.commit()
 
                     continue
 
@@ -830,8 +832,9 @@ async def update_upc_stream(request: UPCUpdateRequest, db: Session = Depends(get
                         items_updated_count=result["updated_count"],
                         error_message=result.get("error")
                     )
-                    db.add(history_entry)
-                    db.commit()
+                    with db_session() as db:
+                        db.add(history_entry)
+                        db.commit()
 
         # Update MSSQL stores
         if mssql_store_updates:
@@ -901,8 +904,9 @@ async def update_upc_stream(request: UPCUpdateRequest, db: Session = Depends(get
                         items_updated_count=0,
                         error_message=f"Skipped: UPC '{new_upc}' already exists in this store"
                     )
-                    db.add(history_entry)
-                    db.commit()
+                    with db_session() as db:
+                        db.add(history_entry)
+                        db.commit()
 
                     continue
 
@@ -939,8 +943,9 @@ async def update_upc_stream(request: UPCUpdateRequest, db: Session = Depends(get
                         items_updated_count=result["updated_count"],
                         error_message=result.get("error")
                     )
-                    db.add(history_entry)
-                    db.commit()
+                    with db_session() as db:
+                        db.add(history_entry)
+                        db.commit()
 
         # Send final results
         yield f"event: complete\ndata: {json.dumps({'old_upc': old_upc, 'new_upc': new_upc, 'results': all_results, 'total_updated': total_updated})}\n\n"
@@ -964,7 +969,7 @@ async def update_upc_stream(request: UPCUpdateRequest, db: Session = Depends(get
 
 # SQL UPC Audit endpoint
 @app.post("/api/analysis/orphaned-upcs/stream")
-async def audit_orphaned_upcs_stream(request: OrphanedUPCAuditRequest, db: Session = Depends(get_db)):
+async def audit_orphaned_upcs_stream(request: OrphanedUPCAuditRequest):
     """
     Audit MSSQL store for orphaned UPCs (UPCs in detail tables but not in Items_tbl).
     Returns Server-Sent Events stream with real-time progress.
@@ -975,50 +980,59 @@ async def audit_orphaned_upcs_stream(request: OrphanedUPCAuditRequest, db: Sessi
         date_from = request.date_from
         date_to = request.date_to
 
-        # Get source store from database
-        store = db.query(Store).filter(Store.id == store_id).first()
-        if not store:
-            yield f"event: error\ndata: {json.dumps({'message': 'Store not found'})}\n\n"
-            return
+        with db_session() as db:
+            # Get source store from database
+            store = db.query(Store).filter(Store.id == store_id).first()
+            if not store:
+                yield f"event: error\ndata: {json.dumps({'message': 'Store not found'})}\n\n"
+                return
 
-        # Validate source store is MSSQL type
-        if store.store_type != StoreType.mssql or not store.mssql_connection:
-            yield f"event: error\ndata: {json.dumps({'message': 'Store is not an MSSQL database'})}\n\n"
-            return
+            # Validate source store is MSSQL type
+            if store.store_type != StoreType.mssql or not store.mssql_connection:
+                yield f"event: error\ndata: {json.dumps({'message': 'Store is not an MSSQL database'})}\n\n"
+                return
 
-        # Get source connection details
-        conn = store.mssql_connection
-        store_name = store.name
+            # Get source connection details as plain values: conn is dereferenced
+            # inside the executor lambda long after this session is closed.
+            conn_kw = {
+                "host": store.mssql_connection.host,
+                "port": store.mssql_connection.port,
+                "database_name": store.mssql_connection.database_name,
+                "username": store.mssql_connection.username,
+                "password": store.mssql_connection.password,
+            }
+            store_name = store.name
 
-        # Handle cross-database comparison if target_store_id is provided
-        target_host = None
-        target_port = None
-        target_database = None
-        target_username = None
-        target_password = None
-        target_store_name = None
+            # Handle cross-database comparison if target_store_id is provided
+            target_host = None
+            target_port = None
+            target_database = None
+            target_username = None
+            target_password = None
+            target_store_name = None
+
+            if target_store_id is not None:
+                # Get target store from database
+                target_store = db.query(Store).filter(Store.id == target_store_id).first()
+                if not target_store:
+                    yield f"event: error\ndata: {json.dumps({'message': 'Target store not found'})}\n\n"
+                    return
+
+                # Validate target store is MSSQL type
+                if target_store.store_type != StoreType.mssql or not target_store.mssql_connection:
+                    yield f"event: error\ndata: {json.dumps({'message': 'Target store is not an MSSQL database'})}\n\n"
+                    return
+
+                # Get target connection details
+                target_conn = target_store.mssql_connection
+                target_store_name = target_store.name
+                target_host = target_conn.host
+                target_port = target_conn.port
+                target_database = target_conn.database_name
+                target_username = target_conn.username
+                target_password = target_conn.password
 
         if target_store_id is not None:
-            # Get target store from database
-            target_store = db.query(Store).filter(Store.id == target_store_id).first()
-            if not target_store:
-                yield f"event: error\ndata: {json.dumps({'message': 'Target store not found'})}\n\n"
-                return
-
-            # Validate target store is MSSQL type
-            if target_store.store_type != StoreType.mssql or not target_store.mssql_connection:
-                yield f"event: error\ndata: {json.dumps({'message': 'Target store is not an MSSQL database'})}\n\n"
-                return
-
-            # Get target connection details
-            target_conn = target_store.mssql_connection
-            target_store_name = target_store.name
-            target_host = target_conn.host
-            target_port = target_conn.port
-            target_database = target_conn.database_name
-            target_username = target_conn.username
-            target_password = target_conn.password
-
             print(f"[AUDIT] Starting cross-database audit")
             print(f"[AUDIT] Source: {store_name}")
             print(f"[AUDIT] Target: {target_store_name}")
@@ -1050,11 +1064,11 @@ async def audit_orphaned_upcs_stream(request: OrphanedUPCAuditRequest, db: Sessi
             audit_future = loop.run_in_executor(
                 _audit_executor,
                 lambda: audit_orphaned_upcs_sync_wrapper(
-                    conn.host,
-                    conn.port,
-                    conn.database_name,
-                    conn.username,
-                    conn.password,
+                    conn_kw["host"],
+                    conn_kw["port"],
+                    conn_kw["database_name"],
+                    conn_kw["username"],
+                    conn_kw["password"],
                     progress_callback,
                     date_from,
                     date_to,
@@ -1114,8 +1128,9 @@ async def audit_orphaned_upcs_stream(request: OrphanedUPCAuditRequest, db: Sessi
                 return
 
             # Filter out excluded UPCs for this store
-            exclusions = db.query(UPCExclusion).filter(UPCExclusion.store_id == store_id).all()
-            excluded_upcs = {exclusion.upc for exclusion in exclusions}
+            with db_session() as db:
+                exclusions = db.query(UPCExclusion).filter(UPCExclusion.store_id == store_id).all()
+                excluded_upcs = {exclusion.upc for exclusion in exclusions}
 
             if excluded_upcs:
                 original_count = len(orphaned_records)
@@ -1796,7 +1811,7 @@ async def update_reconciled_upcs(request: ReconciliationUpdateRequest, db: Sessi
 
 # SSE Streaming version of reconciliation find matches
 @app.post("/api/analysis/reconcile-upcs/stream")
-async def reconcile_orphaned_upcs_stream(request: ReconciliationRequest, db: Session = Depends(get_db)):
+async def reconcile_orphaned_upcs_stream(request: ReconciliationRequest):
     """
     Find matching UPCs in Items_tbl for orphaned records with SSE streaming progress.
     Streams progress events for each record checked.
@@ -1805,18 +1820,26 @@ async def reconcile_orphaned_upcs_stream(request: ReconciliationRequest, db: Ses
     match_type = request.match_type
     orphaned_records = request.orphaned_records
 
-    # Get store from database
-    store = db.query(Store).filter(Store.id == store_id).first()
-    if not store:
-        raise HTTPException(status_code=404, detail="Store not found")
+    with db_session() as db:
+        # Get store from database
+        store = db.query(Store).filter(Store.id == store_id).first()
+        if not store:
+            raise HTTPException(status_code=404, detail="Store not found")
 
-    # Validate store is MSSQL type
-    if store.store_type != StoreType.mssql or not store.mssql_connection:
-        raise HTTPException(status_code=400, detail="Store is not an MSSQL database")
+        # Validate store is MSSQL type
+        if store.store_type != StoreType.mssql or not store.mssql_connection:
+            raise HTTPException(status_code=400, detail="Store is not an MSSQL database")
 
-    # Get connection details
-    conn = store.mssql_connection
-    store_name = store.name
+        # Connection details as plain values: the executor lambda dereferences
+        # them after this session is closed.
+        conn_kw = {
+            "host": store.mssql_connection.host,
+            "port": store.mssql_connection.port,
+            "database_name": store.mssql_connection.database_name,
+            "username": store.mssql_connection.username,
+            "password": store.mssql_connection.password,
+        }
+        store_name = store.name
 
     # Convert Pydantic models to dicts for helper function
     records_dict = [record.model_dump() for record in orphaned_records]
@@ -1839,11 +1862,11 @@ async def reconcile_orphaned_upcs_stream(request: ReconciliationRequest, db: Ses
             reconcile_future = loop.run_in_executor(
                 _audit_executor,
                 lambda: reconcile_with_progress_wrapper(
-                    conn.host,
-                    conn.port,
-                    conn.database_name,
-                    conn.username,
-                    conn.password,
+                    conn_kw["host"],
+                    conn_kw["port"],
+                    conn_kw["database_name"],
+                    conn_kw["username"],
+                    conn_kw["password"],
                     records_dict,
                     match_type,
                     progress_callback
@@ -1953,7 +1976,7 @@ def reconcile_with_progress_wrapper(host, port, database, username, password, or
 
 # SSE Streaming version of reconciliation update
 @app.post("/api/analysis/reconcile-upcs/update/stream")
-async def update_reconciled_upcs_stream(request: ReconciliationUpdateRequest, db: Session = Depends(get_db)):
+async def update_reconciled_upcs_stream(request: ReconciliationUpdateRequest):
     """
     Update orphaned UPCs with matched values from Items_tbl with SSE streaming progress.
     Processes updates in batches and streams progress.
@@ -1961,18 +1984,26 @@ async def update_reconciled_upcs_stream(request: ReconciliationUpdateRequest, db
     store_id = request.store_id
     updates = request.updates
 
-    # Get store from database
-    store = db.query(Store).filter(Store.id == store_id).first()
-    if not store:
-        raise HTTPException(status_code=404, detail="Store not found")
+    with db_session() as db:
+        # Get store from database
+        store = db.query(Store).filter(Store.id == store_id).first()
+        if not store:
+            raise HTTPException(status_code=404, detail="Store not found")
 
-    # Validate store is MSSQL type
-    if store.store_type != StoreType.mssql or not store.mssql_connection:
-        raise HTTPException(status_code=400, detail="Store is not an MSSQL database")
+        # Validate store is MSSQL type
+        if store.store_type != StoreType.mssql or not store.mssql_connection:
+            raise HTTPException(status_code=400, detail="Store is not an MSSQL database")
 
-    # Get connection details
-    conn = store.mssql_connection
-    store_name = store.name
+        # Connection details as plain values: the executor lambda dereferences
+        # them after this session is closed.
+        conn_kw = {
+            "host": store.mssql_connection.host,
+            "port": store.mssql_connection.port,
+            "database_name": store.mssql_connection.database_name,
+            "username": store.mssql_connection.username,
+            "password": store.mssql_connection.password,
+        }
+        store_name = store.name
 
     # Convert Pydantic models to dicts for helper function
     updates_dict = [update.model_dump() for update in updates]
@@ -1995,11 +2026,11 @@ async def update_reconciled_upcs_stream(request: ReconciliationUpdateRequest, db
             update_future = loop.run_in_executor(
                 _audit_executor,
                 lambda: update_with_batching_wrapper(
-                    conn.host,
-                    conn.port,
-                    conn.database_name,
-                    conn.username,
-                    conn.password,
+                    conn_kw["host"],
+                    conn_kw["port"],
+                    conn_kw["database_name"],
+                    conn_kw["username"],
+                    conn_kw["password"],
                     updates_dict,
                     progress_callback
                 )
@@ -12178,33 +12209,42 @@ _MONTH_END_MAX_ROWS = 20000
 # bov.estimate_ship_cost.
 
 
-async def _month_end_payload(db: Session, date_from: Optional[str], date_to: Optional[str],
+async def _month_end_payload(date_from: Optional[str], date_to: Optional[str],
                              limit: int, store_ids: Optional[str] = None, progress=None,
                              cost_mode: str = "sale") -> Dict[str, Any]:
     async def note(msg: str):
         if progress:
             await progress(msg)
 
-    cfg = _bov_config(db)
-    cmode = _bov_cost_mode(cost_mode)
-    tz = _bov_tz(cfg)
-    if not date_from and not date_to:
-        date_from, date_to = _month_end_default_range(tz)
-    period = _bov_period(cfg, None, date_from, date_to)
-    limit = max(1, min(int(limit or _MONTH_END_MAX_ROWS), _MONTH_END_MAX_ROWS))
+    # Every Postgres read happens in this one short scope; the ORM rows that
+    # outlive it (cfg, sales stores, shipper store) have their connections
+    # touched here so they stay readable detached (no commit -> no expiry).
+    with db_session() as db:
+        cfg = _bov_config(db)
+        cmode = _bov_cost_mode(cost_mode)
+        tz = _bov_tz(cfg)
+        if not date_from and not date_to:
+            date_from, date_to = _month_end_default_range(tz)
+        period = _bov_period(cfg, None, date_from, date_to)
+        limit = max(1, min(int(limit or _MONTH_END_MAX_ROWS), _MONTH_END_MAX_ROWS))
 
-    only = _bov_parse_store_ids(store_ids)
-    sales_stores = _bov_sales_stores(db, cfg, only)
-    shopify_stores = _bov_shopify_stores(db, cfg, only)
-    if not sales_stores and not shopify_stores:
-        # Distinguish "nothing configured" from "the topbar store filter excludes everything".
-        if only is not None and (_bov_sales_stores(db, cfg) or _bov_shopify_stores(db, cfg)):
-            return {"configured": True, "filtered_out": True, "period": period.as_dict(), "limit": limit}
-        return {"configured": False, "period": period.as_dict(), "limit": limit}
+        only = _bov_parse_store_ids(store_ids)
+        sales_stores = _bov_sales_stores(db, cfg, only)
+        shopify_stores = _bov_shopify_stores(db, cfg, only)
+        if not sales_stores and not shopify_stores:
+            # Distinguish "nothing configured" from "the topbar store filter excludes everything".
+            if only is not None and (_bov_sales_stores(db, cfg) or _bov_shopify_stores(db, cfg)):
+                return {"configured": True, "filtered_out": True, "period": period.as_dict(), "limit": limit}
+            return {"configured": False, "period": period.as_dict(), "limit": limit}
+
+        for st in sales_stores:
+            _ = st.mssql_connection and st.mssql_connection.host
+        sh_excl = _bov_shopify_exclusions(db)
+        excl_sales = _bov_excluded_names(db)[0]
+        shipper_store = _resolve_shipper_store_soft(db)
 
     warnings: List[str] = []
     synced = await asyncio.to_thread(shopify_sync.get_synced_stores) if shopify_stores else {}
-    sh_excl = _bov_shopify_exclusions(db)
     usable_shopify: List[Dict[str, Any]] = []
     for st in shopify_stores:
         info = synced.get(st["id"])
@@ -12213,8 +12253,6 @@ async def _month_end_payload(db: Session, date_from: Optional[str], date_to: Opt
             continue
         st["_tz"] = info.get("shop_timezone") or tz
         usable_shopify.append(st)
-
-    excl_sales = _bov_excluded_names(db)[0]
 
     async def _bo(st: Store):
         # The invoice helper clamps to its own MAX_LIST_LIMIT (5k) — far above
@@ -12249,7 +12287,8 @@ async def _month_end_payload(db: Session, date_from: Optional[str], date_to: Opt
     timings["fetch"] = round(time.monotonic() - t_fetch, 2)
     if cmode == "s2s":
         # Same S2S re-cost as /invoices/period; recost_rows_s2s refreshes net_profit per invoice.
-        await _bov_recost_invoice_results(db, cfg, bo_results)
+        with db_session() as db:
+            await _bov_recost_invoice_results(db, cfg, bo_results)
 
     stores_status: List[Dict[str, Any]] = []
     rows: List[Dict[str, Any]] = []
@@ -12306,7 +12345,6 @@ async def _month_end_payload(db: Session, date_from: Optional[str], date_to: Opt
 
     # ---- S2S cost lookup (UnitPriceC) + shipper parcels lookup, concurrently
     # (both hit MSSQL; running them in parallel keeps total latency = max, not sum)
-    shipper_store = _resolve_shipper_store_soft(db)
     shipper: Dict[str, Any] = {"configured": shipper_store is not None,
                                "store_name": shipper_store.name if shipper_store else None,
                                "matched": 0, "unmatched": 0, "error": None}
@@ -12322,7 +12360,8 @@ async def _month_end_payload(db: Session, date_from: Optional[str], date_to: Opt
                 return {}
             barcodes = sorted({bc for _st, p in sh_ok for lines in (p.get("lines") or {}).values()
                                for (bc, _u, _r) in lines if bc})
-            lookup = _bov_make_cost_lookup(db, cfg, "unit_delivery_b")
+            with db_session() as db:
+                lookup = _bov_make_cost_lookup(db, cfg, "unit_delivery_b")
             if not getattr(lookup, "configured", False):
                 warnings.append("Item Tracker S2S store not configured — Shopify cost/profit unavailable")
                 return {}
@@ -12451,15 +12490,15 @@ async def _month_end_payload(db: Session, date_from: Optional[str], date_to: Opt
 @app.get("/api/business-overview/month-end", response_model=MonthEndResponse)
 async def get_month_end(date_from: Optional[str] = None, date_to: Optional[str] = None,
                         limit: int = _MONTH_END_MAX_ROWS, store_ids: Optional[str] = None,
-                        cost_mode: str = "sale", db: Session = Depends(get_db)):
-    payload = await _month_end_payload(db, date_from, date_to, limit, store_ids, cost_mode=cost_mode)
+                        cost_mode: str = "sale"):
+    payload = await _month_end_payload(date_from, date_to, limit, store_ids, cost_mode=cost_mode)
     return MonthEndResponse(**payload)
 
 
 @app.get("/api/business-overview/month-end/stream")
 async def stream_month_end(date_from: Optional[str] = None, date_to: Optional[str] = None,
                            limit: int = _MONTH_END_MAX_ROWS, store_ids: Optional[str] = None,
-                           cost_mode: str = "sale", db: Session = Depends(get_db)):
+                           cost_mode: str = "sale"):
     """SSE twin of /month-end: progress events while the report is computed,
     then one `result` event carrying the full payload."""
     queue: asyncio.Queue = asyncio.Queue()
@@ -12469,7 +12508,7 @@ async def stream_month_end(date_from: Optional[str] = None, date_to: Optional[st
 
     async def runner():
         try:
-            payload = await _month_end_payload(db, date_from, date_to, limit, store_ids, progress=progress, cost_mode=cost_mode)
+            payload = await _month_end_payload(date_from, date_to, limit, store_ids, progress=progress, cost_mode=cost_mode)
             await queue.put(("result", payload))
         except HTTPException as e:
             await queue.put(("error", {"message": str(e.detail)}))
