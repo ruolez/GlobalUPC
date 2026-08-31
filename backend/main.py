@@ -1,10 +1,11 @@
 from fastapi import FastAPI, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
-from sqlalchemy.orm import Session
+from fastapi.responses import StreamingResponse, JSONResponse
+from sqlalchemy.orm import Session, joinedload
 from typing import List, Union, AsyncGenerator, Optional, Dict, Any, Tuple, Set, Literal
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, date, timedelta, timezone
 import uvicorn
 import asyncio
@@ -18,7 +19,7 @@ import uuid
 import os
 import secrets
 
-from database import get_db, engine, SessionLocal
+from database import get_db, engine, SessionLocal, db_session, POOL_CAPACITY
 from shopify_oauth_helper import fetch_client_credentials_token, apply_token
 from models import Store, MSSQLConnection, ShopifyConnection, Setting, StoreType, StoreCategory, UPCUpdateHistory, UPCExclusion, ItemTrackerConfig, ItemTrackerExclusion, PriceUpdateHistory, StoreMirror, SalesConfig, SalesExclusion, BusinessOverviewConfig, BusinessOverviewShopifyExclusion, BusinessOverviewPoProductExclusion, QuickBooksConnection, QuickBooksAccount
 from schemas import (
@@ -135,6 +136,39 @@ from checked_orders_helper import (
     compute_checked_orders,
 )
 
+_audit_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="audit")
+
+
+class BoundedStreamingResponse(StreamingResponse):
+    # A send blocked past this bound means the client is gone but never sent a
+    # TCP FIN, so listen_for_disconnect would wait forever and the stream's
+    # dependencies (db sessions, executors) would leak for the process lifetime.
+    send_timeout = 90
+
+    async def stream_response(self, send) -> None:
+        try:
+            await asyncio.wait_for(
+                send({"type": "http.response.start", "status": self.status_code,
+                      "headers": self.raw_headers}), self.send_timeout)
+            async for chunk in self.body_iterator:
+                if not isinstance(chunk, bytes):
+                    chunk = chunk.encode(self.charset)
+                await asyncio.wait_for(
+                    send({"type": "http.response.body", "body": chunk, "more_body": True}),
+                    self.send_timeout)
+            await asyncio.wait_for(
+                send({"type": "http.response.body", "body": b"", "more_body": False}),
+                self.send_timeout)
+        except asyncio.TimeoutError:
+            print(f"[SSE] send blocked > {self.send_timeout}s; dropping dead client")
+            aclose = getattr(self.body_iterator, "aclose", None)
+            if aclose is not None:
+                try:
+                    await asyncio.wait_for(aclose(), 30)
+                except Exception:
+                    pass
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from shopify_oauth_helper import token_refresh_loop
@@ -169,6 +203,8 @@ async def lifespan(app: FastAPI):
     print("[SHUTDOWN] Shutting down Business Overview thread pool...")
     from business_overview_helper import shutdown_bov_executor
     shutdown_bov_executor()
+    print("[SHUTDOWN] Shutting down audit thread pool...")
+    _audit_executor.shutdown(wait=False)
     print("[SHUTDOWN] Cleanup complete.")
 
 app = FastAPI(title="Global UPC API", version="1.0.0", lifespan=lifespan)
@@ -210,6 +246,30 @@ app.add_middleware(
 @app.get("/api/health")
 def health_check():
     return {"status": "healthy", "service": "Global UPC API"}
+
+@app.get("/api/health/deep")
+async def health_check_deep():
+    from sqlalchemy import text as _sa_text
+    pool = engine.pool
+    stats = {
+        "pool_checked_out": pool.checkedout(),
+        "pool_capacity": POOL_CAPACITY,
+        "pool_overflow": pool.overflow(),
+    }
+    # Fail fast on exhaustion: engine.connect() would queue for pool_timeout=30s,
+    # longer than the docker healthcheck timeout, and read as a hang instead.
+    if stats["pool_checked_out"] >= POOL_CAPACITY:
+        return JSONResponse(status_code=503, content={"status": "pool_exhausted", **stats})
+
+    def probe():
+        with engine.connect() as conn:
+            conn.execute(_sa_text("SELECT 1"))
+
+    try:
+        await asyncio.wait_for(asyncio.to_thread(probe), timeout=5)
+    except Exception as e:
+        return JSONResponse(status_code=503, content={"status": "db_error", "error": str(e)[:200], **stats})
+    return {"status": "healthy", **stats}
 
 # Connection test schemas
 class MSSQLConnectionTest(BaseModel):
@@ -458,7 +518,7 @@ async def search_upc_stream(request: UPCSearchRequest, db: Session = Depends(get
             print(f"[SEARCH] Error: {e}")
             yield f"event: error\ndata: {json.dumps({'message': str(e)})}\n\n"
 
-    return StreamingResponse(
+    return BoundedStreamingResponse(
         generate_search_events(),
         media_type="text/event-stream",
         headers={
@@ -892,7 +952,7 @@ async def update_upc_stream(request: UPCUpdateRequest, db: Session = Depends(get
             print("[UPDATE] Client disconnected")
             return
 
-    return StreamingResponse(
+    return BoundedStreamingResponse(
         generate_update_events_safe(),
         media_type="text/event-stream",
         headers={
@@ -980,16 +1040,14 @@ async def audit_orphaned_upcs_stream(request: OrphanedUPCAuditRequest, db: Sessi
 
         # Start audit in background task
         import asyncio
-        from concurrent.futures import ThreadPoolExecutor
 
         loop = asyncio.get_event_loop()
-        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="audit")
         audit_future = None
 
         try:
             # Run audit in executor
             audit_future = loop.run_in_executor(
-                executor,
+                _audit_executor,
                 lambda: audit_orphaned_upcs_sync_wrapper(
                     conn.host,
                     conn.port,
@@ -1086,10 +1144,8 @@ async def audit_orphaned_upcs_stream(request: OrphanedUPCAuditRequest, db: Sessi
         except Exception as e:
             print(f"[AUDIT] Error: {e}")
             yield f"event: error\ndata: {json.dumps({'message': str(e)})}\n\n"
-        finally:
-            executor.shutdown(wait=False)
 
-    return StreamingResponse(
+    return BoundedStreamingResponse(
         generate_audit_events(),
         media_type="text/event-stream",
         headers={
@@ -1768,10 +1824,8 @@ async def reconcile_orphaned_upcs_stream(request: ReconciliationRequest, db: Ses
         """Generator for SSE events during reconciliation"""
         import queue
         import time
-        from concurrent.futures import ThreadPoolExecutor
 
         progress_queue = queue.Queue()
-        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="reconcile")
         reconcile_future = None
 
         def progress_callback(data: dict):
@@ -1782,7 +1836,7 @@ async def reconcile_orphaned_upcs_stream(request: ReconciliationRequest, db: Ses
 
             # Run reconciliation in executor
             reconcile_future = loop.run_in_executor(
-                executor,
+                _audit_executor,
                 lambda: reconcile_with_progress_wrapper(
                     conn.host,
                     conn.port,
@@ -1855,10 +1909,8 @@ async def reconcile_orphaned_upcs_stream(request: ReconciliationRequest, db: Ses
         except Exception as e:
             print(f"[RECONCILIATION] Error in streaming: {e}")
             yield f"event: error\ndata: {json.dumps({'message': str(e)})}\n\n"
-        finally:
-            executor.shutdown(wait=False)
 
-    return StreamingResponse(
+    return BoundedStreamingResponse(
         generate_reconciliation_events(),
         media_type="text/event-stream",
         headers={
@@ -1928,10 +1980,8 @@ async def update_reconciled_upcs_stream(request: ReconciliationUpdateRequest, db
         """Generator for SSE events during batch updates"""
         import queue
         import time
-        from concurrent.futures import ThreadPoolExecutor
 
         progress_queue = queue.Queue()
-        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="reconcile_update")
         update_future = None
 
         def progress_callback(data: dict):
@@ -1942,7 +1992,7 @@ async def update_reconciled_upcs_stream(request: ReconciliationUpdateRequest, db
 
             # Run update in executor
             update_future = loop.run_in_executor(
-                executor,
+                _audit_executor,
                 lambda: update_with_batching_wrapper(
                     conn.host,
                     conn.port,
@@ -2015,10 +2065,8 @@ async def update_reconciled_upcs_stream(request: ReconciliationUpdateRequest, db
         except Exception as e:
             print(f"[RECONCILIATION UPDATE] Error in streaming: {e}")
             yield f"event: error\ndata: {json.dumps({'message': str(e)})}\n\n"
-        finally:
-            executor.shutdown(wait=False)
 
-    return StreamingResponse(
+    return BoundedStreamingResponse(
         generate_update_events(),
         media_type="text/event-stream",
         headers={
@@ -3135,7 +3183,7 @@ async def search_item_tracker_stream(request: ItemTrackerSearchRequest, db: Sess
             traceback.print_exc()
             yield f"event: error\ndata: {json.dumps({'message': str(e)})}\n\n"
 
-    return StreamingResponse(
+    return BoundedStreamingResponse(
         generate_search_events(),
         media_type="text/event-stream",
         headers={
@@ -4046,7 +4094,7 @@ async def fetch_prices_stream(request: PriceSearchRequest, db: Session = Depends
             print("[PRICE-FETCH] Client disconnected")
             return
 
-    return StreamingResponse(
+    return BoundedStreamingResponse(
         generate_events_safe(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
@@ -4482,7 +4530,7 @@ async def update_prices_stream(request: PriceUpdateRequest, db: Session = Depend
             print("[PRICE-UPDATE] Client disconnected")
             return
 
-    return StreamingResponse(
+    return BoundedStreamingResponse(
         generate_events_safe(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
@@ -4985,7 +5033,7 @@ async def shopify_sales_stream(request: ShopifySalesRequest, db: Session = Depen
             print("[SHOPIFY-SALES] Client disconnected")
             return
 
-    return StreamingResponse(
+    return BoundedStreamingResponse(
         generate_sales_events_safe(),
         media_type="text/event-stream",
         headers={
@@ -5368,7 +5416,7 @@ async def sales_report_stream(request: SalesReportRequest, db: Session = Depends
             print("[SALES-REPORT] Client disconnected")
             return
 
-    return StreamingResponse(
+    return BoundedStreamingResponse(
         generate_report_events_safe(),
         media_type="text/event-stream",
         headers={
@@ -6215,7 +6263,7 @@ async def shopify_analytics_first_customer_returns_stream(
             print("[SHOPIFY-ANALYTICS] Stream cancelled")
             return
 
-    return StreamingResponse(
+    return BoundedStreamingResponse(
         generate_safe(),
         media_type="text/event-stream",
         headers={
@@ -6522,7 +6570,7 @@ async def shopify_analytics_new_customers_by_month_stream(
             print("[SHOPIFY-ANALYTICS] New-customers stream cancelled")
             return
 
-    return StreamingResponse(
+    return BoundedStreamingResponse(
         generate_safe(),
         media_type="text/event-stream",
         headers={
@@ -8671,7 +8719,7 @@ async def shopify_analytics_lost_customers_stream(
             print("[SHOPIFY-ANALYTICS] Lost stream cancelled")
             return
 
-    return StreamingResponse(
+    return BoundedStreamingResponse(
         generate_safe(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
@@ -9321,7 +9369,7 @@ async def shopify_analytics_lost_products_stream(
             print("[SHOPIFY-ANALYTICS] Lost-products stream cancelled")
             return
 
-    return StreamingResponse(
+    return BoundedStreamingResponse(
         generate_safe(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
@@ -9477,7 +9525,7 @@ async def shopify_sync_stream(
                 )
                 print(f"[SHOPIFY-SYNC] store {store_id} sync cancelled by client")
 
-    return StreamingResponse(
+    return BoundedStreamingResponse(
         generate(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
@@ -12442,7 +12490,7 @@ async def stream_month_end(date_from: Optional[str] = None, date_to: Optional[st
             if not task.done():
                 task.cancel()
 
-    return StreamingResponse(gen(), media_type="text/event-stream",
+    return BoundedStreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "Connection": "keep-alive",
                                       "X-Accel-Buffering": "no"})
 
