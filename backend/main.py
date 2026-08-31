@@ -359,7 +359,7 @@ def test_shopify(connection: ShopifyConnectionTest, db: Session = Depends(get_db
 
 # UPC Search/Update endpoints
 @app.post("/api/upc/search/stream")
-async def search_upc_stream(request: UPCSearchRequest, db: Session = Depends(get_db)):
+async def search_upc_stream(request: UPCSearchRequest):
     """
     Search for a UPC/barcode across all active stores with real-time progress updates.
     Returns Server-Sent Events stream.
@@ -372,35 +372,36 @@ async def search_upc_stream(request: UPCSearchRequest, db: Session = Depends(get
             return
 
         # Get all active stores
-        active_stores = db.query(Store).filter(Store.is_active == True).all()
+        with db_session() as db:
+            active_stores = db.query(Store).filter(Store.is_active == True).all()
 
-        if not active_stores:
-            yield f"event: complete\ndata: {json.dumps({'upc': upc, 'matches': [], 'total_found': 0, 'stores_searched': 0})}\n\n"
-            return
+            if not active_stores:
+                yield f"event: complete\ndata: {json.dumps({'upc': upc, 'matches': [], 'total_found': 0, 'stores_searched': 0})}\n\n"
+                return
 
-        # Separate stores by type
-        shopify_stores = []
-        mssql_stores = []
+            # Separate stores by type
+            shopify_stores = []
+            mssql_stores = []
 
-        for store in active_stores:
-            if store.store_type == StoreType.shopify and store.shopify_connection:
-                shopify_stores.append({
-                    "id": store.id,
-                    "name": store.name,
-                    "shop_domain": store.shopify_connection.shop_domain,
-                    "admin_api_key": store.shopify_connection.admin_api_key,
-                    "api_version": store.shopify_connection.api_version
-                })
-            elif store.store_type == StoreType.mssql and store.mssql_connection:
-                mssql_stores.append({
-                    "id": store.id,
-                    "name": store.name,
-                    "host": store.mssql_connection.host,
-                    "port": store.mssql_connection.port,
-                    "database_name": store.mssql_connection.database_name,
-                    "username": store.mssql_connection.username,
-                    "password": store.mssql_connection.password
-                })
+            for store in active_stores:
+                if store.store_type == StoreType.shopify and store.shopify_connection:
+                    shopify_stores.append({
+                        "id": store.id,
+                        "name": store.name,
+                        "shop_domain": store.shopify_connection.shop_domain,
+                        "admin_api_key": store.shopify_connection.admin_api_key,
+                        "api_version": store.shopify_connection.api_version
+                    })
+                elif store.store_type == StoreType.mssql and store.mssql_connection:
+                    mssql_stores.append({
+                        "id": store.id,
+                        "name": store.name,
+                        "host": store.mssql_connection.host,
+                        "port": store.mssql_connection.port,
+                        "database_name": store.mssql_connection.database_name,
+                        "username": store.mssql_connection.username,
+                        "password": store.mssql_connection.password
+                    })
 
         all_matches = []
         tasks = []
@@ -4740,7 +4741,7 @@ async def shopify_fulfillment_status(exclude_ids: str = "", db: Session = Depend
 
 
 @app.post("/api/shopify-sales/stream")
-async def shopify_sales_stream(request: ShopifySalesRequest, db: Session = Depends(get_db)):
+async def shopify_sales_stream(request: ShopifySalesRequest):
     async def generate_sales_events() -> AsyncGenerator[str, None]:
         store_ids = request.store_ids
         start_date = request.start_date
@@ -4750,36 +4751,39 @@ async def shopify_sales_stream(request: ShopifySalesRequest, db: Session = Depen
             yield f"event: error\ndata: {json.dumps({'message': 'No stores selected'})}\n\n"
             return
 
-        stores = db.query(Store).filter(
-            Store.id.in_(store_ids),
-            Store.store_type == StoreType.shopify,
-            Store.is_active == True
-        ).all()
+        use_local = request.use_local_data
+        data_source = "local" if use_local else "live"
+        fallback_tz = None
+        with db_session() as db:
+            stores = db.query(Store).filter(
+                Store.id.in_(store_ids),
+                Store.store_type == StoreType.shopify,
+                Store.is_active == True
+            ).all()
+
+            store_map = {}
+            for store in stores:
+                if store.shopify_connection:
+                    store_map[store.id] = {
+                        "id": store.id,
+                        "name": store.name,
+                        "shop_domain": store.shopify_connection.shop_domain,
+                        "admin_api_key": store.shopify_connection.admin_api_key,
+                        "api_version": store.shopify_connection.api_version
+                    }
+            if use_local:
+                fallback_tz = _bov_tz(_bov_config(db))
 
         if not stores:
             yield f"event: error\ndata: {json.dumps({'message': 'No active Shopify stores found for selected IDs'})}\n\n"
             return
 
-        store_map = {}
-        for store in stores:
-            if store.shopify_connection:
-                store_map[store.id] = {
-                    "id": store.id,
-                    "name": store.name,
-                    "shop_domain": store.shopify_connection.shop_domain,
-                    "admin_api_key": store.shopify_connection.admin_api_key,
-                    "api_version": store.shopify_connection.api_version
-                }
-
-        use_local = request.use_local_data
-        data_source = "local" if use_local else "live"
         skipped_names = []
         if use_local:
             # Stores without a completed sync are skipped, never silently
             # routed to the live API — the checkbox means "no live order pull".
             # Order days are the shop's own timezone (captured by the sync),
             # with the same fallback Month End uses.
-            fallback_tz = _bov_tz(_bov_config(db))
             synced_map = await asyncio.to_thread(shopify_sync.get_synced_stores)
             for sid in list(store_map):
                 if sid not in synced_map:
@@ -4848,10 +4852,11 @@ async def shopify_sales_stream(request: ShopifySalesRequest, db: Session = Depen
         yield f"event: progress\ndata: {json.dumps({'status': 'aggregating'})}\n\n"
 
         # Read SKU exclusion prefixes from settings
-        sku_exclude_setting = db.query(Setting).filter(Setting.key == "shopify_sales_sku_exclude_prefixes").first()
-        sku_exclude_prefixes = []
-        if sku_exclude_setting and sku_exclude_setting.value:
-            sku_exclude_prefixes = [p.strip().upper() for p in sku_exclude_setting.value.split(",") if p.strip()]
+        with db_session() as db:
+            sku_exclude_setting = db.query(Setting).filter(Setting.key == "shopify_sales_sku_exclude_prefixes").first()
+            sku_exclude_prefixes = []
+            if sku_exclude_setting and sku_exclude_setting.value:
+                sku_exclude_prefixes = [p.strip().upper() for p in sku_exclude_setting.value.split(",") if p.strip()]
 
         if sku_exclude_prefixes:
             included_items = []
@@ -4954,52 +4959,52 @@ async def shopify_sales_stream(request: ShopifySalesRequest, db: Session = Depen
 
         results.sort(key=lambda r: float(r["total_revenue"]), reverse=True)
 
-        s2s_setting = db.query(Setting).filter(Setting.key == "shopify_sales_s2s_store_id").first()
-        if s2s_setting and s2s_setting.value:
+        s2s_conn_kw = None
+        with db_session() as db:
+            s2s_setting = db.query(Setting).filter(Setting.key == "shopify_sales_s2s_store_id").first()
+            if s2s_setting and s2s_setting.value:
+                try:
+                    s2s_store_id = int(s2s_setting.value)
+                    s2s_store = db.query(Store).filter(
+                        Store.id == s2s_store_id,
+                        Store.store_type == StoreType.mssql,
+                        Store.is_active == True
+                    ).first()
+                    if s2s_store and s2s_store.mssql_connection:
+                        c = s2s_store.mssql_connection
+                        s2s_conn_kw = {
+                            "host": c.host, "port": c.port,
+                            "database_name": c.database_name,
+                            "username": c.username, "password": c.password,
+                        }
+                except Exception:
+                    s2s_conn_kw = None
+
+        costs_filled = False
+        if s2s_conn_kw:
             try:
-                s2s_store_id = int(s2s_setting.value)
-                s2s_store = db.query(Store).filter(
-                    Store.id == s2s_store_id,
-                    Store.store_type == StoreType.mssql,
-                    Store.is_active == True
-                ).first()
-                if s2s_store and s2s_store.mssql_connection:
-                    conn = s2s_store.mssql_connection
-                    barcodes = list({r["barcode"].strip() for r in results if r.get("barcode", "").strip()})
-                    if barcodes:
-                        success, error, prices_map = await get_item_prices_batch_async(
-                            conn.host, conn.port, conn.database_name,
-                            conn.username, conn.password, barcodes,
-                            include_discontinued=True
-                        )
-                        if success:
-                            for r in results:
-                                bc = r.get("barcode", "").strip()
-                                if bc and bc in prices_map:
-                                    cost_val = prices_map[bc].get("unit_delivery_b")
-                                    r["cost"] = f"{cost_val:.2f}" if cost_val is not None else None
-                                    real_cost_val = prices_map[bc].get("unit_cost")
-                                    r["real_cost"] = f"{real_cost_val:.2f}" if real_cost_val is not None else None
-                                else:
-                                    r["cost"] = None
-                                    r["real_cost"] = None
-                        else:
-                            for r in results:
+                barcodes = list({r["barcode"].strip() for r in results if r.get("barcode", "").strip()})
+                if barcodes:
+                    success, error, prices_map = await get_item_prices_batch_async(
+                        s2s_conn_kw["host"], s2s_conn_kw["port"], s2s_conn_kw["database_name"],
+                        s2s_conn_kw["username"], s2s_conn_kw["password"], barcodes,
+                        include_discontinued=True
+                    )
+                    if success:
+                        for r in results:
+                            bc = r.get("barcode", "").strip()
+                            if bc and bc in prices_map:
+                                cost_val = prices_map[bc].get("unit_delivery_b")
+                                r["cost"] = f"{cost_val:.2f}" if cost_val is not None else None
+                                real_cost_val = prices_map[bc].get("unit_cost")
+                                r["real_cost"] = f"{real_cost_val:.2f}" if real_cost_val is not None else None
+                            else:
                                 r["cost"] = None
                                 r["real_cost"] = None
-                    else:
-                        for r in results:
-                            r["cost"] = None
-                            r["real_cost"] = None
-                else:
-                    for r in results:
-                        r["cost"] = None
-                        r["real_cost"] = None
+                        costs_filled = True
             except Exception:
-                for r in results:
-                    r["cost"] = None
-                    r["real_cost"] = None
-        else:
+                costs_filled = False
+        if not costs_filled:
             for r in results:
                 r["cost"] = None
                 r["real_cost"] = None
@@ -6083,34 +6088,35 @@ async def shopify_analytics_set_first_order_tag(
 @app.post("/api/shopify-analytics/first-customer-returns/stream")
 async def shopify_analytics_first_customer_returns_stream(
     request: FirstCustomerReturnsRequest,
-    db: Session = Depends(get_db),
 ):
     async def generate() -> AsyncGenerator[str, None]:
         store_id = request.store_id
         start_date = request.start_date
         end_date = request.end_date
 
-        store = db.query(Store).filter(
-            Store.id == store_id,
-            Store.store_type == StoreType.shopify,
-            Store.is_active == True,
-        ).first()
+        with db_session() as db:
+            store = db.query(Store).filter(
+                Store.id == store_id,
+                Store.store_type == StoreType.shopify,
+                Store.is_active == True,
+            ).first()
 
-        if not store or not store.shopify_connection:
-            yield f"event: error\ndata: {json.dumps({'message': 'Shopify store not found or inactive'})}\n\n"
-            return
+            if not store or not store.shopify_connection:
+                yield f"event: error\ndata: {json.dumps({'message': 'Shopify store not found or inactive'})}\n\n"
+                return
 
-        conn = store.shopify_connection
-        shop_domain = conn.shop_domain
-        admin_api_key = conn.admin_api_key
-        api_version = conn.api_version
+            conn = store.shopify_connection
+            store_name = store.name
+            shop_domain = conn.shop_domain
+            admin_api_key = conn.admin_api_key
+            api_version = conn.api_version
 
-        # Tag resolution: explicit request override > store's saved tag > default.
-        request_tag = (request.tag or "").strip() if request.tag is not None else ""
-        saved_tag = (conn.first_order_tag or "").strip()
-        tag = request_tag or saved_tag or DEFAULT_FIRST_ORDER_TAG
+            # Tag resolution: explicit request override > store's saved tag > default.
+            request_tag = (request.tag or "").strip() if request.tag is not None else ""
+            saved_tag = (conn.first_order_tag or "").strip()
+            tag = request_tag or saved_tag or DEFAULT_FIRST_ORDER_TAG
 
-        yield f"event: progress\ndata: {json.dumps({'phase': 'started', 'store_name': store.name, 'tag': tag, 'start_date': start_date, 'end_date': end_date})}\n\n"
+        yield f"event: progress\ndata: {json.dumps({'phase': 'started', 'store_name': store_name, 'tag': tag, 'start_date': start_date, 'end_date': end_date})}\n\n"
 
         # Phase 1: fetch all tagged orders in the date range
         success, error, tagged_orders = await fetch_orders_with_tag(
@@ -6371,7 +6377,6 @@ def _by_month_spine(lost_by_month: Dict[str, int], new_by_month: Dict[str, int],
 @app.post("/api/shopify-analytics/new-customers-by-month/stream")
 async def shopify_analytics_new_customers_by_month_stream(
     request: NewCustomersByMonthRequest,
-    db: Session = Depends(get_db),
 ):
     async def generate() -> AsyncGenerator[str, None]:
         start_date = request.start_date
@@ -6387,29 +6392,30 @@ async def shopify_analytics_new_customers_by_month_stream(
             yield f"event: error\ndata: {json.dumps({'message': 'Select at least one Shopify store'})}\n\n"
             return
 
-        stores = db.query(Store).filter(
-            Store.id.in_(store_ids),
-            Store.store_type == StoreType.shopify,
-            Store.is_active == True,
-        ).all()
+        with db_session() as db:
+            stores = db.query(Store).filter(
+                Store.id.in_(store_ids),
+                Store.store_type == StoreType.shopify,
+                Store.is_active == True,
+            ).all()
 
-        # Tag resolution per store: explicit request override > store's saved tag > default.
-        request_tag = (request.tag or "").strip() if request.tag is not None else ""
+            # Tag resolution per store: explicit request override > store's saved tag > default.
+            request_tag = (request.tag or "").strip() if request.tag is not None else ""
 
-        store_list: List[Dict[str, Any]] = []
-        for s in stores:
-            conn = s.shopify_connection
-            if not conn:
-                continue
-            saved_tag = (conn.first_order_tag or "").strip()
-            store_list.append({
-                "id": s.id,
-                "name": s.name,
-                "shop_domain": conn.shop_domain,
-                "admin_api_key": conn.admin_api_key,
-                "api_version": conn.api_version,
-                "tag": request_tag or saved_tag or DEFAULT_FIRST_ORDER_TAG,
-            })
+            store_list: List[Dict[str, Any]] = []
+            for s in stores:
+                conn = s.shopify_connection
+                if not conn:
+                    continue
+                saved_tag = (conn.first_order_tag or "").strip()
+                store_list.append({
+                    "id": s.id,
+                    "name": s.name,
+                    "shop_domain": conn.shop_domain,
+                    "admin_api_key": conn.admin_api_key,
+                    "api_version": conn.api_version,
+                    "tag": request_tag or saved_tag or DEFAULT_FIRST_ORDER_TAG,
+                })
 
         if not store_list:
             yield f"event: error\ndata: {json.dumps({'message': 'No active Shopify stores found for the selected ids'})}\n\n"
@@ -7089,7 +7095,6 @@ def _timing_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
 @app.post("/api/shopify-analytics/lost-customers/stream")
 async def shopify_analytics_lost_customers_stream(
     request: LostCustomersRequest,
-    db: Session = Depends(get_db),
 ):
     async def generate() -> AsyncGenerator[str, None]:
         # Snapped to the first of its month, because this report is monthly and a
@@ -7122,44 +7127,45 @@ async def shopify_analytics_lost_customers_stream(
             yield f"event: error\ndata: {json.dumps({'message': 'Select at least one Shopify store'})}\n\n"
             return
 
-        stores = db.query(Store).filter(
-            Store.id.in_(request.store_ids),
-            Store.store_type == StoreType.shopify,
-            Store.is_active == True,
-        ).all()
+        with db_session() as db:
+            stores = db.query(Store).filter(
+                Store.id.in_(request.store_ids),
+                Store.store_type == StoreType.shopify,
+                Store.is_active == True,
+            ).all()
 
-        store_list: List[Dict[str, Any]] = []
-        for s in stores:
-            conn = s.shopify_connection
-            if not conn:
-                continue
-            store_list.append({
-                "id": s.id, "name": s.name,
-                "shop_domain": conn.shop_domain,
-                "admin_api_key": conn.admin_api_key,
-                "api_version": conn.api_version,
-            })
-        if not store_list:
-            yield f"event: error\ndata: {json.dumps({'message': 'No active Shopify stores found for the selected ids'})}\n\n"
-            return
-        store_list.sort(key=lambda s: s["id"])
+            store_list: List[Dict[str, Any]] = []
+            for s in stores:
+                conn = s.shopify_connection
+                if not conn:
+                    continue
+                store_list.append({
+                    "id": s.id, "name": s.name,
+                    "shop_domain": conn.shop_domain,
+                    "admin_api_key": conn.admin_api_key,
+                    "api_version": conn.api_version,
+                })
+            if not store_list:
+                yield f"event: error\ndata: {json.dumps({'message': 'No active Shopify stores found for the selected ids'})}\n\n"
+                return
+            store_list.sort(key=lambda s: s["id"])
 
-        # Someone who stops buying here and starts at a sister shop has not
-        # churned. Shopify keeps a separate customer record per shop, so the
-        # only way to see that is to look — and it has to include shops the
-        # user did not select, since that is exactly where they may have gone.
-        all_shopify: List[Dict[str, Any]] = []
-        for st_all in db.query(Store).filter(
-            Store.store_type == StoreType.shopify, Store.is_active == True,
-        ).all():
-            if not st_all.shopify_connection:
-                continue
-            all_shopify.append({
-                "id": st_all.id, "name": st_all.name,
-                "shop_domain": st_all.shopify_connection.shop_domain,
-                "admin_api_key": st_all.shopify_connection.admin_api_key,
-                "api_version": st_all.shopify_connection.api_version,
-            })
+            # Someone who stops buying here and starts at a sister shop has not
+            # churned. Shopify keeps a separate customer record per shop, so the
+            # only way to see that is to look — and it has to include shops the
+            # user did not select, since that is exactly where they may have gone.
+            all_shopify: List[Dict[str, Any]] = []
+            for st_all in db.query(Store).filter(
+                Store.store_type == StoreType.shopify, Store.is_active == True,
+            ).all():
+                if not st_all.shopify_connection:
+                    continue
+                all_shopify.append({
+                    "id": st_all.id, "name": st_all.name,
+                    "shop_domain": st_all.shopify_connection.shop_domain,
+                    "admin_api_key": st_all.shopify_connection.admin_api_key,
+                    "api_version": st_all.shopify_connection.api_version,
+                })
         # Fixed order so that when two shops both match a customer, the one
         # credited with the move is the same on every run.
         all_shopify.sort(key=lambda s: s["id"])
@@ -7186,11 +7192,12 @@ async def shopify_analytics_lost_customers_stream(
             refresh_ids = [sid for sid in by_id_all if sid in refresh_candidates]
             anchors: Dict[int, Any] = {}
             if refresh_ids:
-                for r in db.execute(sa_text(
-                    "SELECT store_id, last_sync_started_at FROM shopify_sync_state "
-                    "WHERE store_id = ANY(:ids)"), {"ids": refresh_ids},
-                ).mappings():
-                    anchors[r["store_id"]] = r["last_sync_started_at"]
+                with db_session() as db:
+                    for r in db.execute(sa_text(
+                        "SELECT store_id, last_sync_started_at FROM shopify_sync_state "
+                        "WHERE store_id = ANY(:ids)"), {"ids": refresh_ids},
+                    ).mappings():
+                        anchors[r["store_id"]] = r["last_sync_started_at"]
             refresh_targets = [by_id_all[sid] for sid in refresh_ids
                                if anchors.get(sid) is not None]
 
@@ -9028,7 +9035,6 @@ def _link_products_across_stores(per_store: List[Dict[str, Any]]) -> tuple:
 @app.post("/api/shopify-analytics/lost-products/stream")
 async def shopify_analytics_lost_products_stream(
     request: LostProductsRequest,
-    db: Session = Depends(get_db),
 ):
     async def generate() -> AsyncGenerator[str, None]:
         selected = [s for s in (request.stores or []) if s.order_ids]
@@ -9044,26 +9050,27 @@ async def shopify_analytics_lost_products_stream(
             yield f"event: error\ndata: {json.dumps({'message': 'Baseline window start must be earlier than its end'})}\n\n"
             return
 
-        stores = db.query(Store).filter(
-            Store.id.in_([s.store_id for s in selected]),
-            Store.store_type == StoreType.shopify,
-            Store.is_active == True,
-        ).all()
-        by_id = {s.id: s for s in stores}
+        with db_session() as db:
+            stores = db.query(Store).filter(
+                Store.id.in_([s.store_id for s in selected]),
+                Store.store_type == StoreType.shopify,
+                Store.is_active == True,
+            ).all()
+            by_id = {s.id: s for s in stores}
 
-        work: List[Dict[str, Any]] = []
-        for sel in selected:
-            store = by_id.get(sel.store_id)
-            if not store or not store.shopify_connection:
-                continue
-            conn = store.shopify_connection
-            work.append({
-                "id": store.id, "name": store.name,
-                "shop_domain": conn.shop_domain,
-                "admin_api_key": conn.admin_api_key,
-                "api_version": conn.api_version,
-                "order_ids": sel.order_ids,
-            })
+            work: List[Dict[str, Any]] = []
+            for sel in selected:
+                store = by_id.get(sel.store_id)
+                if not store or not store.shopify_connection:
+                    continue
+                conn = store.shopify_connection
+                work.append({
+                    "id": store.id, "name": store.name,
+                    "shop_domain": conn.shop_domain,
+                    "admin_api_key": conn.admin_api_key,
+                    "api_version": conn.api_version,
+                    "order_ids": sel.order_ids,
+                })
         if not work:
             yield f"event: error\ndata: {json.dumps({'message': 'No active Shopify stores found for the selected ids'})}\n\n"
             return
@@ -9416,19 +9423,19 @@ async def shopify_sync_status():
 async def shopify_sync_stream(
     store_id: int,
     request: ShopifySyncRequest,
-    db: Session = Depends(get_db),
 ):
-    store = _load_sync_store(db, store_id)
+    with db_session() as db:
+        store = _load_sync_store(db, store_id)
 
-    # The anchor for an incremental run is the start of the last successful one.
-    # No successful run yet -> the store has never fully synced -> force full.
-    state_row = db.execute(
-        sa_text(
-            "SELECT last_completed_at, last_sync_started_at, status, heartbeat_at "
-            "FROM shopify_sync_state WHERE store_id = :sid"
-        ),
-        {"sid": store_id},
-    ).mappings().first()
+        # The anchor for an incremental run is the start of the last successful
+        # one. No successful run yet -> never fully synced -> force full.
+        state_row = db.execute(
+            sa_text(
+                "SELECT last_completed_at, last_sync_started_at, status, heartbeat_at "
+                "FROM shopify_sync_state WHERE store_id = :sid"
+            ),
+            {"sid": store_id},
+        ).mappings().first()
     anchor = state_row["last_sync_started_at"] if state_row else None
     mode = request.mode
     if not state_row or state_row["last_completed_at"] is None or anchor is None:
