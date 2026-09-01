@@ -401,6 +401,7 @@ async function loadSettings() {
   await loadAdminStoreSetting();
   await loadInventoryTimeSettings();
   await loadCheckedOrdersSettings();
+  await loadEasyShipSettings();
   await loadQuickBooksSettings();
 
   // Set dropdown value to saved preference
@@ -18207,6 +18208,70 @@ document
   .getElementById("checked-orders-settings-save")
   ?.addEventListener("click", saveCheckedOrdersSettings);
 
+// ===== EasyShip shipping lookup settings =====
+
+const EASYSHIP_LOOKUP_URL_KEY = "easyship_lookup_url";
+
+async function loadEasyShipSettings() {
+  const input = document.getElementById("easyship-lookup-url");
+  if (!input) return;
+  try {
+    const resp = await fetch(`${API_BASE}/settings/${EASYSHIP_LOOKUP_URL_KEY}`);
+    input.value = resp.ok ? (await resp.json()).value || "" : "";
+  } catch {
+    input.value = "";
+  }
+}
+
+async function saveEasyShipSettings() {
+  const value = (document.getElementById("easyship-lookup-url")?.value || "").trim();
+  try {
+    await saveSetting(
+      EASYSHIP_LOOKUP_URL_KEY,
+      value,
+      "EasyShip external lookup base URL — Month End shipping-cost fallback (empty = disabled).",
+    );
+    showToast(
+      value ? "✓ EasyShip lookup URL saved" : "✓ EasyShip lookup disabled",
+      "success",
+    );
+  } catch (error) {
+    showToast(`✗ Failed to save: ${error.message}`, "error");
+  }
+}
+
+async function testEasyShipEndpoint() {
+  const url = (document.getElementById("easyship-lookup-url")?.value || "").trim();
+  if (!url) {
+    showToast("Enter the EasyShip base URL first", "error");
+    return;
+  }
+  const btn = document.getElementById("easyship-test");
+  if (btn) btn.disabled = true;
+  try {
+    const resp = await fetch(`${API_BASE}/easyship/test`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url }),
+    });
+    const data = await resp.json();
+    if (resp.ok && data.ok) {
+      showToast("✓ EasyShip endpoint reachable", "success");
+    } else {
+      showToast(`✗ ${data.error || data.detail || "Connection failed"}`, "error");
+    }
+  } catch (error) {
+    showToast(`✗ Connection failed: ${error.message}`, "error");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+document
+  .getElementById("easyship-settings-save")
+  ?.addEventListener("click", saveEasyShipSettings);
+document.getElementById("easyship-test")?.addEventListener("click", testEasyShipEndpoint);
+
 // ===== QuickBooks Online settings =====
 //
 // Paste-back OAuth: "Connect" opens Intuit in a new tab; the user pastes the
@@ -25505,6 +25570,9 @@ function meRenderWarnings(d, visibleTotals) {
   if (d.truncated) notes.push(`Some stores hit the ${bovInt(d.limit)}-row limit — totals cover the listed orders only`);
   if (d.shipper && d.shipper.configured && d.shipper.unmatched > 0) {
     notes.push(`No parcel found for ${bovInt(d.shipper.unmatched)} Shopify order${d.shipper.unmatched === 1 ? "" : "s"} — their profit assumes $0 shipping cost`);
+  }
+  if (d.shipper && d.shipper.easyship_matched > 0) {
+    notes.push(`${bovInt(d.shipper.easyship_matched)} shipping cost${d.shipper.easyship_matched === 1 ? "" : "s"} filled in from EasyShip`);
   }
   if (!notes.length) { el.style.display = "none"; el.innerHTML = ""; return; }
   el.style.display = "";

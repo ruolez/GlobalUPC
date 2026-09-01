@@ -2100,6 +2100,7 @@ class MonthEndShipperStatus(BaseModel):
     store_name: Optional[str] = None
     matched: int = 0
     unmatched: int = 0
+    easyship_matched: int = 0                    # filled in by the EasyShip external lookup
     error: Optional[str] = None
 
 

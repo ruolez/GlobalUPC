@@ -27,6 +27,7 @@ from decimal import Decimal
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
+import aiohttp
 import pyodbc
 from sqlalchemy import text
 
@@ -2993,6 +2994,76 @@ def _parcel_costs_sync(host, port, database, username, password,
         return True, None, out
     except Exception as e:
         return False, str(e), {}
+
+
+# ---- EasyShip external lookup (secondary shipper) --------------------------
+# Read-only LAN API: POST {base}/api/external/orders/lookup with
+# {"order_numbers": [...]} (max 500/request, #- and case-insensitive) returns
+# orders[] with total_shipping_cost plus not_found[]. Used as a second-chance
+# shipping-cost source for orders the shipper store's parcels table missed.
+EASYSHIP_LOOKUP_TIMEOUT = 30
+EASYSHIP_LOOKUP_BATCH = 500
+
+
+def _easyship_base(base_url: str) -> str:
+    url = str(base_url or "").strip().rstrip("/")
+    if url and not url.lower().startswith(("http://", "https://")):
+        url = "http://" + url
+    return url
+
+
+async def easyship_parcel_costs_async(base_url: str, order_numbers: List[str],
+                                      ) -> Tuple[bool, Optional[str], Dict[str, Dict[str, float]]]:
+    """Shipping cost per order from the EasyShip external API, keyed by
+    normalized order number — same map shape as parcel_costs_async so results
+    merge straight into parcel_map. A mid-batch failure returns what was
+    collected so far alongside the error."""
+    url = _easyship_base(base_url) + "/api/external/orders/lookup"
+    names = sorted({str(n or "").strip() for n in order_numbers if str(n or "").strip()})
+    out: Dict[str, Dict[str, float]] = {}
+    if not names:
+        return True, None, out
+    timeout = aiohttp.ClientTimeout(total=EASYSHIP_LOOKUP_TIMEOUT)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            for i in range(0, len(names), EASYSHIP_LOOKUP_BATCH):
+                batch = names[i:i + EASYSHIP_LOOKUP_BATCH]
+                # LAN service; HTTPS deployments use a self-signed cert per the API doc.
+                async with session.post(url, json={"order_numbers": batch}, ssl=False) as response:
+                    if response.status != 200:
+                        body = (await response.text())[:200]
+                        return False, f"EasyShip returned HTTP {response.status}: {body}", out
+                    payload = await response.json(content_type=None)
+                for order in payload.get("orders") or []:
+                    key = normalize_order_number(order.get("order_number"))
+                    if not key:
+                        continue
+                    boxes = sum(len(s.get("boxes") or []) for s in order.get("shipments") or [])
+                    out[key] = {"cost": round(_f(order.get("total_shipping_cost")), 2),
+                                "parcels": boxes or 1}
+        return True, None, out
+    except asyncio.TimeoutError:
+        return False, f"Timed out after {EASYSHIP_LOOKUP_TIMEOUT}s talking to {url}", out
+    except (aiohttp.ClientError, ValueError) as e:
+        return False, str(e) or type(e).__name__, out
+
+
+async def easyship_health_async(base_url: str, timeout_s: float = 5.0) -> Tuple[bool, Optional[str]]:
+    """GET {base}/api/health — connectivity probe for the settings card."""
+    url = _easyship_base(base_url) + "/api/health"
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout_s)) as session:
+            async with session.get(url, ssl=False) as response:
+                if response.status != 200:
+                    return False, f"HTTP {response.status} from {url}"
+                payload = await response.json(content_type=None)
+        if not isinstance(payload, dict) or payload.get("status") != "ok":
+            return False, f"Unexpected health response from {url}"
+        return True, None
+    except asyncio.TimeoutError:
+        return False, f"Timed out after {timeout_s:.0f}s connecting to {url}"
+    except (aiohttp.ClientError, ValueError) as e:
+        return False, str(e) or type(e).__name__
 
 
 # ============================================================================

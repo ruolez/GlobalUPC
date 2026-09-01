@@ -5652,6 +5652,15 @@ DEFAULT_CHECKED_ORDERS_SLOW_MINUTES = 15.0
 CHECKED_ORDERS_SECONDS_PER_PRODUCT_SETTING_KEY = "checked_orders_seconds_per_product"
 DEFAULT_CHECKED_ORDERS_SECONDS_PER_PRODUCT = 10.0
 
+EASYSHIP_LOOKUP_URL_SETTING_KEY = "easyship_lookup_url"
+
+
+def _get_str_setting(db: Session, key: str) -> Optional[str]:
+    """Read a string setting; blank/missing → None."""
+    setting = db.query(Setting).filter(Setting.key == key).first()
+    value = (setting.value or "").strip() if setting else ""
+    return value or None
+
 
 def _get_float_setting(db: Session, key: str, default: float) -> float:
     """Read a numeric setting (stored as a string), falling back to `default`."""
@@ -12266,6 +12275,7 @@ async def _month_end_payload(date_from: Optional[str], date_to: Optional[str],
         sh_excl = _bov_shopify_exclusions(db)
         excl_sales = _bov_excluded_names(db)[0]
         shipper_store = _resolve_shipper_store_soft(db)
+        easyship_url = _get_str_setting(db, EASYSHIP_LOOKUP_URL_SETTING_KEY)
 
     warnings: List[str] = []
     synced = await asyncio.to_thread(shopify_sync.get_synced_stores) if shopify_stores else {}
@@ -12371,7 +12381,7 @@ async def _month_end_payload(date_from: Optional[str], date_to: Optional[str],
     # (both hit MSSQL; running them in parallel keeps total latency = max, not sum)
     shipper: Dict[str, Any] = {"configured": shipper_store is not None,
                                "store_name": shipper_store.name if shipper_store else None,
-                               "matched": 0, "unmatched": 0, "error": None}
+                               "matched": 0, "unmatched": 0, "easyship_matched": 0, "error": None}
     all_names = [o.get("name") for _st, p in sh_ok for o in (p.get("orders") or []) if o.get("name")]
     bo_count = sum(int(s.get("count") or 0) for s in stores_status if s["source"] == "backoffice" and not s.get("error"))
     await note(f"Fetched {bo_count:,} invoices and {len(all_names):,} Shopify orders "
@@ -12432,6 +12442,21 @@ async def _month_end_payload(date_from: Optional[str], date_to: Optional[str],
                     pmap.update(extra)
                 else:
                     warnings.append(f"Shipper parcels fallback lookup failed: {err2}")
+            if easyship_url:
+                # Second-chance lookup: orders the shipper store never saw may
+                # have shipped through EasyShip. Found costs merge into pmap and
+                # behave exactly like a parcel match downstream.
+                still_missing = sorted({n for n in all_names if bov.normalize_order_number(n) not in pmap})
+                if still_missing:
+                    t_es = time.monotonic()
+                    await note(f"Checking {len(still_missing):,} unmatched orders against EasyShip…")
+                    ok3, err3, es_map = await bov.easyship_parcel_costs_async(easyship_url, still_missing)
+                    if es_map:
+                        pmap.update(es_map)
+                        shipper["easyship_matched"] = len(es_map)
+                    if not ok3:
+                        warnings.append(f"EasyShip lookup failed: {err3}")
+                    timings["easyship"] = round(time.monotonic() - t_es, 2)
             await note(f"Shipping costs matched ({round(time.monotonic() - t, 1)}s)")
             return pmap
         finally:
@@ -12727,6 +12752,21 @@ def update_quickbooks_accounts_visibility(body: QuickBooksAccountVisibilityUpdat
 @app.get("/api/business-overview/bank-balances", response_model=BOVBankBalancesBlock)
 async def get_business_overview_bank_balances(max_age_minutes: Optional[float] = Query(None, ge=0)):
     return BOVBankBalancesBlock(**(await asyncio.to_thread(qb.get_balances_block, max_age_minutes, False)))
+
+
+# ============================================================================
+# EasyShip external lookup (secondary shipper for Month End shipping costs)
+# ============================================================================
+
+@app.post("/api/easyship/test")
+async def test_easyship_endpoint(body: Dict[str, Any]):
+    """Connectivity probe for the Settings card — GET {base}/api/health via the
+    backend so the browser doesn't need CORS access to the LAN host."""
+    url = str(body.get("url") or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="URL is required")
+    ok, err = await bov.easyship_health_async(url)
+    return {"ok": ok, "error": err}
 
 
 if __name__ == "__main__":
