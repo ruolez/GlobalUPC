@@ -392,7 +392,23 @@ function formatRelative(iso) {
 }
 
 // Settings Functions
+
+// One-shot map of the settings table so per-key loaders don't 404 the console
+// on keys that were never saved. Cleared on every Settings load and after saves.
+let settingsValuesCache = null;
+
+async function getSettingValue(key) {
+  if (!settingsValuesCache) {
+    settingsValuesCache = fetch(`${API_BASE}/settings`)
+      .then((resp) => (resp.ok ? resp.json() : []))
+      .then((list) => Object.fromEntries(list.map((s) => [s.key, s.value])))
+      .catch(() => ({}));
+  }
+  return (await settingsValuesCache)[key];
+}
+
 async function loadSettings() {
+  settingsValuesCache = null;
   await loadStores();
   await loadExclusions();
   await loadStoreMirrors();
@@ -1014,15 +1030,7 @@ async function loadShopifySalesSettings() {
   const input = document.getElementById("shopify-sales-sku-prefixes");
   if (!input) return;
 
-  try {
-    const resp = await fetch(`${API_BASE}/settings/shopify_sales_sku_exclude_prefixes`);
-    if (resp.ok) {
-      const data = await resp.json();
-      input.value = data.value || "";
-    }
-  } catch {
-    input.value = "";
-  }
+  input.value = (await getSettingValue("shopify_sales_sku_exclude_prefixes")) || "";
 
   const s2sSelect = document.getElementById("shopify-sales-s2s-store");
   if (!s2sSelect) return;
@@ -1040,11 +1048,8 @@ async function loadShopifySalesSettings() {
       s2sSelect.appendChild(opt);
     });
 
-    const s2sResp = await fetch(`${API_BASE}/settings/shopify_sales_s2s_store_id`);
-    if (s2sResp.ok) {
-      const setting = await s2sResp.json();
-      if (setting.value) s2sSelect.value = setting.value;
-    }
+    const s2sValue = await getSettingValue("shopify_sales_s2s_store_id");
+    if (s2sValue) s2sSelect.value = s2sValue;
   } catch {}
 }
 
@@ -11192,11 +11197,8 @@ async function loadAdminStoreSetting() {
       select.appendChild(opt);
     });
 
-    const resp = await fetch(`${API_BASE}/settings/${QIP_ADMIN_STORE_KEY}`);
-    if (resp.ok) {
-      const setting = await resp.json();
-      if (setting.value) select.value = setting.value;
-    }
+    const adminValue = await getSettingValue(QIP_ADMIN_STORE_KEY);
+    if (adminValue) select.value = adminValue;
   } catch {}
 }
 
@@ -18096,35 +18098,32 @@ async function loadInventoryTimeSettings() {
   const isolatedInput = document.getElementById("inventory-isolated-minutes");
 
   if (timeoutInput) {
-    try {
-      const resp = await fetch(`${API_BASE}/settings/${INVENTORY_TIMEOUT_KEY}`);
-      timeoutInput.value = resp.ok ? (await resp.json()).value || "10" : "10";
-    } catch {
-      timeoutInput.value = "10";
-    }
+    timeoutInput.value = (await getSettingValue(INVENTORY_TIMEOUT_KEY)) || "10";
   }
   if (isolatedInput) {
-    try {
-      const resp = await fetch(`${API_BASE}/settings/${INVENTORY_ISOLATED_KEY}`);
-      isolatedInput.value = resp.ok ? (await resp.json()).value || "1" : "1";
-    } catch {
-      isolatedInput.value = "1";
-    }
+    isolatedInput.value = (await getSettingValue(INVENTORY_ISOLATED_KEY)) || "1";
   }
 }
 
 async function saveSetting(key, value, description) {
-  const patchResp = await fetch(`${API_BASE}/settings/${key}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ value }),
-  });
-  if (!patchResp.ok) {
-    await apiRequest("/settings", {
-      method: "POST",
-      body: JSON.stringify({ key, value, description }),
+  // Create vs update decided from the settings map so neither verb 404s.
+  const exists = (await getSettingValue(key)) !== undefined;
+  if (exists) {
+    const patchResp = await fetch(`${API_BASE}/settings/${key}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ value }),
     });
+    if (patchResp.ok) {
+      settingsValuesCache = null;
+      return;
+    }
   }
+  await apiRequest("/settings", {
+    method: "POST",
+    body: JSON.stringify({ key, value, description }),
+  });
+  settingsValuesCache = null;
 }
 
 async function saveInventoryTimeSettings() {
@@ -18163,22 +18162,11 @@ async function loadCheckedOrdersSettings() {
     "checked-orders-seconds-per-product",
   );
   if (slowInput) {
-    try {
-      const resp = await fetch(`${API_BASE}/settings/${CHECKED_ORDERS_SLOW_KEY}`);
-      slowInput.value = resp.ok ? (await resp.json()).value || "15" : "15";
-    } catch {
-      slowInput.value = "15";
-    }
+    slowInput.value = (await getSettingValue(CHECKED_ORDERS_SLOW_KEY)) || "15";
   }
   if (perProductInput) {
-    try {
-      const resp = await fetch(
-        `${API_BASE}/settings/${CHECKED_ORDERS_SECONDS_PER_PRODUCT_KEY}`,
-      );
-      perProductInput.value = resp.ok ? (await resp.json()).value || "10" : "10";
-    } catch {
-      perProductInput.value = "10";
-    }
+    perProductInput.value =
+      (await getSettingValue(CHECKED_ORDERS_SECONDS_PER_PRODUCT_KEY)) || "10";
   }
 }
 
@@ -18215,12 +18203,7 @@ const EASYSHIP_LOOKUP_URL_KEY = "easyship_lookup_url";
 async function loadEasyShipSettings() {
   const input = document.getElementById("easyship-lookup-url");
   if (!input) return;
-  try {
-    const resp = await fetch(`${API_BASE}/settings/${EASYSHIP_LOOKUP_URL_KEY}`);
-    input.value = resp.ok ? (await resp.json()).value || "" : "";
-  } catch {
-    input.value = "";
-  }
+  input.value = (await getSettingValue(EASYSHIP_LOOKUP_URL_KEY)) || "";
 }
 
 async function saveEasyShipSettings() {
