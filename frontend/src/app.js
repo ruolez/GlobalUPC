@@ -25237,7 +25237,7 @@ function monthEndVisibleRows() {
   const f = monthEndState.filters;
   if (f.type !== "all") rows = rows.filter((r) => r.source === f.type);
   if (f.stores.size) rows = rows.filter((r) => f.stores.has(r.store_id));
-  if (f.type === "backoffice" && f.reps != null) rows = rows.filter((r) => f.reps.includes(bovRepKey(r)));
+  if (f.type === "backoffice" && f.reps != null) rows = rows.filter((r) => f.reps.includes(meRepKey(r)));
   if (f.search) {
     rows = rows.filter((r) =>
       String(r.number || "").toLowerCase().includes(f.search) ||
@@ -25249,19 +25249,30 @@ function monthEndVisibleRows() {
 
 // Sales-rep multiselect: BackOffice invoices only (Employees_tbl.FirstName via
 // SalesRepID), so it is shown just while the BackOffice chip is active and reset
-// otherwise. Options come from the loaded rows within the current store chips.
+// otherwise. Options are keyed by lowercased name over ALL loaded BackOffice rows
+// (not the checked store chips) so the same rep merges across stores and the
+// selection survives store toggles.
+function meRepKey(r) {
+  return (r.sales_rep == null ? "" : String(r.sales_rep).trim().toLowerCase()) || "—";
+}
+
 function meRenderRepFilter(d) {
   const bar = document.getElementById("me-rep-filter");
   const list = document.getElementById("me-reps-list");
   if (!bar || !list) return;
   const f = monthEndState.filters;
   const boRows = f.type === "backoffice"
-    ? ((d && d.rows) || []).filter((r) => r.source === "backoffice" && (!f.stores.size || f.stores.has(r.store_id)))
+    ? ((d && d.rows) || []).filter((r) => r.source === "backoffice")
     : [];
   const counts = new Map();
-  boRows.forEach((r) => { const k = bovRepKey(r); counts.set(k, (counts.get(k) || 0) + 1); });
-  const options = Array.from(counts.entries()).sort((a, b) => a[0].localeCompare(b[0]));
-  monthEndState.repOptions = options.map(([name]) => name);
+  boRows.forEach((r) => {
+    const k = meRepKey(r);
+    const e = counts.get(k);
+    if (e) e.count += 1;
+    else counts.set(k, { label: k === "—" ? "No rep" : String(r.sales_rep).trim(), count: 1 });
+  });
+  const options = Array.from(counts.entries()).sort((a, b) => a[1].label.localeCompare(b[1].label));
+  monthEndState.repOptions = options.map(([key]) => key);
   const val = document.getElementById("me-reps-value");
   const cnt = document.getElementById("me-reps-count");
   const trig = document.getElementById("me-reps-trigger");
@@ -25284,11 +25295,11 @@ function meRenderRepFilter(d) {
     `<button type="button" class="bov-ms-item${on ? " active" : ""}" role="checkbox" aria-checked="${on}" data-me-rep="${escapeHtml(value)}" title="${escapeHtml(label)}">` +
     `<span class="bov-ms-check" aria-hidden="true"></span><span class="bov-ms-label">${escapeHtml(label)}</span><span class="bov-store-chip-tag">${bovInt(n)}</span></button>`;
   list.innerHTML = [item("all", "All reps", isAll, options.length)]
-    .concat(options.map(([name, n]) => item(name, name === "—" ? "No rep" : name, isAll || f.reps.includes(name), n)))
+    .concat(options.map(([key, o]) => item(key, o.label, isAll || f.reps.includes(key), o.count)))
     .join("");
   if (val) {
     if (isAll) val.textContent = "All reps";
-    else if (f.reps.length <= 2) val.textContent = f.reps.map((n) => (n === "—" ? "No rep" : n)).join(", ") || "None";
+    else if (f.reps.length <= 2) val.textContent = f.reps.map((k) => counts.get(k)?.label ?? k).join(", ") || "None";
     else val.textContent = `${f.reps.length} of ${options.length} reps`;
   }
   if (cnt) {
