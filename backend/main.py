@@ -12443,10 +12443,14 @@ async def _month_end_payload(date_from: Optional[str], date_to: Optional[str],
                 else:
                     warnings.append(f"Shipper parcels fallback lookup failed: {err2}")
             if easyship_url:
-                # Second-chance lookup: orders the shipper store never saw may
+                # Second-chance lookup: orders the shipper store never saw — or
+                # matched only to $0-cost parcels (cost never recorded) — may
                 # have shipped through EasyShip. Found costs merge into pmap and
                 # behave exactly like a parcel match downstream.
-                still_missing = sorted({n for n in all_names if bov.normalize_order_number(n) not in pmap})
+                def _cost_unknown(name: str) -> bool:
+                    slot = pmap.get(bov.normalize_order_number(name))
+                    return slot is None or float(slot.get("cost") or 0) <= 0
+                still_missing = sorted({n for n in all_names if _cost_unknown(n)})
                 if still_missing:
                     t_es = time.monotonic()
                     await note(f"Checking {len(still_missing):,} unmatched orders against EasyShip…")
