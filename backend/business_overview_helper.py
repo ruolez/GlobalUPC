@@ -731,6 +731,67 @@ def _quotations_in_progress_sync(
         return False, str(e), {}
 
 
+_QUOTATION_SALE_COST_EXPR = "ISNULL(d.Qty, 0) * COALESCE(NULLIF(d.UnitCost, 0), ic.ItemUnitCost, 0)"
+_QUOTATION_LOCAL_COST_EXPR = "ISNULL(d.Qty, 0) * ISNULL(ic.ItemUnitCost, ISNULL(d.UnitCost, 0))"
+_QUOTATION_LINE_COST_EXPR = "ISNULL(d.Qty, 0) * ISNULL(d.UnitCost, 0)"
+
+
+def _quotation_stamped_costs_sync(host, port, database, username, password,
+                                  quotation_numbers: List[str], cost_mode: str = "sale",
+                                  ) -> Tuple[bool, Optional[str], Dict[str, float]]:
+    """
+    Σ line cost per quotation from the source store's own QuotationsDetails_tbl,
+    following the invoice cost bases: sale = the cost stamped on each line
+    (blank/$0 → current Items_tbl cost), current = Items_tbl cost (line cost when
+    the item is missing). Quotations absent from Quotations_tbl are omitted.
+    """
+    try:
+        with _connect(host, port, database, username, password) as conn:
+            cur = conn.cursor()
+            present = _tables_present(cur, ["Quotations_tbl", "QuotationsDetails_tbl", "Items_tbl"])
+            if not (present.get("Quotations_tbl") and present.get("QuotationsDetails_tbl")):
+                return True, None, {}
+            if present.get("Items_tbl"):
+                apply_sql = _LOCAL_COST_APPLY
+                expr = _QUOTATION_SALE_COST_EXPR if cost_mode == "sale" else _QUOTATION_LOCAL_COST_EXPR
+            else:
+                apply_sql = ""
+                expr = _QUOTATION_LINE_COST_EXPR
+            out: Dict[str, float] = {}
+            numbers = [str(n) for n in quotation_numbers]
+            for i in range(0, len(numbers), 1000):
+                chunk = numbers[i:i + 1000]
+                ph = ",".join("?" * len(chunk))
+                cur.execute(f"""
+                    SELECT q.QuotationNumber AS qn, SUM({expr}) AS cost
+                    FROM Quotations_tbl q
+                    JOIN QuotationsDetails_tbl d ON d.QuotationID = q.QuotationID
+                    {apply_sql}
+                    WHERE q.QuotationNumber IN ({ph})
+                    GROUP BY q.QuotationNumber
+                """, chunk)
+                for r in _rows(cur):
+                    out[str(r.get("qn") or "").strip()] = _f(r.get("cost"))
+        return True, None, out
+    except Exception as e:
+        return False, str(e), {}
+
+
+def apply_costs_by_key(rows: List[Dict[str, Any]], key_field: str,
+                       costs: Dict[str, float]) -> List[Dict[str, Any]]:
+    """Set cost/profit/margin from a per-key cost map; returns the rows it had no cost for."""
+    missing: List[Dict[str, Any]] = []
+    for r in rows:
+        key = r.get(key_field)
+        if key in costs:
+            r.update(_margin_fields(r.get("revenue"), costs[key]))
+            if "shipping_cost" in r:
+                r["net_profit"] = invoice_net_profit(r)
+        else:
+            missing.append(r)
+    return missing
+
+
 # ============================================================================
 # Invoices (sales store)
 # ============================================================================
@@ -3081,6 +3142,10 @@ async def quotation_status_options_async(**kw):
 
 async def quotations_in_progress_async(**kw):
     return await _run(_quotations_in_progress_sync, **kw)
+
+
+async def quotation_stamped_costs_async(**kw):
+    return await _run(_quotation_stamped_costs_sync, **kw)
 
 
 async def open_invoices_count_async(**kw):

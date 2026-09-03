@@ -10059,9 +10059,10 @@ async def _bov_recost_list_s2s(db: Session, cfg, rows: List[Dict[str, Any]],
 async def _bov_cost_quotations(db: Session, cfg, quotations: List[Dict[str, Any]],
                                units_by_qn: Dict[str, List[Tuple[str, float]]], cost_mode: str) -> None:
     """
-    Quotation cost: default = the originating store's own Items_tbl.UnitCost
-    (SourceDB → sales store by database_name); s2s = S2S Items_tbl.UnitCost.
-    Revenue = QuotationTotal.
+    Quotation cost (SourceDB → sales store by database_name): sale = the cost
+    stamped on the quotation's own QuotationsDetails_tbl lines (blank/$0 line
+    cost → that store's Items_tbl.UnitCost); current = the store's Items_tbl
+    UnitCost by UPC; s2s = S2S Items_tbl.UnitCost. Revenue = QuotationTotal.
     """
     if not quotations:
         return
@@ -10082,10 +10083,20 @@ async def _bov_cost_quotations(db: Session, cfg, quotations: List[Dict[str, Any]
         if conn is None:
             bov.recost_rows_s2s(rows, sub_units, "quotation_number", {})
             return
+        pending = rows
+        if cost_mode == "sale":
+            ok, _err, stamped = await bov.quotation_stamped_costs_async(
+                host=conn.host, port=conn.port, database=conn.database_name,
+                username=conn.username, password=conn.password,
+                quotation_numbers=[r["quotation_number"] for r in rows], cost_mode=cost_mode)
+            if ok:
+                pending = bov.apply_costs_by_key(rows, "quotation_number", stamped)
+            if not pending:
+                return
         lookup = _bov_make_conn_cost_lookup(conn, "unit_cost")
-        upcs = sorted({u for lines in sub_units.values() for (u, _n) in lines if u})
+        upcs = sorted({u for r in pending for (u, _n) in sub_units.get(r["quotation_number"], []) if u})
         unit_costs = await lookup(upcs) if upcs else {}
-        bov.recost_rows_s2s(rows, sub_units, "quotation_number", unit_costs)
+        bov.recost_rows_s2s(pending, sub_units, "quotation_number", unit_costs)
 
     await asyncio.gather(*[_one(src, rows) for src, rows in groups.items()], return_exceptions=True)
 
