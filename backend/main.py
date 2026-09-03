@@ -5595,6 +5595,53 @@ async def _enrich_products_with_prices(products, s2s_conn):
             p["price"] = round(float(cost) * PRICE_MARKUP, 2)
 
 
+async def _enrich_products_stamped(db: Session, payload: Dict[str, Any], cost_mode: str) -> None:
+    """
+    Business Overview cost-basis enrichment, in place: `price` = the price
+    stamped on the quotation's own QuotationsDetails_tbl lines in the SourceDB
+    store; `unit_cost` per cost_mode (sale = stamped line cost with current
+    fallback, current = that store's Items_tbl.UnitCost, s2s = S2S
+    Items_tbl.UnitCost). Anything unresolvable is left as None.
+    """
+    products = payload.get("products") or []
+    if not products:
+        return
+    for p in products:
+        p["unit_cost"] = None
+        p["price"] = None
+    header = payload.get("header") or {}
+    source_db = (header.get("source_db")
+                 or next((p.get("source_db") for p in products if p.get("source_db")), None)
+                 or "").strip().lower()
+    conn = None
+    if source_db:
+        for st in db.query(Store).filter(Store.store_type == StoreType.mssql, Store.is_active == True).all():
+            if st.mssql_connection and (st.mssql_connection.database_name or "").strip().lower() == source_db:
+                conn = st.mssql_connection
+                break
+    qn = header.get("quotation_number") or products[0].get("quotation_number")
+    stamped: Dict[str, Dict[str, float]] = {}
+    if conn is not None and qn:
+        ok, _err, stamped = await bov.quotation_line_prices_async(
+            host=conn.host, port=conn.port, database=conn.database_name,
+            username=conn.username, password=conn.password, quotation_number=str(qn))
+        if not ok:
+            stamped = {}
+    s2s_costs: Dict[str, float] = {}
+    if cost_mode == "s2s":
+        lookup = _bov_make_conn_cost_lookup(_resolve_item_tracker_s2s_conn(db), "unit_cost")
+        upcs = sorted({(p.get("product_upc") or "").strip() for p in products if (p.get("product_upc") or "").strip()})
+        s2s_costs = await lookup(upcs) if upcs else {}
+    for p in products:
+        upc = (p.get("product_upc") or "").strip()
+        entry = stamped.get(upc)
+        if entry:
+            p["price"] = entry["unit_price"]
+            p["unit_cost"] = entry["sale_unit_cost"] if cost_mode == "sale" else entry["current_unit_cost"]
+        if cost_mode == "s2s":
+            p["unit_cost"] = s2s_costs.get(upc)
+
+
 def _resolve_admin_store(db: Session) -> Store:
     """
     Look up the configured DB_ADMIN store via the `admin_store_id` setting.
@@ -5912,9 +5959,19 @@ async def list_quotations_in_progress(
 )
 async def get_quotation_in_progress_products(
     quotation_number: str,
+    cost_mode: Optional[str] = None,
     db: Session = Depends(get_db),
 ):
-    """Return all product line items + header for a single quotation in progress."""
+    """
+    Return all product line items + header for a single quotation in progress.
+
+    Without cost_mode (the In Progress page): unit_cost / price are the Item
+    Tracker S2S suggestion (Items_tbl.UnitCost and cost × 1.05). With cost_mode
+    (the Business Overview modal): price = the price stamped on the quotation's
+    own QuotationsDetails_tbl lines in the SourceDB store, and unit_cost follows
+    the selected basis (sale = stamped line cost, current = that store's
+    Items_tbl.UnitCost, s2s = S2S Items_tbl.UnitCost).
+    """
     store = _resolve_admin_store(db)
     conn = store.mssql_connection
 
@@ -5929,10 +5986,13 @@ async def get_quotation_in_progress_products(
     if not success:
         raise HTTPException(status_code=502, detail=f"MSSQL query failed: {error}")
 
-    # Enrich each product line with unit_cost / price from the Item
-    # Tracker s2s store. Soft-fails to None when not configured.
-    s2s_conn = _resolve_item_tracker_s2s_conn(db)
-    await _enrich_products_with_prices(payload["products"], s2s_conn)
+    if cost_mode is not None:
+        await _enrich_products_stamped(db, payload, _bov_cost_mode(cost_mode))
+    else:
+        # Enrich each product line with unit_cost / price from the Item
+        # Tracker s2s store. Soft-fails to None when not configured.
+        s2s_conn = _resolve_item_tracker_s2s_conn(db)
+        await _enrich_products_with_prices(payload["products"], s2s_conn)
 
     return QuotationProductsResponse(
         products=[QuotationProductLine(**p) for p in payload["products"]],

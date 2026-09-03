@@ -777,6 +777,52 @@ def _quotation_stamped_costs_sync(host, port, database, username, password,
         return False, str(e), {}
 
 
+def _quotation_line_prices_sync(host, port, database, username, password,
+                                quotation_number: str,
+                                ) -> Tuple[bool, Optional[str], Dict[str, Dict[str, float]]]:
+    """
+    Qty-weighted stamped unit price + sale/current unit costs per UPC for one
+    quotation, from the source store's own Quotations/QuotationsDetails tables.
+    """
+    try:
+        with _connect(host, port, database, username, password) as conn:
+            cur = conn.cursor()
+            present = _tables_present(cur, ["Quotations_tbl", "QuotationsDetails_tbl", "Items_tbl"])
+            if not (present.get("Quotations_tbl") and present.get("QuotationsDetails_tbl")):
+                return True, None, {}
+            if present.get("Items_tbl"):
+                apply_sql = _LOCAL_COST_APPLY
+                sale_expr, cur_expr = _QUOTATION_SALE_COST_EXPR, _QUOTATION_LOCAL_COST_EXPR
+            else:
+                apply_sql = ""
+                sale_expr = cur_expr = _QUOTATION_LINE_COST_EXPR
+            cur.execute(f"""
+                SELECT LTRIM(RTRIM(d.ProductUPC)) AS upc,
+                       SUM(ISNULL(d.Qty, 0)) AS qty,
+                       SUM(ISNULL(d.Qty, 0) * ISNULL(d.UnitPrice, 0)) AS price_total,
+                       SUM({sale_expr}) AS sale_cost_total,
+                       SUM({cur_expr}) AS current_cost_total
+                FROM Quotations_tbl q
+                JOIN QuotationsDetails_tbl d ON d.QuotationID = q.QuotationID
+                {apply_sql}
+                WHERE q.QuotationNumber = ?
+                GROUP BY LTRIM(RTRIM(d.ProductUPC))
+            """, [quotation_number])
+            out: Dict[str, Dict[str, float]] = {}
+            for r in _rows(cur):
+                qty = _f(r.get("qty"))
+                if not qty:
+                    continue
+                out[str(r.get("upc") or "").strip()] = {
+                    "unit_price": round(_f(r.get("price_total")) / qty, 4),
+                    "sale_unit_cost": round(_f(r.get("sale_cost_total")) / qty, 4),
+                    "current_unit_cost": round(_f(r.get("current_cost_total")) / qty, 4),
+                }
+        return True, None, out
+    except Exception as e:
+        return False, str(e), {}
+
+
 def apply_costs_by_key(rows: List[Dict[str, Any]], key_field: str,
                        costs: Dict[str, float]) -> List[Dict[str, Any]]:
     """Set cost/profit/margin from a per-key cost map; returns the rows it had no cost for."""
@@ -3146,6 +3192,10 @@ async def quotations_in_progress_async(**kw):
 
 async def quotation_stamped_costs_async(**kw):
     return await _run(_quotation_stamped_costs_sync, **kw)
+
+
+async def quotation_line_prices_async(**kw):
+    return await _run(_quotation_line_prices_sync, **kw)
 
 
 async def open_invoices_count_async(**kw):

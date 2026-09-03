@@ -24129,20 +24129,21 @@ async function bovOpenQuotationModal(quotationNumber) {
   if (title) title.textContent = `Quotation ${quotationNumber}${row.business_name ? ` — ${row.business_name}` : ""}`;
   openModal("bov-quotation-modal");
   const cache = bovState.modalCache.quotation;
-  if (cache.has(quotationNumber)) {
-    bovRenderQuotationModal(cache.get(quotationNumber), row, quotationNumber);
+  const cacheKey = `${bovCostParams().cost_mode}:${quotationNumber}`;
+  if (cache.has(cacheKey)) {
+    bovRenderQuotationModal(cache.get(cacheKey), row, quotationNumber);
     return;
   }
   bovModalLoading(body, "Loading quotation…");
   try {
-    const resp = await fetch(`${API_BASE}/quotations/in-progress/${encodeURIComponent(quotationNumber)}/products`);
+    const resp = await fetch(`${API_BASE}/quotations/in-progress/${encodeURIComponent(quotationNumber)}/products?cost_mode=${encodeURIComponent(bovCostParams().cost_mode)}`);
     if (!resp.ok) {
       let detail = `HTTP ${resp.status}`;
       try { detail = (await resp.json()).detail || detail; } catch (e) { /* keep */ }
       throw new Error(detail);
     }
     const data = await resp.json();
-    cache.set(quotationNumber, data);
+    cache.set(cacheKey, data);
     bovRenderQuotationModal(data, row, quotationNumber);
   } catch (e) {
     bovModalError(body, `Could not load this quotation: ${e.message || e}`);
@@ -24188,10 +24189,15 @@ function bovRenderQuotationModal(data, row, quotationNumber) {
     return `<tr><td><span class="bov-cell-main">${escapeHtml(p.product_description || "—")}</span><span class="bov-cell-sub bov-cell-mono">${escapeHtml([p.product_sku, p.product_upc].filter(Boolean).join(" · "))}</span></td><td class="bov-num">${bovInt(qty)}</td><td class="bov-num">${cost != null ? bovMoney(cost) : "—"}</td><td class="bov-num">${price != null ? bovMoney(price) : "—"}</td><td class="bov-num">${lineTotal != null ? bovMoney(lineTotal) : "—"}</td><td class="bov-num">${margin != null ? bovPct(margin) : "—"}</td></tr>`;
   }).join("");
   const marginTot = sumPrice > 0 ? ((sumPrice - sumCost) / sumPrice) * 100 : null;
+  const basis = {
+    sale: { label: "Stamped cost", note: "Price and cost come from the quotation's own lines in the source store (blank/$0 line cost → its current Items_tbl.UnitCost)." },
+    current: { label: "Current cost", note: "Price is the quoted price from the source store; cost is that store's Items_tbl.UnitCost today." },
+    s2s: { label: "S2S cost", note: "Price is the quoted price from the source store; cost is S2S Items_tbl.UnitCost." },
+  }[bovCostParams().cost_mode] || { label: "Unit cost", note: "" };
   body.innerHTML =
     `<div class="bov-kv-grid">${kv}</div>` +
     (products.length
-      ? `<div class="bov-table-scroll"><table class="data-table bov-mini-table bov-modal-table"><thead><tr><th style="width:44%">Product</th><th class="bov-num" style="width:9%">Qty</th><th class="bov-num" style="width:12%">Unit cost</th><th class="bov-num" style="width:12%">Price</th><th class="bov-num" style="width:13%">Line total</th><th class="bov-num" style="width:10%">Margin</th></tr></thead><tbody>${lines}</tbody><tfoot><tr><td>${bovInt(products.length)} lines</td><td class="bov-num">${bovInt(sumQty)}</td><td class="bov-num">${sumCost ? bovMoney(sumCost) : "—"}</td><td></td><td class="bov-num">${sumPrice ? bovMoney(sumPrice) : "—"}</td><td class="bov-num">${marginTot != null ? bovPct(marginTot) : "—"}</td></tr></tfoot></table></div><p class="bov-modal-note">Price = Items_tbl cost × 1.05 from the Item Tracker store; margin is indicative.</p>`
+      ? `<div class="bov-table-scroll"><table class="data-table bov-mini-table bov-modal-table"><thead><tr><th style="width:44%">Product</th><th class="bov-num" style="width:9%">Qty</th><th class="bov-num" style="width:12%">${escapeHtml(basis.label)}</th><th class="bov-num" style="width:12%">Price</th><th class="bov-num" style="width:13%">Line total</th><th class="bov-num" style="width:10%">Margin</th></tr></thead><tbody>${lines}</tbody><tfoot><tr><td>${bovInt(products.length)} lines</td><td class="bov-num">${bovInt(sumQty)}</td><td class="bov-num">${sumCost ? bovMoney(sumCost) : "—"}</td><td></td><td class="bov-num">${sumPrice ? bovMoney(sumPrice) : "—"}</td><td class="bov-num">${marginTot != null ? bovPct(marginTot) : "—"}</td></tr></tfoot></table></div>${basis.note ? `<p class="bov-modal-note">${escapeHtml(basis.note)}</p>` : ""}`
       : `<p class="bov-modal-note">No products on this quotation.</p>`);
 }
 
