@@ -20775,7 +20775,10 @@ const BOV_WIDGET_DEFS = {
   },
   quotations: {
     card: "bov-quotations-card",
-    request: () => ["/quotations", { limit: BOV_LIST_LIMIT, ...bovStoreParams(), ...bovCostParams() }],
+    // Deliberately no bovStoreParams()/bovRangeParams(): the Quotations tab is
+    // independent of the topbar store and period selectors (its own per-card
+    // store filter narrows client-side).
+    request: () => ["/quotations", { limit: BOV_LIST_LIMIT, ...bovCostParams() }],
     render: () => bovRenderQuotationsTable(),
   },
   products: {
