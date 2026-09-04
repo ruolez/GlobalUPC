@@ -1971,7 +1971,9 @@ body {
 /* Data Table */
 .data-table {
   width: 100%;
-  border-collapse: collapse;
+  /* separate (not collapse) so th borders travel with sticky header cells */
+  border-collapse: separate;
+  border-spacing: 0;
   table-layout: fixed;
 }
 
@@ -2283,7 +2285,8 @@ body {
 /* Price Updates */
 .price-table {
   width: 100%;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   font-size: 0.875rem;
 }
 
@@ -4526,7 +4529,7 @@ body.no-scroll {
   font-size: 0.825rem;
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
-  overflow: hidden;
+  overflow: clip; /* clip (not hidden): rounds the corners without becoming the sticky-header anchor */
   background: var(--bg-primary);
 }
 
@@ -4559,7 +4562,7 @@ body.no-scroll {
 .qip-products-table thead th.qip-sortable {
   cursor: pointer;
   user-select: none;
-  position: relative;
+  position: sticky;
   transition: color 0.12s ease, background 0.12s ease;
 }
 
@@ -4876,7 +4879,7 @@ body.no-scroll {
 .sa-page .data-table thead th.qip-sortable {
   cursor: pointer;
   user-select: none;
-  position: relative;
+  position: sticky;
   transition: color 0.12s ease, background 0.12s ease;
 }
 
@@ -4925,7 +4928,7 @@ body.no-scroll {
 #chkord-table thead th.qip-sortable {
   cursor: pointer;
   user-select: none;
-  position: relative;
+  position: sticky;
   transition: color 0.12s ease, background 0.12s ease;
 }
 
@@ -5195,8 +5198,8 @@ body.no-scroll {
 }
 .sa-page .data-table thead th {
   position: sticky;
-  top: 0;
-  z-index: 1;
+  top: var(--table-sticky-top, 0px);
+  z-index: 3;
   background: color-mix(in srgb, var(--bg-secondary) 92%, var(--bg-primary));
   backdrop-filter: blur(4px);
   border-bottom: 1px solid var(--border-color);
@@ -5854,10 +5857,15 @@ tr:hover > td .sacr-copy { opacity: 0.8; }
 }
 #sacr-detail-modal .sacr-detail-items {
   width: 100%;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   font-size: 0.75rem;
 }
 #sacr-detail-modal .sacr-detail-items th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--bg-secondary);
   text-align: left;
   font-size: 0.625rem;
   text-transform: uppercase;
@@ -6777,7 +6785,9 @@ tr:hover > td .sacr-copy { opacity: 0.8; }
    left the numeric captions sitting 9px lower than the rest. */
 .sa-page #sacr-table thead th,
 .sa-page #sacr-table thead th.sacr-num {
-  position: relative;
+  /* sticky (not relative) so the header freezes; it still anchors the
+     absolutely-positioned sort arrow below */
+  position: sticky;
   padding-right: 1.15rem;
   padding-bottom: 1.1rem;
 }
@@ -7368,8 +7378,8 @@ tr:hover > td .sacr-copy { opacity: 0.8; }
   overflow: visible;                 /* full list always shown; the page scrolls */
   border-radius: var(--radius-sm);
 }
-.bov-card-body .bov-table-scroll { overflow-x: auto; }
-.bov-card-body .bov-mini-table thead th { position: sticky; top: 0; z-index: 1; background: var(--bg-tertiary); }
+.bov-card-body .bov-table-scroll { overflow: visible; }
+.bov-card-body .bov-mini-table thead th { position: sticky; top: var(--table-sticky-top, 0px); z-index: 3; background: var(--bg-tertiary); }
 .bov-page .bov-card:has(.bov-card-body:empty) .bov-card-body { min-height: 0; }
 .bov-card-foot {
   display: flex;
@@ -7401,7 +7411,11 @@ tr:hover > td .sacr-copy { opacity: 0.8; }
 .bov-age-chip { font-variant-numeric: tabular-nums; }
 
 /* --- Tables --------------------------------------------------------------- */
-.bov-table-scroll { overflow-x: auto; }
+/* overflow: visible so page-level tables sticky-pin their headers to the
+   viewport; modals restore a bounded scroller below (their tables set
+   min-width and need horizontal scroll) */
+.bov-table-scroll { overflow: visible; }
+.bov-modal .bov-table-scroll { overflow: auto; max-height: 65vh; }
 .bov-mini-table { font-size: 0.875rem; }
 .bov-mini-table th, .bov-mini-table td { padding: 0.5rem 0.75rem; }
 .bov-mini-table th { font-size: 0.6875rem; white-space: nowrap; }
@@ -7603,7 +7617,8 @@ tr.bov-line-void td { opacity: 0.55; text-decoration: line-through; }
 .bov-list-toolbar { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem; }
 .bov-list-toolbar .dark-input { max-width: 22rem; font-size: 0.875rem; padding: 0.4rem 0.6rem; }
 .bov-list-count { font-size: 0.75rem; color: var(--text-tertiary); white-space: nowrap; }
-.bov-list-body { max-height: 70vh; overflow: auto; border-radius: var(--radius-sm); }
+.bov-list-body { border-radius: var(--radius-sm); }
+.bov-list-body .bov-table-scroll { max-height: 70vh; overflow: auto; }
 .bov-list-body .bov-mini-table thead th { position: sticky; top: 0; z-index: 2; }
 .bov-empty.is-muted { color: var(--text-tertiary); border-style: dotted; }
 @media (max-width: 700px) {
@@ -8665,7 +8680,6 @@ tr.bov-line-void td { opacity: 0.55; text-decoration: line-through; }
 }
 
 #me-table-card { padding: 0; }
-#me-table .bov-table-scroll { overflow-x: auto; }
 #me-table table tfoot td {
   font-weight: 600; color: var(--text-primary);
   border-top: 2px solid var(--border-color); background: var(--bg-tertiary);
@@ -8850,3 +8864,39 @@ tr.bov-line-void td { opacity: 0.55; text-decoration: line-through; }
 .me-idle-text { display: flex; flex-direction: column; gap: 0.25rem; min-width: 0; }
 .me-idle-text strong { font-size: 0.9375rem; color: var(--text-primary); }
 .me-idle-text span { font-size: 0.8125rem; color: var(--text-secondary); }
+
+/* ============================================================================
+   Frozen table headers — global viewport-sticky rule
+   The page scrolls; header rows pin to the top of the window (or to the
+   nearest bounded scroller inside modals). Appended last so it wins the
+   cascade over the per-feature th rules above.
+   ============================================================================ */
+.data-table thead th,
+.data-table thead td {
+  position: sticky;
+  top: var(--table-sticky-top, 0px);
+  z-index: 3;
+}
+.data-table thead td { background: var(--bg-secondary); }
+/* Business Overview pins below its sticky topbar (height set by app.js) */
+.bov-page { --table-sticky-top: var(--bov-topbar-h, 0px); }
+.bov-page .bov-modal { --table-sticky-top: 0px; }
+/* Two-row headers (filter row + caption row) pin as one unit via the thead,
+   so the per-cell rule above must not apply to them. */
+#sales-table thead th,
+#sales-table thead td,
+#inv-table thead th,
+#inv-table thead td {
+  position: static;
+}
+#inv-table thead {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--bg-secondary);
+}
+/* With border-collapse: separate, a tfoot's border-top would stack on the last
+   body row's border-bottom — drop the latter. */
+.data-table tbody:has(+ tfoot:not(:empty)) tr:last-child td {
+  border-bottom: 0;
+}

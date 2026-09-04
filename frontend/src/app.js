@@ -19760,6 +19760,15 @@ function bovBindOnce() {
   const page = document.getElementById("business-overview-page");
   if (!page) return;
   bovInstallCollapsers();
+
+  // Keep --bov-topbar-h in sync so sticky table headers pin below the topbar
+  // (its height changes when the toolbar wraps).
+  const sticky = page.querySelector(".bov-sticky");
+  if (sticky && "ResizeObserver" in window) {
+    new ResizeObserver(() => {
+      page.style.setProperty("--bov-topbar-h", `${sticky.offsetHeight}px`);
+    }).observe(sticky);
+  }
   page.addEventListener("click", (e) => {
     const t = e.target.closest("[data-bov-collapse]");
     if (!t) return;
