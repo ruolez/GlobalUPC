@@ -23099,7 +23099,7 @@ function bovRenderShopifyOrderModal(data) {
   if (metaEl) metaEl.innerHTML = `${bovShopifyStatusChip(h.fulfillment_status)} ${h.financial_status ? `<span class="qip-status-chip ${String(h.financial_status).toUpperCase() === "PAID" ? "complete" : "pending"}">${escapeHtml(String(h.financial_status).toLowerCase())}</span>` : ""}`;
   const shipTo = [h.ship_city, h.ship_province_code, h.ship_zip, h.ship_country_code].filter(Boolean).join(", ");
   const tracking = h.tracking_number
-    ? (h.tracking_url ? `<a href="${escapeHtml(h.tracking_url)}" target="_blank" rel="noopener">${escapeHtml([h.tracking_company, h.tracking_number].filter(Boolean).join(" "))}</a>` : escapeHtml([h.tracking_company, h.tracking_number].filter(Boolean).join(" ")))
+    ? (h.tracking_url ? `<a class="bov-modal-link" href="${escapeHtml(h.tracking_url)}" target="_blank" rel="noopener">${escapeHtml([h.tracking_company, h.tracking_number].filter(Boolean).join(" "))}</a>` : escapeHtml([h.tracking_company, h.tracking_number].filter(Boolean).join(" ")))
     : "—";
   const fulf = (h.fulfillments || []).map((f) => `<span class="bov-cell-sub">${escapeHtml(f.display_status || f.status || "—")}${f.created_at ? ` · ${escapeHtml(bovDateMdy(f.created_at))}` : ""}${f.tracking_number ? ` · ${escapeHtml([f.tracking_company, f.tracking_number].filter(Boolean).join(" "))}` : ""}</span>`).join("<br>") || "—";
   const kv = [

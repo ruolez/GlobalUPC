@@ -16,7 +16,7 @@
 
   --text-primary: #e4e4e7;
   --text-secondary: #a1a1aa;
-  --text-tertiary: #71717a;
+  --text-tertiary: #8e8e99;
 
   --accent-primary: #6366f1;
   --accent-hover: #4f46e5;
@@ -42,6 +42,10 @@
   --radius-lg: 0.75rem;
 
   --transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* Defined at :root (not .qip-page) so the top-level drill-in modals can use it too. */
+  --qip-mono: "JetBrains Mono", "SF Mono", ui-monospace, "Cascadia Mono",
+    "Menlo", "Consolas", monospace;
 }
 
 /* Theme 1: Monochrome Slate */
@@ -56,7 +60,7 @@
 
   --text-primary: #ffffff;
   --text-secondary: #a3a3a3;
-  --text-tertiary: #737373;
+  --text-tertiary: #8f8f8f;
 
   --accent-primary: #e5e5e5;
   --accent-hover: #ffffff;
@@ -75,7 +79,7 @@
 
   --text-primary: #efefed;
   --text-secondary: #a8a6a3;
-  --text-tertiary: #757371;
+  --text-tertiary: #918f8c;
 
   --accent-primary: #d4d2cf;
   --accent-hover: #e8e6e3;
@@ -94,7 +98,7 @@
 
   --text-primary: #ecedee;
   --text-secondary: #a4a6a9;
-  --text-tertiary: #727478;
+  --text-tertiary: #8e9095;
 
   --accent-primary: #cbd5e0;
   --accent-hover: #e2e8f0;
@@ -113,7 +117,7 @@
 
   --text-primary: #e0e0e2;
   --text-secondary: #9e9ea2;
-  --text-tertiary: #6e6e72;
+  --text-tertiary: #8b8b90;
 
   --accent-primary: #c8c8cc;
   --accent-hover: #dcdce0;
@@ -150,8 +154,8 @@
   --border-focus: #5e6779;
 
   --text-primary: #eceff4;
-  --text-secondary: #9da5b4;
-  --text-tertiary: #6c7689;
+  --text-secondary: #bcc3ce;
+  --text-tertiary: #a6afbf;
 
   --accent-primary: #88c0d0;
   --accent-hover: #7eb4c4;
@@ -175,7 +179,7 @@
 
   --text-primary: #2c2c2c;
   --text-secondary: #5a5a5a;
-  --text-tertiary: #8a8a8a;
+  --text-tertiary: #6d6d6d;
 
   --accent-primary: #4a7c59;
   --accent-hover: #3d6649;
@@ -3374,8 +3378,6 @@ body.no-scroll {
    =========================================================================== */
 
 .qip-page {
-  --qip-mono: "JetBrains Mono", "SF Mono", ui-monospace, "Cascadia Mono",
-    "Menlo", "Consolas", monospace;
   --qip-rail-active: var(--accent-primary);
   font-feature-settings: "tnum", "ss01";
 }
@@ -7411,7 +7413,7 @@ tr.bov-row-click:focus-visible { outline: 2px solid var(--accent-primary); outli
 tr.bov-line-void td { opacity: 0.55; text-decoration: line-through; }
 .bov-cell-main { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .bov-cell-sub { display: block; font-size: 0.6875rem; color: var(--text-tertiary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.bov-cell-mono { font-variant-numeric: tabular-nums; letter-spacing: 0.01em; }
+.bov-cell-mono { font-family: var(--qip-mono); font-variant-numeric: tabular-nums; letter-spacing: 0.01em; }
 
 /* --- Charts --------------------------------------------------------------- */
 .bov-page .bov-chart-wrap { min-height: 3rem; }
@@ -7483,6 +7485,30 @@ tr.bov-line-void td { opacity: 0.55; text-decoration: line-through; }
 /* KV sub-lines (e.g. the profit breakdown) wrap instead of ellipsizing — the
    nowrap/ellipsis on .bov-cell-sub is for table cells, not the KV grid. */
 .bov-kv .bov-cell-sub { white-space: normal; overflow: visible; text-overflow: clip; }
+/* The drill-in modals are dense small text — promote the faint tertiary classes
+   one level so they stay readable in every theme. Scoped here because
+   .dashboard-card-meta and .qip-status-chip are shared with non-modal UI. */
+.bov-modal .bov-kv-label,
+.bov-modal .bov-cell-sub,
+.bov-modal .bov-cell-muted,
+.bov-modal .bov-modal-note,
+.bov-modal .me-nav-pos,
+.bov-modal .dashboard-card-meta,
+.bov-modal .qip-status-chip { color: var(--text-secondary); }
+/* No global anchor rule exists — without this a bare <a> falls back to the
+   UA default blue/purple, unreadable on the dark themes. */
+.bov-modal a { color: var(--accent-primary); }
+/* `.sa-kpi-pct` is styled under `.sa-page`; the drill-in modals live outside
+   the page, so restate the chip look for them (same reason as .qip-sortable). */
+.bov-modal .sa-kpi-pct {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--accent-primary);
+  background: color-mix(in srgb, var(--accent-primary) 12%, transparent);
+  border-radius: var(--radius-sm);
+  padding: 0.0625rem 0.4375rem;
+  letter-spacing: 0.01em;
+}
 .bov-modal-note { font-size: 0.75rem; color: var(--text-tertiary); margin: 0.75rem 0 0; }
 .bov-modal-error { color: var(--danger); }
 .bov-modal .bov-modal-table { min-width: 40rem; }
