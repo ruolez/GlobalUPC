@@ -20058,6 +20058,8 @@ function bovBindOnce() {
     const scope = e.target.closest && e.target.closest("#business-overview-page, .bov-modal");
     if (!scope) return;
     if (e.target.closest("[data-bov-action], [data-bov-tab], [data-bov-show-all], [data-bov-aging], [data-bov-retry], [data-bov-series], [data-bov-close]")) return;
+    const meNav = e.target.closest("[data-me-nav]");
+    if (meNav) { meNavGo(meNav.dataset.meNav); return; }
     const sortTh = e.target.closest("th[data-bov-sort]");
     if (sortTh && scope.classList.contains("bov-modal")) {
       bovToggleSort(sortTh.dataset.bovWidget, sortTh.dataset.bovSort);
@@ -20151,6 +20153,17 @@ function bovBindOnce() {
     const top = open[open.length - 1];
     if (top.id === "bov-config-modal") bovCancelConfigEdit({ close: true });
     else closeModal(top.id);
+  });
+  // ←/→ cycle Month End orders while a drill-in modal opened from that list is up
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    if (e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
+    const open = document.querySelectorAll(".bov-modal.active");
+    if (!open.length) return;
+    const nav = open[open.length - 1].querySelector(".me-modal-nav");
+    if (!nav || nav.hidden) return;
+    e.preventDefault();
+    meNavGo(e.key === "ArrowLeft" ? "prev" : "next");
   });
 
   // Visibility → auto-refresh
@@ -23105,7 +23118,7 @@ function bovRenderShopifyOrderModal(data) {
       if (h.product_profit == null) {
         return `<span class="bov-cell-muted" title="Product cost unknown — barcodes not found in the S2S items table">—</span>`;
       }
-      const cov = h.cost_coverage != null && h.cost_coverage < 0.999 ? `<span class="bov-cell-sub">cost known for ${Math.round(h.cost_coverage * 100)}% of units</span>` : "";
+      const cov = h.cost_coverage != null && h.cost_coverage < 0.999 ? `<span class="bov-cell-sub" title="cost known for ${Math.round(h.cost_coverage * 100)}% of units">cost known for ${Math.round(h.cost_coverage * 100)}% of units</span>` : "";
       return `<span class="bov-profit${bovNum(h.product_profit) < 0 ? " is-neg" : ""}">${escapeHtml(bovMoney(h.product_profit))}</span>${h.margin_pct != null ? ` <span class="sa-kpi-pct">${escapeHtml(bovPct(h.margin_pct))}</span>` : ""}${cov}`;
     })()),
     ...(ctx ? [
@@ -23117,8 +23130,9 @@ function bovRenderShopifyOrderModal(data) {
       bovKv(ctx.estimated ? "Real profit (est.)" : "Real profit", (() => {
         if (h.product_profit == null) return `<span class="bov-cell-muted">—</span>`;
         const real = bovNum(h.product_profit) + bovNum(h.total_shipping) - bovNum(ctx.shipping_cost);
+        const sub = `product ${bovMoney(h.product_profit)} + shipping collected ${bovMoney(h.total_shipping || 0)} − ${ctx.estimated ? "estimated " : ""}shipping cost ${bovMoney(ctx.shipping_cost || 0)}`;
         return `<strong class="bov-profit${real < 0 ? " is-neg" : ""}">${escapeHtml(bovMoney(real))}</strong>` +
-          `<span class="bov-cell-sub">${escapeHtml(`product ${bovMoney(h.product_profit)} + shipping collected ${bovMoney(h.total_shipping || 0)} − ${ctx.estimated ? "estimated " : ""}shipping cost ${bovMoney(ctx.shipping_cost || 0)}`)}</span>`;
+          `<span class="bov-cell-sub" title="${escapeHtml(sub)}">${escapeHtml(sub)}</span>`;
       })()),
     ] : []),
   ].join("");
@@ -24093,6 +24107,14 @@ function bovOpenRow(rowEl) {
   const kind = rowEl.dataset.bovOpen;
   const id = rowEl.dataset.bovId;
   if (!kind || id == null) return;
+  if (kind === "invoice" || kind === "shopify-order") {
+    // Month End rows carry data-me-key → enable Prev/Next + the viewed-row highlight.
+    monthEndState.navActive = !!rowEl.dataset.meKey;
+    if (rowEl.dataset.meKey) {
+      monthEndState.viewedKey = rowEl.dataset.meKey;
+      meApplyViewedHighlight();
+    }
+  }
   if (kind === "quotation") bovOpenQuotationModal(id);
   else if (kind === "product") bovOpenProductModal(parseInt(id, 10));
   else if (kind === "invoice") bovOpenInvoiceModal(parseInt(id, 10), rowEl.dataset.bovStore ? parseInt(rowEl.dataset.bovStore, 10) : null);
@@ -24107,6 +24129,7 @@ function bovOpenRow(rowEl) {
       : null;
     bovOpenShopifyOrderModal(parseInt(rowEl.dataset.bovStore, 10), id, ctx);
   }
+  if (kind === "invoice" || kind === "shopify-order") meUpdateModalNav();
 }
 
 function bovKv(label, valueHtml) {
@@ -24261,7 +24284,8 @@ function bovRenderInvoiceModal(data) {
       const net = h.net_profit != null ? h.net_profit : h.profit;
       if (net == null) return "—";
       const netPct = bovNum(h.revenue) > 0 ? (bovNum(net) / bovNum(h.revenue)) * 100 : null;
-      return `<strong class="bov-profit${bovNum(net) < 0 ? " is-neg" : ""}">${escapeHtml(bovMoney(net))}</strong>${netPct != null ? ` <span class="sa-kpi-pct">${escapeHtml(bovPct(netPct))}</span>` : ""}<span class="bov-cell-sub">${escapeHtml(`product ${bovMoney(h.profit)} − shipping ${bovMoney(h.shipping_cost || 0)}`)}</span>`;
+      const sub = `product ${bovMoney(h.profit)} − shipping ${bovMoney(h.shipping_cost || 0)}`;
+      return `<strong class="bov-profit${bovNum(net) < 0 ? " is-neg" : ""}">${escapeHtml(bovMoney(net))}</strong>${netPct != null ? ` <span class="sa-kpi-pct">${escapeHtml(bovPct(netPct))}</span>` : ""}<span class="bov-cell-sub" title="${escapeHtml(sub)}">${escapeHtml(sub)}</span>`;
     })()),
     bovKv("Cost basis", data.cost_basis === "s2s"
       ? `<span class="bov-cost-basis is-s2s" title="S2S cost is on — every line costed from the Item Tracker S2S Items_tbl.UnitCost by UPC">S2S UnitCost</span>`
@@ -25044,6 +25068,8 @@ const monthEndState = {
   repOptions: [],
   abort: null,
   progressLog: [],
+  viewedKey: null, // row_key of the last order opened from the list — drives the row highlight
+  navActive: false, // whether the open drill-in modal was reached from Month End (shows Prev/Next)
 };
 
 function meShow(id, visible, text) {
@@ -25301,6 +25327,64 @@ function monthEndVisibleRows() {
   return bovSortRows(rows, bovState.sort.monthEnd);
 }
 
+// --- Modal Prev/Next over the Month End list + last-viewed row highlight ---
+// The cycle order is monthEndVisibleRows(), recomputed on every step, so it
+// always matches the table exactly as sorted/filtered right now.
+
+function meApplyViewedHighlight() {
+  const table = document.getElementById("me-table");
+  if (!table) return;
+  table.querySelectorAll("tr.bov-row-viewed").forEach((tr) => tr.classList.remove("bov-row-viewed"));
+  if (!monthEndState.viewedKey) return;
+  const row = table.querySelector(`tr[data-me-key="${CSS.escape(monthEndState.viewedKey)}"]`);
+  if (row) row.classList.add("bov-row-viewed");
+}
+
+function meUpdateModalNav() {
+  const rows = monthEndState.navActive && monthEndState.viewedKey ? monthEndVisibleRows() : [];
+  const idx = rows.findIndex((r) => r.row_key === monthEndState.viewedKey);
+  document.querySelectorAll(".me-modal-nav").forEach((el) => {
+    if (idx < 0) { el.hidden = true; return; }
+    el.hidden = false;
+    const pos = el.querySelector(".me-nav-pos");
+    if (pos) pos.textContent = `${bovInt(idx + 1)} of ${bovInt(rows.length)}`;
+    const prev = el.querySelector('[data-me-nav="prev"]');
+    const next = el.querySelector('[data-me-nav="next"]');
+    if (prev) prev.disabled = idx <= 0;
+    if (next) next.disabled = idx >= rows.length - 1;
+  });
+}
+
+function meNavGo(dir) {
+  if (!monthEndState.navActive || !monthEndState.viewedKey) return;
+  const rows = monthEndVisibleRows();
+  const idx = rows.findIndex((r) => r.row_key === monthEndState.viewedKey);
+  if (idx < 0) return;
+  const r = rows[dir === "prev" ? idx - 1 : idx + 1];
+  if (!r) return;
+  monthEndState.viewedKey = r.row_key;
+  meApplyViewedHighlight();
+  const hl = document.querySelector(`#me-table tr[data-me-key="${CSS.escape(r.row_key)}"]`);
+  if (hl) hl.scrollIntoView({ behavior: "smooth", block: "center" });
+  const id = String(r.row_key || "").split(":")[2] || "";
+  const openInvoice = r.source === "backoffice";
+  // The two sources use different modal elements — close the other one so
+  // stacking (and Escape, which closes the topmost) stays sane.
+  const other = document.getElementById(openInvoice ? "bov-shopify-order-modal" : "bov-invoice-modal");
+  if (other && other.classList.contains("active")) closeModal(other.id);
+  if (openInvoice) {
+    bovOpenInvoiceModal(parseInt(id, 10), r.store_id);
+  } else {
+    bovOpenShopifyOrderModal(r.store_id, id, {
+      shipping_cost: r.shipping_cost != null ? r.shipping_cost : null,
+      parcels: r.parcels != null ? r.parcels : null,
+      shipping_missing: !!r.shipping_missing,
+      estimated: !!r._estimated,
+    });
+  }
+  meUpdateModalNav();
+}
+
 // Sales-rep multiselect: BackOffice invoices only (Employees_tbl.FirstName via
 // SalesRepID), so it is shown just while the BackOffice chip is active and reset
 // otherwise. Options are keyed by lowercased name over ALL loaded BackOffice rows
@@ -25497,10 +25581,11 @@ function meColumns() {
 
 function meRowAttrs(r) {
   const id = String(r.row_key || "").split(":")[2] || "";
+  const key = ` data-me-key="${escapeHtml(String(r.row_key || ""))}"`;
   if (r.source === "backoffice") {
-    return `data-bov-open="invoice" data-bov-id="${escapeHtml(id)}" data-bov-store="${r.store_id}"`;
+    return `data-bov-open="invoice" data-bov-id="${escapeHtml(id)}" data-bov-store="${r.store_id}"${key}`;
   }
-  return `data-bov-open="shopify-order" data-bov-id="${escapeHtml(id)}" data-bov-store="${r.store_id}"` +
+  return `data-bov-open="shopify-order" data-bov-id="${escapeHtml(id)}" data-bov-store="${r.store_id}"${key}` +
     (r.shipping_cost != null ? ` data-me-ship-cost="${r.shipping_cost}"` : "") +
     (r.parcels != null ? ` data-me-parcels="${r.parcels}"` : "") +
     ` data-me-ship-missing="${r.shipping_missing ? "1" : "0"}"` +
@@ -25624,6 +25709,7 @@ function renderMonthEnd() {
   }
   meShow("me-empty", false);
   if (table) table.innerHTML = bovTableHtml("monthEnd", meColumns(), rows, { tfoot: meTfootHtml(t), rowAttrs: meRowAttrs, select: { keyOf: BOV_EXPORTS.monthEnd.keyOf } });
+  meApplyViewedHighlight();
   if (foot) {
     const p = d.period || {};
     foot.innerHTML = `<span>${bovInt(rows.length)} of ${bovInt((d.rows || []).length)} orders · ${escapeHtml(p.start || "")} → ${escapeHtml(p.end || "")}</span>`;

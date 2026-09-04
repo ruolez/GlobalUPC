@@ -5597,7 +5597,14 @@
       <div class="modal-content" style="max-width: 940px; width: 95%">
         <div class="modal-header">
           <h3 id="bov-invoice-title">Invoice</h3>
-          <button type="button" class="modal-close" data-bov-close="bov-invoice-modal" aria-label="Close">&times;</button>
+          <div class="bov-modal-head-actions">
+            <div class="me-modal-nav" hidden>
+              <button type="button" class="me-nav-btn" data-me-nav="prev" title="Previous order (←)" aria-label="Previous order">&lsaquo;</button>
+              <span class="me-nav-pos"></span>
+              <button type="button" class="me-nav-btn" data-me-nav="next" title="Next order (→)" aria-label="Next order">&rsaquo;</button>
+            </div>
+            <button type="button" class="modal-close" data-bov-close="bov-invoice-modal" aria-label="Close">&times;</button>
+          </div>
         </div>
         <div class="modal-body bov-modal-body" id="bov-invoice-body"></div>
       </div>
@@ -5624,7 +5631,14 @@
             <h3 id="bov-shopify-order-title">Shopify order</h3>
             <span class="dashboard-card-meta" id="bov-shopify-order-meta"></span>
           </div>
-          <button type="button" class="modal-close" data-bov-close="bov-shopify-order-modal" aria-label="Close">&times;</button>
+          <div class="bov-modal-head-actions">
+            <div class="me-modal-nav" hidden>
+              <button type="button" class="me-nav-btn" data-me-nav="prev" title="Previous order (←)" aria-label="Previous order">&lsaquo;</button>
+              <span class="me-nav-pos"></span>
+              <button type="button" class="me-nav-btn" data-me-nav="next" title="Next order (→)" aria-label="Next order">&rsaquo;</button>
+            </div>
+            <button type="button" class="modal-close" data-bov-close="bov-shopify-order-modal" aria-label="Close">&times;</button>
+          </div>
         </div>
         <div class="modal-body bov-modal-body" id="bov-shopify-order-body"></div>
       </div>
