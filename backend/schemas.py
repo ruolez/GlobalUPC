@@ -2207,3 +2207,21 @@ class BOVBankBalancesBlock(BOVBlockStatus):
     stale: bool = False
     accounts: List[QuickBooksAccountResponse] = []
     totals: BOVBankTotals = BOVBankTotals()
+
+# ============================================================================
+# Active users (Settings page)
+# ============================================================================
+
+class ActiveUserRow(BaseModel):
+    ip: str
+    first_seen: datetime
+    last_seen: datetime
+    idle_seconds: float
+    request_count: int
+    last_section: Optional[str] = None
+
+
+class ActiveUsersResponse(BaseModel):
+    window_minutes: int
+    refreshed_at: datetime
+    users: List[ActiveUserRow] = []

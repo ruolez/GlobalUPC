@@ -74,6 +74,15 @@ class Setting(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
+class ActiveClient(Base):
+    __tablename__ = "active_clients"
+
+    ip = Column(String, primary_key=True)
+    first_seen = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    last_seen = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    request_count = Column(BigInteger, nullable=False, server_default="0")
+    last_section = Column(Text)
+
 class UPCUpdateHistory(Base):
     __tablename__ = "upc_update_history"
 

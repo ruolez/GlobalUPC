@@ -419,6 +419,8 @@ async function loadSettings() {
   await loadCheckedOrdersSettings();
   await loadEasyShipSettings();
   await loadQuickBooksSettings();
+  await loadActiveUsers();
+  startActiveUsersAutoRefresh();
 
   // Set dropdown value to saved preference
   const savedLandingPage = getDefaultLandingPage();
@@ -18254,6 +18256,84 @@ document
   .getElementById("easyship-settings-save")
   ?.addEventListener("click", saveEasyShipSettings);
 document.getElementById("easyship-test")?.addEventListener("click", testEasyShipEndpoint);
+
+// ===== Active users =====
+
+let activeUsersTimer = null;
+
+function isSettingsPageVisible() {
+  const page = document.getElementById("settings-page");
+  return !!page && page.style.display !== "none";
+}
+
+async function loadActiveUsers(showSpinner = true) {
+  const loading = document.getElementById("active-users-loading");
+  const empty = document.getElementById("active-users-empty");
+  const results = document.getElementById("active-users-results");
+  const tbody = document.getElementById("active-users-table-body");
+  if (!loading || !empty || !results || !tbody) return;
+
+  if (showSpinner) {
+    loading.style.display = "block";
+    empty.style.display = "none";
+    results.style.display = "none";
+  }
+
+  let data;
+  try {
+    const resp = await fetch(`${API_BASE}/active-users`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    data = await resp.json();
+  } catch (error) {
+    loading.style.display = "none";
+    if (showSpinner) showToast(`✗ Failed to load active users: ${error.message}`, "error");
+    return;
+  }
+
+  loading.style.display = "none";
+  const users = data.users || [];
+  if (users.length === 0) {
+    empty.style.display = "block";
+    results.style.display = "none";
+    return;
+  }
+
+  empty.style.display = "none";
+  results.style.display = "block";
+  document.getElementById("active-users-count").textContent = String(users.length);
+  const refreshedEl = document.getElementById("active-users-refreshed-at");
+  if (refreshedEl) {
+    refreshedEl.textContent = ` — as of ${new Date(data.refreshed_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`;
+  }
+
+  tbody.innerHTML = users
+    .map((u) => {
+      const idle = formatDuration(u.idle_seconds);
+      const dim = u.idle_seconds > 300;
+      return `
+        <tr${dim ? ' style="color: var(--text-tertiary)"' : ""}>
+          <td>${escapeHtml(u.ip)}</td>
+          <td>${escapeHtml(u.last_section || "—")}</td>
+          <td>${formatDateTime(u.first_seen)}</td>
+          <td>${formatDateTime(u.last_seen)}</td>
+          <td>${escapeHtml(idle)}</td>
+          <td>${Number(u.request_count).toLocaleString()}</td>
+        </tr>`;
+    })
+    .join("");
+}
+
+function startActiveUsersAutoRefresh() {
+  if (activeUsersTimer) return;
+  activeUsersTimer = setInterval(() => {
+    if (document.hidden || !isSettingsPageVisible()) return;
+    loadActiveUsers(false);
+  }, 30000);
+}
+
+document
+  .getElementById("active-users-refresh")
+  ?.addEventListener("click", () => loadActiveUsers(true));
 
 // ===== QuickBooks Online settings =====
 //

@@ -1396,6 +1396,81 @@
                     </div>
                   </div>
                 </div>
+
+                <!-- Active users -->
+                <div class="role-card role-card-wide">
+                  <div class="role-card-head">
+                    <span class="role-card-icon" aria-hidden="true">
+                      <svg width="18" height="18" viewBox="0 0 18 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <circle cx="6.5" cy="6" r="2.6" stroke="currentColor" stroke-width="1.6"/>
+                        <path d="M1.8 15c.5-2.6 2.4-4 4.7-4s4.2 1.4 4.7 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                        <circle cx="12.8" cy="6.8" r="2" stroke="currentColor" stroke-width="1.6"/>
+                        <path d="M12.6 10.9c2 .1 3.3 1.3 3.7 3.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                      </svg>
+                    </span>
+                    <div class="role-card-title-block">
+                      <div class="role-card-title">Active Users</div>
+                      <p class="role-card-help">
+                        Client IPs that hit the API in the last 30 minutes —
+                        check before deploying an update. Refreshes every 30
+                        seconds while this page is open; activity can lag by up
+                        to ~10 seconds.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div class="role-card-control" style="margin-top: 0.75rem">
+                    <button type="button" class="btn btn-secondary" id="active-users-refresh">
+                      Refresh
+                    </button>
+                  </div>
+
+                  <div
+                    id="active-users-loading"
+                    class="test-status"
+                    style="display: none; margin-top: 1rem"
+                  >
+                    <div class="loading">Loading active users...</div>
+                  </div>
+
+                  <div
+                    id="active-users-empty"
+                    class="settings-empty-state"
+                    style="display: none; margin-top: 1rem"
+                  >
+                    <p>No activity in the last 30 minutes</p>
+                    <p class="settings-empty-state-hint">
+                      Safe to deploy — nobody is using the app right now
+                    </p>
+                  </div>
+
+                  <div
+                    id="active-users-results"
+                    style="display: none; margin-top: 1rem"
+                  >
+                    <div style="margin-bottom: 0.75rem">
+                      <p style="margin: 0; font-size: 0.875rem; color: var(--text-secondary)">
+                        <strong id="active-users-count">0</strong> active user(s)
+                        <span id="active-users-refreshed-at"></span>
+                      </p>
+                    </div>
+                    <div>
+                      <table class="data-table">
+                        <thead>
+                          <tr>
+                            <th style="width: 22%">IP Address</th>
+                            <th style="width: 20%">Section</th>
+                            <th style="width: 20%">Connected</th>
+                            <th style="width: 20%">Last Activity</th>
+                            <th style="width: 10%">Idle</th>
+                            <th style="width: 8%">Requests</th>
+                          </tr>
+                        </thead>
+                        <tbody id="active-users-table-body"></tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
               </section>
 
               <!-- ──────────── Exclusions Panel ──────────── -->

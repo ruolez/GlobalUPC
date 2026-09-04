@@ -85,6 +85,11 @@ from schemas import (
     QuickBooksConnectCompleteRequest, QuickBooksAccountResponse, QuickBooksAccountUpdate,
     QuickBooksAccountVisibilityUpdate,
     BOVBankTotals, BOVBankBalancesBlock,
+    ActiveUserRow, ActiveUsersResponse,
+)
+from active_users_helper import (
+    resolve_client_ip, section_for_path, record_activity, flush_activity_loop,
+    SESSION_GAP_MINUTES,
 )
 from mssql_helper import (
     test_mssql_connection, search_upc_across_mssql_stores, search_products_by_upc,
@@ -175,7 +180,14 @@ async def lifespan(app: FastAPI):
     from quickbooks_helper import keepalive_loop as quickbooks_keepalive_loop
     oauth_refresh_task = asyncio.create_task(token_refresh_loop())
     quickbooks_task = asyncio.create_task(quickbooks_keepalive_loop())
+    activity_flush_task = asyncio.create_task(flush_activity_loop())
     yield
+    print("[SHUTDOWN] Cancelling active-users flush loop (final flush)...")
+    activity_flush_task.cancel()
+    try:
+        await activity_flush_task
+    except BaseException:
+        pass
     print("[SHUTDOWN] Cancelling Shopify OAuth token refresh loop...")
     oauth_refresh_task.cancel()
     print("[SHUTDOWN] Cancelling QuickBooks keep-alive loop...")
@@ -241,6 +253,31 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+class ActivityTrackerMiddleware:
+    """Pure ASGI pass-through: reads the scope, never touches receive/send, so
+    SSE streams and BoundedStreamingResponse behave exactly as without it."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        try:
+            if (
+                scope["type"] == "http"
+                and scope["path"].startswith("/api/")
+                and not scope["path"].startswith("/api/health")
+            ):
+                ip = resolve_client_ip(scope)
+                if ip:
+                    record_activity(ip, section_for_path(scope["path"]))
+        except Exception:
+            pass  # tracking must never fail a request
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(ActivityTrackerMiddleware)
 
 # Health check
 @app.get("/api/health")
@@ -12842,6 +12879,36 @@ async def test_easyship_endpoint(body: Dict[str, Any]):
         raise HTTPException(status_code=400, detail="URL is required")
     ok, err = await bov.easyship_health_async(url)
     return {"ok": ok, "error": err}
+
+
+# ============================================================================
+# Active users (Settings page)
+# ============================================================================
+
+@app.get("/api/active-users", response_model=ActiveUsersResponse)
+def list_active_users(db: Session = Depends(get_db)):
+    from sqlalchemy import text as _sa_text
+    rows = db.execute(_sa_text(f"""
+        SELECT ip, first_seen, last_seen,
+               EXTRACT(EPOCH FROM (now() - last_seen)) AS idle_seconds,
+               request_count, last_section,
+               now() AS refreshed_at
+        FROM active_clients
+        WHERE last_seen >= now() - interval '{SESSION_GAP_MINUTES} minutes'
+        ORDER BY last_seen DESC
+    """)).mappings().all()
+    return ActiveUsersResponse(
+        window_minutes=SESSION_GAP_MINUTES,
+        refreshed_at=rows[0]["refreshed_at"] if rows else datetime.now(timezone.utc),
+        users=[
+            ActiveUserRow(
+                ip=r["ip"], first_seen=r["first_seen"], last_seen=r["last_seen"],
+                idle_seconds=float(r["idle_seconds"]), request_count=r["request_count"],
+                last_section=r["last_section"],
+            )
+            for r in rows
+        ],
+    )
 
 
 if __name__ == "__main__":

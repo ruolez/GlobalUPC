@@ -455,3 +455,15 @@ CREATE TABLE IF NOT EXISTS quickbooks_accounts (
 INSERT INTO settings (key, value, description) VALUES
     ('app_name', 'Global UPC', 'Application name'),
     ('version', '1.0.0', 'Application version');
+
+-- Active clients tracking (migration 026)
+CREATE TABLE IF NOT EXISTS active_clients (
+    ip TEXT PRIMARY KEY,
+    first_seen TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_seen  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    request_count BIGINT NOT NULL DEFAULT 0,
+    last_section TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_active_clients_last_seen
+    ON active_clients (last_seen);
