@@ -27344,6 +27344,9 @@ function osyncRenderTable() {
         (combinedN > 1 ? ` <span class="osync-badge is-combined" title="${combinedN} reconciled together as one shipment">×${combinedN}</span>` : "") +
         (noTrk && name ? ' <span class="osync-flag" title="Nothing in the tracking field">no tracking</span>' : "") +
         extra;
+      const unpaidBadge = (r.sh_outstanding || 0) > 0.004
+        ? ` <span class="osync-flag" title="Shopify shows an unpaid balance — a fix run marks it paid">unpaid ${escapeHtml(osyncMoney(r.sh_outstanding))}</span>`
+        : "";
       const issues = (r.issue_kinds || []).map((k) => osyncIssueChip(k)).join(" ");
       const delta = r.total_delta;
       const deltaCls = delta != null && Math.abs(delta) > 0.011 ? " osync-delta-bad" : "";
@@ -27352,7 +27355,7 @@ function osyncRenderTable() {
         `<tr data-osync-pos="${pos}" class="osync-row ${tone}${selCls}">` +
         selCell +
         `<td class="osync-nowrap">${escapeHtml(osyncFmtDate(osyncRowDate(r)))}</td>` +
-        `<td class="osync-nowrap">${nameCell(r.sh_name, r.sh_no_tracking, (r.sh_orders || []).length, sharedBadge)}</td>` +
+        `<td class="osync-nowrap">${nameCell(r.sh_name, r.sh_no_tracking, (r.sh_orders || []).length, sharedBadge + unpaidBadge)}</td>` +
         `<td class="osync-nowrap">${nameCell(r.bo_invoice_number, r.bo_no_tracking, (r.bo_invoices || []).length)}</td>` +
         `<td class="osync-customer" title="${escapeHtml(r.sh_customer || r.bo_customer || "")}">${escapeHtml(r.sh_customer || r.bo_customer || "")}</td>` +
         `<td class="osync-nowrap">${osyncMethodPill(r)}</td>` +
@@ -27455,7 +27458,7 @@ function osyncRenderDetail() {
         ["Placed", escapeHtml(r.sh_orders.map((o) => o.date).filter(Boolean).join(", "))],
         ["Customer", escapeHtml(r.sh_customer || "—")],
         ["Tracking", r.sh_tracking && r.sh_tracking.length ? r.sh_tracking.map((t) => `<span class="osync-mono">${escapeHtml(t)}</span>`).join("<br>") : r.sh_no_tracking ? '<span class="osync-flag">MISSING</span>' : '<span class="osync-muted">—</span>'],
-        ["Total", `<strong>${osyncMoney(r.sh_total)}</strong>`],
+        ["Total", `<strong>${osyncMoney(r.sh_total)}</strong>` + ((r.sh_outstanding || 0) > 0.004 ? ` <span class="osync-flag">unpaid ${escapeHtml(osyncMoney(r.sh_outstanding))}</span>` : "")],
       ]
     : [["", '<span class="osync-muted">No Shopify order matched this invoice.</span>']];
 
@@ -27614,7 +27617,8 @@ function osyncFixable(r) {
   if (r.combined) return { ok: false, reason: "Combined shipments need manual review" };
   const lineIssues = (r.issue_kinds || []).some((k) => ["product", "qty", "price"].includes(k));
   const trackingFix = r.sh_no_tracking && !!r.bo_tracking;
-  if (!lineIssues && !trackingFix) {
+  const unpaid = (r.sh_outstanding || 0) > 0.004;
+  if (!lineIssues && !trackingFix && !unpaid) {
     return { ok: false, reason: r.status === "matched_ok" ? "Nothing to fix" : "Only the order total differs — no line-level change to make" };
   }
   return { ok: true, reason: r.ambiguous ? "Ambiguous match — verify the pairing before applying" : "" };
@@ -27749,6 +27753,10 @@ function osyncFixActionLines(actions) {
       out.push(["tracking", `Set tracking <span class="osync-mono">${escapeHtml(a.numbers.join(", "))}</span> on ${a.fulfillment_ids.length} fulfillment${a.fulfillment_ids.length === 1 ? "" : "s"}`]);
       return;
     }
+    if (a.kind === "mark_paid") {
+      out.push(["paid", `Mark the outstanding balance of <strong>${osyncMoney(a.amount)}</strong> as paid <span class="osync-muted">(left by an earlier run; no money is collected)</span>`]);
+      return;
+    }
     if (a.reason === "replace") {
       const e = byKey.get(a.key) || {};
       e[a.kind] = a;
@@ -27780,7 +27788,7 @@ function osyncFixPriceNote(a) {
   return "";
 }
 
-const OSYNC_FIX_KIND_LABELS = { add: "Add", remove: "Remove", reduce: "Reduce", reprice: "Reprice", tracking: "Tracking" };
+const OSYNC_FIX_KIND_LABELS = { add: "Add", remove: "Remove", reduce: "Reduce", reprice: "Reprice", tracking: "Tracking", paid: "Paid" };
 const OSYNC_FIX_STATUS = {
   ready: ["Ready", "is-ok"], noop: ["Nothing to do", "is-muted"], skipped: ["Skipped", "is-warn"], error: ["Error", "is-bad"],
   applied: ["Applied", "is-ok"], partial: ["Partially applied", "is-warn"], failed: ["Failed", "is-bad"],

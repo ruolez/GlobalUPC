@@ -74,6 +74,30 @@ async def _gql(ctx: ShopifyCtx, query: str, variables: Dict[str, Any]) -> Dict[s
     return data or {}
 
 
+# Right after a refund / edit / fulfillment Shopify briefly locks the order
+# ("Order is temporarily unavailable to be modified") while it settles; the
+# next step must wait it out rather than fail.
+_TRANSIENT_MARKERS = ("temporarily unavailable", "try again", "currently being modified")
+_RETRY_DELAYS = (1.5, 2.5, 4.0, 6.0, 8.0)
+
+
+def _is_transient(message: str) -> bool:
+    m = (message or "").lower()
+    return any(k in m for k in _TRANSIENT_MARKERS)
+
+
+async def _with_retry(coro_factory):
+    """Run a step, retrying only on Shopify's transient order lock."""
+    for i, delay in enumerate(_RETRY_DELAYS):
+        try:
+            return await coro_factory()
+        except FixStepError as e:
+            if not _is_transient(e.message):
+                raise
+            await asyncio.sleep(delay)
+    return await coro_factory()
+
+
 def _payload(data: Dict[str, Any], field: str, step: str) -> Dict[str, Any]:
     """Unwrap a mutation payload and turn its userErrors into a FixStepError."""
     payload = data.get(field)
@@ -444,6 +468,7 @@ async def apply_order_fix(ctx: ShopifyCtx, tz: Optional[str], target: Dict[str, 
     refunds = [a for a in actions if a["kind"] == "refund"]
     adds = [a for a in actions if a["kind"] == "add"]
     tracking = next((a for a in actions if a["kind"] == "tracking"), None)
+    outstanding = float(order.get("outstanding") or 0)   # balance left by an earlier partial run
     steps: List[Dict[str, Any]] = result["steps"]
     bo_numbers, _ = osync.split_routes(osync.split_tracking(invoice.get("tracking_no")))
 
@@ -454,29 +479,30 @@ async def apply_order_fix(ctx: ShopifyCtx, tz: Optional[str], target: Dict[str, 
     try:
         if refunds:
             units = sum(a["qty"] for a in refunds)
-            refund_id, amount = await refund_units(ctx, order["id"], refunds, note)
+            refund_id, amount = await _with_retry(lambda: refund_units(ctx, order["id"], refunds, note))
             step("refund", True, f"Refunded {units} unit(s), ${amount:.2f} returned", [refund_id])
 
         if adds:
-            edit = await add_lines(ctx, order["id"], adds, note)
+            edit = await _with_retry(lambda: add_lines(ctx, order["id"], adds, note))
             units = sum(a["qty"] for a in adds)
             step("edit", True, f"Added {units} unit(s) across {len(adds)} line(s)", [edit["calculated_order_id"]])
+            outstanding = edit["outstanding"]
 
             fo_ids = edit["open_fulfillment_order_ids"]
             if fo_ids:
-                fids = await fulfill_open(ctx, fo_ids, bo_numbers or None)
+                fids = await _with_retry(lambda: fulfill_open(ctx, fo_ids, bo_numbers or None))
                 step("fulfill", True, f"Fulfilled {len(fo_ids)} new fulfillment order(s)", fids)
             else:
                 step("fulfill", True, "No open fulfillment order after the edit", [])
 
-            if edit["outstanding"] > 0.004:
-                status = await mark_paid(ctx, order["id"])
-                step("mark_paid", True, f"Marked ${edit['outstanding']:.2f} as paid ({status})", [])
-            else:
-                step("mark_paid", True, "No outstanding balance", [])
+        if outstanding > 0.004:
+            status = await _with_retry(lambda: mark_paid(ctx, order["id"]))
+            step("mark_paid", True, f"Marked ${outstanding:.2f} as paid ({status})", [])
+        elif adds:
+            step("mark_paid", True, "No outstanding balance", [])
 
         if tracking:
-            n = await push_tracking(ctx, tracking["fulfillment_ids"], tracking["numbers"])
+            n = await _with_retry(lambda: push_tracking(ctx, tracking["fulfillment_ids"], tracking["numbers"]))
             step("tracking", True, f"Tracking {', '.join(tracking['numbers'])} set on {n} fulfillment(s)", [])
 
     except FixStepError as e:
@@ -493,8 +519,10 @@ async def apply_order_fix(ctx: ShopifyCtx, tz: Optional[str], target: Dict[str, 
         done = [s for s in steps if s["ok"]]
         result["status"] = "partial" if done else "failed"
         result["message"] = steps[-1]["message"]
-        if failed == "fulfill" or (failed == "mark_paid" and adds):
+        if failed == "fulfill":
             result["message"] = (result["message"] or "") + " — added items are UNFULFILLED in Shopify; fulfill them there or the order drops out of Month End"
+        elif failed == "mark_paid":
+            result["message"] = (result["message"] or "") + " — lines are corrected; run the fix again to mark the balance paid"
     else:
         result["status"] = "applied"
         result["message"] = None

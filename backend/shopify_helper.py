@@ -1321,6 +1321,7 @@ _ORDER_SYNC_ORDER_FIELDS = f"""
                 currentSubtotalPriceSet {{ shopMoney {{ amount }} }}
                 totalShippingPriceSet {{ shopMoney {{ amount }} }}
                 totalRefundedSet {{ shopMoney {{ amount }} }}
+                totalOutstandingSet {{ shopMoney {{ amount }} }}
                 fulfillments(first: 50) {{
                   id
                   createdAt
@@ -1447,6 +1448,7 @@ async def _shape_sync_order(node: Dict[str, Any], placed_on: Optional[str], post
         "subtotal": _money(node.get("currentSubtotalPriceSet")) if node.get("currentSubtotalPriceSet") else _money(node.get("subtotalPriceSet")),
         "shipping": _money(node.get("totalShippingPriceSet")),
         "refunded": _money(node.get("totalRefundedSet")),
+        "outstanding": _money(node.get("totalOutstandingSet")),
         "email": (node.get("email") or "").strip(),
         "customer_name": (ship.get("name") or cust.get("displayName") or "").strip(),
         "phones": [p for p in (ship.get("phone"), node.get("phone"), cust.get("phone")) if p],
@@ -1484,7 +1486,6 @@ async def fetch_order_for_sync(
     query fetchOrderForSync($id: ID!) {{
       order(id: $id) {{
         {_ORDER_SYNC_ORDER_FIELDS}
-        totalOutstandingSet {{ shopMoney {{ amount }} }}
         fulfillmentOrders(first: 20) {{
           nodes {{
             id
@@ -1513,7 +1514,6 @@ async def fetch_order_for_sync(
             if not node:
                 return False, f"Order {order_gid} not found", None
             order = await _shape_sync_order(node, local_date(node.get("createdAt"), tz), post_gql)
-            order["outstanding"] = _money(node.get("totalOutstandingSet"))
             order["open_fulfillment_order_ids"] = [
                 fo.get("id") for fo in ((node.get("fulfillmentOrders") or {}).get("nodes") or [])
                 if fo.get("id") and fo.get("status") in ("OPEN", "IN_PROGRESS", "SCHEDULED")

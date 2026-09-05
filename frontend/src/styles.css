@@ -9465,6 +9465,7 @@ tr.bov-line-void td { opacity: 0.55; text-decoration: line-through; }
 .osync-fix-kind.is-remove,
 .osync-fix-kind.is-reduce { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, var(--border-color)); }
 .osync-fix-kind.is-reprice { color: var(--accent-primary); border-color: color-mix(in srgb, var(--accent-primary) 45%, var(--border-color)); }
+.osync-fix-kind.is-paid,
 .osync-fix-kind.is-tracking { color: var(--accent-primary); background: color-mix(in srgb, var(--accent-primary) 12%, var(--bg-secondary)); border-color: transparent; }
 .osync-fix-kind.is-unsupported { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 45%, var(--border-color)); }
 .osync-fix-actions.is-unsupported { color: var(--text-secondary); }

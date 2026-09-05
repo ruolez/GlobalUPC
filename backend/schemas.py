@@ -2306,6 +2306,7 @@ class OrderSyncRow(BaseModel):
     sh_tracking: List[str] = []                # real carrier numbers (route codes excluded)
     sh_route: List[str] = []                   # delivery route numbers found in the tracking field
     sh_no_tracking: bool = False               # FULFILLED but nothing at all in tracking
+    sh_outstanding: float = 0.0                # unpaid balance (an earlier fix added lines but could not mark paid)
     # BackOffice side (None on shopify_unmatched rows)
     bo_invoice_id: Optional[int] = None
     bo_invoice_number: Optional[str] = None
@@ -2387,6 +2388,7 @@ class OrderSyncFixAction(BaseModel):
     bump_price: bool = False                   # variant price raised to the invoice price during the edit
     numbers: List[str] = []                    # tracking
     fulfillment_ids: List[str] = []
+    amount: Optional[float] = None             # mark_paid
 
 
 class OrderSyncFixUnsupported(BaseModel):

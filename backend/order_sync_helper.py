@@ -707,6 +707,7 @@ def _order_side(orders: List[Dict[str, Any]]) -> Dict[str, Any]:
         "sh_customer": first.get("customer_name") or first.get("email") or None,
         "sh_tracking": tracking,
         "sh_no_tracking": any(not o.get("tracking_numbers") for o in orders),
+        "sh_outstanding": round(sum(o.get("outstanding") or 0 for o in orders), 2),
     }
 
 
@@ -985,6 +986,12 @@ def plan_order_fix(order: Dict[str, Any], invoice: Dict[str, Any],
             actions.append({"kind": "tracking", "reason": "tracking",
                             "numbers": bo_real, "fulfillment_ids": targets})
 
+    # A balance left behind when an earlier run added lines but could not
+    # mark the order paid (Shopify's post-fulfillment lock) — finish it.
+    outstanding = round(float(order.get("outstanding") or 0), 2)
+    if outstanding > 0.004:
+        actions.append({"kind": "mark_paid", "reason": "mark_paid", "amount": outstanding})
+
     refunds = [a for a in actions if a["kind"] == "refund"]
     adds = [a for a in actions if a["kind"] == "add"]
     return {
@@ -995,6 +1002,7 @@ def plan_order_fix(order: Dict[str, Any], invoice: Dict[str, Any],
             "adds": len(adds), "add_units": sum(a["qty"] for a in adds),
             "add_amount": round(sum(a["qty"] * a["unit_price"] for a in adds), 2),
             "tracking": any(a["kind"] == "tracking" for a in actions),
+            "mark_paid": outstanding if outstanding > 0.004 else 0.0,
             "unsupported": len(unsupported),
         },
         "noop": not actions,
