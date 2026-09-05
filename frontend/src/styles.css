@@ -8900,3 +8900,139 @@ tr.bov-line-void td { opacity: 0.55; text-decoration: line-through; }
 .data-table tbody:has(+ tfoot:not(:empty)) tr:last-child td {
   border-bottom: 0;
 }
+
+/* ============================================================================
+   Order Sync
+   ============================================================================ */
+
+.osync-tiles {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.osync-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.125rem;
+  padding: 0.5rem 0.875rem;
+  min-width: 110px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+}
+
+.osync-tile:hover {
+  border-color: color-mix(in srgb, var(--accent-primary) 40%, var(--border-color));
+}
+
+.osync-tile.is-active {
+  border-color: var(--accent-primary);
+  background: color-mix(in srgb, var(--accent-primary) 8%, var(--bg-secondary));
+}
+
+.osync-tile-count {
+  font-size: 1.25rem;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.osync-tile-label {
+  font-size: 0.6875rem;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+
+.osync-row {
+  cursor: pointer;
+}
+
+.osync-status {
+  display: inline-block;
+  padding: 0.125rem 0.5rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.osync-status.osync-ok {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 12%, var(--bg-secondary));
+}
+
+.osync-status.osync-warn {
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 12%, var(--bg-secondary));
+}
+
+.osync-status.osync-bad {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, var(--bg-secondary));
+}
+
+.osync-flag {
+  display: inline-block;
+  padding: 0 0.3rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.625rem;
+  font-weight: 600;
+  color: var(--warning);
+  border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border-color));
+  vertical-align: middle;
+}
+
+.osync-issue {
+  display: inline-block;
+  padding: 0 0.35rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.625rem;
+  font-weight: 600;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 10%, var(--bg-secondary));
+  white-space: nowrap;
+}
+
+.osync-ambig {
+  color: var(--warning);
+  font-weight: 700;
+  cursor: help;
+}
+
+.osync-delta-bad {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.osync-diff-cell {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.osync-line-bad td {
+  background: color-mix(in srgb, var(--danger) 5%, transparent);
+}
+
+.osync-detail-grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.375rem 1.25rem;
+  font-size: 0.8125rem;
+}
+
+.osync-detail-label {
+  color: var(--text-tertiary);
+}
+
+.osync-detail-value {
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}

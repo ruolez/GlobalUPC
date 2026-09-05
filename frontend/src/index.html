@@ -154,6 +154,13 @@
               </svg>
               <span>Shopify Analytics</span>
             </a>
+            <a href="#" class="nav-item" data-page="order-sync">
+              <svg width="18" height="18" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M8 10h16m0 0-4-4m4 4-4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M24 22H8m0 0 4-4m-4 4 4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              <span>Order Sync</span>
+            </a>
           </div>
 
           <div class="nav-section">
@@ -4842,6 +4849,88 @@
           </div>
         </div>
 
+        <div id="order-sync-page" class="page sa-page" style="display: none">
+          <!-- Config bar (collapsed summary of the store pair) -->
+          <div id="osync-config-bar" style="margin-bottom: 1rem; background: var(--bg-secondary); border-radius: var(--radius-md); border: 1px solid var(--border-color); overflow: hidden; display: none;">
+            <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.625rem 1rem;">
+              <span id="osync-config-label" style="font-size: 0.8125rem; color: var(--text-secondary)">Stores: <strong style="color: var(--text-primary)">Not configured</strong></span>
+              <button type="button" class="btn btn-secondary" id="osync-config-edit-btn" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Edit</button>
+            </div>
+          </div>
+
+          <!-- Config setup (shown when no config or editing) -->
+          <div id="osync-config-setup" style="display: none;">
+            <div class="card" style="margin-bottom: 0.75rem">
+              <div style="padding: 0.875rem 1.25rem">
+                <p style="margin: 0 0 0.75rem 0; font-size: 0.8125rem; color: var(--text-secondary);">
+                  Order Sync compares shipped orders between one BackOffice database (source of truth) and one Shopify store.
+                </p>
+                <div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem; flex-wrap: wrap;">
+                  <span style="font-size: 0.75rem; color: var(--text-tertiary); font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em;">BackOffice DB</span>
+                  <select id="osync-mssql-select" style="max-width: 250px; font-size: 0.8125rem; padding: 0.3rem 0.5rem;">
+                    <option value="">Select...</option>
+                  </select>
+                  <span style="font-size: 0.75rem; color: var(--text-tertiary); font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em;">Shopify Store</span>
+                  <select id="osync-shopify-select" style="max-width: 250px; font-size: 0.8125rem; padding: 0.3rem 0.5rem;">
+                    <option value="">Select...</option>
+                  </select>
+                </div>
+                <div style="display: flex; gap: 0.5rem; padding-top: 0.25rem;">
+                  <button type="button" class="btn btn-primary" id="osync-config-save-btn" style="font-size: 0.8125rem; padding: 0.35rem 1rem;">Save</button>
+                  <button type="button" class="btn btn-secondary" id="osync-config-cancel-btn" style="display: none; font-size: 0.8125rem; padding: 0.35rem 0.75rem;">Cancel</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Report controls -->
+          <div id="osync-controls" style="display: none;">
+            <div class="card" style="margin-bottom: 0.75rem">
+              <div style="padding: 0.625rem 1rem; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+                <input type="date" id="osync-start-date" style="width: 140px; font-size: 0.8125rem; padding: 0.3rem 0.5rem;">
+                <span style="color: var(--text-tertiary); font-size: 0.75rem;">to</span>
+                <input type="date" id="osync-end-date" style="width: 140px; font-size: 0.8125rem; padding: 0.3rem 0.5rem;">
+                <div style="display: flex; gap: 0.375rem; flex-shrink: 0;">
+                  <button type="button" class="btn btn-secondary" data-osync-day="0" style="font-size: 0.8125rem; padding: 0.4rem 0.75rem;">Today</button>
+                  <button type="button" class="btn btn-secondary" data-osync-day="1" style="font-size: 0.8125rem; padding: 0.4rem 0.75rem;">Yesterday</button>
+                  <button type="button" class="btn btn-secondary" data-week="0" style="font-size: 0.8125rem; padding: 0.4rem 0.75rem;">Week</button>
+                  <button type="button" class="btn btn-secondary" data-week="1" style="font-size: 0.8125rem; padding: 0.4rem 0.75rem;">Prev Wk</button>
+                  <button type="button" class="btn btn-secondary" data-month="0" style="font-size: 0.8125rem; padding: 0.4rem 0.75rem;">Month</button>
+                  <button type="button" class="btn btn-secondary" data-month="1" style="font-size: 0.8125rem; padding: 0.4rem 0.75rem;">Prev Mo</button>
+                </div>
+                <button type="button" class="btn btn-primary" id="osync-run" style="font-size: 0.875rem; padding: 0.5rem 1.25rem; margin-left: auto;">Compare Orders</button>
+              </div>
+            </div>
+          </div>
+
+          <div id="osync-idle" style="display: none; text-align: center; padding: 3rem 1rem; color: var(--text-secondary);">
+            <p id="osync-idle-title" style="margin-bottom: 1rem;">Pick a date range and run the comparison.</p>
+            <button type="button" class="btn btn-primary" id="osync-idle-run">Compare Orders</button>
+          </div>
+          <div id="osync-loading" style="display: none; padding: 2rem 1rem; color: var(--text-secondary);"></div>
+          <div id="osync-error" class="qip-error" style="display: none; margin-bottom: 1.5rem;"></div>
+          <div id="osync-empty" style="display: none; text-align: center; padding: 3rem 1rem; color: var(--text-secondary);">
+            <p>No shipped orders found on either side for this range.</p>
+          </div>
+
+          <!-- Summary tiles double as status filters -->
+          <div id="osync-summary" style="display: none; margin-bottom: 0.75rem;"></div>
+
+          <!-- Results table -->
+          <div id="osync-table-card" class="card" style="display: none;">
+            <div style="padding: 0.625rem 1rem; display: flex; align-items: center; gap: 0.75rem; border-bottom: 1px solid var(--border-color);">
+              <input type="text" id="osync-search" placeholder="Search order #, invoice #, customer, tracking…" style="max-width: 340px; font-size: 0.8125rem; padding: 0.35rem 0.6rem;">
+              <span id="osync-count" style="font-size: 0.75rem; color: var(--text-tertiary); margin-left: auto;"></span>
+            </div>
+            <div class="table-container">
+              <table class="data-table" id="osync-table">
+                <thead id="osync-thead"></thead>
+                <tbody id="osync-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
         <div id="shopify-analytics-page" class="page sa-page" style="display: none">
           <nav class="sa-subnav" role="tablist" aria-label="Shopify Analytics reports">
             <button type="button" class="sa-subnav-item active" data-sa-tab="first-customer-returns" role="tab" aria-selected="true">
@@ -5916,6 +6005,17 @@
     </div>
 
     <!-- MSSQL Store Modal -->
+    <!-- Order Sync drill-in: side-by-side line comparison -->
+    <div id="osync-modal" class="modal">
+      <div class="modal-content" style="max-width: 900px; width: 95%">
+        <div class="modal-header">
+          <h3 id="osync-modal-title">Order comparison</h3>
+          <button type="button" class="modal-close" id="osync-modal-close">&times;</button>
+        </div>
+        <div class="modal-body" id="osync-modal-body" style="padding: 1rem 1.5rem 1.5rem"></div>
+      </div>
+    </div>
+
     <div id="mssql-modal" class="modal">
       <div class="modal-content">
         <div class="modal-header">

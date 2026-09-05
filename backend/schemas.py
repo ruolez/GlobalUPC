@@ -2225,3 +2225,87 @@ class ActiveUsersResponse(BaseModel):
     window_minutes: int
     refreshed_at: datetime
     users: List[ActiveUserRow] = []
+
+# ============================================================================
+# Order Sync — BackOffice ↔ Shopify shipped-order reconciliation
+# ============================================================================
+
+class OrderSyncConfigBase(BaseModel):
+    mssql_store_id: Optional[int] = None
+    shopify_store_id: Optional[int] = None
+
+
+class OrderSyncConfigCreate(OrderSyncConfigBase):
+    pass
+
+
+class OrderSyncConfigResponse(OrderSyncConfigBase):
+    id: int
+    mssql_store_name: Optional[str] = None
+    shopify_store_name: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class OrderSyncLineDiff(BaseModel):
+    key: str                                   # barcode, or "sku:<sku>" fallback
+    barcode: Optional[str] = None
+    sku: Optional[str] = None
+    description: Optional[str] = None          # BO ProductDescription, else Shopify title
+    sh_qty: Optional[float] = None             # None = line missing on the Shopify side
+    bo_qty: Optional[float] = None             # BO QtyShipped (source of truth)
+    sh_unit_price: Optional[float] = None      # discounted_total / quantity
+    bo_unit_price: Optional[float] = None      # InvoicesDetails UnitPrice (qty-weighted)
+    issues: List[str] = []                     # missing_in_backoffice | missing_in_shopify | qty | price
+
+
+class OrderSyncRow(BaseModel):
+    status: str                                # matched_ok | matched_diffs | shopify_unmatched | backoffice_unmatched
+    match_method: Optional[str] = None         # tracking | phone | address | name_zip
+    ambiguous: bool = False
+    # Shopify side (None on backoffice_unmatched rows)
+    sh_order_id: Optional[str] = None
+    sh_name: Optional[str] = None
+    sh_date: Optional[str] = None              # shop-local YYYY-MM-DD
+    sh_total: Optional[float] = None
+    sh_customer: Optional[str] = None
+    sh_tracking: List[str] = []
+    sh_no_tracking: bool = False               # FULFILLED but no tracking number
+    # BackOffice side (None on shopify_unmatched rows)
+    bo_invoice_id: Optional[int] = None
+    bo_invoice_number: Optional[str] = None
+    bo_date: Optional[str] = None              # ISO datetime
+    bo_total: Optional[float] = None
+    bo_customer: Optional[str] = None
+    bo_tracking: Optional[str] = None
+    bo_no_tracking: bool = False               # NULL/''/'0' sentinel
+    # Comparison detail (matched rows only)
+    total_delta: Optional[float] = None        # sh_total - bo_total
+    issue_kinds: List[str] = []                # product | qty | price | total
+    line_diffs: List[OrderSyncLineDiff] = []   # every line, clean ones included
+
+
+class OrderSyncSummary(BaseModel):
+    matched_ok: int = 0
+    matched_diffs: int = 0
+    shopify_unmatched: int = 0
+    backoffice_unmatched: int = 0
+    shopify_no_tracking: int = 0
+    backoffice_no_tracking: int = 0
+    shopify_total: int = 0
+    backoffice_total: int = 0
+
+
+class OrderSyncResponse(BaseModel):
+    configured: bool = False
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
+    mssql_store_name: Optional[str] = None
+    shopify_store_name: Optional[str] = None
+    summary: OrderSyncSummary = OrderSyncSummary()
+    rows: List[OrderSyncRow] = []
+    warnings: List[str] = []
+    timings: Dict[str, float] = {}

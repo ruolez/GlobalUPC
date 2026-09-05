@@ -209,6 +209,9 @@ async def lifespan(app: FastAPI):
     print("[SHUTDOWN] Shutting down Checked Orders thread pool...")
     from checked_orders_helper import shutdown_chkord_executor
     shutdown_chkord_executor()
+    print("[SHUTDOWN] Shutting down Order Sync thread pool...")
+    from order_sync_helper import shutdown_order_sync_executor
+    shutdown_order_sync_executor()
     print("[SHUTDOWN] Shutting down Shopify Sync thread pool...")
     from shopify_sync_helper import shutdown_sync_executor
     shutdown_sync_executor()
@@ -12909,6 +12912,212 @@ def list_active_users(db: Session = Depends(get_db)):
             for r in rows
         ],
     )
+
+
+# ============================================================================
+# Order Sync — BackOffice ↔ Shopify shipped-order reconciliation
+# ============================================================================
+
+import order_sync_helper as osync
+from models import OrderSyncConfig
+from schemas import OrderSyncConfigCreate, OrderSyncConfigResponse, OrderSyncResponse
+from shopify_helper import fetch_orders_for_sync
+
+_ORDER_SYNC_MAX_DAYS = 62
+
+
+def _order_sync_config_response(db: Session, config: Optional[OrderSyncConfig]) -> OrderSyncConfigResponse:
+    if not config:
+        return OrderSyncConfigResponse(
+            id=0, mssql_store_id=None, shopify_store_id=None,
+            mssql_store_name=None, shopify_store_name=None,
+            created_at=datetime.now(), updated_at=datetime.now(),
+        )
+
+    def store_name(store_id: Optional[int]) -> Optional[str]:
+        if not store_id:
+            return None
+        store = db.query(Store).filter(Store.id == store_id).first()
+        return store.name if store else None
+
+    return OrderSyncConfigResponse(
+        id=config.id,
+        mssql_store_id=config.mssql_store_id,
+        shopify_store_id=config.shopify_store_id,
+        mssql_store_name=store_name(config.mssql_store_id),
+        shopify_store_name=store_name(config.shopify_store_id),
+        created_at=config.created_at,
+        updated_at=config.updated_at,
+    )
+
+
+@app.get("/api/order-sync/config", response_model=OrderSyncConfigResponse)
+def get_order_sync_config(db: Session = Depends(get_db)):
+    """Get Order Sync configuration (the BackOffice/Shopify store pair)."""
+    return _order_sync_config_response(db, db.query(OrderSyncConfig).first())
+
+
+@app.post("/api/order-sync/config", response_model=OrderSyncConfigResponse)
+def save_order_sync_config(config_data: OrderSyncConfigCreate, db: Session = Depends(get_db)):
+    """Save or update Order Sync configuration (upsert singleton)."""
+    if config_data.mssql_store_id:
+        store = db.query(Store).filter(
+            Store.id == config_data.mssql_store_id,
+            Store.store_type == StoreType.mssql,
+        ).first()
+        if not store or not store.mssql_connection:
+            raise HTTPException(status_code=400, detail="Invalid BackOffice store ID")
+    if config_data.shopify_store_id:
+        store = db.query(Store).filter(
+            Store.id == config_data.shopify_store_id,
+            Store.store_type == StoreType.shopify,
+        ).first()
+        if not store or not store.shopify_connection:
+            raise HTTPException(status_code=400, detail="Invalid Shopify store ID")
+
+    config = db.query(OrderSyncConfig).first()
+    if config:
+        config.mssql_store_id = config_data.mssql_store_id
+        config.shopify_store_id = config_data.shopify_store_id
+    else:
+        config = OrderSyncConfig(
+            mssql_store_id=config_data.mssql_store_id,
+            shopify_store_id=config_data.shopify_store_id,
+        )
+        db.add(config)
+    db.commit()
+    db.refresh(config)
+    return _order_sync_config_response(db, config)
+
+
+def _order_sync_validate_range(date_from: Optional[str], date_to: Optional[str]) -> Tuple[str, str]:
+    if not date_from or not date_to:
+        raise HTTPException(status_code=400, detail="date_from and date_to are required")
+    try:
+        lo = datetime.strptime(date_from, "%Y-%m-%d").date()
+        hi = datetime.strptime(date_to, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Dates must be YYYY-MM-DD")
+    if hi < lo:
+        raise HTTPException(status_code=400, detail="date_to must not precede date_from")
+    if (hi - lo).days + 1 > _ORDER_SYNC_MAX_DAYS:
+        raise HTTPException(status_code=400, detail=f"Range too large (max {_ORDER_SYNC_MAX_DAYS} days)")
+    return date_from, date_to
+
+
+async def _order_sync_payload(date_from: Optional[str], date_to: Optional[str],
+                              progress=None) -> Dict[str, Any]:
+    async def note(msg: str):
+        if progress:
+            await progress(msg)
+
+    date_from, date_to = _order_sync_validate_range(date_from, date_to)
+
+    # One short Postgres scope; connection attrs are touched here so the
+    # detached rows stay readable after the session closes.
+    with db_session() as db:
+        cfg = db.query(OrderSyncConfig).first()
+        if not cfg or not cfg.mssql_store_id or not cfg.shopify_store_id:
+            return {"configured": False, "date_from": date_from, "date_to": date_to}
+        mssql_store = db.query(Store).filter(
+            Store.id == cfg.mssql_store_id, Store.is_active == True).first()
+        shopify_store = db.query(Store).filter(
+            Store.id == cfg.shopify_store_id, Store.is_active == True).first()
+        if not mssql_store or not mssql_store.mssql_connection:
+            raise HTTPException(status_code=400, detail="Configured BackOffice store is missing or inactive")
+        if not shopify_store or not shopify_store.shopify_connection:
+            raise HTTPException(status_code=400, detail="Configured Shopify store is missing or inactive")
+        conn_kwargs = _bov_conn_kwargs(mssql_store)
+        sc = shopify_store.shopify_connection
+        shop_domain, admin_api_key = sc.shop_domain, sc.admin_api_key
+        api_version = sc.api_version or "2025-01"
+        mssql_store_name, shopify_store_name = mssql_store.name, shopify_store.name
+
+    warnings: List[str] = []
+    timings: Dict[str, float] = {}
+
+    await note("Resolving shop timezone…")
+    tz = await fetch_shop_timezone(shop_domain, admin_api_key, api_version)
+
+    await note(f"Fetching Shopify orders and BackOffice invoices for {date_from} → {date_to}…")
+    t_fetch = time.monotonic()
+    (sh_ok, sh_err, orders), (bo_ok, bo_err, invoices) = await asyncio.gather(
+        fetch_orders_for_sync(shop_domain, admin_api_key, date_from, date_to,
+                              api_version=api_version, tz=tz),
+        osync.fetch_invoices_async(**conn_kwargs, date_from=date_from, date_to=date_to),
+    )
+    timings["fetch"] = round(time.monotonic() - t_fetch, 2)
+    if not sh_ok:
+        raise HTTPException(status_code=502, detail=f"Shopify fetch failed: {sh_err}")
+    if not bo_ok:
+        raise HTTPException(status_code=502, detail=f"BackOffice query failed: {bo_err}")
+
+    await note(f"Matching {len(orders)} Shopify orders against {len(invoices)} invoices…")
+    t_match = time.monotonic()
+    report = osync.build_report(orders, invoices, date_from, date_to)
+    timings["match"] = round(time.monotonic() - t_match, 2)
+
+    return {
+        "configured": True,
+        "date_from": date_from,
+        "date_to": date_to,
+        "mssql_store_name": mssql_store_name,
+        "shopify_store_name": shopify_store_name,
+        "summary": report["summary"],
+        "rows": report["rows"],
+        "warnings": warnings,
+        "timings": timings,
+    }
+
+
+@app.get("/api/order-sync/report", response_model=OrderSyncResponse)
+async def get_order_sync_report(date_from: Optional[str] = None, date_to: Optional[str] = None):
+    payload = await _order_sync_payload(date_from, date_to)
+    return OrderSyncResponse(**payload)
+
+
+@app.get("/api/order-sync/report/stream")
+async def stream_order_sync_report(date_from: Optional[str] = None, date_to: Optional[str] = None):
+    """SSE twin of /report: progress events while the reconciliation runs,
+    then one `result` event carrying the full payload."""
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def progress(msg: str):
+        await queue.put(("progress", {"message": msg}))
+
+    async def runner():
+        try:
+            payload = await _order_sync_payload(date_from, date_to, progress=progress)
+            await queue.put(("result", payload))
+        except HTTPException as e:
+            await queue.put(("error", {"message": str(e.detail)}))
+        except Exception as e:
+            await queue.put(("error", {"message": str(e)}))
+        await queue.put(None)
+
+    async def gen():
+        task = asyncio.create_task(runner())
+        try:
+            while True:
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=15)
+                except asyncio.TimeoutError:
+                    yield "event: heartbeat\ndata: {}\n\n"
+                    continue
+                if item is None:
+                    break
+                ev, data = item
+                yield f"event: {ev}\ndata: {json.dumps(data)}\n\n"
+        except GeneratorExit:
+            task.cancel()
+            raise
+        finally:
+            if not task.done():
+                task.cancel()
+
+    return BoundedStreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "Connection": "keep-alive",
+                                      "X-Accel-Buffering": "no"})
 
 
 if __name__ == "__main__":

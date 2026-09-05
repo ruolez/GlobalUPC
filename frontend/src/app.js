@@ -96,6 +96,8 @@ function navigateTo(page) {
     loadInventoryTimePage();
   } else if (page === "checked-orders") {
     loadCheckedOrdersPage();
+  } else if (page === "order-sync") {
+    loadOrderSyncPage();
   }
 }
 
@@ -26656,3 +26658,574 @@ document.addEventListener("click", (e) => {
 });
 
 // ===== End BOV Inventory tab =====
+
+// ============================================================================
+// Order Sync — BackOffice ↔ Shopify shipped-order reconciliation
+// ============================================================================
+
+const orderSyncState = {
+  initialized: false,
+  loading: false,
+  data: null,
+  config: null,
+  allStores: [],
+  filters: { status: "all", search: "" },
+  sort: { key: "date", dir: "desc" },
+  abort: null,
+  progressLog: [],
+};
+
+const OSYNC_STATUS_LABELS = {
+  matched_ok: "Matched OK",
+  matched_diffs: "Differences",
+  shopify_unmatched: "Shopify Unmatched",
+  backoffice_unmatched: "BackOffice Unmatched",
+};
+
+function loadOrderSyncPage() {
+  if (!orderSyncState.initialized) {
+    initOrderSyncPage();
+    orderSyncState.initialized = true;
+  }
+  osyncLoadConfig();
+}
+
+function initOrderSyncPage() {
+  applyWeekPreset("osync-start-date", "osync-end-date", 0);
+
+  document.getElementById("osync-run")?.addEventListener("click", fetchOrderSync);
+  document.getElementById("osync-idle-run")?.addEventListener("click", fetchOrderSync);
+  document.getElementById("osync-config-edit-btn")?.addEventListener("click", () => osyncShowConfigSetup(true));
+  document.getElementById("osync-config-save-btn")?.addEventListener("click", osyncSaveConfig);
+  document.getElementById("osync-config-cancel-btn")?.addEventListener("click", () => osyncApplyConfig());
+  document.getElementById("osync-modal-close")?.addEventListener("click", () => closeModal("osync-modal"));
+
+  // Date presets + manual edits invalidate a loaded result (Month End rule:
+  // the report is heavy, so a changed range never refetches by itself).
+  document.getElementById("osync-controls")?.addEventListener("click", (e) => {
+    const day = e.target.closest("[data-osync-day]");
+    const week = e.target.closest("[data-week]");
+    const month = e.target.closest("[data-month]");
+    if (!day && !week && !month) return;
+    if (day) {
+      const d = new Date();
+      d.setDate(d.getDate() - parseInt(day.dataset.osyncDay, 10));
+      const ymd = toYMD(d);
+      document.getElementById("osync-start-date").value = ymd;
+      document.getElementById("osync-end-date").value = ymd;
+    } else if (week) {
+      applyWeekPreset("osync-start-date", "osync-end-date", parseInt(week.dataset.week, 10));
+    } else {
+      applyMonthPreset("osync-start-date", "osync-end-date", parseInt(month.dataset.month, 10));
+    }
+    osyncInvalidate();
+  });
+  ["osync-start-date", "osync-end-date"].forEach((id) => {
+    document.getElementById(id)?.addEventListener("change", osyncInvalidate);
+  });
+
+  let searchTimer = null;
+  document.getElementById("osync-search")?.addEventListener("input", (e) => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      orderSyncState.filters.search = e.target.value.trim().toLowerCase();
+      osyncRenderTable();
+    }, 200);
+  });
+
+  document.getElementById("osync-summary")?.addEventListener("click", (e) => {
+    const tile = e.target.closest("[data-osync-status]");
+    if (!tile) return;
+    orderSyncState.filters.status =
+      orderSyncState.filters.status === tile.dataset.osyncStatus ? "all" : tile.dataset.osyncStatus;
+    renderOrderSync();
+  });
+
+  document.getElementById("osync-thead")?.addEventListener("click", (e) => {
+    const th = e.target.closest("th.qip-sortable");
+    if (!th) return;
+    const key = th.dataset.sort;
+    const s = orderSyncState.sort;
+    if (s.key === key) {
+      s.dir = s.dir === "asc" ? "desc" : "asc";
+    } else {
+      s.key = key;
+      s.dir = ["sh_total", "bo_total", "total_delta", "date"].includes(key) ? "desc" : "asc";
+    }
+    osyncRenderTable();
+  });
+
+  document.getElementById("osync-tbody")?.addEventListener("click", (e) => {
+    const tr = e.target.closest("tr[data-osync-idx]");
+    if (tr) osyncOpenDetail(parseInt(tr.dataset.osyncIdx, 10));
+  });
+}
+
+function osyncShow(id, visible) {
+  const el = document.getElementById(id);
+  if (el) el.style.display = visible ? "" : "none";
+}
+
+function osyncInvalidate() {
+  if (!orderSyncState.data && !orderSyncState.loading) return;
+  if (orderSyncState.abort) orderSyncState.abort.abort();
+  orderSyncState.data = null;
+  orderSyncState.loading = false;
+  osyncShowIdle("changed");
+}
+
+function osyncShowIdle(reason) {
+  ["osync-loading", "osync-error", "osync-empty", "osync-summary", "osync-table-card"].forEach(
+    (id) => osyncShow(id, false),
+  );
+  const title = document.getElementById("osync-idle-title");
+  if (title) {
+    title.textContent =
+      reason === "changed"
+        ? "The date range changed — run the comparison again."
+        : "Pick a date range and run the comparison.";
+  }
+  osyncShow("osync-idle", true);
+}
+
+function osyncSetRunning(on) {
+  ["osync-run", "osync-idle-run"].forEach((id) => {
+    const btn = document.getElementById(id);
+    if (btn) btn.disabled = on;
+  });
+}
+
+function osyncSetProgress(message) {
+  const el = document.getElementById("osync-loading");
+  if (!el) return;
+  if (message == null) {
+    orderSyncState.progressLog = [];
+    return;
+  }
+  const log = orderSyncState.progressLog;
+  log.push(message);
+  while (log.length > 6) log.shift();
+  el.innerHTML =
+    `<div class="me-progress">` +
+    log
+      .map(
+        (m, i) =>
+          `<div class="me-progress-line${i === log.length - 1 ? " is-current" : " is-done"}">` +
+          `<span class="me-progress-dot"></span>${escapeHtml(m)}</div>`,
+      )
+      .join("") +
+    `</div>`;
+}
+
+function osyncFail(message) {
+  const el = document.getElementById("osync-error");
+  if (el) {
+    el.textContent = `Could not run Order Sync: ${message}`;
+    el.style.display = "";
+  }
+  osyncShow("osync-loading", false);
+}
+
+// ---- Config -----------------------------------------------------------------
+
+async function osyncLoadConfig() {
+  try {
+    const [config, stores] = await Promise.all([
+      apiRequest("/order-sync/config"),
+      orderSyncState.allStores.length
+        ? Promise.resolve(orderSyncState.allStores)
+        : apiRequest("/stores"),
+    ]);
+    orderSyncState.config = config;
+    orderSyncState.allStores = stores;
+    osyncApplyConfig();
+  } catch (e) {
+    osyncFail(e.message || e);
+  }
+}
+
+function osyncConfigured() {
+  const c = orderSyncState.config;
+  return !!(c && c.mssql_store_id && c.shopify_store_id);
+}
+
+function osyncApplyConfig() {
+  const c = orderSyncState.config;
+  if (osyncConfigured()) {
+    const label = document.getElementById("osync-config-label");
+    if (label) {
+      label.innerHTML =
+        `Stores: <strong style="color: var(--text-primary)">${escapeHtml(c.mssql_store_name || "?")}</strong>` +
+        ` <span style="color: var(--text-tertiary)">⇄</span> ` +
+        `<strong style="color: var(--text-primary)">${escapeHtml(c.shopify_store_name || "?")}</strong>`;
+    }
+    osyncShow("osync-config-bar", true);
+    osyncShow("osync-config-setup", false);
+    osyncShow("osync-controls", true);
+    if (!orderSyncState.data && !orderSyncState.loading) osyncShowIdle(null);
+  } else {
+    osyncShowConfigSetup(false);
+  }
+}
+
+function osyncShowConfigSetup(isEdit) {
+  const c = orderSyncState.config || {};
+  const mssqlSelect = document.getElementById("osync-mssql-select");
+  const shopifySelect = document.getElementById("osync-shopify-select");
+  const fill = (select, type, selectedId) => {
+    if (!select) return;
+    select.innerHTML = '<option value="">Select...</option>';
+    orderSyncState.allStores
+      .filter((s) => s.store_type === type && s.is_active)
+      .forEach((s) => {
+        const opt = document.createElement("option");
+        opt.value = s.id;
+        opt.textContent = s.name;
+        if (selectedId === s.id) opt.selected = true;
+        select.appendChild(opt);
+      });
+  };
+  fill(mssqlSelect, "mssql", c.mssql_store_id);
+  fill(shopifySelect, "shopify", c.shopify_store_id);
+  osyncShow("osync-config-cancel-btn", isEdit && osyncConfigured());
+  osyncShow("osync-config-bar", false);
+  osyncShow("osync-config-setup", true);
+  osyncShow("osync-controls", false);
+  osyncShow("osync-idle", false);
+}
+
+async function osyncSaveConfig() {
+  const mssqlId = parseInt(document.getElementById("osync-mssql-select")?.value, 10) || null;
+  const shopifyId = parseInt(document.getElementById("osync-shopify-select")?.value, 10) || null;
+  if (!mssqlId || !shopifyId) {
+    showToast("Select both a BackOffice database and a Shopify store", "error");
+    return;
+  }
+  try {
+    orderSyncState.config = await apiRequest("/order-sync/config", {
+      method: "POST",
+      body: JSON.stringify({ mssql_store_id: mssqlId, shopify_store_id: shopifyId }),
+    });
+    showToast("Order Sync configuration saved", "success");
+    osyncInvalidate();
+    osyncApplyConfig();
+  } catch (e) {
+    showToast(e.message || "Failed to save configuration", "error");
+  }
+}
+
+// ---- Report fetch (SSE with plain-JSON fallback) ----------------------------
+
+function osyncRangeParams() {
+  return {
+    date_from: document.getElementById("osync-start-date")?.value || "",
+    date_to: document.getElementById("osync-end-date")?.value || "",
+  };
+}
+
+async function fetchOrderSync() {
+  const params = osyncRangeParams();
+  if (!params.date_from || !params.date_to) {
+    osyncFail("pick both dates first");
+    return;
+  }
+  if (orderSyncState.abort) orderSyncState.abort.abort();
+  const ctl = new AbortController();
+  orderSyncState.abort = ctl;
+  orderSyncState.loading = true;
+  osyncShow("osync-idle", false);
+  osyncShow("osync-error", false);
+  osyncShow("osync-empty", false);
+  osyncShow("osync-summary", false);
+  osyncShow("osync-table-card", false);
+  osyncSetRunning(true);
+  osyncSetProgress(null);
+  osyncSetProgress("Starting…");
+  osyncShow("osync-loading", true);
+  const finish = () => {
+    if (orderSyncState.abort === ctl) {
+      orderSyncState.loading = false;
+      osyncShow("osync-loading", false);
+      osyncSetRunning(false);
+    }
+  };
+  const qs = new URLSearchParams(params);
+  try {
+    const resp = await fetch(`${API_BASE}/order-sync/report/stream?${qs}`, { signal: ctl.signal });
+    if (!resp.ok || !resp.body) throw new Error(`HTTP ${resp.status}`);
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let gotResult = false;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const chunks = buffer.split("\n\n");
+      buffer = chunks.pop();
+      for (const chunk of chunks) {
+        const m = chunk.match(/event: (\w+)\ndata: (.+)/s);
+        if (!m) continue;
+        const [, ev, dataStr] = m;
+        if (ev === "progress") {
+          try { osyncSetProgress(JSON.parse(dataStr).message); } catch (e) { /* malformed frame */ }
+        } else if (ev === "result") {
+          orderSyncState.data = JSON.parse(dataStr);
+          gotResult = true;
+          finish();
+          renderOrderSync();
+        } else if (ev === "error") {
+          let msg = "server error";
+          try { msg = JSON.parse(dataStr).message || msg; } catch (e) { /* keep default */ }
+          throw new Error(msg);
+        }
+      }
+    }
+    if (!gotResult) throw new Error("stream ended without a result");
+  } catch (e) {
+    if (e.name === "AbortError" || ctl.signal.aborted) return;
+    try {
+      osyncSetProgress("Retrying without progress stream…");
+      const resp = await fetch(`${API_BASE}/order-sync/report?${qs}`, { signal: ctl.signal });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.detail || `HTTP ${resp.status}`);
+      }
+      orderSyncState.data = await resp.json();
+      if (ctl.signal.aborted) return;
+      finish();
+      renderOrderSync();
+    } catch (e2) {
+      if (e2.name === "AbortError" || ctl.signal.aborted) return;
+      osyncFail(e2.message || e2);
+      finish();
+    }
+  } finally {
+    finish();
+  }
+}
+
+// ---- Rendering --------------------------------------------------------------
+
+function osyncMoney(v) {
+  if (v == null) return "—";
+  return v.toLocaleString("en-US", { style: "currency", currency: "USD" });
+}
+
+function osyncRowDate(r) {
+  return r.sh_date || (r.bo_date ? r.bo_date.slice(0, 10) : "");
+}
+
+function osyncVisibleRows() {
+  const { status, search } = orderSyncState.filters;
+  let rows = (orderSyncState.data?.rows || []).map((r, i) => ({ ...r, _idx: i }));
+  if (status === "no_tracking") {
+    rows = rows.filter((r) => r.sh_no_tracking || r.bo_no_tracking);
+  } else if (status !== "all") {
+    rows = rows.filter((r) => r.status === status);
+  }
+  if (search) {
+    rows = rows.filter((r) =>
+      [
+        r.sh_name, r.bo_invoice_number, r.sh_customer, r.bo_customer,
+        r.bo_tracking, ...(r.sh_tracking || []),
+      ].some((v) => v && String(v).toLowerCase().includes(search)),
+    );
+  }
+  const { key, dir } = orderSyncState.sort;
+  const val = (r) => {
+    if (key === "date") return osyncRowDate(r);
+    if (key === "issues") return (r.issue_kinds || []).length;
+    const v = r[key];
+    return v == null ? (typeof v === "number" ? -Infinity : "") : v;
+  };
+  rows.sort((a, b) => {
+    const va = val(a);
+    const vb = val(b);
+    let cmp;
+    if (typeof va === "number" || typeof vb === "number") {
+      cmp = (Number(va) || 0) - (Number(vb) || 0);
+    } else {
+      cmp = String(va).localeCompare(String(vb));
+    }
+    return dir === "asc" ? cmp : -cmp;
+  });
+  return rows;
+}
+
+function renderOrderSync() {
+  const data = orderSyncState.data;
+  if (!data) return;
+  if (data.configured === false) {
+    osyncShowConfigSetup(false);
+    return;
+  }
+  const s = data.summary || {};
+  const active = orderSyncState.filters.status;
+  const tiles = [
+    ["all", "Orders", (s.shopify_total || 0), "var(--text-primary)"],
+    ["matched_ok", "Matched OK", s.matched_ok || 0, "var(--success)"],
+    ["matched_diffs", "Differences", s.matched_diffs || 0, "var(--warning)"],
+    ["shopify_unmatched", "Shopify Unmatched", s.shopify_unmatched || 0, "var(--danger)"],
+    ["backoffice_unmatched", "BackOffice Unmatched", s.backoffice_unmatched || 0, "var(--danger)"],
+    ["no_tracking", "Missing Tracking", (s.shopify_no_tracking || 0) + (s.backoffice_no_tracking || 0), "var(--warning)"],
+  ];
+  const summaryEl = document.getElementById("osync-summary");
+  if (summaryEl) {
+    summaryEl.innerHTML =
+      `<div class="osync-tiles">` +
+      tiles
+        .map(
+          ([key, label, count, color]) =>
+            `<button type="button" class="osync-tile${active === key ? " is-active" : ""}" data-osync-status="${key}">` +
+            `<span class="osync-tile-count" style="color: ${color}">${count.toLocaleString()}</span>` +
+            `<span class="osync-tile-label">${escapeHtml(label)}</span></button>`,
+        )
+        .join("") +
+      `</div>` +
+      `<div style="font-size: 0.75rem; color: var(--text-tertiary); margin-top: 0.375rem;">` +
+      `${escapeHtml(data.mssql_store_name || "BackOffice")} ⇄ ${escapeHtml(data.shopify_store_name || "Shopify")}` +
+      ` · ${escapeHtml(data.date_from || "")} → ${escapeHtml(data.date_to || "")}` +
+      ` · ${s.backoffice_total || 0} invoice(s)` +
+      (data.timings?.fetch != null ? ` · fetched in ${data.timings.fetch}s` : "") +
+      `</div>`;
+  }
+  osyncShow("osync-summary", true);
+
+  const hasRows = (data.rows || []).length > 0;
+  osyncShow("osync-empty", !hasRows);
+  osyncShow("osync-table-card", hasRows);
+  if (hasRows) osyncRenderTable();
+}
+
+const OSYNC_COLUMNS = [
+  { key: "date", label: "Date" },
+  { key: "sh_name", label: "Shopify Order" },
+  { key: "bo_invoice_number", label: "Invoice" },
+  { key: "sh_customer", label: "Customer" },
+  { key: "match_method", label: "Match" },
+  { key: "issues", label: "Issues" },
+  { key: "sh_total", label: "Shopify Total", num: true },
+  { key: "bo_total", label: "BO Total", num: true },
+  { key: "total_delta", label: "Δ", num: true },
+  { key: "status", label: "Status" },
+];
+
+function osyncRenderTable() {
+  const thead = document.getElementById("osync-thead");
+  const tbody = document.getElementById("osync-tbody");
+  if (!thead || !tbody) return;
+  const { key: sortKey, dir } = orderSyncState.sort;
+  thead.innerHTML =
+    "<tr>" +
+    OSYNC_COLUMNS.map((c) => {
+      const cls = ["qip-sortable"];
+      if (c.num) cls.push("qip-num");
+      if (sortKey === c.key) cls.push(dir === "asc" ? "qip-sort-asc" : "qip-sort-desc");
+      return `<th class="${cls.join(" ")}" data-sort="${c.key}"${c.num ? ' style="text-align: right"' : ""}><span>${escapeHtml(c.label)}</span><span class="qip-sort-arrow"></span></th>`;
+    }).join("") +
+    "</tr>";
+
+  const rows = osyncVisibleRows();
+  tbody.innerHTML = rows
+    .map((r) => {
+      const statusCls =
+        r.status === "matched_ok" ? "osync-ok" : r.status === "matched_diffs" ? "osync-warn" : "osync-bad";
+      const flags = [];
+      if (r.sh_no_tracking) flags.push("Shopify: no tracking");
+      if (r.bo_no_tracking) flags.push("BackOffice: no tracking");
+      const method = r.match_method
+        ? escapeHtml(r.match_method) + (r.ambiguous ? ' <span class="osync-ambig" title="Multiple candidates — closest date/total picked">?</span>' : "")
+        : '<span style="color: var(--text-tertiary)">—</span>';
+      const issues = (r.issue_kinds || []).map((k) => `<span class="osync-issue">${escapeHtml(k)}</span>`).join(" ");
+      const deltaCls = r.total_delta ? (Math.abs(r.total_delta) > 0.011 ? " osync-delta-bad" : "") : "";
+      return (
+        `<tr data-osync-idx="${r._idx}" class="osync-row">` +
+        `<td>${escapeHtml(osyncRowDate(r))}</td>` +
+        `<td>${r.sh_name ? escapeHtml(r.sh_name) : '<span style="color: var(--text-tertiary)">—</span>'}` +
+        (r.sh_no_tracking ? ' <span class="osync-flag" title="Fulfilled but no tracking number">no trk</span>' : "") +
+        `</td>` +
+        `<td>${r.bo_invoice_number ? escapeHtml(r.bo_invoice_number) : '<span style="color: var(--text-tertiary)">—</span>'}` +
+        (r.bo_no_tracking && r.bo_invoice_number ? ' <span class="osync-flag" title="Invoice has no tracking number">no trk</span>' : "") +
+        `</td>` +
+        `<td>${escapeHtml(r.sh_customer || r.bo_customer || "")}</td>` +
+        `<td>${method}</td>` +
+        `<td>${issues}</td>` +
+        `<td style="text-align: right">${osyncMoney(r.sh_total)}</td>` +
+        `<td style="text-align: right">${osyncMoney(r.bo_total)}</td>` +
+        `<td style="text-align: right" class="${deltaCls}">${r.total_delta != null ? osyncMoney(r.total_delta) : "—"}</td>` +
+        `<td><span class="osync-status ${statusCls}"${flags.length ? ` title="${escapeHtml(flags.join("; "))}"` : ""}>${escapeHtml(OSYNC_STATUS_LABELS[r.status] || r.status)}</span></td>` +
+        `</tr>`
+      );
+    })
+    .join("");
+
+  const count = document.getElementById("osync-count");
+  if (count) count.textContent = `${rows.length} of ${(orderSyncState.data?.rows || []).length} rows`;
+}
+
+// ---- Drill-in modal ---------------------------------------------------------
+
+function osyncOpenDetail(idx) {
+  const r = (orderSyncState.data?.rows || [])[idx];
+  if (!r) return;
+  const title = document.getElementById("osync-modal-title");
+  if (title) {
+    title.textContent = `${r.sh_name || "—"} ⇄ ${r.bo_invoice_number ? "Invoice " + r.bo_invoice_number : "—"}`;
+  }
+  const body = document.getElementById("osync-modal-body");
+  if (!body) return;
+
+  const headerRows = [
+    ["Status", OSYNC_STATUS_LABELS[r.status] || r.status],
+    ["Match method", r.match_method ? r.match_method + (r.ambiguous ? " (ambiguous)" : "") : "—"],
+    ["Customer", r.sh_customer || r.bo_customer || "—"],
+    ["Shopify date / total", r.sh_date ? `${r.sh_date} · ${osyncMoney(r.sh_total)}` : "—"],
+    ["Invoice date / total", r.bo_date ? `${r.bo_date.slice(0, 10)} · ${osyncMoney(r.bo_total)}` : "—"],
+    ["Total Δ (Shopify − BO)", r.total_delta != null ? osyncMoney(r.total_delta) : "—"],
+    ["Shopify tracking", (r.sh_tracking || []).join(", ") || (r.sh_name ? "MISSING" : "—")],
+    ["BackOffice tracking", r.bo_tracking || (r.bo_invoice_number ? "MISSING" : "—")],
+  ];
+  const linesHtml = (r.line_diffs || [])
+    .map((d) => {
+      const bad = d.issues.length > 0;
+      const cell = (v, issueKey, fmt) => {
+        const cls = d.issues.includes(issueKey) ? ' class="osync-diff-cell"' : "";
+        return `<td style="text-align: right"${cls}>${v == null ? "—" : fmt(v)}</td>`;
+      };
+      return (
+        `<tr${bad ? ' class="osync-line-bad"' : ""}>` +
+        `<td>${escapeHtml(d.barcode || d.sku || d.key)}</td>` +
+        `<td>${escapeHtml(d.description || "")}</td>` +
+        cell(d.sh_qty, "qty", (v) => v.toLocaleString()) +
+        cell(d.bo_qty, "qty", (v) => v.toLocaleString()) +
+        cell(d.sh_unit_price, "price", osyncMoney) +
+        cell(d.bo_unit_price, "price", osyncMoney) +
+        `<td>${d.issues.map((i) => `<span class="osync-issue">${escapeHtml(i)}</span>`).join(" ")}</td>` +
+        `</tr>`
+      );
+    })
+    .join("");
+
+  body.innerHTML =
+    `<div class="osync-detail-grid">` +
+    headerRows
+      .map(
+        ([label, value]) =>
+          `<div class="osync-detail-label">${escapeHtml(label)}</div>` +
+          `<div class="osync-detail-value">${escapeHtml(String(value))}</div>`,
+      )
+      .join("") +
+    `</div>` +
+    (r.line_diffs?.length
+      ? `<div class="table-container" style="margin-top: 1rem;"><table class="data-table">` +
+        `<thead><tr><th>Barcode / SKU</th><th>Description</th>` +
+        `<th style="text-align: right">Sh Qty</th><th style="text-align: right">BO Qty</th>` +
+        `<th style="text-align: right">Sh Price</th><th style="text-align: right">BO Price</th>` +
+        `<th>Issue</th></tr></thead><tbody>${linesHtml}</tbody></table></div>`
+      : `<p style="color: var(--text-secondary); margin-top: 1rem;">No line details available for this row.</p>`);
+
+  openModal("osync-modal");
+}
+
+// ===== End Order Sync =====

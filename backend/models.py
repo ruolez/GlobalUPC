@@ -135,6 +135,18 @@ class ItemTrackerConfig(Base):
     s2s_store = relationship("Store", foreign_keys=[s2s_store_id])
     inventory_store = relationship("Store", foreign_keys=[inventory_store_id])
 
+class OrderSyncConfig(Base):
+    __tablename__ = "order_sync_config"
+
+    id = Column(Integer, primary_key=True, index=True)
+    mssql_store_id = Column(Integer, ForeignKey("stores.id", ondelete="SET NULL"), nullable=True)
+    shopify_store_id = Column(Integer, ForeignKey("stores.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    mssql_store = relationship("Store", foreign_keys=[mssql_store_id])
+    shopify_store = relationship("Store", foreign_keys=[shopify_store_id])
+
 class SalesExclusion(Base):
     __tablename__ = "sales_exclusions"
 
