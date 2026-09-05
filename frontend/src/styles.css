@@ -9262,7 +9262,36 @@ tr.bov-line-void td { opacity: 0.55; text-decoration: line-through; }
   font-weight: 600;
 }
 
+/* Dense comparison table: one line per product, numbers right-aligned. */
+.osync-lines th,
+.osync-lines td {
+  padding: 0.35rem 0.6rem;
+  font-size: 0.8125rem;
+  white-space: nowrap;
+}
+.osync-lines th {
+  font-size: 0.6875rem;
+  letter-spacing: 0.04em;
+  vertical-align: bottom;
+}
 .osync-lines th.osync-num { text-align: right; }
+.osync-th-pair { line-height: 1.2; }
+.osync-th-metric { display: block; }
+.osync-th-side {
+  display: block;
+  font-size: 0.5625rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  opacity: 0.75;
+}
+.osync-th-side.is-shopify { color: var(--accent-primary); }
+.osync-th-side.is-backoffice { color: var(--success); }
+.osync-lines td.osync-desc {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-secondary);
+}
+.osync-lines tr.osync-line-bad td.osync-desc { color: var(--text-primary); }
 .osync-diff-cell { color: var(--danger); font-weight: 600; }
 .osync-line-bad td { background: color-mix(in srgb, var(--danger) 5%, transparent); }
 .osync-lines tfoot td {
@@ -9271,3 +9300,11 @@ tr.bov-line-void td { opacity: 0.55; text-decoration: line-through; }
   border-top: 2px solid var(--border-color);
   background: var(--bg-secondary);
 }
+
+/* Main results table: same density */
+.osync-table th,
+.osync-table td {
+  padding: 0.4rem 0.7rem;
+  font-size: 0.8125rem;
+}
+.osync-table th { font-size: 0.6875rem; letter-spacing: 0.04em; white-space: nowrap; }

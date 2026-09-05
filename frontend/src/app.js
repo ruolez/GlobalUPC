@@ -27123,26 +27123,6 @@ function osyncMethodPill(r) {
   );
 }
 
-// Tracking cell: real carrier numbers (mono), route numbers as chips, shared badge.
-function osyncTrackingHtml(r) {
-  const parts = [];
-  const tracking = r.sh_tracking && r.sh_tracking.length ? r.sh_tracking : r.bo_tracking ? r.bo_tracking.split(",").map((t) => t.trim()) : [];
-  if (tracking.length) {
-    parts.push(`<span class="osync-mono" title="${escapeHtml(tracking.join(", "))}">${escapeHtml(tracking[0])}</span>`);
-    if (tracking.length > 1) parts.push(`<span class="osync-badge" title="${escapeHtml(tracking.join(", "))}">+${tracking.length - 1}</span>`);
-  }
-  const routes = (r.sh_route || []).length ? r.sh_route : r.bo_route || [];
-  if (routes.length) {
-    parts.push(`<span class="osync-route" title="Delivery route number found in the tracking field">Route ${escapeHtml(routes.join("/"))}</span>`);
-  }
-  if (r.shared_tracking) {
-    const st = r.shared_tracking;
-    const tip = `Tracking ${st.tracking} is shared by orders ${st.orders.join(", ")} and invoices ${st.invoices.join(", ")}`;
-    parts.push(`<span class="osync-badge is-shared" title="${escapeHtml(tip)}">shared ×${st.orders.length}</span>`);
-  }
-  return parts.length ? parts.join(" ") : osyncDash();
-}
-
 // ---- Rendering --------------------------------------------------------------
 
 function osyncVisibleRows() {
@@ -27175,7 +27155,6 @@ function osyncVisibleRows() {
     if (key === "date") return osyncRowDate(r);
     if (key === "issues") return (r.issue_kinds || []).length;
     if (key === "customer") return r.sh_customer || r.bo_customer || "";
-    if (key === "tracking") return (r.sh_tracking || [])[0] || r.bo_tracking || (r.sh_route || [])[0] || "";
     if (key === "status") return ["shopify_unmatched", "backoffice_unmatched", "matched_diffs", "matched_ok"].indexOf(r.status);
     const v = r[key];
     return v == null ? (["sh_total", "bo_total", "total_delta"].includes(key) ? -Infinity : "") : v;
@@ -27263,25 +27242,32 @@ function renderOrderSync() {
   if (hasRows) osyncRenderTable();
 }
 
+// `.data-table` is table-layout: fixed, so every column needs an explicit
+// width or they all split the table evenly; Customer takes the remainder.
 const OSYNC_COLUMNS = [
-  { key: "date", label: "Date" },
-  { key: "sh_name", label: "Shopify order" },
-  { key: "bo_invoice_number", label: "Invoice" },
+  { key: "date", label: "Date", width: 68 },
+  { key: "sh_name", label: "Shopify order", width: 176 },
+  { key: "bo_invoice_number", label: "Invoice", width: 104 },
   { key: "customer", label: "Customer" },
-  { key: "tracking", label: "Tracking" },
-  { key: "match_method", label: "Matched by" },
-  { key: "issues", label: "Issues" },
-  { key: "sh_total", label: "Shopify", num: true },
-  { key: "bo_total", label: "BackOffice", num: true },
-  { key: "total_delta", label: "Δ", num: true },
-  { key: "status", label: "Status" },
+  { key: "match_method", label: "Matched by", width: 104 },
+  { key: "issues", label: "Issues", width: 150 },
+  { key: "sh_total", label: "Shopify", num: true, width: 96 },
+  { key: "bo_total", label: "BackOffice", num: true, width: 96 },
+  { key: "total_delta", label: "Δ", num: true, width: 86 },
+  { key: "status", label: "Status", width: 108 },
 ];
+
+function osyncColgroup(cols) {
+  return "<colgroup>" + cols.map((c) => `<col${c.width ? ` style="width:${c.width}px"` : ""}>`).join("") + "</colgroup>";
+}
 
 function osyncRenderTable() {
   const thead = document.getElementById("osync-thead");
   const tbody = document.getElementById("osync-tbody");
   if (!thead || !tbody) return;
   const { key: sortKey, dir } = orderSyncState.sort;
+  const table = document.getElementById("osync-table");
+  if (table && !table.querySelector("colgroup")) table.insertAdjacentHTML("afterbegin", osyncColgroup(OSYNC_COLUMNS));
   thead.innerHTML =
     "<tr>" +
     OSYNC_COLUMNS.map((c) => {
@@ -27297,20 +27283,23 @@ function osyncRenderTable() {
   tbody.innerHTML = rows
     .map((r, pos) => {
       const tone = r.status === "matched_ok" ? "is-ok" : r.status === "matched_diffs" ? "is-warn" : "is-bad";
-      const nameCell = (name, noTrk, combinedN) =>
+      const sharedBadge = r.shared_tracking
+        ? ` <span class="osync-badge is-shared" title="${escapeHtml(`Tracking ${r.shared_tracking.tracking} is shared by orders ${r.shared_tracking.orders.join(", ")} and invoices ${r.shared_tracking.invoices.join(", ")}`)}">shared ×${r.shared_tracking.orders.length}</span>`
+        : "";
+      const nameCell = (name, noTrk, combinedN, extra = "") =>
         (name ? escapeHtml(name) : osyncDash()) +
         (combinedN > 1 ? ` <span class="osync-badge is-combined" title="${combinedN} reconciled together as one shipment">×${combinedN}</span>` : "") +
-        (noTrk && name ? ' <span class="osync-flag" title="Nothing in the tracking field">no tracking</span>' : "");
+        (noTrk && name ? ' <span class="osync-flag" title="Nothing in the tracking field">no tracking</span>' : "") +
+        extra;
       const issues = (r.issue_kinds || []).map((k) => osyncIssueChip(k)).join(" ");
       const delta = r.total_delta;
       const deltaCls = delta != null && Math.abs(delta) > 0.011 ? " osync-delta-bad" : "";
       return (
         `<tr data-osync-pos="${pos}" class="osync-row ${tone}">` +
         `<td class="osync-nowrap">${escapeHtml(osyncFmtDate(osyncRowDate(r)))}</td>` +
-        `<td class="osync-nowrap">${nameCell(r.sh_name, r.sh_no_tracking, (r.sh_orders || []).length)}</td>` +
+        `<td class="osync-nowrap">${nameCell(r.sh_name, r.sh_no_tracking, (r.sh_orders || []).length, sharedBadge)}</td>` +
         `<td class="osync-nowrap">${nameCell(r.bo_invoice_number, r.bo_no_tracking, (r.bo_invoices || []).length)}</td>` +
         `<td class="osync-customer" title="${escapeHtml(r.sh_customer || r.bo_customer || "")}">${escapeHtml(r.sh_customer || r.bo_customer || "")}</td>` +
-        `<td class="osync-nowrap">${osyncTrackingHtml(r)}</td>` +
         `<td class="osync-nowrap">${osyncMethodPill(r)}</td>` +
         `<td>${issues || (r.status === "matched_ok" ? '<span class="osync-muted">none</span>' : "")}</td>` +
         `<td class="osync-num">${osyncMoney(r.sh_total)}</td>` +
@@ -27342,6 +27331,19 @@ function osyncStepDetail(delta) {
   if (next < 0 || next >= orderSyncState.visible.length) return;
   orderSyncState.modalPos = next;
   osyncRenderDetail();
+}
+
+const OSYNC_LINE_COLUMNS = [
+  { width: 118 }, {}, { width: 60 }, { width: 60 },
+  { width: 84 }, { width: 84 }, { width: 92 }, { width: 92 }, { width: 112 },
+];
+
+// One metric, two columns: "Qty / Shopify" and "Qty / BackOffice".
+function osyncPairTh(metric) {
+  return (
+    `<th class="osync-num osync-th-pair"><span class="osync-th-metric">${escapeHtml(metric)}</span><span class="osync-th-side is-shopify">Shopify</span></th>` +
+    `<th class="osync-num osync-th-pair"><span class="osync-th-metric">${escapeHtml(metric)}</span><span class="osync-th-side is-backoffice">BackOffice</span></th>`
+  );
 }
 
 function osyncSideCard(title, tone, items) {
@@ -27420,7 +27422,7 @@ function osyncRenderDetail() {
       return (
         `<tr${bad ? ' class="osync-line-bad"' : ""}>` +
         `<td class="osync-mono osync-nowrap">${escapeHtml(d.barcode || d.sku || d.key)}</td>` +
-        `<td>${escapeHtml(d.description || "")}</td>` +
+        `<td class="osync-desc" title="${escapeHtml(d.description || "")}">${escapeHtml(d.description || "")}</td>` +
         cell(d.sh_qty, "qty", osyncQty, d) +
         cell(d.bo_qty, "qty", osyncQty, d) +
         cell(d.sh_unit_price, "price", osyncMoney, d) +
@@ -27456,10 +27458,9 @@ function osyncRenderDetail() {
           : "") +
         `</div>` +
         `<div class="table-container"><table class="data-table osync-lines">` +
-        `<thead><tr><th>Barcode / SKU</th><th>Description</th>` +
-        `<th class="osync-num">Qty Sh</th><th class="osync-num">Qty BO</th>` +
-        `<th class="osync-num">Price Sh</th><th class="osync-num">Price BO</th>` +
-        `<th class="osync-num">Total Sh</th><th class="osync-num">Total BO</th>` +
+        osyncColgroup(OSYNC_LINE_COLUMNS) +
+        `<thead><tr><th>Barcode</th><th>Description</th>` +
+        osyncPairTh("Qty") + osyncPairTh("Unit price") + osyncPairTh("Line total") +
         `<th>Issue</th></tr></thead><tbody>${linesHtml}</tbody>` +
         `<tfoot><tr><td colspan="2">${showDiffOnly ? "Listed lines" : "All lines"}</td>` +
         `<td class="osync-num">${osyncQty(sum(listed, "sh_qty"))}</td><td class="osync-num">${osyncQty(sum(listed, "bo_qty"))}</td>` +
