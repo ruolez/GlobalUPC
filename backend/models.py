@@ -147,6 +147,27 @@ class OrderSyncConfig(Base):
     mssql_store = relationship("Store", foreign_keys=[mssql_store_id])
     shopify_store = relationship("Store", foreign_keys=[shopify_store_id])
 
+class OrderSyncFixHistory(Base):
+    __tablename__ = "order_sync_fix_history"
+
+    id = Column(Integer, primary_key=True, index=True)
+    batch_id = Column(String(36), nullable=False, index=True)
+    shopify_store_id = Column(Integer, ForeignKey("stores.id", ondelete="SET NULL"), nullable=True)
+    store_name = Column(String(255))
+    sh_order_id = Column(String(64), nullable=False, index=True)
+    sh_order_name = Column(String(64))
+    bo_invoice_id = Column(Integer)
+    bo_invoice_number = Column(String(64))
+    status = Column(String(16), nullable=False)          # applied | partial | failed | noop | skipped
+    status_before = Column(String(32))
+    status_after = Column(String(32))
+    actions = Column(JSONB)
+    steps = Column(JSONB)
+    error_message = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    shopify_store = relationship("Store", foreign_keys=[shopify_store_id])
+
 class SalesExclusion(Base):
     __tablename__ = "sales_exclusions"
 

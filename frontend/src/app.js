@@ -26746,12 +26746,39 @@ function initOrderSyncPage() {
   document.getElementById("osync-modal-prev")?.addEventListener("click", () => osyncStepDetail(-1));
   document.getElementById("osync-modal-next")?.addEventListener("click", () => osyncStepDetail(1));
   document.addEventListener("keydown", (e) => {
+    // The fix modal stacks above the drill-in: Escape closes the top one only.
+    const fixModal = document.getElementById("osync-fix-modal");
+    if (fixModal && fixModal.classList.contains("active")) {
+      if (e.key === "Escape") osyncFixClose();
+      return;
+    }
     const modal = document.getElementById("osync-modal");
     if (!modal || !modal.classList.contains("active")) return;
     if (e.key === "ArrowLeft") { e.preventDefault(); osyncStepDetail(-1); }
     else if (e.key === "ArrowRight") { e.preventDefault(); osyncStepDetail(1); }
     else if (e.key === "Escape") { closeModal("osync-modal"); }
   });
+
+  // Fix in Shopify: selection mode + modals
+  document.getElementById("osync-fix")?.addEventListener("click", () => osyncFixSelectMode(true));
+  document.getElementById("osync-fix-cancel-sel")?.addEventListener("click", () => osyncFixSelectMode(false));
+  document.getElementById("osync-fix-all")?.addEventListener("click", osyncFixSelectAll);
+  document.getElementById("osync-fix-preview")?.addEventListener("click", () => {
+    const rows = orderSyncState.visible.filter((r) => osyncFix.keys.has(r.sh_order_id));
+    osyncFixPreview(rows, { fromModal: false });
+  });
+  document.getElementById("osync-modal-fix")?.addEventListener("click", () => {
+    const r = osyncModalRow();
+    if (r) osyncFixPreview([r], { fromModal: true });
+  });
+  document.getElementById("osync-fix-x")?.addEventListener("click", osyncFixClose);
+  document.getElementById("osync-fix-cancel")?.addEventListener("click", osyncFixClose);
+  document.getElementById("osync-fix-done")?.addEventListener("click", osyncFixClose);
+  document.getElementById("osync-fix-apply")?.addEventListener("click", osyncFixApply);
+  // No backdrop close while mutations are in flight.
+  document.getElementById("osync-fix-modal")?.addEventListener("click", (e) => {
+    if (osyncFix.applying && e.target.id === "osync-fix-modal") e.stopImmediatePropagation();
+  }, true);
   document.getElementById("osync-modal-body")?.addEventListener("click", (e) => {
     const t = e.target.closest("[data-osync-lines]");
     if (!t) return;
@@ -26827,7 +26854,13 @@ function initOrderSyncPage() {
 
   document.getElementById("osync-tbody")?.addEventListener("click", (e) => {
     const tr = e.target.closest("tr[data-osync-pos]");
-    if (tr) osyncOpenDetail(parseInt(tr.dataset.osyncPos, 10));
+    if (!tr) return;
+    const pos = parseInt(tr.dataset.osyncPos, 10);
+    if (osyncFix.selecting) {
+      osyncFixToggleRow(pos, e);
+      return;
+    }
+    osyncOpenDetail(pos);
   });
 }
 
@@ -27265,10 +27298,23 @@ function osyncRenderTable() {
   const tbody = document.getElementById("osync-tbody");
   if (!thead || !tbody) return;
   const { key: sortKey, dir } = orderSyncState.sort;
+  const selecting = osyncFix.selecting;
+  const cols = selecting ? [{ key: "_sel", width: 34 }, ...OSYNC_COLUMNS] : OSYNC_COLUMNS;
   const table = document.getElementById("osync-table");
-  if (table && !table.querySelector("colgroup")) table.insertAdjacentHTML("afterbegin", osyncColgroup(OSYNC_COLUMNS));
+  if (table) {
+    table.querySelector("colgroup")?.remove();
+    table.insertAdjacentHTML("afterbegin", osyncColgroup(cols));
+  }
+  const rows = osyncVisibleRows();
+  orderSyncState.visible = rows;
+  const fixableVisible = selecting ? rows.filter((r) => osyncFixable(r).ok) : [];
+  const allChecked = fixableVisible.length > 0 && fixableVisible.every((r) => osyncFix.keys.has(r.sh_order_id));
+
   thead.innerHTML =
     "<tr>" +
+    (selecting
+      ? `<th class="osync-sel-th"><input type="checkbox" id="osync-fix-all-box" title="Select every fixable row listed"${allChecked ? " checked" : ""}${fixableVisible.length ? "" : " disabled"}></th>`
+      : "") +
     OSYNC_COLUMNS.map((c) => {
       const cls = ["qip-sortable"];
       if (c.num) cls.push("osync-num");
@@ -27276,12 +27322,20 @@ function osyncRenderTable() {
       return `<th class="${cls.join(" ")}" data-sort="${c.key}"><span>${escapeHtml(c.label)}</span><span class="qip-sort-arrow"></span></th>`;
     }).join("") +
     "</tr>";
+  document.getElementById("osync-fix-all-box")?.addEventListener("change", (e) => {
+    fixableVisible.forEach((r) => (e.target.checked ? osyncFix.keys.add(r.sh_order_id) : osyncFix.keys.delete(r.sh_order_id)));
+    osyncRenderTable();
+  });
 
-  const rows = osyncVisibleRows();
-  orderSyncState.visible = rows;
   tbody.innerHTML = rows
     .map((r, pos) => {
       const tone = r.status === "matched_ok" ? "is-ok" : r.status === "matched_diffs" ? "is-warn" : "is-bad";
+      let selCell = "";
+      if (selecting) {
+        const fx = osyncFixable(r);
+        const checked = fx.ok && osyncFix.keys.has(r.sh_order_id);
+        selCell = `<td class="osync-sel-td"><input type="checkbox" class="osync-sel-box"${checked ? " checked" : ""}${fx.ok ? "" : " disabled"} title="${escapeHtml(fx.reason || "Select to fix")}"></td>`;
+      }
       const sharedBadge = r.shared_tracking
         ? ` <span class="osync-badge is-shared" title="${escapeHtml(`Tracking ${r.shared_tracking.tracking} is shared by orders ${r.shared_tracking.orders.join(", ")} and invoices ${r.shared_tracking.invoices.join(", ")}`)}">shared ×${r.shared_tracking.orders.length}</span>`
         : "";
@@ -27293,8 +27347,10 @@ function osyncRenderTable() {
       const issues = (r.issue_kinds || []).map((k) => osyncIssueChip(k)).join(" ");
       const delta = r.total_delta;
       const deltaCls = delta != null && Math.abs(delta) > 0.011 ? " osync-delta-bad" : "";
+      const selCls = selecting ? (osyncFix.keys.has(r.sh_order_id) ? " is-selected" : osyncFixable(r).ok ? " is-selectable" : " is-unselectable") : "";
       return (
-        `<tr data-osync-pos="${pos}" class="osync-row ${tone}">` +
+        `<tr data-osync-pos="${pos}" class="osync-row ${tone}${selCls}">` +
+        selCell +
         `<td class="osync-nowrap">${escapeHtml(osyncFmtDate(osyncRowDate(r)))}</td>` +
         `<td class="osync-nowrap">${nameCell(r.sh_name, r.sh_no_tracking, (r.sh_orders || []).length, sharedBadge)}</td>` +
         `<td class="osync-nowrap">${nameCell(r.bo_invoice_number, r.bo_no_tracking, (r.bo_invoices || []).length)}</td>` +
@@ -27315,12 +27371,14 @@ function osyncRenderTable() {
     const total = (orderSyncState.data?.rows || []).length;
     count.textContent = rows.length === total ? `${total} rows` : `${rows.length} of ${total} rows`;
   }
+  if (selecting) osyncFixRenderBar();
 }
 
 // ---- Drill-in modal ---------------------------------------------------------
 
 function osyncOpenDetail(pos) {
   orderSyncState.modalPos = pos;
+  orderSyncState.modalDetached = null;
   osyncRenderDetail();
   openModal("osync-modal");
 }
@@ -27329,7 +27387,15 @@ function osyncStepDetail(delta) {
   const next = orderSyncState.modalPos + delta;
   if (next < 0 || next >= orderSyncState.visible.length) return;
   orderSyncState.modalPos = next;
+  orderSyncState.modalDetached = null;
   osyncRenderDetail();
+}
+
+// The row the drill-in shows: normally `visible[modalPos]`; after a fix
+// re-renders the table, a row the active filter no longer lists is kept as
+// `modalDetached` so the modal can still show its updated state.
+function osyncModalRow() {
+  return orderSyncState.modalDetached || orderSyncState.visible[orderSyncState.modalPos] || null;
 }
 
 const OSYNC_LINE_COLUMNS = [
@@ -27358,17 +27424,27 @@ function osyncSideCard(title, tone, items) {
 function osyncRenderDetail() {
   const rows = orderSyncState.visible;
   const pos = orderSyncState.modalPos;
-  const r = rows[pos];
+  const detached = !!orderSyncState.modalDetached;
+  const r = osyncModalRow();
   if (!r) return;
 
   const title = document.getElementById("osync-modal-title");
   if (title) title.textContent = `${r.sh_name || "No Shopify order"} ⇄ ${r.bo_invoice_number ? `Invoice ${r.bo_invoice_number}` : "No invoice"}`;
   const posEl = document.getElementById("osync-modal-pos");
-  if (posEl) posEl.textContent = `${pos + 1} / ${rows.length}`;
+  if (posEl) posEl.textContent = detached ? "no longer in the current filter" : `${pos + 1} / ${rows.length}`;
   const prev = document.getElementById("osync-modal-prev");
   const next = document.getElementById("osync-modal-next");
-  if (prev) prev.disabled = pos <= 0;
-  if (next) next.disabled = pos >= rows.length - 1;
+  if (prev) prev.disabled = detached || pos <= 0;
+  if (next) next.disabled = detached || pos >= rows.length - 1;
+
+  const fx = osyncFixable(r);
+  const fixBtn = document.getElementById("osync-modal-fix");
+  const fixNote = document.getElementById("osync-modal-fix-note");
+  if (fixBtn) {
+    fixBtn.disabled = !fx.ok;
+    fixBtn.title = fx.ok ? "Preview the changes that would bring this Shopify order in line with the invoice" : fx.reason;
+  }
+  if (fixNote) fixNote.textContent = fx.ok ? (fx.reason || "") : fx.reason;
 
   const body = document.getElementById("osync-modal-body");
   if (!body) return;
@@ -27508,6 +27584,471 @@ function osyncExport() {
     bovDownloadSheet({ sheet: "Orders", header: orderHeader, data: orderRows, fname });
   }
   showToast(`Exported ${rows.length} rows and ${lineRows.length} line differences`, "success");
+}
+
+// ---- Fix in Shopify ---------------------------------------------------------
+//
+// Selection mode adds a checkbox column to the table; "Preview fix" (or the
+// drill-in footer button) asks the backend for a dry-run plan built from
+// fresh Shopify + BackOffice data, shows it in #osync-fix-modal, and Apply
+// streams the per-order outcome. Rebuilt rows are patched into the loaded
+// report (with summary deltas) — no full re-run needed.
+
+const osyncFix = {
+  selecting: false,
+  keys: new Set(),        // sh_order_id of selected rows
+  lastPos: null,          // for shift-click ranges
+  applying: false,
+  fromModal: false,
+  targets: [],            // rows the current preview was built from
+  plan: null,             // last /fix/plan response
+  results: null,
+};
+
+const OSYNC_FIX_POLICY =
+  "Records only: refunds return $0 and don't restock · added items are fulfilled at once and the balance marked paid · " +
+  "variant prices raised for a repricing are restored right after · the customer is never notified.";
+
+function osyncFixable(r) {
+  if (!r || !r.sh_order_id || !r.bo_invoice_id) return { ok: false, reason: "Needs a matched Shopify order and invoice" };
+  if (r.combined) return { ok: false, reason: "Combined shipments need manual review" };
+  const lineIssues = (r.issue_kinds || []).some((k) => ["product", "qty", "price"].includes(k));
+  const trackingFix = r.sh_no_tracking && !!r.bo_tracking;
+  if (!lineIssues && !trackingFix) {
+    return { ok: false, reason: r.status === "matched_ok" ? "Nothing to fix" : "Only the order total differs — no line-level change to make" };
+  }
+  return { ok: true, reason: r.ambiguous ? "Ambiguous match — verify the pairing before applying" : "" };
+}
+
+// apiRequest() alerts on failure; the fix modal reports errors inline instead.
+async function osyncPost(endpoint, body) {
+  const resp = await fetch(`${API_BASE}${endpoint}`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    throw new Error(err.detail || `HTTP ${resp.status}`);
+  }
+  return resp.json();
+}
+
+function osyncFixTarget(r) {
+  return {
+    sh_order_id: r.sh_order_id,
+    bo_invoice_id: r.bo_invoice_id,
+    bo_invoice_number: r.bo_invoice_number || null,
+    match_method: r.match_method || null,
+    ambiguous: !!r.ambiguous,
+  };
+}
+
+function osyncFixSelectMode(on) {
+  osyncFix.selecting = on;
+  osyncFix.keys.clear();
+  osyncFix.lastPos = null;
+  osyncShow("osync-fixbar", on);
+  const btn = document.getElementById("osync-fix");
+  if (btn) btn.disabled = on;
+  osyncRenderTable();
+}
+
+function osyncFixRenderBar() {
+  const n = osyncFix.keys.size;
+  const count = document.getElementById("osync-fix-count");
+  if (count) count.textContent = `${n} selected`;
+  const preview = document.getElementById("osync-fix-preview");
+  if (preview) {
+    preview.disabled = n === 0;
+    preview.textContent = n ? `Preview fix (${n})` : "Preview fix";
+  }
+  const all = document.getElementById("osync-fix-all");
+  if (all) {
+    const fixable = orderSyncState.visible.filter((r) => osyncFixable(r).ok).length;
+    all.textContent = `Select all fixable (${fixable})`;
+    all.disabled = fixable === 0;
+  }
+}
+
+function osyncFixSelectAll() {
+  orderSyncState.visible.filter((r) => osyncFixable(r).ok).forEach((r) => osyncFix.keys.add(r.sh_order_id));
+  osyncRenderTable();
+}
+
+function osyncFixToggleRow(pos, e) {
+  const rows = orderSyncState.visible;
+  const r = rows[pos];
+  if (!r || !osyncFixable(r).ok) return;
+  const isBox = e.target.classList && e.target.classList.contains("osync-sel-box");
+  const on = isBox ? e.target.checked : !osyncFix.keys.has(r.sh_order_id);
+  if (e.shiftKey && osyncFix.lastPos != null) {
+    const [a, b] = [Math.min(pos, osyncFix.lastPos), Math.max(pos, osyncFix.lastPos)];
+    for (let i = a; i <= b; i++) {
+      if (osyncFixable(rows[i]).ok) (on ? osyncFix.keys.add(rows[i].sh_order_id) : osyncFix.keys.delete(rows[i].sh_order_id));
+    }
+  } else {
+    on ? osyncFix.keys.add(r.sh_order_id) : osyncFix.keys.delete(r.sh_order_id);
+  }
+  osyncFix.lastPos = pos;
+  osyncRenderTable();
+}
+
+// ---- Plan preview ----
+
+function osyncFixSetPhase(phase, { applyLabel = "Apply", applyEnabled = false } = {}) {
+  const cancel = document.getElementById("osync-fix-cancel");
+  const apply = document.getElementById("osync-fix-apply");
+  const done = document.getElementById("osync-fix-done");
+  const x = document.getElementById("osync-fix-x");
+  const policy = document.getElementById("osync-fix-policy");
+  if (cancel) cancel.style.display = phase === "done" || phase === "applying" ? "none" : "";
+  if (apply) {
+    apply.style.display = phase === "plan" || phase === "loading" ? "" : "none";
+    apply.disabled = !applyEnabled;
+    apply.textContent = applyLabel;
+  }
+  if (done) done.style.display = phase === "done" ? "" : "none";
+  if (x) x.style.display = phase === "applying" ? "none" : "";
+  if (policy) policy.textContent = phase === "plan" ? OSYNC_FIX_POLICY : "";
+}
+
+async function osyncFixPreview(rows, { fromModal }) {
+  const targets = rows.filter((r) => osyncFixable(r).ok);
+  if (!targets.length) {
+    showToast("None of the selected rows can be fixed", "info");
+    return;
+  }
+  osyncFix.fromModal = fromModal;
+  osyncFix.targets = targets;
+  osyncFix.plan = null;
+  osyncFix.results = null;
+  const title = document.getElementById("osync-fix-title");
+  const sub = document.getElementById("osync-fix-sub");
+  if (title) title.textContent = "Fix in Shopify";
+  if (sub) sub.textContent = targets.length === 1 ? `${targets[0].sh_name} ⇄ Invoice ${targets[0].bo_invoice_number}` : `${targets.length} orders`;
+  const body = document.getElementById("osync-fix-body");
+  if (body) body.innerHTML = `<div class="osync-fix-loading"><span class="progress-spinner"></span> Checking ${targets.length} order${targets.length === 1 ? "" : "s"} against Shopify and BackOffice…</div>`;
+  osyncFixSetPhase("loading");
+  openModal("osync-fix-modal");
+
+  try {
+    const plan = await osyncPost("/order-sync/fix/plan", { targets: targets.map(osyncFixTarget) });
+    osyncFix.plan = plan;
+    osyncFixRenderPlan(plan);
+  } catch (e) {
+    if (body) body.innerHTML = `<div class="osync-fix-error">Could not build the fix plan: ${escapeHtml(e.message || String(e))}</div>`;
+    osyncFixSetPhase("plan");
+  }
+}
+
+function osyncFixActionLines(actions) {
+  // Refund + add on the same key with reason "replace" read as one repricing.
+  const byKey = new Map();
+  const out = [];
+  actions.forEach((a) => {
+    if (a.kind === "tracking") {
+      out.push(["tracking", `Set tracking <span class="osync-mono">${escapeHtml(a.numbers.join(", "))}</span> on ${a.fulfillment_ids.length} fulfillment${a.fulfillment_ids.length === 1 ? "" : "s"}`]);
+      return;
+    }
+    if (a.reason === "replace") {
+      const e = byKey.get(a.key) || {};
+      e[a.kind] = a;
+      byKey.set(a.key, e);
+      return;
+    }
+    const what = `${a.qty} × <span class="osync-mono">${escapeHtml(a.barcode || a.key || "")}</span> ${escapeHtml(a.description || "")}`;
+    if (a.reason === "remove") out.push(["remove", `${what} <span class="osync-muted">— refund all units, $0</span>`]);
+    else if (a.reason === "reduce") out.push(["reduce", `−${what} <span class="osync-muted">— refund ${a.qty} unit${a.qty === 1 ? "" : "s"}, $0</span>`]);
+    else out.push(["add", `+${what} at ${osyncMoney(a.unit_price)} ${osyncFixPriceNote(a)}`]);
+  });
+  byKey.forEach((e) => {
+    const a = e.add || e.refund;
+    const what = `${a.qty} × <span class="osync-mono">${escapeHtml(a.barcode || a.key || "")}</span> ${escapeHtml(a.description || "")}`;
+    if (e.add && e.refund) {
+      out.push(["reprice", `${what} <span class="osync-muted">${osyncMoney(e.refund.unit_price)} →</span> <strong>${osyncMoney(e.add.unit_price)}</strong> ${osyncFixPriceNote(e.add)}`]);
+    } else if (e.refund) {
+      out.push(["remove", `${what} <span class="osync-muted">— refund all units, $0</span>`]);
+    } else {
+      out.push(["add", `+${what} at ${osyncMoney(a.unit_price)} ${osyncFixPriceNote(a)}`]);
+    }
+  });
+  return out;
+}
+
+function osyncFixPriceNote(a) {
+  if (a.bump_price) return `<span class="osync-muted">(store price ${osyncMoney(a.variant_price)} raised to ${osyncMoney(a.unit_price)} during the edit, then restored)</span>`;
+  if (a.discount_total > 0) return `<span class="osync-muted">(store price ${osyncMoney(a.variant_price)}, −${osyncMoney(a.discount_total / (a.qty || 1))}/unit discount)</span>`;
+  return "";
+}
+
+const OSYNC_FIX_KIND_LABELS = { add: "Add", remove: "Remove", reduce: "Reduce", reprice: "Reprice", tracking: "Tracking" };
+const OSYNC_FIX_STATUS = {
+  ready: ["Ready", "is-ok"], noop: ["Nothing to do", "is-muted"], skipped: ["Skipped", "is-warn"], error: ["Error", "is-bad"],
+  applied: ["Applied", "is-ok"], partial: ["Partially applied", "is-warn"], failed: ["Failed", "is-bad"],
+  running: ["Applying…", "is-muted"], queued: ["Queued", "is-muted"],
+};
+
+function osyncFixStatusPill(status) {
+  const [label, tone] = OSYNC_FIX_STATUS[status] || [status, "is-muted"];
+  return `<span class="osync-fix-pill ${tone}">${escapeHtml(label)}</span>`;
+}
+
+function osyncFixOrderCard(p, { status, message, steps, after = null, extraCls = "" }) {
+  const row = osyncFix.targets.find((r) => r.sh_order_id === p.sh_order_id);
+  const lines = osyncFixActionLines(p.actions || []);
+  const unsupported = p.unsupported || [];
+  const afterPill = after
+    ? ` <span class="osync-status ${after === "matched_ok" ? "is-ok" : after === "matched_diffs" ? "is-warn" : "is-bad"}" title="Row status after re-comparing fresh data">now ${escapeHtml(OSYNC_STATUS_LABELS[after] || after)}</span>`
+    : "";
+  return (
+    `<div class="osync-fix-order ${extraCls}" data-osync-fix-order="${escapeHtml(p.sh_order_id)}">` +
+    `<div class="osync-fix-order-head">` +
+    `<span class="osync-fix-order-title"><strong>${escapeHtml(p.sh_name || "")}</strong> <span class="osync-muted">⇄</span> Invoice <strong>${escapeHtml(p.bo_invoice_number || String(p.bo_invoice_id))}</strong>` +
+    (row && row.ambiguous ? ' <span class="osync-ambig" title="Ambiguous match — several invoices were plausible">?</span>' : "") +
+    `</span>` +
+    `<span class="osync-fix-order-status">${osyncFixStatusPill(status)}${afterPill}</span>` +
+    `</div>` +
+    (message ? `<div class="osync-fix-order-msg ${status === "failed" || status === "error" || status === "partial" ? "is-bad" : ""}">${escapeHtml(message)}</div>` : "") +
+    (lines.length
+      ? `<ul class="osync-fix-actions">` +
+        lines.map(([kind, html]) => `<li><span class="osync-fix-kind is-${kind}">${OSYNC_FIX_KIND_LABELS[kind] || kind}</span><span>${html}</span></li>`).join("") +
+        `</ul>`
+      : "") +
+    (unsupported.length
+      ? `<ul class="osync-fix-actions is-unsupported">` +
+        unsupported.map((u) =>
+          `<li><span class="osync-fix-kind is-unsupported">Can't fix</span><span><span class="osync-mono">${escapeHtml(u.barcode || u.key)}</span> ${escapeHtml(u.description || "")} <span class="osync-muted">— ${escapeHtml(u.message)}</span></span></li>`).join("") +
+        `</ul>`
+      : "") +
+    (steps && steps.length
+      ? `<ul class="osync-fix-steps">` +
+        steps.map((s) => `<li class="${s.ok ? "is-ok" : "is-bad"}"><span class="progress-icon ${s.ok ? "success" : "error"}">${s.ok ? "✓" : "✗"}</span><span class="osync-fix-step-name">${escapeHtml(OSYNC_FIX_STEP_LABELS[s.step] || s.step)}</span><span>${escapeHtml(s.message || "")}</span></li>`).join("") +
+        `</ul>`
+      : "") +
+    `</div>`
+  );
+}
+
+const OSYNC_FIX_STEP_LABELS = { refund: "Refund", edit: "Order edit", fulfill: "Fulfillment", mark_paid: "Mark paid", tracking: "Tracking", shopify: "Shopify", unexpected: "Error" };
+
+function osyncFixRenderPlan(plan) {
+  const body = document.getElementById("osync-fix-body");
+  if (!body) return;
+  const plans = plan.plans || [];
+  const ready = plans.filter((p) => p.status === "ready");
+  const tot = ready.reduce((acc, p) => {
+    const s = p.summary || {};
+    acc.refund += s.refund_units || 0;
+    acc.add += s.add_units || 0;
+    acc.amount += s.add_amount || 0;
+    acc.tracking += s.tracking ? 1 : 0;
+    acc.unsupported += s.unsupported || 0;
+    return acc;
+  }, { refund: 0, add: 0, amount: 0, tracking: 0, unsupported: 0 });
+  const unsupportedTotal = plans.reduce((n, p) => n + (p.unsupported || []).length, 0);
+  const blocked = (plan.scopes_missing || []).length > 0;
+
+  const bits = [];
+  if (tot.refund) bits.push(`<strong>${tot.refund}</strong> unit${tot.refund === 1 ? "" : "s"} refunded ($0)`);
+  if (tot.add) bits.push(`<strong>${tot.add}</strong> unit${tot.add === 1 ? "" : "s"} added (${osyncMoney(tot.amount)})`);
+  if (tot.tracking) bits.push(`tracking on <strong>${tot.tracking}</strong> order${tot.tracking === 1 ? "" : "s"}`);
+  if (unsupportedTotal) bits.push(`<span class="osync-fix-warn-text"><strong>${unsupportedTotal}</strong> line${unsupportedTotal === 1 ? "" : "s"} can't be fixed</span>`);
+
+  body.innerHTML =
+    (blocked
+      ? `<div class="osync-fix-error">The Shopify token is missing the scopes needed to edit orders: <span class="osync-mono">${escapeHtml(plan.scopes_missing.join(", "))}</span>. Add them to the app in Shopify admin, then try again.</div>`
+      : "") +
+    (plan.warnings || []).map((w) => `<div class="osync-fix-warn">${escapeHtml(w)}</div>`).join("") +
+    `<div class="osync-fix-summary">` +
+    `<span><strong>${ready.length}</strong> of ${plans.length} order${plans.length === 1 ? "" : "s"} ready</span>` +
+    (bits.length ? `<span class="osync-muted">·</span>${bits.map((b) => `<span>${b}</span>`).join('<span class="osync-muted">·</span>')}` : "") +
+    `</div>` +
+    `<div class="osync-fix-list">` +
+    plans.map((p) => osyncFixOrderCard(p, { status: p.status, message: p.message })).join("") +
+    `</div>`;
+
+  osyncFixSetPhase("plan", {
+    applyEnabled: ready.length > 0 && !blocked,
+    applyLabel: ready.length ? `Apply to ${ready.length} order${ready.length === 1 ? "" : "s"}` : "Nothing to apply",
+  });
+}
+
+// ---- Apply ----
+
+function osyncFixSetOrderStatus(shOrderId, status, message) {
+  const card = document.querySelector(`[data-osync-fix-order="${CSS.escape(shOrderId)}"]`);
+  if (!card) return;
+  const pill = card.querySelector(".osync-fix-order-status");
+  if (pill) pill.innerHTML = (status === "running" ? '<span class="progress-spinner osync-fix-spinner"></span>' : "") + osyncFixStatusPill(status);
+  card.classList.toggle("is-running", status === "running");
+  if (message) {
+    let msg = card.querySelector(".osync-fix-order-msg");
+    if (!msg) {
+      msg = document.createElement("div");
+      msg.className = "osync-fix-order-msg";
+      card.querySelector(".osync-fix-order-head")?.insertAdjacentElement("afterend", msg);
+    }
+    msg.textContent = message;
+    msg.classList.toggle("is-bad", status === "failed" || status === "partial");
+  }
+}
+
+async function osyncFixApply() {
+  const plan = osyncFix.plan;
+  if (!plan || osyncFix.applying) return;
+  const ready = (plan.plans || []).filter((p) => p.status === "ready");
+  const targets = osyncFix.targets.filter((r) => ready.some((p) => p.sh_order_id === r.sh_order_id)).map(osyncFixTarget);
+  if (!targets.length) return;
+
+  osyncFix.applying = true;
+  osyncFixSetPhase("applying");
+  const sub = document.getElementById("osync-fix-sub");
+  if (sub) sub.textContent = `Applying to ${targets.length} order${targets.length === 1 ? "" : "s"}…`;
+  ready.forEach((p) => osyncFixSetOrderStatus(p.sh_order_id, "queued"));
+  (plan.plans || []).filter((p) => p.status !== "ready").forEach((p) => {
+    document.querySelector(`[data-osync-fix-order="${CSS.escape(p.sh_order_id)}"]`)?.classList.add("is-dim");
+  });
+
+  let payload = null;
+  let sawProgress = false;
+  const reqBody = JSON.stringify({ targets });
+  try {
+    const resp = await fetch(`${API_BASE}/order-sync/fix/stream`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: reqBody,
+    });
+    if (!resp.ok || !resp.body) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${resp.status}`);
+    }
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const chunks = buffer.split("\n\n");
+      buffer = chunks.pop();
+      for (const chunk of chunks) {
+        const m = chunk.match(/event: (\w+)\ndata: (.+)/s);
+        if (!m) continue;
+        const [, ev, dataStr] = m;
+        if (ev === "progress") {
+          sawProgress = true;
+          try {
+            const p = JSON.parse(dataStr);
+            osyncFixSetOrderStatus(p.sh_order_id, p.status, p.status === "running" ? null : p.message);
+            if (sub) sub.textContent = `Applying… ${p.done} of ${p.total} done`;
+          } catch (e) { /* malformed frame */ }
+        } else if (ev === "result") {
+          payload = JSON.parse(dataStr);
+        } else if (ev === "error") {
+          let msg = "server error";
+          try { msg = JSON.parse(dataStr).message || msg; } catch (e) { /* keep default */ }
+          throw new Error(msg);
+        }
+      }
+    }
+    if (!payload) throw new Error("stream ended without a result");
+  } catch (e) {
+    if (!sawProgress) {
+      // Nothing had started — safe to retry through the plain endpoint.
+      try {
+        payload = await osyncPost("/order-sync/fix", { targets });
+      } catch (e2) {
+        osyncFixFinish(null, e2.message || String(e2));
+        return;
+      }
+    } else {
+      osyncFixFinish(null, `${e.message || e} — some orders may have been changed; run the comparison again to see the current state.`);
+      return;
+    }
+  }
+  osyncFixFinish(payload, null);
+}
+
+function osyncFixFinish(payload, errorMessage) {
+  osyncFix.applying = false;
+  osyncFix.results = payload;
+  const body = document.getElementById("osync-fix-body");
+  const sub = document.getElementById("osync-fix-sub");
+  if (errorMessage) {
+    if (body) body.insertAdjacentHTML("afterbegin", `<div class="osync-fix-error">${escapeHtml(errorMessage)}</div>`);
+    if (sub) sub.textContent = "Apply failed";
+    osyncFixSetPhase("done");
+    return;
+  }
+  const results = payload.results || [];
+  const counts = results.reduce((acc, r) => { acc[r.status] = (acc[r.status] || 0) + 1; return acc; }, {});
+  results.forEach((r) => {
+    if (r.row) osyncApplyRowUpdate(r.sh_order_id, r.row);
+  });
+  osyncFixRefreshAfterApply();
+
+  if (body) {
+    const planById = new Map((osyncFix.plan?.plans || []).map((p) => [p.sh_order_id, p]));
+    body.innerHTML =
+      (payload.warnings || []).map((w) => `<div class="osync-fix-warn">${escapeHtml(w)}</div>`).join("") +
+      `<div class="osync-fix-summary">` +
+      [["applied", "applied"], ["partial", "partially applied"], ["failed", "failed"], ["skipped", "skipped"], ["noop", "unchanged"]]
+        .filter(([k]) => counts[k])
+        .map(([k, label]) => `<span class="osync-fix-count is-${k}"><strong>${counts[k]}</strong> ${label}</span>`)
+        .join('<span class="osync-muted">·</span>') +
+      `</div>` +
+      `<div class="osync-fix-list">` +
+      results.map((r) => {
+        const p = planById.get(r.sh_order_id) || { sh_order_id: r.sh_order_id, sh_name: r.sh_name, bo_invoice_id: r.bo_invoice_id, bo_invoice_number: r.bo_invoice_number, actions: [] };
+        return osyncFixOrderCard({ ...p, unsupported: r.unsupported || p.unsupported || [] }, {
+          status: r.status, message: r.message, steps: r.steps, after: r.row ? r.row.status : null,
+        });
+      }).join("") +
+      `</div>`;
+  }
+  if (sub) sub.textContent = `${results.length} order${results.length === 1 ? "" : "s"} processed`;
+  osyncFixSetPhase("done");
+  const applied = (counts.applied || 0) + (counts.partial || 0);
+  if (applied) showToast(`Shopify updated for ${applied} order${applied === 1 ? "" : "s"}`, counts.failed || counts.partial ? "warning" : "success");
+}
+
+// Patch a rebuilt row into the loaded report and keep the summary honest.
+function osyncApplyRowUpdate(shOrderId, newRow) {
+  const data = orderSyncState.data;
+  if (!data || !data.rows) return;
+  const idx = data.rows.findIndex((r) => r.sh_order_id === shOrderId && !r.combined);
+  if (idx < 0) return;
+  const old = data.rows[idx];
+  const s = data.summary || (data.summary = {});
+  const bump = (k, d) => { s[k] = Math.max(0, (s[k] || 0) + d); };
+  bump(old.status, -1);
+  bump(newRow.status, +1);
+  s.issue_counts = s.issue_counts || {};
+  (old.issue_kinds || []).forEach((k) => { s.issue_counts[k] = Math.max(0, (s.issue_counts[k] || 0) - 1); });
+  (newRow.issue_kinds || []).forEach((k) => { s.issue_counts[k] = (s.issue_counts[k] || 0) + 1; });
+  if (old.sh_no_tracking && !newRow.sh_no_tracking) bump("shopify_no_tracking", -1);
+  if (!old.sh_no_tracking && newRow.sh_no_tracking) bump("shopify_no_tracking", +1);
+  data.rows[idx] = { ...old, ...newRow, shared_tracking: old.shared_tracking, _fixed: true };
+}
+
+function osyncFixRefreshAfterApply() {
+  const modal = document.getElementById("osync-modal");
+  const modalOpen = modal && modal.classList.contains("active");
+  const current = modalOpen ? osyncModalRow() : null;
+  const currentId = current ? current.sh_order_id : null;
+  if (osyncFix.selecting) osyncFixSelectMode(false);
+  renderOrderSync();
+  if (!modalOpen || !currentId) return;
+  const pos = orderSyncState.visible.findIndex((r) => r.sh_order_id === currentId);
+  if (pos >= 0) {
+    orderSyncState.modalPos = pos;
+    orderSyncState.modalDetached = null;
+  } else {
+    orderSyncState.modalDetached = (orderSyncState.data?.rows || []).find((r) => r.sh_order_id === currentId) || current;
+  }
+  osyncRenderDetail();
+}
+
+function osyncFixClose() {
+  if (osyncFix.applying) return;
+  closeModal("osync-fix-modal");
 }
 
 // ===== End Order Sync =====

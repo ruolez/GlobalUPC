@@ -13120,5 +13120,216 @@ async def stream_order_sync_report(date_from: Optional[str] = None, date_to: Opt
                                       "X-Accel-Buffering": "no"})
 
 
+# --- Fix in Shopify -------------------------------------------------------
+#
+# Corrects the Shopify side of matched rows to the invoice (refund units,
+# add/re-add lines at the invoice price, push tracking). Plans are always
+# computed from fresh data on the server — the report's rows are only used
+# to pick targets — so a re-run on a fixed order is a no-op.
+
+import aiohttp
+import order_sync_fix_helper as ofix
+from models import OrderSyncFixHistory
+from schemas import (
+    OrderSyncFixRequest, OrderSyncFixPlanResponse, OrderSyncFixResponse,
+    OrderSyncFixPlan, OrderSyncFixResult,
+)
+
+_ORDER_SYNC_FIX_CONCURRENCY = 2
+
+
+async def _order_sync_fix_context() -> Dict[str, Any]:
+    """Resolved store pair for a fix run (raises 400 when unconfigured)."""
+    with db_session() as db:
+        cfg = db.query(OrderSyncConfig).first()
+        if not cfg or not cfg.mssql_store_id or not cfg.shopify_store_id:
+            raise HTTPException(status_code=400, detail="Order Sync is not configured")
+        mssql_store = db.query(Store).filter(
+            Store.id == cfg.mssql_store_id, Store.is_active == True).first()
+        shopify_store = db.query(Store).filter(
+            Store.id == cfg.shopify_store_id, Store.is_active == True).first()
+        if not mssql_store or not mssql_store.mssql_connection:
+            raise HTTPException(status_code=400, detail="Configured BackOffice store is missing or inactive")
+        if not shopify_store or not shopify_store.shopify_connection:
+            raise HTTPException(status_code=400, detail="Configured Shopify store is missing or inactive")
+        sc = shopify_store.shopify_connection
+        ctx = {
+            "invoice_conn": _bov_conn_kwargs(mssql_store),
+            "shop_domain": sc.shop_domain,
+            "admin_api_key": sc.admin_api_key,
+            "api_version": sc.api_version or "2025-01",
+            "shopify_store_id": shopify_store.id,
+            "shopify_store_name": shopify_store.name,
+        }
+    ctx["tz"] = await fetch_shop_timezone(ctx["shop_domain"], ctx["admin_api_key"], ctx["api_version"])
+    return ctx
+
+
+def _order_sync_fix_targets(req: OrderSyncFixRequest) -> List[Dict[str, Any]]:
+    seen: set = set()
+    targets: List[Dict[str, Any]] = []
+    for t in req.targets:
+        if t.sh_order_id in seen:
+            continue
+        seen.add(t.sh_order_id)
+        targets.append(t.model_dump())
+    return targets
+
+
+@app.post("/api/order-sync/fix/plan", response_model=OrderSyncFixPlanResponse)
+async def plan_order_sync_fix(req: OrderSyncFixRequest):
+    """Dry run: what would change on each target order. No mutations."""
+    ctx = await _order_sync_fix_context()
+    targets = _order_sync_fix_targets(req)
+    sem = asyncio.Semaphore(4)
+    warnings: List[str] = []
+
+    async with aiohttp.ClientSession() as session:
+        sctx = ofix.ShopifyCtx(session, ctx["shop_domain"], ctx["admin_api_key"], ctx["api_version"])
+        scopes_missing, scope_warning = await ofix.check_write_scopes(sctx)
+        if scope_warning:
+            warnings.append(scope_warning)
+
+        async def one(target: Dict[str, Any]) -> Dict[str, Any]:
+            async with sem:
+                prep = await ofix.prepare_target(sctx, ctx["tz"], target, ctx["invoice_conn"])
+            plan = prep.get("plan") or {}
+            return {
+                "sh_order_id": prep["sh_order_id"], "sh_name": prep.get("sh_name"),
+                "bo_invoice_id": prep["bo_invoice_id"], "bo_invoice_number": prep.get("bo_invoice_number"),
+                "fixable": prep["status"] == "ready",
+                "status": prep["status"], "message": prep.get("message"),
+                "actions": plan.get("actions", []), "unsupported": plan.get("unsupported", []),
+                "summary": plan.get("summary", {}),
+            }
+
+        plans = await asyncio.gather(*(one(t) for t in targets))
+
+    return OrderSyncFixPlanResponse(
+        configured=True,
+        plans=[OrderSyncFixPlan(**p) for p in plans],
+        scopes_missing=scopes_missing,
+        warnings=warnings,
+    )
+
+
+def _order_sync_fix_record(batch_id: str, ctx: Dict[str, Any], target: Dict[str, Any],
+                           result: Dict[str, Any]) -> None:
+    try:
+        with db_session() as db:
+            db.add(OrderSyncFixHistory(
+                batch_id=batch_id,
+                shopify_store_id=ctx["shopify_store_id"],
+                store_name=ctx["shopify_store_name"],
+                sh_order_id=result["sh_order_id"],
+                sh_order_name=result.get("sh_name"),
+                bo_invoice_id=result.get("bo_invoice_id"),
+                bo_invoice_number=result.get("bo_invoice_number"),
+                status=result["status"],
+                status_before=result.get("status_before"),
+                status_after=result.get("status_after"),
+                actions=result.get("actions") or [],
+                steps=result.get("steps") or [],
+                error_message=result.get("message") if result["status"] in ("partial", "failed", "error") else None,
+            ))
+            db.commit()
+    except Exception as e:
+        print(f"order_sync_fix_history write failed for {result.get('sh_order_id')}: {e}")
+
+
+async def _order_sync_fix_run(req: OrderSyncFixRequest, progress=None) -> Dict[str, Any]:
+    ctx = await _order_sync_fix_context()
+    targets = _order_sync_fix_targets(req)
+    batch_id = str(uuid.uuid4())
+    sem = asyncio.Semaphore(_ORDER_SYNC_FIX_CONCURRENCY)
+    results: List[Dict[str, Any]] = []
+    warnings: List[str] = []
+    done = 0
+
+    async def emit(payload: Dict[str, Any]):
+        if progress:
+            await progress(payload)
+
+    async with aiohttp.ClientSession() as session:
+        sctx = ofix.ShopifyCtx(session, ctx["shop_domain"], ctx["admin_api_key"], ctx["api_version"])
+        scopes_missing, scope_warning = await ofix.check_write_scopes(sctx)
+        if scope_warning:
+            warnings.append(scope_warning)
+        if scopes_missing:
+            raise HTTPException(status_code=400,
+                                detail=f"Shopify token is missing scopes: {', '.join(scopes_missing)}")
+
+        async def one(target: Dict[str, Any]) -> Dict[str, Any]:
+            nonlocal done
+            async with sem:
+                await emit({"sh_order_id": target["sh_order_id"], "status": "running",
+                            "done": done, "total": len(targets)})
+                note = f"Order Sync: matched to BackOffice invoice {target.get('bo_invoice_number') or target['bo_invoice_id']}"
+                result = await ofix.apply_order_fix(sctx, ctx["tz"], target, ctx["invoice_conn"], note)
+                done += 1
+                _order_sync_fix_record(batch_id, ctx, target, result)
+                await emit({"sh_order_id": result["sh_order_id"], "sh_name": result.get("sh_name"),
+                            "status": result["status"], "message": result.get("message"),
+                            "done": done, "total": len(targets)})
+                return result
+
+        results = list(await asyncio.gather(*(one(t) for t in targets)))
+
+    return {
+        "batch_id": batch_id,
+        "results": [{k: v for k, v in r.items() if k not in ("actions", "status_before", "status_after")}
+                    for r in results],
+        "warnings": warnings,
+    }
+
+
+@app.post("/api/order-sync/fix", response_model=OrderSyncFixResponse)
+async def apply_order_sync_fix(req: OrderSyncFixRequest):
+    """Apply fixes to the target orders (plain JSON twin of /fix/stream)."""
+    payload = await _order_sync_fix_run(req)
+    return OrderSyncFixResponse(**payload)
+
+
+@app.post("/api/order-sync/fix/stream")
+async def stream_order_sync_fix(req: OrderSyncFixRequest):
+    """SSE: one `progress` event as each order starts and finishes, then one
+    `result` event with every per-order outcome and rebuilt row."""
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def progress(payload: Dict[str, Any]):
+        await queue.put(("progress", payload))
+
+    async def runner():
+        try:
+            payload = await _order_sync_fix_run(req, progress=progress)
+            await queue.put(("result", payload))
+        except HTTPException as e:
+            await queue.put(("error", {"message": str(e.detail)}))
+        except Exception as e:
+            await queue.put(("error", {"message": str(e)}))
+        await queue.put(None)
+
+    async def gen():
+        # Deliberately NOT cancelled on client disconnect: an in-flight order
+        # must finish its refund → edit → fulfill chain rather than being
+        # abandoned half-applied. The runner holds no Postgres session while
+        # it waits on Shopify, so nothing is pinned.
+        asyncio.create_task(runner())
+        while True:
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=15)
+            except asyncio.TimeoutError:
+                yield "event: heartbeat\ndata: {}\n\n"
+                continue
+            if item is None:
+                break
+            ev, data = item
+            yield f"event: {ev}\ndata: {json.dumps(data)}\n\n"
+
+    return BoundedStreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "Connection": "keep-alive",
+                                      "X-Accel-Buffering": "no"})
+
+
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

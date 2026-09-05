@@ -42,6 +42,47 @@ def _tracking_present(value: Any) -> bool:
     return bool(v) and v != "0"
 
 
+_INVOICE_HEADER_SELECT = """
+    SELECT h.InvoiceID, h.InvoiceNumber, h.InvoiceDate, h.CustomerID, h.BusinessName,
+           h.PoNumber, h.TrackingNo, h.Shipto, h.ShipContact, h.ShipAddress1, h.ShipAddress2,
+           h.ShipCity, h.ShipState, h.ShipZipCode, h.ShipPhoneNo,
+           h.InvoiceSubtotal, h.TotalTaxes, h.ShippingCost, h.InvoiceTotal, h.TotQtyShp
+    FROM Invoices_tbl h
+    WHERE ISNULL(h.Void, 0) = 0
+"""
+
+
+def _shape_invoice(r, lines: List[Dict[str, Any]], date_from: str, date_to: str) -> Dict[str, Any]:
+    inv_date = r[2]
+    day = inv_date.strftime("%Y-%m-%d") if inv_date else None
+    return {
+        "invoice_id": r[0],
+        "invoice_number": str(r[1]).strip() if r[1] is not None else str(r[0]),
+        "invoice_date": inv_date.isoformat() if inv_date else None,
+        "date": day,
+        "in_range": bool(day and date_from <= day <= date_to),
+        "customer_id": r[3],
+        "business_name": (r[4] or "").strip(),
+        "po_number": (r[5] or "").strip(),
+        "tracking_no": (r[6] or "").strip(),
+        "has_tracking": _tracking_present(r[6]),
+        "ship_to": (r[7] or "").strip(),
+        "ship_contact": (r[8] or "").strip(),
+        "ship_address1": (r[9] or "").strip(),
+        "ship_address2": (r[10] or "").strip(),
+        "ship_city": (r[11] or "").strip(),
+        "ship_state": (r[12] or "").strip(),
+        "ship_zip": (r[13] or "").strip(),
+        "ship_phone": (r[14] or "").strip(),
+        "subtotal": float(r[15] or 0),
+        "taxes": float(r[16] or 0),
+        "shipping_cost": float(r[17] or 0),
+        "total": float(r[18] or 0),
+        "tot_qty_shp": float(r[19] or 0),
+        "lines": lines,
+    }
+
+
 def _fetch_invoices_sync(
     host: str,
     port: int,
@@ -65,13 +106,8 @@ def _fetch_invoices_sync(
         return False, f"Invalid date: {e}", []
     lo, hi = lo_dt.strftime("%Y-%m-%d"), hi_dt.strftime("%Y-%m-%d")
 
-    header_query = """
-        SELECT h.InvoiceID, h.InvoiceNumber, h.InvoiceDate, h.CustomerID, h.BusinessName,
-               h.PoNumber, h.TrackingNo, h.Shipto, h.ShipContact, h.ShipAddress1, h.ShipAddress2,
-               h.ShipCity, h.ShipState, h.ShipZipCode, h.ShipPhoneNo,
-               h.InvoiceSubtotal, h.TotalTaxes, h.ShippingCost, h.InvoiceTotal, h.TotQtyShp
-        FROM Invoices_tbl h
-        WHERE ISNULL(h.Void, 0) = 0 AND h.InvoiceDate >= ? AND h.InvoiceDate < ?
+    header_query = _INVOICE_HEADER_SELECT + """
+        AND h.InvoiceDate >= ? AND h.InvoiceDate < ?
         ORDER BY h.InvoiceDate ASC
     """
 
@@ -84,39 +120,52 @@ def _fetch_invoices_sync(
             invoice_ids = [r[0] for r in headers]
             lines_by_invoice = _fetch_lines(cursor, invoice_ids)
 
-        invoices: List[Dict[str, Any]] = []
-        for r in headers:
-            inv_date = r[2]
-            day = inv_date.strftime("%Y-%m-%d") if inv_date else None
-            invoices.append({
-                "invoice_id": r[0],
-                "invoice_number": str(r[1]).strip() if r[1] is not None else str(r[0]),
-                "invoice_date": inv_date.isoformat() if inv_date else None,
-                "date": day,
-                "in_range": bool(day and date_from <= day <= date_to),
-                "customer_id": r[3],
-                "business_name": (r[4] or "").strip(),
-                "po_number": (r[5] or "").strip(),
-                "tracking_no": (r[6] or "").strip(),
-                "has_tracking": _tracking_present(r[6]),
-                "ship_to": (r[7] or "").strip(),
-                "ship_contact": (r[8] or "").strip(),
-                "ship_address1": (r[9] or "").strip(),
-                "ship_address2": (r[10] or "").strip(),
-                "ship_city": (r[11] or "").strip(),
-                "ship_state": (r[12] or "").strip(),
-                "ship_zip": (r[13] or "").strip(),
-                "ship_phone": (r[14] or "").strip(),
-                "subtotal": float(r[15] or 0),
-                "taxes": float(r[16] or 0),
-                "shipping_cost": float(r[17] or 0),
-                "total": float(r[18] or 0),
-                "tot_qty_shp": float(r[19] or 0),
-                "lines": lines_by_invoice.get(r[0], []),
-            })
+        invoices = [_shape_invoice(r, lines_by_invoice.get(r[0], []), date_from, date_to)
+                    for r in headers]
         return True, None, invoices
     except Exception as e:
         return False, str(e), []
+
+
+def _fetch_invoice_sync(
+    host: str,
+    port: int,
+    database: str,
+    username: str,
+    password: str,
+    invoice_id: int,
+) -> Tuple[bool, Optional[str], Optional[Dict[str, Any]]]:
+    """One non-void invoice by InvoiceID, same shape as the range fetch
+    (`in_range` is always True — there is no range)."""
+    conn_str = get_mssql_connection_string(host, port, database, username, password)
+    try:
+        with pyodbc.connect(conn_str, timeout=30) as conn:
+            cursor = conn.cursor()
+            cursor.execute(_INVOICE_HEADER_SELECT + " AND h.InvoiceID = ?", [invoice_id])
+            r = cursor.fetchone()
+            if not r:
+                return False, f"Invoice {invoice_id} not found (or void)", None
+            lines = _fetch_lines(cursor, [invoice_id]).get(invoice_id, [])
+        return True, None, _shape_invoice(r, lines, "0000-00-00", "9999-12-31")
+    except Exception as e:
+        return False, str(e), None
+
+
+async def fetch_invoice_async(**kwargs) -> Tuple[bool, Optional[str], Optional[Dict[str, Any]]]:
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(_ordsync_executor, lambda: _fetch_invoice_sync(**kwargs))
+
+
+def line_key(barcode: Any, sku: Any, description: Any) -> str:
+    """Comparison key shared by both sides: trimmed barcode, else SKU, else
+    description — so a Shopify line and an invoice line meet on the same key."""
+    b = (barcode or "").strip()
+    if b:
+        return b
+    s = (sku or "").strip()
+    if s:
+        return f"sku:{s.upper()}"
+    return f"desc:{(description or '').strip().lower()}"
 
 
 def _fetch_lines(cursor, invoice_ids: List[int]) -> Dict[int, List[Dict[str, Any]]]:
@@ -135,9 +184,7 @@ def _fetch_lines(cursor, invoice_ids: List[int]) -> Dict[int, List[Dict[str, Any
             WHERE d.InvoiceID IN ({placeholders}) AND ISNULL(d.Void, 0) = 0
         """, chunk)
         for inv_id, upc, sku, desc, qty, unit_price, ext_price in cursor.fetchall():
-            key = upc or (f"sku:{sku.upper()}" if sku else "")
-            if not key:
-                key = f"desc:{(desc or '').strip().lower()}"
+            key = line_key(upc, sku, desc)
             per_inv = agg.setdefault(inv_id, {})
             line = per_inv.setdefault(key, {
                 "key": key, "barcode": upc, "sku": sku,
@@ -530,7 +577,7 @@ def _shopify_lines_by_key(order: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     for li in order.get("lines", []):
         barcode = (li.get("barcode") or "").strip()
         sku = (li.get("sku") or "").strip()
-        key = barcode or (f"sku:{sku.upper()}" if sku else f"desc:{(li.get('title') or '').strip().lower()}")
+        key = line_key(barcode, sku, li.get("title"))
         line = agg.setdefault(key, {
             "key": key, "barcode": barcode, "sku": sku,
             "title": li.get("title") or "", "qty": 0.0,
@@ -711,6 +758,27 @@ def _invoice_only_lines(invoice: Dict[str, Any]) -> List[Dict[str, Any]]:
     } for li in invoice.get("lines", [])]
 
 
+def build_pair_row(orders: List[Dict[str, Any]], invoices: List[Dict[str, Any]],
+                   method: Optional[str], ambiguous: bool,
+                   shared_tracking: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """One matched row: both sides summarized, lines compared, status derived.
+    Used by build_report and by the fix flow to rebuild a row after applying."""
+    merged_o = _merge_orders(orders)
+    merged_i = _merge_invoices(invoices)
+    kinds, diffs = compare_lines(merged_o, merged_i)
+    total_delta = round((merged_o.get("total") or 0) - (merged_i.get("total") or 0), 2)
+    if abs(total_delta) > CENT_TOL:
+        kinds = sorted(set(kinds) | {"total"})
+    return {
+        "status": "matched_ok" if not kinds else "matched_diffs",
+        "match_method": method, "ambiguous": ambiguous,
+        "shared_tracking": shared_tracking,
+        "combined": len(orders) > 1 or len(invoices) > 1,
+        **_order_side(orders), **_invoice_side(invoices),
+        "total_delta": total_delta, "issue_kinds": kinds, "line_diffs": diffs,
+    }
+
+
 def build_report(orders: List[Dict[str, Any]], invoices: List[Dict[str, Any]],
                  date_from: str, date_to: str) -> Dict[str, Any]:
     """Match, compare, and assemble rows + summary. Out-of-range invoices
@@ -730,28 +798,16 @@ def build_report(orders: List[Dict[str, Any]], invoices: List[Dict[str, Any]],
     }
 
     for m in result["matches"]:
-        merged_o = _merge_orders(m["orders"])
-        merged_i = _merge_invoices(m["invoices"])
-        kinds, diffs = compare_lines(merged_o, merged_i)
-        total_delta = round((merged_o.get("total") or 0) - (merged_i.get("total") or 0), 2)
-        if abs(total_delta) > CENT_TOL:
-            kinds = sorted(set(kinds) | {"total"})
-        o_side, i_side = _order_side(m["orders"]), _invoice_side(m["invoices"])
-        status = "matched_ok" if not kinds else "matched_diffs"
-        rows.append({
-            "status": status, "match_method": m["method"], "ambiguous": m["ambiguous"],
-            "shared_tracking": m["shared_tracking"],
-            "combined": len(m["orders"]) > 1 or len(m["invoices"]) > 1,
-            **o_side, **i_side,
-            "total_delta": total_delta, "issue_kinds": kinds, "line_diffs": diffs,
-        })
-        summary[status] += 1
+        row = build_pair_row(m["orders"], m["invoices"], m["method"], m["ambiguous"],
+                             m["shared_tracking"])
+        rows.append(row)
+        summary[row["status"]] += 1
         summary["matched_orders"] += len(m["orders"])
-        if len(m["orders"]) > 1 or len(m["invoices"]) > 1:
+        if row["combined"]:
             summary["combined_groups"] += 1
         if m["ambiguous"]:
             summary["ambiguous"] += 1
-        for k in kinds:
+        for k in row["issue_kinds"]:
             summary["issue_counts"][k] = summary["issue_counts"].get(k, 0) + 1
 
     for order in result["unmatched_orders"]:
@@ -782,6 +838,163 @@ def build_report(orders: List[Dict[str, Any]], invoices: List[Dict[str, Any]],
 
     rows.sort(key=lambda r: (r.get("sh_date") or (r.get("bo_date") or "")[:10] or ""), reverse=True)
     return {"summary": summary, "rows": rows}
+
+
+# ---------------------------------------------------------------------------
+# Fix planning (pure)
+# ---------------------------------------------------------------------------
+#
+# Every order in the report is FULFILLED, and Shopify's order-edit API only
+# touches unfulfilled line items. So the Shopify side is corrected with:
+#   refund  — $0 refund of N units (records only, no restock) to remove units
+#   add     — order edit: add the variant at the invoice price (line discount
+#             when that is below the variant price, temporary variant price
+#             bump when above), commit, fulfill the new fulfillment order,
+#             mark paid
+#   replace — refund every current unit of a line + add it back at the
+#             invoice price (the only way to change a fulfilled line's price)
+#   tracking— push the invoice tracking number onto fulfillments lacking one
+# A key whose fix would be half-possible (e.g. refund OK but the re-add has
+# no variant) is left untouched and reported as unsupported.
+
+UNSUPPORTED_MESSAGES = {
+    "no_barcode": "Line has no barcode — cannot be located in Shopify",
+    "no_variant": "No Shopify variant carries this barcode",
+    "not_refundable": "Not enough refundable units on the Shopify line",
+}
+
+
+def _raw_lines_by_key(order: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
+    by_key: Dict[str, List[Dict[str, Any]]] = {}
+    for li in order.get("lines", []):
+        by_key.setdefault(line_key(li.get("barcode"), li.get("sku"), li.get("title")), []).append(li)
+    return by_key
+
+
+def _refund_action(reason: str, diff: Dict[str, Any], lines: List[Dict[str, Any]],
+                   units: float) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Drain `units` from the key's Shopify lines, last line first, bounded by
+    what Shopify still allows refunding on each."""
+    need = int(round(units))
+    if need <= 0:
+        return None, None
+    picks: List[Dict[str, Any]] = []
+    for li in reversed(lines):
+        if need <= 0:
+            break
+        avail = int(min(li.get("current_quantity") or 0, li.get("refundable_quantity") or 0))
+        take = min(avail, need)
+        if take > 0 and li.get("line_item_id"):
+            picks.append({"line_item_id": li["line_item_id"], "quantity": take})
+            need -= take
+    if need > 0:
+        return None, "not_refundable"
+    return {
+        "kind": "refund", "reason": reason, "key": diff["key"],
+        "barcode": diff.get("barcode"), "description": diff.get("description"),
+        "qty": int(round(units)), "unit_price": diff.get("sh_unit_price"),
+        "line_items": picks,
+    }, None
+
+
+def _add_action(reason: str, diff: Dict[str, Any], qty: float, target_price: float,
+                variants_by_barcode: Dict[str, Dict[str, Any]]
+                ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    barcode = (diff.get("barcode") or "").strip()
+    if not barcode:
+        return None, "no_barcode"
+    variant = variants_by_barcode.get(barcode)
+    if not variant or not variant.get("variant_id"):
+        return None, "no_variant"
+    variant_price = float(variant.get("price") or 0)
+    units = int(round(qty))
+    if units <= 0:
+        return None, None
+    # Below the variant price → a line discount; above it → the variant price
+    # is raised to the invoice price for the duration of the edit, then
+    # restored (a discount can only lower a price).
+    bump = variant_price + CENT_TOL < target_price
+    discount_total = 0.0 if bump else round(max(variant_price - target_price, 0.0) * units, 2)
+    return {
+        "kind": "add", "reason": reason, "key": diff["key"],
+        "barcode": barcode, "description": diff.get("description") or variant.get("product_title"),
+        "qty": units, "unit_price": round(target_price, 2),
+        "variant_id": variant["variant_id"], "product_id": variant.get("product_id"),
+        "variant_price": round(variant_price, 2), "variant_price_raw": variant.get("price_raw"),
+        "variant_title": variant.get("product_title"),
+        "discount_total": discount_total if discount_total > CENT_TOL else 0.0,
+        "bump_price": bump,
+    }, None
+
+
+def plan_order_fix(order: Dict[str, Any], invoice: Dict[str, Any],
+                   variants_by_barcode: Dict[str, Dict[str, Any]],
+                   push_tracking: bool = True) -> Dict[str, Any]:
+    """Actions that bring the Shopify order's lines to the invoice's lines.
+    Pure: `order` is a fetch_order_for_sync dict (line ids present),
+    `variants_by_barcode` comes from find_variants_by_barcode."""
+    _kinds, diffs = compare_lines(order, invoice)
+    raw_by_key = _raw_lines_by_key(order)
+
+    actions: List[Dict[str, Any]] = []
+    unsupported: List[Dict[str, Any]] = []
+    for d in diffs:
+        issues = d.get("issues") or []
+        if not issues:
+            continue
+        lines = raw_by_key.get(d["key"], [])
+        sh_qty = d.get("sh_qty") or 0.0
+        bo_qty = d.get("bo_qty") or 0.0
+        bo_price = d.get("bo_unit_price") or 0.0
+        planned: List[Tuple[Optional[Dict[str, Any]], Optional[str]]] = []
+
+        if "missing_in_backoffice" in issues:
+            planned.append(_refund_action("remove", d, lines, sh_qty))
+        elif "missing_in_shopify" in issues:
+            planned.append(_add_action("add", d, bo_qty, bo_price, variants_by_barcode))
+        elif "price" in issues:
+            planned.append(_refund_action("replace", d, lines, sh_qty))
+            planned.append(_add_action("replace", d, bo_qty, bo_price, variants_by_barcode))
+        elif "qty" in issues:
+            if sh_qty > bo_qty:
+                planned.append(_refund_action("reduce", d, lines, sh_qty - bo_qty))
+            else:
+                planned.append(_add_action("increase", d, bo_qty - sh_qty, bo_price, variants_by_barcode))
+
+        reasons = [r for _a, r in planned if r]
+        if reasons:
+            unsupported.append({
+                "key": d["key"], "barcode": d.get("barcode"), "description": d.get("description"),
+                "issues": issues, "reason": reasons[0],
+                "message": UNSUPPORTED_MESSAGES.get(reasons[0], reasons[0]),
+                "sh_qty": d.get("sh_qty"), "bo_qty": d.get("bo_qty"),
+                "sh_unit_price": d.get("sh_unit_price"), "bo_unit_price": d.get("bo_unit_price"),
+            })
+            continue
+        actions.extend(a for a, _r in planned if a)
+
+    if push_tracking:
+        sh_real, _ = split_routes(order.get("tracking_numbers", []))
+        bo_real, _ = split_routes(split_tracking(invoice.get("tracking_no")))
+        targets = order.get("fulfillment_ids_without_tracking") or []
+        if not sh_real and bo_real and targets:
+            actions.append({"kind": "tracking", "reason": "tracking",
+                            "numbers": bo_real, "fulfillment_ids": targets})
+
+    refunds = [a for a in actions if a["kind"] == "refund"]
+    adds = [a for a in actions if a["kind"] == "add"]
+    return {
+        "actions": actions,
+        "unsupported": unsupported,
+        "summary": {
+            "refunds": len(refunds), "refund_units": sum(a["qty"] for a in refunds),
+            "adds": len(adds), "add_units": sum(a["qty"] for a in adds),
+            "add_amount": round(sum(a["qty"] * a["unit_price"] for a in adds), 2),
+            "tracking": any(a["kind"] == "tracking" for a in actions),
+            "unsupported": len(unsupported),
+        },
+        "noop": not actions,
+    }
 
 
 def shutdown_order_sync_executor():

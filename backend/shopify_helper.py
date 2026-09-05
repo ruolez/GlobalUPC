@@ -1262,11 +1262,14 @@ async def fetch_fulfilled_orders(
 _ORDER_SYNC_PAGE_SIZE = 50
 
 _ORDER_SYNC_LINE_FIELDS = """
+                      id
                       title
                       quantity
                       currentQuantity
+                      refundableQuantity
                       sku
                       variant {
+                        id
                         barcode
                       }
                       originalUnitPriceSet {
@@ -1287,6 +1290,304 @@ def _money(price_set: Optional[Dict[str, Any]]) -> float:
         return float(((price_set or {}).get("shopMoney") or {}).get("amount") or 0)
     except (TypeError, ValueError):
         return 0.0
+
+
+_ORDER_SYNC_ORDER_FIELDS = f"""
+                id
+                name
+                createdAt
+                cancelledAt
+                displayFinancialStatus
+                displayFulfillmentStatus
+                email
+                phone
+                customer {{
+                  displayName
+                  phone
+                }}
+                shippingAddress {{
+                  name
+                  phone
+                  address1
+                  address2
+                  city
+                  provinceCode
+                  zip
+                  countryCodeV2
+                }}
+                totalPriceSet {{ shopMoney {{ amount }} }}
+                subtotalPriceSet {{ shopMoney {{ amount }} }}
+                totalShippingPriceSet {{ shopMoney {{ amount }} }}
+                totalRefundedSet {{ shopMoney {{ amount }} }}
+                fulfillments(first: 50) {{
+                  id
+                  createdAt
+                  displayStatus
+                  trackingInfo {{
+                    company
+                    number
+                    url
+                  }}
+                }}
+                lineItems(first: 100) {{
+                  pageInfo {{
+                    hasNextPage
+                    endCursor
+                  }}
+                  edges {{
+                    node {{
+                      {_ORDER_SYNC_LINE_FIELDS}
+                    }}
+                  }}
+                }}
+"""
+
+_ORDER_SYNC_MORE_ITEMS_GQL = f"""
+query fetchOrderSyncLineItems($id: ID!, $after: String) {{
+  node(id: $id) {{
+    ... on Order {{
+      lineItems(first: 250, after: $after) {{
+        pageInfo {{
+          hasNextPage
+          endCursor
+        }}
+        edges {{
+          node {{
+            {_ORDER_SYNC_LINE_FIELDS}
+          }}
+        }}
+      }}
+    }}
+  }}
+}}
+"""
+
+
+def _shape_sync_line(node: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    # currentQuantity 0 means fully refunded/removed — drop the line;
+    # unit price divides discountedTotal by the ORIGINAL quantity
+    # (the shopify_line_net_revenue rule).
+    quantity = node.get("currentQuantity")
+    if quantity is None:
+        quantity = node.get("quantity", 0) or 0
+    if quantity <= 0:
+        return None
+    ordered = node.get("quantity", 0) or 0
+    discounted_total = _money(node.get("discountedTotalSet"))
+    unit_price = (discounted_total / ordered) if ordered > 0 else 0.0
+    variant = node.get("variant") or {}
+    return {
+        "line_item_id": node.get("id"),
+        "variant_id": variant.get("id"),
+        "barcode": (variant.get("barcode") or "").strip(),
+        "sku": (node.get("sku") or "").strip(),
+        "title": node.get("title") or "",
+        "quantity": ordered,
+        "current_quantity": quantity,
+        "refundable_quantity": node.get("refundableQuantity", quantity),
+        "discounted_total": discounted_total,
+        "unit_price": round(unit_price, 4),
+        "original_unit_price": _money(node.get("originalUnitPriceSet")),
+    }
+
+
+def _sync_order_passes(node: Dict[str, Any]) -> bool:
+    """Month End membership: FULFILLED, not cancelled, not fully refunded."""
+    return (node.get("cancelledAt") is None
+            and node.get("displayFinancialStatus") != "REFUNDED"
+            and node.get("displayFulfillmentStatus") == "FULFILLED")
+
+
+async def _shape_sync_order(node: Dict[str, Any], placed_on: Optional[str], post_gql) -> Dict[str, Any]:
+    """Order dict for the reconciliation; fetches line-item continuation pages
+    through `post_gql` when an order carries more than 100 lines."""
+    ship = node.get("shippingAddress") or {}
+    cust = node.get("customer") or {}
+    fulfillments = node.get("fulfillments") or []
+    tracking_numbers = [
+        (t.get("number") or "").strip()
+        for f in fulfillments
+        for t in (f.get("trackingInfo") or [])
+        if (t.get("number") or "").strip()
+    ]
+
+    lines: List[Dict[str, Any]] = []
+    li_conn = node.get("lineItems") or {}
+    for li_edge in li_conn.get("edges", []):
+        shaped = _shape_sync_line(li_edge.get("node") or {})
+        if shaped:
+            lines.append(shaped)
+    li_page = li_conn.get("pageInfo") or {}
+    li_cursor = li_page.get("endCursor")
+    while li_page.get("hasNextPage") and li_cursor and node.get("id"):
+        more = await post_gql(_ORDER_SYNC_MORE_ITEMS_GQL, {"id": node["id"], "after": li_cursor})
+        more_conn = ((more or {}).get("node") or {}).get("lineItems") or {}
+        for li_edge in more_conn.get("edges", []):
+            shaped = _shape_sync_line(li_edge.get("node") or {})
+            if shaped:
+                lines.append(shaped)
+        li_page = more_conn.get("pageInfo") or {}
+        li_cursor = li_page.get("endCursor")
+
+    return {
+        "id": node.get("id"),
+        "name": node.get("name") or "",
+        "created_at": node.get("createdAt"),
+        "local_date": placed_on,
+        "financial_status": node.get("displayFinancialStatus"),
+        "fulfillment_status": node.get("displayFulfillmentStatus"),
+        "cancelled": node.get("cancelledAt") is not None,
+        "total": _money(node.get("totalPriceSet")),
+        "subtotal": _money(node.get("subtotalPriceSet")),
+        "shipping": _money(node.get("totalShippingPriceSet")),
+        "refunded": _money(node.get("totalRefundedSet")),
+        "email": (node.get("email") or "").strip(),
+        "customer_name": (ship.get("name") or cust.get("displayName") or "").strip(),
+        "phones": [p for p in (ship.get("phone"), node.get("phone"), cust.get("phone")) if p],
+        "address1": (ship.get("address1") or "").strip(),
+        "address2": (ship.get("address2") or "").strip(),
+        "city": (ship.get("city") or "").strip(),
+        "province": (ship.get("provinceCode") or "").strip(),
+        "zip": (ship.get("zip") or "").strip(),
+        "country": (ship.get("countryCodeV2") or "").strip(),
+        "tracking_numbers": tracking_numbers,
+        "fulfillment_ids_without_tracking": [
+            f.get("id") for f in fulfillments
+            if f.get("id") and not any((t.get("number") or "").strip() for t in (f.get("trackingInfo") or []))
+        ],
+        "lines": lines,
+    }
+
+
+async def fetch_order_for_sync(
+    shop_domain: str,
+    admin_api_key: str,
+    order_gid: str,
+    api_version: str = "2025-01",
+    tz: Optional[str] = None,
+    session: Optional[aiohttp.ClientSession] = None,
+) -> tuple[bool, Optional[str], Optional[Dict[str, Any]]]:
+    """
+    One order in the exact shape fetch_orders_for_sync produces (so the fix
+    flow can re-plan and re-compare against fresh data), plus the state the
+    fix needs: `outstanding` balance and `open_fulfillment_order_ids`. Unlike
+    the range fetch it does NOT apply the membership gate — the caller decides
+    what a cancelled/refunded/unfulfilled order means.
+    """
+    query_gql = f"""
+    query fetchOrderForSync($id: ID!) {{
+      order(id: $id) {{
+        {_ORDER_SYNC_ORDER_FIELDS}
+        totalOutstandingSet {{ shopMoney {{ amount }} }}
+        fulfillmentOrders(first: 20) {{
+          nodes {{
+            id
+            status
+            requestStatus
+          }}
+        }}
+      }}
+    }}
+    """
+    try:
+        shop_domain = validate_shop_domain(shop_domain)
+        if tz is None:
+            tz = await fetch_shop_timezone(shop_domain, admin_api_key, api_version)
+
+        async def run(sess: aiohttp.ClientSession):
+            async def post_gql(query: str, variables: Dict[str, Any]) -> Dict[str, Any]:
+                data, _warnings = await _shopify_graphql(
+                    sess, shop_domain, admin_api_key, api_version,
+                    query, variables, op_name="order_fix",
+                )
+                return data
+
+            data = await post_gql(query_gql, {"id": order_gid})
+            node = (data or {}).get("order")
+            if not node:
+                return False, f"Order {order_gid} not found", None
+            order = await _shape_sync_order(node, local_date(node.get("createdAt"), tz), post_gql)
+            order["outstanding"] = _money(node.get("totalOutstandingSet"))
+            order["open_fulfillment_order_ids"] = [
+                fo.get("id") for fo in ((node.get("fulfillmentOrders") or {}).get("nodes") or [])
+                if fo.get("id") and fo.get("status") in ("OPEN", "IN_PROGRESS", "SCHEDULED")
+            ]
+            return True, None, order
+
+        if session is not None:
+            return await run(session)
+        async with aiohttp.ClientSession() as sess:
+            return await run(sess)
+
+    except ShopifyFetchError as e:
+        return False, str(e), None
+    except aiohttp.ClientError as e:
+        return False, f"Network error: {str(e)}", None
+    except Exception as e:
+        return False, f"Unexpected error: {str(e)}", None
+
+
+async def find_variants_by_barcode(
+    session: aiohttp.ClientSession,
+    shop_domain: str,
+    admin_api_key: str,
+    api_version: str,
+    barcodes: List[str],
+) -> Dict[str, Dict[str, Any]]:
+    """
+    barcode -> {variant_id, price, product_title, product_status} for the
+    variant that carries exactly that barcode (ACTIVE products preferred).
+    Barcodes with no variant are absent from the result. Raises
+    ShopifyFetchError on transport failure.
+    """
+    query_gql = """
+    query variantsByBarcode($q: String!) {
+      productVariants(first: 10, query: $q) {
+        nodes {
+          id
+          barcode
+          sku
+          price
+          title
+          product {
+            id
+            title
+            status
+          }
+        }
+      }
+    }
+    """
+    found: Dict[str, Dict[str, Any]] = {}
+    for barcode in barcodes:
+        b = (barcode or "").strip()
+        if not b:
+            continue
+        data, _warnings = await _shopify_graphql(
+            session, shop_domain, admin_api_key, api_version,
+            query_gql, {"q": f"barcode:{b}"}, op_name="order_fix",
+        )
+        nodes = ((data or {}).get("productVariants") or {}).get("nodes") or []
+        exact = [n for n in nodes if (n.get("barcode") or "").strip() == b]
+        exact.sort(key=lambda n: 0 if (n.get("product") or {}).get("status") == "ACTIVE" else 1)
+        if exact:
+            n = exact[0]
+            product = n.get("product") or {}
+            try:
+                price = float(n.get("price") or 0)
+            except (TypeError, ValueError):
+                price = 0.0
+            found[b] = {
+                "variant_id": n.get("id"),
+                "product_id": product.get("id"),
+                "price": price,
+                "price_raw": n.get("price"),
+                "sku": (n.get("sku") or "").strip(),
+                "product_title": product.get("title") or "",
+                "variant_title": n.get("title") or "",
+                "product_status": product.get("status"),
+            }
+    return found
 
 
 async def fetch_orders_for_sync(
@@ -1319,72 +1620,7 @@ async def fetch_orders_for_sync(
             }}
             edges {{
               node {{
-                id
-                name
-                createdAt
-                cancelledAt
-                displayFinancialStatus
-                displayFulfillmentStatus
-                email
-                phone
-                customer {{
-                  displayName
-                  phone
-                }}
-                shippingAddress {{
-                  name
-                  phone
-                  address1
-                  address2
-                  city
-                  provinceCode
-                  zip
-                  countryCodeV2
-                }}
-                totalPriceSet {{ shopMoney {{ amount }} }}
-                subtotalPriceSet {{ shopMoney {{ amount }} }}
-                totalShippingPriceSet {{ shopMoney {{ amount }} }}
-                totalRefundedSet {{ shopMoney {{ amount }} }}
-                fulfillments(first: 50) {{
-                  createdAt
-                  displayStatus
-                  trackingInfo {{
-                    company
-                    number
-                    url
-                  }}
-                }}
-                lineItems(first: 100) {{
-                  pageInfo {{
-                    hasNextPage
-                    endCursor
-                  }}
-                  edges {{
-                    node {{
-                      {_ORDER_SYNC_LINE_FIELDS}
-                    }}
-                  }}
-                }}
-              }}
-            }}
-          }}
-        }}
-        """
-
-        more_items_gql = f"""
-        query fetchOrderSyncLineItems($id: ID!, $after: String) {{
-          node(id: $id) {{
-            ... on Order {{
-              lineItems(first: 250, after: $after) {{
-                pageInfo {{
-                  hasNextPage
-                  endCursor
-                }}
-                edges {{
-                  node {{
-                    {_ORDER_SYNC_LINE_FIELDS}
-                  }}
-                }}
+                {_ORDER_SYNC_ORDER_FIELDS}
               }}
             }}
           }}
@@ -1399,30 +1635,6 @@ async def fetch_orders_for_sync(
             "fulfillment_status:shipped -status:cancelled -financial_status:refunded "
             f"created_at:>={search_lo} created_at:<{search_hi}"
         )
-
-        def shape_line(node: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-            # currentQuantity 0 means fully refunded/removed — drop the line;
-            # unit price divides discountedTotal by the ORIGINAL quantity
-            # (the shopify_line_net_revenue rule).
-            quantity = node.get("currentQuantity")
-            if quantity is None:
-                quantity = node.get("quantity", 0) or 0
-            if quantity <= 0:
-                return None
-            ordered = node.get("quantity", 0) or 0
-            discounted_total = _money(node.get("discountedTotalSet"))
-            unit_price = (discounted_total / ordered) if ordered > 0 else 0.0
-            variant = node.get("variant") or {}
-            return {
-                "barcode": (variant.get("barcode") or "").strip(),
-                "sku": (node.get("sku") or "").strip(),
-                "title": node.get("title") or "",
-                "quantity": ordered,
-                "current_quantity": quantity,
-                "discounted_total": discounted_total,
-                "unit_price": round(unit_price, 4),
-                "original_unit_price": _money(node.get("originalUnitPriceSet")),
-            }
 
         orders: List[Dict[str, Any]] = []
         has_next_page = True
@@ -1448,64 +1660,12 @@ async def fetch_orders_for_sync(
 
                 for edge in orders_conn.get("edges", []):
                     node = edge.get("node") or {}
-                    if node.get("cancelledAt") is not None:
-                        continue
-                    if node.get("displayFinancialStatus") == "REFUNDED":
-                        continue
-                    if node.get("displayFulfillmentStatus") != "FULFILLED":
+                    if not _sync_order_passes(node):
                         continue
                     placed_on = local_date(node.get("createdAt"), tz)
                     if not placed_on or not (start_date <= placed_on <= end_date):
                         continue
-
-                    ship = node.get("shippingAddress") or {}
-                    cust = node.get("customer") or {}
-                    tracking_numbers = [
-                        (t.get("number") or "").strip()
-                        for f in (node.get("fulfillments") or [])
-                        for t in (f.get("trackingInfo") or [])
-                        if (t.get("number") or "").strip()
-                    ]
-
-                    lines: List[Dict[str, Any]] = []
-                    li_conn = node.get("lineItems") or {}
-                    for li_edge in li_conn.get("edges", []):
-                        shaped = shape_line(li_edge.get("node") or {})
-                        if shaped:
-                            lines.append(shaped)
-                    li_page = li_conn.get("pageInfo") or {}
-                    li_cursor = li_page.get("endCursor")
-                    while li_page.get("hasNextPage") and li_cursor and node.get("id"):
-                        more = await post_gql(more_items_gql, {"id": node["id"], "after": li_cursor})
-                        more_conn = ((more or {}).get("node") or {}).get("lineItems") or {}
-                        for li_edge in more_conn.get("edges", []):
-                            shaped = shape_line(li_edge.get("node") or {})
-                            if shaped:
-                                lines.append(shaped)
-                        li_page = more_conn.get("pageInfo") or {}
-                        li_cursor = li_page.get("endCursor")
-
-                    orders.append({
-                        "id": node.get("id"),
-                        "name": node.get("name") or "",
-                        "created_at": node.get("createdAt"),
-                        "local_date": placed_on,
-                        "total": _money(node.get("totalPriceSet")),
-                        "subtotal": _money(node.get("subtotalPriceSet")),
-                        "shipping": _money(node.get("totalShippingPriceSet")),
-                        "refunded": _money(node.get("totalRefundedSet")),
-                        "email": (node.get("email") or "").strip(),
-                        "customer_name": (ship.get("name") or cust.get("displayName") or "").strip(),
-                        "phones": [p for p in (ship.get("phone"), node.get("phone"), cust.get("phone")) if p],
-                        "address1": (ship.get("address1") or "").strip(),
-                        "address2": (ship.get("address2") or "").strip(),
-                        "city": (ship.get("city") or "").strip(),
-                        "province": (ship.get("provinceCode") or "").strip(),
-                        "zip": (ship.get("zip") or "").strip(),
-                        "country": (ship.get("countryCodeV2") or "").strip(),
-                        "tracking_numbers": tracking_numbers,
-                        "lines": lines,
-                    })
+                    orders.append(await _shape_sync_order(node, placed_on, post_gql))
 
         return True, None, orders
 

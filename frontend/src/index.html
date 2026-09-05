@@ -4924,6 +4924,14 @@
               <input type="text" id="osync-search" class="dark-input" placeholder="Search order #, invoice #, customer, tracking…">
               <span id="osync-count" class="osync-count"></span>
               <button type="button" class="btn btn-secondary" id="osync-export" style="font-size: 0.75rem; padding: 0.3rem 0.7rem;">Export</button>
+              <button type="button" class="btn btn-primary" id="osync-fix" style="font-size: 0.75rem; padding: 0.3rem 0.7rem;">Fix in Shopify…</button>
+            </div>
+            <!-- Selection strip, shown while picking orders to fix -->
+            <div id="osync-fixbar" class="osync-fixbar" style="display: none;">
+              <span class="osync-fixbar-text">Select the orders to correct in Shopify — <span id="osync-fix-count">0 selected</span></span>
+              <button type="button" class="btn btn-secondary" id="osync-fix-all" style="font-size: 0.75rem; padding: 0.3rem 0.7rem;">Select all fixable</button>
+              <button type="button" class="btn btn-secondary" id="osync-fix-cancel-sel" style="font-size: 0.75rem; padding: 0.3rem 0.7rem;">Cancel</button>
+              <button type="button" class="btn btn-primary" id="osync-fix-preview" style="font-size: 0.75rem; padding: 0.3rem 0.7rem;" disabled>Preview fix</button>
             </div>
             <div class="table-container">
               <table class="data-table osync-table" id="osync-table">
@@ -6023,6 +6031,32 @@
           </div>
         </div>
         <div class="modal-body" id="osync-modal-body" style="padding: 1rem 1.5rem 1.5rem"></div>
+        <div class="modal-footer osync-modal-footer">
+          <span id="osync-modal-fix-note" class="osync-modal-fix-note"></span>
+          <button type="button" class="btn btn-primary" id="osync-modal-fix">Fix in Shopify…</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Order Sync: fix plan / apply progress (declared after osync-modal so it stacks above it) -->
+    <div id="osync-fix-modal" class="modal">
+      <div class="modal-content osync-fix-modal-content">
+        <div class="modal-header osync-modal-header">
+          <div class="osync-modal-titles">
+            <h3 id="osync-fix-title">Fix in Shopify</h3>
+            <span id="osync-fix-sub" class="osync-modal-pos"></span>
+          </div>
+          <div class="osync-modal-nav">
+            <button type="button" class="modal-close" id="osync-fix-x">&times;</button>
+          </div>
+        </div>
+        <div class="modal-body osync-fix-body" id="osync-fix-body"></div>
+        <div class="modal-footer osync-modal-footer">
+          <span id="osync-fix-policy" class="osync-modal-fix-note"></span>
+          <button type="button" class="btn btn-secondary" id="osync-fix-cancel">Cancel</button>
+          <button type="button" class="btn btn-primary" id="osync-fix-apply" disabled>Apply</button>
+          <button type="button" class="btn btn-primary" id="osync-fix-done" style="display: none;">Done</button>
+        </div>
       </div>
     </div>
 

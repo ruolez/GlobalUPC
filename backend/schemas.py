@@ -1,3 +1,4 @@
+import re
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing import Optional, Literal, List, Dict, Tuple, Any
 from datetime import datetime, date
@@ -2345,3 +2346,102 @@ class OrderSyncResponse(BaseModel):
     rows: List[OrderSyncRow] = []
     warnings: List[str] = []
     timings: Dict[str, float] = {}
+
+
+# --- Fix in Shopify -------------------------------------------------------
+
+class OrderSyncFixTarget(BaseModel):
+    sh_order_id: str                           # gid://shopify/Order/…
+    bo_invoice_id: int
+    bo_invoice_number: Optional[str] = None    # for the staff note only
+    match_method: Optional[str] = None         # echoed onto the rebuilt row
+    ambiguous: bool = False
+
+    @field_validator("sh_order_id")
+    @classmethod
+    def _order_gid(cls, v: str) -> str:
+        if not re.match(r"^gid://shopify/Order/\d+$", v or ""):
+            raise ValueError("sh_order_id must be a Shopify Order GID")
+        return v
+
+
+class OrderSyncFixRequest(BaseModel):
+    targets: List[OrderSyncFixTarget] = Field(..., min_length=1, max_length=200)
+
+
+class OrderSyncFixAction(BaseModel):
+    kind: str                                  # refund | add | tracking
+    reason: str                                # remove | reduce | replace | add | increase | tracking
+    key: Optional[str] = None
+    barcode: Optional[str] = None
+    description: Optional[str] = None
+    qty: Optional[int] = None
+    unit_price: Optional[float] = None
+    line_items: List[Dict[str, Any]] = []      # refund: [{line_item_id, quantity}]
+    variant_id: Optional[str] = None           # add
+    product_id: Optional[str] = None
+    variant_price: Optional[float] = None
+    variant_price_raw: Optional[str] = None
+    variant_title: Optional[str] = None
+    discount_total: Optional[float] = None
+    bump_price: bool = False                   # variant price raised to the invoice price during the edit
+    numbers: List[str] = []                    # tracking
+    fulfillment_ids: List[str] = []
+
+
+class OrderSyncFixUnsupported(BaseModel):
+    key: str
+    barcode: Optional[str] = None
+    description: Optional[str] = None
+    issues: List[str] = []
+    reason: str
+    message: str
+    sh_qty: Optional[float] = None
+    bo_qty: Optional[float] = None
+    sh_unit_price: Optional[float] = None
+    bo_unit_price: Optional[float] = None
+
+
+class OrderSyncFixPlan(BaseModel):
+    sh_order_id: str
+    sh_name: Optional[str] = None
+    bo_invoice_id: int
+    bo_invoice_number: Optional[str] = None
+    fixable: bool = False                      # at least one action and the order is still editable
+    status: str                                # ready | noop | skipped | error
+    message: Optional[str] = None
+    actions: List[OrderSyncFixAction] = []
+    unsupported: List[OrderSyncFixUnsupported] = []
+    summary: Dict[str, Any] = {}
+
+
+class OrderSyncFixPlanResponse(BaseModel):
+    configured: bool = True
+    plans: List[OrderSyncFixPlan] = []
+    scopes_missing: List[str] = []
+    warnings: List[str] = []
+
+
+class OrderSyncFixStep(BaseModel):
+    step: str                                  # refund | edit | fulfill | mark_paid | tracking
+    ok: bool
+    message: Optional[str] = None
+    ids: List[str] = []
+
+
+class OrderSyncFixResult(BaseModel):
+    sh_order_id: str
+    sh_name: Optional[str] = None
+    bo_invoice_id: int
+    bo_invoice_number: Optional[str] = None
+    status: str                                # applied | partial | failed | noop | skipped
+    message: Optional[str] = None
+    steps: List[OrderSyncFixStep] = []
+    unsupported: List[OrderSyncFixUnsupported] = []
+    row: Optional[OrderSyncRow] = None         # rebuilt from fresh data after applying
+
+
+class OrderSyncFixResponse(BaseModel):
+    batch_id: str
+    results: List[OrderSyncFixResult] = []
+    warnings: List[str] = []
