@@ -297,6 +297,8 @@ CREATE TABLE shopify_orders (
     note TEXT,
     total_price NUMERIC(14,2),
     subtotal_price NUMERIC(14,2),
+    current_subtotal_price NUMERIC(14,2),
+    current_total_price NUMERIC(14,2),
     total_discounts NUMERIC(14,2),
     total_refunded NUMERIC(14,2),
     total_shipping NUMERIC(14,2),

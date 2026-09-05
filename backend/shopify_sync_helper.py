@@ -99,6 +99,8 @@ _ORDER_NODE_FIELDS = """
         note
         totalPriceSet { shopMoney { amount currencyCode } }
         subtotalPriceSet { shopMoney { amount } }
+        currentSubtotalPriceSet { shopMoney { amount } }
+        currentTotalPriceSet { shopMoney { amount } }
         totalDiscountsSet { shopMoney { amount } }
         totalRefundedSet { shopMoney { amount } }
         totalShippingPriceSet { shopMoney { amount } }
@@ -306,6 +308,8 @@ def _shape_order(node: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "note": node.get("note"),
         "total_price": _num(total.get("amount")),
         "subtotal_price": _money(node.get("subtotalPriceSet")),
+        "current_subtotal_price": _money(node.get("currentSubtotalPriceSet")) if node.get("currentSubtotalPriceSet") else None,
+        "current_total_price": _money(node.get("currentTotalPriceSet")) if node.get("currentTotalPriceSet") else None,
         "total_discounts": _money(node.get("totalDiscountsSet")),
         "total_refunded": _money(node.get("totalRefundedSet")),
         "total_shipping": _money(node.get("totalShippingPriceSet")),
@@ -369,7 +373,7 @@ _ORDER_COLS = (
     "store_id", "shopify_id", "shopify_gid", "name", "customer_shopify_id",
     "email", "created_at", "processed_at", "shopify_updated_at", "cancelled_at",
     "closed_at", "financial_status", "fulfillment_status", "tags", "note",
-    "total_price", "subtotal_price", "total_discounts", "total_refunded",
+    "total_price", "subtotal_price", "current_subtotal_price", "current_total_price", "total_discounts", "total_refunded",
     "total_shipping", "currency", "ship_province_code", "ship_province", "ship_country_code",
     "ship_zip", "ship_city", "shipping_line_title", "shipping_carrier_identifier",
     "fulfilled_at", "in_transit_at", "delivered_at", "tracking_company",

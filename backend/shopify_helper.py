@@ -1316,7 +1316,9 @@ _ORDER_SYNC_ORDER_FIELDS = f"""
                   countryCodeV2
                 }}
                 totalPriceSet {{ shopMoney {{ amount }} }}
+                currentTotalPriceSet {{ shopMoney {{ amount }} }}
                 subtotalPriceSet {{ shopMoney {{ amount }} }}
+                currentSubtotalPriceSet {{ shopMoney {{ amount }} }}
                 totalShippingPriceSet {{ shopMoney {{ amount }} }}
                 totalRefundedSet {{ shopMoney {{ amount }} }}
                 fulfillments(first: 50) {{
@@ -1437,8 +1439,12 @@ async def _shape_sync_order(node: Dict[str, Any], placed_on: Optional[str], post
         "financial_status": node.get("displayFinancialStatus"),
         "fulfillment_status": node.get("displayFulfillmentStatus"),
         "cancelled": node.get("cancelledAt") is not None,
-        "total": _money(node.get("totalPriceSet")),
-        "subtotal": _money(node.get("subtotalPriceSet")),
+        # "current" = after returns: a $0 line refund (the Order Sync fix)
+        # removes the line's value from currentTotal but not from totalPrice,
+        # and the invoice total is what actually shipped.
+        "total": _money(node.get("currentTotalPriceSet")) if node.get("currentTotalPriceSet") else _money(node.get("totalPriceSet")),
+        "gross_total": _money(node.get("totalPriceSet")),
+        "subtotal": _money(node.get("currentSubtotalPriceSet")) if node.get("currentSubtotalPriceSet") else _money(node.get("subtotalPriceSet")),
         "shipping": _money(node.get("totalShippingPriceSet")),
         "refunded": _money(node.get("totalRefundedSet")),
         "email": (node.get("email") or "").strip(),

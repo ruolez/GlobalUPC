@@ -2221,6 +2221,17 @@ def totals_change(cur: Dict[str, Any], prev: Dict[str, Any]) -> Dict[str, Option
 
 _SHOPIFY_COMPLETED = "o.cancelled_at IS NULL AND o.financial_status IS DISTINCT FROM 'REFUNDED'"
 
+# Order-level Shopify revenue (subtotal before "returns" are subtracted as
+# `refunded`). Shopify's subtotal_price never drops when a line is refunded
+# for $0 — which is how Order Sync removes or reprices a shipped line — but
+# current_subtotal_price does, so cap by it: net revenue becomes
+# MIN(subtotal − refunded, current_subtotal), i.e. money refunds keep their
+# effect and records-only refunds remove the line's value.
+_SHOPIFY_ORDER_REVENUE = (
+    "LEAST(COALESCE(o.subtotal_price, 0), "
+    "COALESCE(o.current_subtotal_price, o.subtotal_price, 0) + COALESCE(o.total_refunded, 0))"
+)
+
 # Line units still on the order after refunds/removals (NULL current_quantity =
 # rows synced before migration 018, ordered qty). discounted_total covers the
 # ORIGINAL quantity, so every line-level revenue figure pro-rates it by the
@@ -2330,7 +2341,7 @@ def _shopify_bucketed_orders_sync(store_id: int, tz: str, date_from: str, date_t
     sql = f"""
         SELECT date_trunc('{bucket}', o.created_at AT TIME ZONE :tz)::date AS b,
                COUNT(*)                                             AS orders,
-               SUM(COALESCE(o.subtotal_price, 0))                   AS revenue,
+               SUM({_SHOPIFY_ORDER_REVENUE})                         AS revenue,
                SUM(COALESCE(o.total_refunded, 0))                   AS refunded,
                SUM(COALESCE(o.total_shipping, 0))                   AS shipping,
                SUM(COALESCE(o.total_discounts, 0))                  AS discounts,
@@ -2401,7 +2412,7 @@ def _shopify_period_orders_sync(store_id: int, tz: str, date_from: str, date_to_
     with engine.connect() as conn:
         placed = conn.execute(text(f"""
             SELECT COUNT(*) FILTER (WHERE o.cancelled_at IS NULL)                                   AS orders,
-                   COALESCE(SUM(o.subtotal_price) FILTER (WHERE o.cancelled_at IS NULL), 0)         AS revenue,
+                   COALESCE(SUM({_SHOPIFY_ORDER_REVENUE}) FILTER (WHERE o.cancelled_at IS NULL), 0) AS revenue,
                    COUNT(*) FILTER (WHERE o.cancelled_at IS NOT NULL)                               AS cancelled,
                    COUNT(*) FILTER (WHERE o.cancelled_at IS NULL
                                       AND o.fulfillment_status IN ({_SHOPIFY_UNFULFILLED}))         AS unfulfilled_from_period,
