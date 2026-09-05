@@ -9046,7 +9046,7 @@ tr.bov-line-void td { opacity: 0.55; text-decoration: line-through; }
   white-space: nowrap;
 }
 
-.osync-table td { vertical-align: middle; }
+.osync-table td { vertical-align: middle; overflow: hidden; text-overflow: ellipsis; }
 .osync-customer {
   max-width: 220px;
   overflow: hidden;
@@ -9089,7 +9089,6 @@ tr.bov-line-void td { opacity: 0.55; text-decoration: line-through; }
 
 .osync-badge,
 .osync-flag,
-.osync-route,
 .osync-issue {
   display: inline-block;
   padding: 0 0.35rem;
@@ -9116,10 +9115,6 @@ tr.bov-line-void td { opacity: 0.55; text-decoration: line-through; }
 .osync-flag {
   color: var(--warning);
   border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border-color));
-}
-.osync-route {
-  color: var(--text-secondary);
-  background: var(--bg-tertiary);
 }
 .osync-issue {
   color: var(--danger);

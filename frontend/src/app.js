@@ -26692,6 +26692,7 @@ const OSYNC_METHOD_LABELS = {
   phone: "Phone",
   address: "Address",
   name_zip: "Name + ZIP",
+  products: "Same basket",
 };
 
 const OSYNC_ISSUE_LABELS = {
@@ -26699,7 +26700,6 @@ const OSYNC_ISSUE_LABELS = {
   qty: "Quantity",
   product: "Product",
   total: "Order total",
-  route: "Route",
   missing_in_backoffice: "Not in BackOffice",
   missing_in_shopify: "Not in Shopify",
 };
@@ -27138,7 +27138,6 @@ function osyncVisibleRows() {
       if (issue === "ambiguous") return r.ambiguous;
       if (issue === "shared") return !!r.shared_tracking;
       if (issue === "combined") return r.combined;
-      if (issue === "route_delivery") return (r.sh_route || []).length || (r.bo_route || []).length;
       return (r.issue_kinds || []).includes(issue);
     });
   }
@@ -27146,7 +27145,7 @@ function osyncVisibleRows() {
     rows = rows.filter((r) =>
       [
         r.sh_name, r.bo_invoice_number, r.sh_customer, r.bo_customer, r.bo_tracking,
-        ...(r.sh_tracking || []), ...(r.sh_route || []).map((x) => `route ${x}`),
+        ...(r.sh_tracking || []),
       ].some((v) => v && String(v).toLowerCase().includes(search)),
     );
   }
@@ -27198,9 +27197,9 @@ function renderOrderSync() {
   const ic = s.issue_counts || {};
   const chips = [
     ["price", "Price", ic.price], ["qty", "Quantity", ic.qty], ["product", "Product", ic.product],
-    ["total", "Order total", ic.total], ["route", "Route mismatch", ic.route],
+    ["total", "Order total", ic.total],
     ["ambiguous", "Ambiguous match", s.ambiguous], ["shared", "Shared tracking", (data.rows || []).filter((r) => r.shared_tracking).length],
-    ["combined", "Combined shipments", s.combined_groups], ["route_delivery", "Route deliveries", s.route_deliveries],
+    ["combined", "Combined shipments", s.combined_groups],
   ].filter(([, , n]) => n);
 
   const summaryEl = document.getElementById("osync-summary");
@@ -27246,8 +27245,8 @@ function renderOrderSync() {
 // width or they all split the table evenly; Customer takes the remainder.
 const OSYNC_COLUMNS = [
   { key: "date", label: "Date", width: 68 },
-  { key: "sh_name", label: "Shopify order", width: 176 },
-  { key: "bo_invoice_number", label: "Invoice", width: 104 },
+  { key: "sh_name", label: "Shopify order", width: 182 },
+  { key: "bo_invoice_number", label: "Invoice", width: 158 },
   { key: "customer", label: "Customer" },
   { key: "match_method", label: "Matched by", width: 104 },
   { key: "issues", label: "Issues", width: 150 },
@@ -27379,10 +27378,9 @@ function osyncRenderDetail() {
         ["Order", r.sh_orders.map((o) => `<strong>${escapeHtml(o.name || "")}</strong>${r.sh_orders.length > 1 ? ` <span class="osync-muted">${osyncMoney(o.total)}</span>` : ""}`).join("<br>")],
         ["Placed", escapeHtml(r.sh_orders.map((o) => o.date).filter(Boolean).join(", "))],
         ["Customer", escapeHtml(r.sh_customer || "—")],
-        ["Tracking", r.sh_tracking && r.sh_tracking.length ? r.sh_tracking.map((t) => `<span class="osync-mono">${escapeHtml(t)}</span>`).join("<br>") : (r.sh_route || []).length ? "" : '<span class="osync-flag">MISSING</span>'],
-        ...((r.sh_route || []).length ? [["Route", `<span class="osync-route">Route ${escapeHtml(r.sh_route.join("/"))}</span>`]] : []),
+        ["Tracking", r.sh_tracking && r.sh_tracking.length ? r.sh_tracking.map((t) => `<span class="osync-mono">${escapeHtml(t)}</span>`).join("<br>") : r.sh_no_tracking ? '<span class="osync-flag">MISSING</span>' : '<span class="osync-muted">—</span>'],
         ["Total", `<strong>${osyncMoney(r.sh_total)}</strong>`],
-      ].filter(([, v]) => v !== "")
+      ]
     : [["", '<span class="osync-muted">No Shopify order matched this invoice.</span>']];
 
   const boItems = r.bo_invoices && r.bo_invoices.length
@@ -27390,10 +27388,9 @@ function osyncRenderDetail() {
         ["Invoice", r.bo_invoices.map((i) => `<strong>${escapeHtml(i.number || "")}</strong>${r.bo_invoices.length > 1 ? ` <span class="osync-muted">${osyncMoney(i.total)}</span>` : ""}`).join("<br>")],
         ["Invoiced", escapeHtml(r.bo_invoices.map((i) => (i.date || "").slice(0, 10)).filter(Boolean).join(", "))],
         ["Customer", escapeHtml(r.bo_customer || "—")],
-        ["Tracking", r.bo_tracking ? r.bo_tracking.split(",").map((t) => `<span class="osync-mono">${escapeHtml(t.trim())}</span>`).join("<br>") : (r.bo_route || []).length ? "" : '<span class="osync-flag">MISSING</span>'],
-        ...((r.bo_route || []).length ? [["Route", `<span class="osync-route">Route ${escapeHtml(r.bo_route.join("/"))}</span>`]] : []),
+        ["Tracking", r.bo_tracking ? r.bo_tracking.split(",").map((t) => `<span class="osync-mono">${escapeHtml(t.trim())}</span>`).join("<br>") : r.bo_no_tracking ? '<span class="osync-flag">MISSING</span>' : '<span class="osync-muted">—</span>'],
         ["Total", `<strong>${osyncMoney(r.bo_total)}</strong>`],
-      ].filter(([, v]) => v !== "")
+      ]
     : [["", '<span class="osync-muted">No BackOffice invoice matched this order.</span>']];
 
   const notes = [];
@@ -27402,7 +27399,6 @@ function osyncRenderDetail() {
     notes.push(`Tracking <span class="osync-mono">${escapeHtml(st.tracking)}</span> is shared by ${st.orders.length} Shopify order(s) (${escapeHtml(st.orders.join(", "))}) and ${st.invoices.length} invoice(s) (${escapeHtml(st.invoices.join(", "))})${r.combined ? " — reconciled together as one shipment." : " — paired by closest total, lines and date."}`);
   }
   if (r.ambiguous) notes.push("Several invoices were plausible for this order; the closest total and date was picked. Verify before acting on the differences.");
-  if ((r.issue_kinds || []).includes("route")) notes.push(`Route numbers disagree: Shopify says ${escapeHtml((r.sh_route || []).join("/"))}, BackOffice says ${escapeHtml((r.bo_route || []).join("/"))}.`);
 
   const diffs = r.line_diffs || [];
   const diffLines = diffs.filter((d) => d.issues.length);
@@ -27462,7 +27458,7 @@ function osyncRenderDetail() {
         `<thead><tr><th>Barcode</th><th>Description</th>` +
         osyncPairTh("Qty") + osyncPairTh("Unit price") + osyncPairTh("Line total") +
         `<th>Issue</th></tr></thead><tbody>${linesHtml}</tbody>` +
-        `<tfoot><tr><td colspan="2">${showDiffOnly ? "Listed lines" : "All lines"}</td>` +
+        `<tfoot><tr><td colspan="2">${showDiffOnly ? `${listed.length} of ${diffs.length} lines shown` : `All ${diffs.length} lines`}</td>` +
         `<td class="osync-num">${osyncQty(sum(listed, "sh_qty"))}</td><td class="osync-num">${osyncQty(sum(listed, "bo_qty"))}</td>` +
         `<td></td><td></td>` +
         `<td class="osync-num">${osyncMoney(sum(listed, "sh_line_total"))}</td><td class="osync-num">${osyncMoney(sum(listed, "bo_line_total"))}</td>` +
@@ -27481,11 +27477,11 @@ function osyncExport() {
   const data = orderSyncState.data || {};
   const fname = `order-sync_${data.date_from || ""}_${data.date_to || ""}`;
   const orderHeader = ["Date", "Status", "Matched by", "Ambiguous", "Shopify order", "Invoice", "Customer",
-    "Tracking", "Route (Shopify)", "Route (BO)", "Shopify total", "BackOffice total", "Delta", "Issues"];
+    "Tracking", "Shopify total", "BackOffice total", "Delta", "Issues"];
   const orderRows = rows.map((r) => [
     osyncRowDate(r), OSYNC_STATUS_LABELS[r.status] || r.status, OSYNC_METHOD_LABELS[r.match_method] || "",
     r.ambiguous ? "yes" : "", r.sh_name || "", r.bo_invoice_number || "", r.sh_customer || r.bo_customer || "",
-    (r.sh_tracking || []).join(", ") || r.bo_tracking || "", (r.sh_route || []).join("/"), (r.bo_route || []).join("/"),
+    (r.sh_tracking || []).join(", ") || r.bo_tracking || "",
     r.sh_total, r.bo_total, r.total_delta, (r.issue_kinds || []).map((k) => OSYNC_ISSUE_LABELS[k] || k).join(", "),
   ]);
   const lineHeader = ["Date", "Shopify order", "Invoice", "Barcode", "SKU", "Description",
@@ -27502,7 +27498,7 @@ function osyncExport() {
   if (typeof XLSX !== "undefined" && XLSX.utils) {
     const wb = XLSX.utils.book_new();
     const ws1 = XLSX.utils.aoa_to_sheet([orderHeader, ...orderRows]);
-    ws1["!cols"] = [10, 14, 11, 9, 14, 12, 26, 22, 8, 8, 13, 13, 10, 28].map((w) => ({ wch: w }));
+    ws1["!cols"] = [10, 14, 11, 9, 14, 12, 26, 22, 13, 13, 10, 28].map((w) => ({ wch: w }));
     XLSX.utils.book_append_sheet(wb, ws1, "Orders");
     const ws2 = XLSX.utils.aoa_to_sheet([lineHeader, ...lineRows]);
     ws2["!cols"] = [10, 14, 12, 16, 12, 34, 10, 12, 12, 14, 12, 14, 18].map((w) => ({ wch: w }));

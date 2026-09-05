@@ -2332,8 +2332,7 @@ class OrderSyncSummary(BaseModel):
     matched_orders: int = 0                    # Shopify orders covered by a matched row
     combined_groups: int = 0
     ambiguous: int = 0
-    route_deliveries: int = 0
-    issue_counts: Dict[str, int] = {}          # product | qty | price | total | route -> matched rows carrying it
+    issue_counts: Dict[str, int] = {}          # product | qty | price | total -> matched rows carrying it
 
 
 class OrderSyncResponse(BaseModel):

@@ -186,14 +186,16 @@ def is_route_code(value: Any) -> bool:
 
 
 def split_routes(values: List[str]) -> Tuple[List[str], List[str]]:
-    """(real tracking numbers, route codes) from a list of raw values."""
+    """(real tracking numbers, route codes) from raw values. Each value is
+    itself split — Shopify packs multi-parcel shipments into one entry
+    ("SP…603/SP…573") the same way BackOffice does ("SP…603, SP…573")."""
     real: List[str] = []
     routes: List[str] = []
     for v in values:
-        n = normalize_tracking(v)
-        if not n:
-            continue
-        (routes if _ROUTE_RE.match(n) else real).append(n)
+        for n in split_tracking(v):
+            target = routes if _ROUTE_RE.match(n) else real
+            if n not in target:
+                target.append(n)
     return real, routes
 
 
@@ -276,6 +278,57 @@ def _pair_score(order: Dict[str, Any], invoice: Dict[str, Any]) -> Tuple[int, fl
     union = len(ok | ik)
     jaccard = (len(ok & ik) / union) if union else 0.0
     return (0 if delta <= CENT_TOL else 1, -round(jaccard, 3), _day_delta(order, invoice), delta)
+
+
+# Identity keys (phone, address, name) are shared by every order a repeat
+# customer places, so a candidate found that way must also look like THIS
+# order's invoice before it is accepted. Calibrated on tracking-confirmed
+# pairs: the invoice is dated the same day as the Shopify order (or the day
+# before, timezone), never later; totals differ by <7% in 99% of pairs.
+IDENTITY_MAX_DAY_LAG = 1
+IDENTITY_TOTAL_TOL_PCT = 0.25
+IDENTITY_TOTAL_TOL_MIN = 50.0
+IDENTITY_MIN_LINE_OVERLAP = 0.3
+
+# Pass 3 — the customer text differs on the two systems ("Ram Ram" vs
+# "TOBACCO HUT - 121") but the order is unmistakable: same day, same basket.
+BASKET_MIN_OVERLAP = 0.8
+BASKET_MIN_OVERLAP_WITH_TOTAL = 0.5
+BASKET_TOTAL_TOL_PCT = 0.01
+
+
+def _line_jaccard(order: Dict[str, Any], invoice: Dict[str, Any]) -> float:
+    ok = _line_keys(order, True)
+    ik = _line_keys(invoice, False)
+    union = len(ok | ik)
+    return (len(ok & ik) / union) if union else 0.0
+
+
+def _identity_plausible(order: Dict[str, Any], invoice: Dict[str, Any]) -> bool:
+    # Invoice must be dated within a day of the order — a repeat customer's
+    # invoice from another week is another order.
+    try:
+        placed = datetime.strptime(order["local_date"], "%Y-%m-%d")
+        invoiced = datetime.strptime(invoice["date"], "%Y-%m-%d")
+        if abs((invoiced - placed).days) > IDENTITY_MAX_DAY_LAG:
+            return False
+    except (KeyError, TypeError, ValueError):
+        pass
+    # Both sides carrying different real tracking numbers = different shipments.
+    o_real = set(split_routes(order.get("tracking_numbers", []))[0])
+    i_real = set(split_routes(split_tracking(invoice["tracking_no"]))[0])
+    if o_real and i_real and not (o_real & i_real):
+        return False
+    # Totals far apart AND barely any products in common = another order.
+    total = order.get("total") or 0
+    delta = abs(total - (invoice.get("total") or 0))
+    if delta > max(IDENTITY_TOTAL_TOL_PCT * total, IDENTITY_TOTAL_TOL_MIN):
+        ok = _line_keys(order, True)
+        ik = _line_keys(invoice, False)
+        union = len(ok | ik)
+        if not union or len(ok & ik) / union < IDENTITY_MIN_LINE_OVERLAP:
+            return False
+    return True
 
 
 def _pick_candidate(order: Dict[str, Any],
@@ -411,7 +464,8 @@ def match_orders(orders: List[Dict[str, Any]],
         candidates: List[Dict[str, Any]] = []
         for k in keys:
             for inv in index.get(k, []):
-                if inv["invoice_id"] not in used_invoices and inv not in candidates:
+                if (inv["invoice_id"] not in used_invoices and inv not in candidates
+                        and _identity_plausible(order, inv)):
                     candidates.append(inv)
         if not candidates:
             return False
@@ -419,7 +473,6 @@ def match_orders(orders: List[Dict[str, Any]],
         emit([order], [inv], method, ambiguous, shared_note.get(("o", order["id"])))
         return True
 
-    unmatched_orders: List[Dict[str, Any]] = []
     for order in orders:
         if order["id"] in used_orders:
             continue
@@ -427,11 +480,38 @@ def match_orders(orders: List[Dict[str, Any]],
             continue
         if take(order, [normalize_address(order.get("address1"), order.get("zip"))], by_addr, "address"):
             continue
-        if take(order, [normalize_name_zip(order.get("customer_name"), order.get("zip"))],
-                by_namezip, "name_zip"):
-            continue
-        unmatched_orders.append(order)
+        take(order, [normalize_name_zip(order.get("customer_name"), order.get("zip"))], by_namezip, "name_zip")
 
+    # Pass 3 — same-day basket fingerprint over whatever is still unmatched,
+    # best overlap first so each invoice goes to its closest order.
+    left_orders = [o for o in orders if o["id"] not in used_orders]
+    by_day: Dict[str, List[Dict[str, Any]]] = {}
+    for inv in invoices:
+        if inv["invoice_id"] not in used_invoices and inv.get("date"):
+            by_day.setdefault(inv["date"], []).append(inv)
+    scored: List[Tuple[float, float, Dict[str, Any], Dict[str, Any]]] = []
+    for order in left_orders:
+        try:
+            placed = datetime.strptime(order["local_date"], "%Y-%m-%d")
+        except (KeyError, TypeError, ValueError):
+            continue
+        for lag in range(-IDENTITY_MAX_DAY_LAG, IDENTITY_MAX_DAY_LAG + 1):
+            day = (placed + timedelta(days=lag)).strftime("%Y-%m-%d")
+            for inv in by_day.get(day, []):
+                if not _identity_plausible(order, inv):
+                    continue
+                j = _line_jaccard(order, inv)
+                total = order.get("total") or 0
+                rel = abs(total - (inv.get("total") or 0)) / total if total else 1.0
+                if j >= BASKET_MIN_OVERLAP or (j >= BASKET_MIN_OVERLAP_WITH_TOTAL and rel <= BASKET_TOTAL_TOL_PCT):
+                    scored.append((-j, rel, order, inv))
+    scored.sort(key=lambda t: (t[0], t[1]))
+    for _, _, order, inv in scored:
+        if order["id"] in used_orders or inv["invoice_id"] in used_invoices:
+            continue
+        emit([order], [inv], "products", False, shared_note.get(("o", order["id"])))
+
+    unmatched_orders = [o for o in orders if o["id"] not in used_orders]
     unmatched_invoices = [inv for inv in invoices if inv["invoice_id"] not in used_invoices]
     return {
         "matches": matches,
@@ -646,8 +726,7 @@ def build_report(orders: List[Dict[str, Any]], invoices: List[Dict[str, Any]],
         "shopify_no_tracking": 0, "backoffice_no_tracking": 0,
         "shopify_total": len(orders), "backoffice_total": 0,
         "matched_orders": 0, "combined_groups": 0, "ambiguous": 0,
-        "route_deliveries": 0,
-        "issue_counts": {"product": 0, "qty": 0, "price": 0, "total": 0, "route": 0},
+        "issue_counts": {"product": 0, "qty": 0, "price": 0, "total": 0},
     }
 
     for m in result["matches"]:
@@ -658,8 +737,6 @@ def build_report(orders: List[Dict[str, Any]], invoices: List[Dict[str, Any]],
         if abs(total_delta) > CENT_TOL:
             kinds = sorted(set(kinds) | {"total"})
         o_side, i_side = _order_side(m["orders"]), _invoice_side(m["invoices"])
-        if o_side["sh_route"] and i_side["bo_route"] and set(o_side["sh_route"]) != set(i_side["bo_route"]):
-            kinds = sorted(set(kinds) | {"route"})
         status = "matched_ok" if not kinds else "matched_diffs"
         rows.append({
             "status": status, "match_method": m["method"], "ambiguous": m["ambiguous"],
@@ -702,7 +779,6 @@ def build_report(orders: List[Dict[str, Any]], invoices: List[Dict[str, Any]],
         1 for o in orders if not o.get("tracking_numbers"))
     summary["backoffice_no_tracking"] = sum(
         1 for inv in invoices if inv["in_range"] and not inv["has_tracking"])
-    summary["route_deliveries"] = sum(1 for r in rows if r.get("sh_route") or r.get("bo_route"))
 
     rows.sort(key=lambda r: (r.get("sh_date") or (r.get("bo_date") or "")[:10] or ""), reverse=True)
     return {"summary": summary, "rows": rows}
