@@ -26663,27 +26663,69 @@ document.addEventListener("click", (e) => {
 // Order Sync — BackOffice ↔ Shopify shipped-order reconciliation
 // ============================================================================
 
+const OSYNC_PREFS_KEY = "order_sync_prefs";
+
 const orderSyncState = {
   initialized: false,
   loading: false,
   data: null,
   config: null,
   allStores: [],
-  filters: { status: "all", search: "" },
+  filters: { status: "all", issue: null, search: "" },
   sort: { key: "date", dir: "desc" },
+  diffOnly: true,
   abort: null,
   progressLog: [],
+  visible: [],          // rows as currently listed (filter + sort applied)
+  modalPos: -1,         // index into `visible` for the open drill-in
 };
 
 const OSYNC_STATUS_LABELS = {
-  matched_ok: "Matched OK",
+  matched_ok: "Matched",
   matched_diffs: "Differences",
-  shopify_unmatched: "Shopify Unmatched",
-  backoffice_unmatched: "BackOffice Unmatched",
+  shopify_unmatched: "Shopify only",
+  backoffice_unmatched: "BackOffice only",
 };
+
+const OSYNC_METHOD_LABELS = {
+  tracking: "Tracking",
+  phone: "Phone",
+  address: "Address",
+  name_zip: "Name + ZIP",
+};
+
+const OSYNC_ISSUE_LABELS = {
+  price: "Price",
+  qty: "Quantity",
+  product: "Product",
+  total: "Order total",
+  route: "Route",
+  missing_in_backoffice: "Not in BackOffice",
+  missing_in_shopify: "Not in Shopify",
+};
+
+function osyncLoadPrefs() {
+  try {
+    const p = JSON.parse(localStorage.getItem(OSYNC_PREFS_KEY) || "{}");
+    if (p.sort && p.sort.key) orderSyncState.sort = p.sort;
+    if (p.status) orderSyncState.filters.status = p.status;
+    if (typeof p.diffOnly === "boolean") orderSyncState.diffOnly = p.diffOnly;
+  } catch (e) { /* ignore bad prefs */ }
+}
+
+function osyncSavePrefs() {
+  try {
+    localStorage.setItem(OSYNC_PREFS_KEY, JSON.stringify({
+      sort: orderSyncState.sort,
+      status: orderSyncState.filters.status,
+      diffOnly: orderSyncState.diffOnly,
+    }));
+  } catch (e) { /* ignore */ }
+}
 
 function loadOrderSyncPage() {
   if (!orderSyncState.initialized) {
+    osyncLoadPrefs();
     initOrderSyncPage();
     orderSyncState.initialized = true;
   }
@@ -26698,7 +26740,25 @@ function initOrderSyncPage() {
   document.getElementById("osync-config-edit-btn")?.addEventListener("click", () => osyncShowConfigSetup(true));
   document.getElementById("osync-config-save-btn")?.addEventListener("click", osyncSaveConfig);
   document.getElementById("osync-config-cancel-btn")?.addEventListener("click", () => osyncApplyConfig());
+  document.getElementById("osync-export")?.addEventListener("click", osyncExport);
+
   document.getElementById("osync-modal-close")?.addEventListener("click", () => closeModal("osync-modal"));
+  document.getElementById("osync-modal-prev")?.addEventListener("click", () => osyncStepDetail(-1));
+  document.getElementById("osync-modal-next")?.addEventListener("click", () => osyncStepDetail(1));
+  document.addEventListener("keydown", (e) => {
+    const modal = document.getElementById("osync-modal");
+    if (!modal || !modal.classList.contains("active")) return;
+    if (e.key === "ArrowLeft") { e.preventDefault(); osyncStepDetail(-1); }
+    else if (e.key === "ArrowRight") { e.preventDefault(); osyncStepDetail(1); }
+    else if (e.key === "Escape") { closeModal("osync-modal"); }
+  });
+  document.getElementById("osync-modal-body")?.addEventListener("click", (e) => {
+    const t = e.target.closest("[data-osync-lines]");
+    if (!t) return;
+    orderSyncState.diffOnly = t.dataset.osyncLines === "diff";
+    osyncSavePrefs();
+    osyncRenderDetail();
+  });
 
   // Date presets + manual edits invalidate a loaded result (Month End rule:
   // the report is heavy, so a changed range never refetches by itself).
@@ -26735,10 +26795,19 @@ function initOrderSyncPage() {
 
   document.getElementById("osync-summary")?.addEventListener("click", (e) => {
     const tile = e.target.closest("[data-osync-status]");
-    if (!tile) return;
-    orderSyncState.filters.status =
-      orderSyncState.filters.status === tile.dataset.osyncStatus ? "all" : tile.dataset.osyncStatus;
-    renderOrderSync();
+    if (tile) {
+      const f = orderSyncState.filters;
+      f.status = f.status === tile.dataset.osyncStatus ? "all" : tile.dataset.osyncStatus;
+      osyncSavePrefs();
+      renderOrderSync();
+      return;
+    }
+    const chip = e.target.closest("[data-osync-issue]");
+    if (chip) {
+      const f = orderSyncState.filters;
+      f.issue = f.issue === chip.dataset.osyncIssue ? null : chip.dataset.osyncIssue;
+      renderOrderSync();
+    }
   });
 
   document.getElementById("osync-thead")?.addEventListener("click", (e) => {
@@ -26750,14 +26819,15 @@ function initOrderSyncPage() {
       s.dir = s.dir === "asc" ? "desc" : "asc";
     } else {
       s.key = key;
-      s.dir = ["sh_total", "bo_total", "total_delta", "date"].includes(key) ? "desc" : "asc";
+      s.dir = ["sh_total", "bo_total", "total_delta", "date", "issues"].includes(key) ? "desc" : "asc";
     }
+    osyncSavePrefs();
     osyncRenderTable();
   });
 
   document.getElementById("osync-tbody")?.addEventListener("click", (e) => {
-    const tr = e.target.closest("tr[data-osync-idx]");
-    if (tr) osyncOpenDetail(parseInt(tr.dataset.osyncIdx, 10));
+    const tr = e.target.closest("tr[data-osync-pos]");
+    if (tr) osyncOpenDetail(parseInt(tr.dataset.osyncPos, 10));
   });
 }
 
@@ -26855,7 +26925,8 @@ function osyncApplyConfig() {
     const label = document.getElementById("osync-config-label");
     if (label) {
       label.innerHTML =
-        `Stores: <strong style="color: var(--text-primary)">${escapeHtml(c.mssql_store_name || "?")}</strong>` +
+        `Comparing <strong style="color: var(--text-primary)">${escapeHtml(c.mssql_store_name || "?")}</strong>` +
+        ` <span style="color: var(--text-tertiary)">(BackOffice, source of truth)</span>` +
         ` <span style="color: var(--text-tertiary)">⇄</span> ` +
         `<strong style="color: var(--text-primary)">${escapeHtml(c.shopify_store_name || "?")}</strong>`;
     }
@@ -26870,9 +26941,8 @@ function osyncApplyConfig() {
 
 function osyncShowConfigSetup(isEdit) {
   const c = orderSyncState.config || {};
-  const mssqlSelect = document.getElementById("osync-mssql-select");
-  const shopifySelect = document.getElementById("osync-shopify-select");
-  const fill = (select, type, selectedId) => {
+  const fill = (id, type, selectedId) => {
+    const select = document.getElementById(id);
     if (!select) return;
     select.innerHTML = '<option value="">Select...</option>';
     orderSyncState.allStores
@@ -26885,8 +26955,8 @@ function osyncShowConfigSetup(isEdit) {
         select.appendChild(opt);
       });
   };
-  fill(mssqlSelect, "mssql", c.mssql_store_id);
-  fill(shopifySelect, "shopify", c.shopify_store_id);
+  fill("osync-mssql-select", "mssql", c.mssql_store_id);
+  fill("osync-shopify-select", "shopify", c.shopify_store_id);
   osyncShow("osync-config-cancel-btn", isEdit && osyncConfigured());
   osyncShow("osync-config-bar", false);
   osyncShow("osync-config-setup", true);
@@ -27005,30 +27075,98 @@ async function fetchOrderSync() {
   }
 }
 
-// ---- Rendering --------------------------------------------------------------
+// ---- Formatting helpers -----------------------------------------------------
 
 function osyncMoney(v) {
+  if (v == null || Number.isNaN(Number(v))) return "—";
+  return Number(v).toLocaleString("en-US", { style: "currency", currency: "USD" });
+}
+
+function osyncSignedMoney(v) {
   if (v == null) return "—";
-  return v.toLocaleString("en-US", { style: "currency", currency: "USD" });
+  const abs = osyncMoney(Math.abs(v));
+  return v > 0 ? `+${abs}` : v < 0 ? `−${abs}` : abs;
+}
+
+function osyncQty(v) {
+  if (v == null) return "—";
+  return Number(v).toLocaleString("en-US", { maximumFractionDigits: 2 });
+}
+
+function osyncFmtDate(ymd) {
+  if (!ymd) return "";
+  const d = new Date(`${ymd.slice(0, 10)}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return ymd;
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
 function osyncRowDate(r) {
   return r.sh_date || (r.bo_date ? r.bo_date.slice(0, 10) : "");
 }
 
+function osyncDash() {
+  return '<span class="osync-muted">—</span>';
+}
+
+function osyncIssueChip(kind, cls = "") {
+  return `<span class="osync-issue ${cls}">${escapeHtml(OSYNC_ISSUE_LABELS[kind] || kind)}</span>`;
+}
+
+function osyncMethodPill(r) {
+  if (!r.match_method) return osyncDash();
+  const strong = r.match_method === "tracking";
+  return (
+    `<span class="osync-method${strong ? " is-strong" : ""}">${escapeHtml(OSYNC_METHOD_LABELS[r.match_method] || r.match_method)}</span>` +
+    (r.ambiguous
+      ? ' <span class="osync-ambig" title="Several invoices were plausible — closest total and date was picked. Worth a look.">?</span>'
+      : "")
+  );
+}
+
+// Tracking cell: real carrier numbers (mono), route numbers as chips, shared badge.
+function osyncTrackingHtml(r) {
+  const parts = [];
+  const tracking = r.sh_tracking && r.sh_tracking.length ? r.sh_tracking : r.bo_tracking ? r.bo_tracking.split(",").map((t) => t.trim()) : [];
+  if (tracking.length) {
+    parts.push(`<span class="osync-mono" title="${escapeHtml(tracking.join(", "))}">${escapeHtml(tracking[0])}</span>`);
+    if (tracking.length > 1) parts.push(`<span class="osync-badge" title="${escapeHtml(tracking.join(", "))}">+${tracking.length - 1}</span>`);
+  }
+  const routes = (r.sh_route || []).length ? r.sh_route : r.bo_route || [];
+  if (routes.length) {
+    parts.push(`<span class="osync-route" title="Delivery route number found in the tracking field">Route ${escapeHtml(routes.join("/"))}</span>`);
+  }
+  if (r.shared_tracking) {
+    const st = r.shared_tracking;
+    const tip = `Tracking ${st.tracking} is shared by orders ${st.orders.join(", ")} and invoices ${st.invoices.join(", ")}`;
+    parts.push(`<span class="osync-badge is-shared" title="${escapeHtml(tip)}">shared ×${st.orders.length}</span>`);
+  }
+  return parts.length ? parts.join(" ") : osyncDash();
+}
+
+// ---- Rendering --------------------------------------------------------------
+
 function osyncVisibleRows() {
-  const { status, search } = orderSyncState.filters;
+  const { status, issue, search } = orderSyncState.filters;
   let rows = (orderSyncState.data?.rows || []).map((r, i) => ({ ...r, _idx: i }));
   if (status === "no_tracking") {
     rows = rows.filter((r) => r.sh_no_tracking || r.bo_no_tracking);
   } else if (status !== "all") {
     rows = rows.filter((r) => r.status === status);
   }
+  if (issue) {
+    rows = rows.filter((r) => {
+      if (issue === "ambiguous") return r.ambiguous;
+      if (issue === "shared") return !!r.shared_tracking;
+      if (issue === "combined") return r.combined;
+      if (issue === "route_delivery") return (r.sh_route || []).length || (r.bo_route || []).length;
+      return (r.issue_kinds || []).includes(issue);
+    });
+  }
   if (search) {
     rows = rows.filter((r) =>
       [
-        r.sh_name, r.bo_invoice_number, r.sh_customer, r.bo_customer,
-        r.bo_tracking, ...(r.sh_tracking || []),
+        r.sh_name, r.bo_invoice_number, r.sh_customer, r.bo_customer, r.bo_tracking,
+        ...(r.sh_tracking || []), ...(r.sh_route || []).map((x) => `route ${x}`),
       ].some((v) => v && String(v).toLowerCase().includes(search)),
     );
   }
@@ -27036,8 +27174,11 @@ function osyncVisibleRows() {
   const val = (r) => {
     if (key === "date") return osyncRowDate(r);
     if (key === "issues") return (r.issue_kinds || []).length;
+    if (key === "customer") return r.sh_customer || r.bo_customer || "";
+    if (key === "tracking") return (r.sh_tracking || [])[0] || r.bo_tracking || (r.sh_route || [])[0] || "";
+    if (key === "status") return ["shopify_unmatched", "backoffice_unmatched", "matched_diffs", "matched_ok"].indexOf(r.status);
     const v = r[key];
-    return v == null ? (typeof v === "number" ? -Infinity : "") : v;
+    return v == null ? (["sh_total", "bo_total", "total_delta"].includes(key) ? -Infinity : "") : v;
   };
   rows.sort((a, b) => {
     const va = val(a);
@@ -27061,34 +27202,58 @@ function renderOrderSync() {
     return;
   }
   const s = data.summary || {};
-  const active = orderSyncState.filters.status;
+  const f = orderSyncState.filters;
+  const matchedRows = (s.matched_ok || 0) + (s.matched_diffs || 0);
+  const pct = s.shopify_total ? Math.round(((s.matched_orders || 0) / s.shopify_total) * 100) : 0;
+  const okPct = matchedRows ? Math.round(((s.matched_ok || 0) / matchedRows) * 100) : 0;
+
   const tiles = [
-    ["all", "Orders", (s.shopify_total || 0), "var(--text-primary)"],
-    ["matched_ok", "Matched OK", s.matched_ok || 0, "var(--success)"],
-    ["matched_diffs", "Differences", s.matched_diffs || 0, "var(--warning)"],
-    ["shopify_unmatched", "Shopify Unmatched", s.shopify_unmatched || 0, "var(--danger)"],
-    ["backoffice_unmatched", "BackOffice Unmatched", s.backoffice_unmatched || 0, "var(--danger)"],
-    ["no_tracking", "Missing Tracking", (s.shopify_no_tracking || 0) + (s.backoffice_no_tracking || 0), "var(--warning)"],
+    ["all", "All orders", s.shopify_total || 0, `${s.backoffice_total || 0} invoices`, ""],
+    ["matched_ok", "Matched", s.matched_ok || 0, `${okPct}% of matched clean`, "is-ok"],
+    ["matched_diffs", "Differences", s.matched_diffs || 0, "line or total mismatch", "is-warn"],
+    ["shopify_unmatched", "Shopify only", s.shopify_unmatched || 0, "no invoice found", "is-bad"],
+    ["backoffice_unmatched", "BackOffice only", s.backoffice_unmatched || 0, "no Shopify order found", "is-bad"],
+    ["no_tracking", "Missing tracking", (s.shopify_no_tracking || 0) + (s.backoffice_no_tracking || 0),
+      `${s.shopify_no_tracking || 0} Shopify · ${s.backoffice_no_tracking || 0} BO`, "is-warn"],
   ];
+  const ic = s.issue_counts || {};
+  const chips = [
+    ["price", "Price", ic.price], ["qty", "Quantity", ic.qty], ["product", "Product", ic.product],
+    ["total", "Order total", ic.total], ["route", "Route mismatch", ic.route],
+    ["ambiguous", "Ambiguous match", s.ambiguous], ["shared", "Shared tracking", (data.rows || []).filter((r) => r.shared_tracking).length],
+    ["combined", "Combined shipments", s.combined_groups], ["route_delivery", "Route deliveries", s.route_deliveries],
+  ].filter(([, , n]) => n);
+
   const summaryEl = document.getElementById("osync-summary");
   if (summaryEl) {
     summaryEl.innerHTML =
+      `<div class="osync-context">` +
+      `<div><strong>${escapeHtml(data.mssql_store_name || "BackOffice")}</strong> <span class="osync-muted">⇄</span> <strong>${escapeHtml(data.shopify_store_name || "Shopify")}</strong>` +
+      ` <span class="osync-muted">·</span> ${escapeHtml(osyncFmtDate(data.date_from))}${data.date_from !== data.date_to ? ` – ${escapeHtml(osyncFmtDate(data.date_to))}` : ""}</div>` +
+      `<div class="osync-context-right"><span class="osync-rate"><strong>${pct}%</strong> of Shopify orders reconciled</span>` +
+      (data.timings?.fetch != null ? `<span class="osync-muted">fetched in ${data.timings.fetch}s</span>` : "") +
+      `</div></div>` +
       `<div class="osync-tiles">` +
       tiles
         .map(
-          ([key, label, count, color]) =>
-            `<button type="button" class="osync-tile${active === key ? " is-active" : ""}" data-osync-status="${key}">` +
-            `<span class="osync-tile-count" style="color: ${color}">${count.toLocaleString()}</span>` +
-            `<span class="osync-tile-label">${escapeHtml(label)}</span></button>`,
+          ([key, label, count, sub, tone]) =>
+            `<button type="button" class="osync-tile ${tone}${f.status === key ? " is-active" : ""}" data-osync-status="${key}">` +
+            `<span class="osync-tile-count">${count.toLocaleString()}</span>` +
+            `<span class="osync-tile-label">${escapeHtml(label)}</span>` +
+            `<span class="osync-tile-sub">${escapeHtml(sub)}</span></button>`,
         )
         .join("") +
       `</div>` +
-      `<div style="font-size: 0.75rem; color: var(--text-tertiary); margin-top: 0.375rem;">` +
-      `${escapeHtml(data.mssql_store_name || "BackOffice")} ⇄ ${escapeHtml(data.shopify_store_name || "Shopify")}` +
-      ` · ${escapeHtml(data.date_from || "")} → ${escapeHtml(data.date_to || "")}` +
-      ` · ${s.backoffice_total || 0} invoice(s)` +
-      (data.timings?.fetch != null ? ` · fetched in ${data.timings.fetch}s` : "") +
-      `</div>`;
+      (chips.length
+        ? `<div class="osync-chips"><span class="osync-chips-label">Filter by</span>` +
+          chips
+            .map(
+              ([key, label, n]) =>
+                `<button type="button" class="sa-chip${f.issue === key ? " active" : ""}" data-osync-issue="${key}">${escapeHtml(label)} <span class="osync-chip-n">${Number(n).toLocaleString()}</span></button>`,
+            )
+            .join("") +
+          `</div>`
+        : "");
   }
   osyncShow("osync-summary", true);
 
@@ -27100,13 +27265,14 @@ function renderOrderSync() {
 
 const OSYNC_COLUMNS = [
   { key: "date", label: "Date" },
-  { key: "sh_name", label: "Shopify Order" },
+  { key: "sh_name", label: "Shopify order" },
   { key: "bo_invoice_number", label: "Invoice" },
-  { key: "sh_customer", label: "Customer" },
-  { key: "match_method", label: "Match" },
+  { key: "customer", label: "Customer" },
+  { key: "tracking", label: "Tracking" },
+  { key: "match_method", label: "Matched by" },
   { key: "issues", label: "Issues" },
-  { key: "sh_total", label: "Shopify Total", num: true },
-  { key: "bo_total", label: "BO Total", num: true },
+  { key: "sh_total", label: "Shopify", num: true },
+  { key: "bo_total", label: "BackOffice", num: true },
   { key: "total_delta", label: "Δ", num: true },
   { key: "status", label: "Status" },
 ];
@@ -27120,112 +27286,231 @@ function osyncRenderTable() {
     "<tr>" +
     OSYNC_COLUMNS.map((c) => {
       const cls = ["qip-sortable"];
-      if (c.num) cls.push("qip-num");
+      if (c.num) cls.push("osync-num");
       if (sortKey === c.key) cls.push(dir === "asc" ? "qip-sort-asc" : "qip-sort-desc");
-      return `<th class="${cls.join(" ")}" data-sort="${c.key}"${c.num ? ' style="text-align: right"' : ""}><span>${escapeHtml(c.label)}</span><span class="qip-sort-arrow"></span></th>`;
+      return `<th class="${cls.join(" ")}" data-sort="${c.key}"><span>${escapeHtml(c.label)}</span><span class="qip-sort-arrow"></span></th>`;
     }).join("") +
     "</tr>";
 
   const rows = osyncVisibleRows();
+  orderSyncState.visible = rows;
   tbody.innerHTML = rows
-    .map((r) => {
-      const statusCls =
-        r.status === "matched_ok" ? "osync-ok" : r.status === "matched_diffs" ? "osync-warn" : "osync-bad";
-      const flags = [];
-      if (r.sh_no_tracking) flags.push("Shopify: no tracking");
-      if (r.bo_no_tracking) flags.push("BackOffice: no tracking");
-      const method = r.match_method
-        ? escapeHtml(r.match_method) + (r.ambiguous ? ' <span class="osync-ambig" title="Multiple candidates — closest date/total picked">?</span>' : "")
-        : '<span style="color: var(--text-tertiary)">—</span>';
-      const issues = (r.issue_kinds || []).map((k) => `<span class="osync-issue">${escapeHtml(k)}</span>`).join(" ");
-      const deltaCls = r.total_delta ? (Math.abs(r.total_delta) > 0.011 ? " osync-delta-bad" : "") : "";
+    .map((r, pos) => {
+      const tone = r.status === "matched_ok" ? "is-ok" : r.status === "matched_diffs" ? "is-warn" : "is-bad";
+      const nameCell = (name, noTrk, combinedN) =>
+        (name ? escapeHtml(name) : osyncDash()) +
+        (combinedN > 1 ? ` <span class="osync-badge is-combined" title="${combinedN} reconciled together as one shipment">×${combinedN}</span>` : "") +
+        (noTrk && name ? ' <span class="osync-flag" title="Nothing in the tracking field">no tracking</span>' : "");
+      const issues = (r.issue_kinds || []).map((k) => osyncIssueChip(k)).join(" ");
+      const delta = r.total_delta;
+      const deltaCls = delta != null && Math.abs(delta) > 0.011 ? " osync-delta-bad" : "";
       return (
-        `<tr data-osync-idx="${r._idx}" class="osync-row">` +
-        `<td>${escapeHtml(osyncRowDate(r))}</td>` +
-        `<td>${r.sh_name ? escapeHtml(r.sh_name) : '<span style="color: var(--text-tertiary)">—</span>'}` +
-        (r.sh_no_tracking ? ' <span class="osync-flag" title="Fulfilled but no tracking number">no trk</span>' : "") +
-        `</td>` +
-        `<td>${r.bo_invoice_number ? escapeHtml(r.bo_invoice_number) : '<span style="color: var(--text-tertiary)">—</span>'}` +
-        (r.bo_no_tracking && r.bo_invoice_number ? ' <span class="osync-flag" title="Invoice has no tracking number">no trk</span>' : "") +
-        `</td>` +
-        `<td>${escapeHtml(r.sh_customer || r.bo_customer || "")}</td>` +
-        `<td>${method}</td>` +
-        `<td>${issues}</td>` +
-        `<td style="text-align: right">${osyncMoney(r.sh_total)}</td>` +
-        `<td style="text-align: right">${osyncMoney(r.bo_total)}</td>` +
-        `<td style="text-align: right" class="${deltaCls}">${r.total_delta != null ? osyncMoney(r.total_delta) : "—"}</td>` +
-        `<td><span class="osync-status ${statusCls}"${flags.length ? ` title="${escapeHtml(flags.join("; "))}"` : ""}>${escapeHtml(OSYNC_STATUS_LABELS[r.status] || r.status)}</span></td>` +
+        `<tr data-osync-pos="${pos}" class="osync-row ${tone}">` +
+        `<td class="osync-nowrap">${escapeHtml(osyncFmtDate(osyncRowDate(r)))}</td>` +
+        `<td class="osync-nowrap">${nameCell(r.sh_name, r.sh_no_tracking, (r.sh_orders || []).length)}</td>` +
+        `<td class="osync-nowrap">${nameCell(r.bo_invoice_number, r.bo_no_tracking, (r.bo_invoices || []).length)}</td>` +
+        `<td class="osync-customer" title="${escapeHtml(r.sh_customer || r.bo_customer || "")}">${escapeHtml(r.sh_customer || r.bo_customer || "")}</td>` +
+        `<td class="osync-nowrap">${osyncTrackingHtml(r)}</td>` +
+        `<td class="osync-nowrap">${osyncMethodPill(r)}</td>` +
+        `<td>${issues || (r.status === "matched_ok" ? '<span class="osync-muted">none</span>' : "")}</td>` +
+        `<td class="osync-num">${osyncMoney(r.sh_total)}</td>` +
+        `<td class="osync-num">${osyncMoney(r.bo_total)}</td>` +
+        `<td class="osync-num${deltaCls}">${delta != null ? osyncSignedMoney(delta) : "—"}</td>` +
+        `<td><span class="osync-status ${tone}">${escapeHtml(OSYNC_STATUS_LABELS[r.status] || r.status)}</span></td>` +
         `</tr>`
       );
     })
     .join("");
 
   const count = document.getElementById("osync-count");
-  if (count) count.textContent = `${rows.length} of ${(orderSyncState.data?.rows || []).length} rows`;
+  if (count) {
+    const total = (orderSyncState.data?.rows || []).length;
+    count.textContent = rows.length === total ? `${total} rows` : `${rows.length} of ${total} rows`;
+  }
 }
 
 // ---- Drill-in modal ---------------------------------------------------------
 
-function osyncOpenDetail(idx) {
-  const r = (orderSyncState.data?.rows || [])[idx];
+function osyncOpenDetail(pos) {
+  orderSyncState.modalPos = pos;
+  osyncRenderDetail();
+  openModal("osync-modal");
+}
+
+function osyncStepDetail(delta) {
+  const next = orderSyncState.modalPos + delta;
+  if (next < 0 || next >= orderSyncState.visible.length) return;
+  orderSyncState.modalPos = next;
+  osyncRenderDetail();
+}
+
+function osyncSideCard(title, tone, items) {
+  return (
+    `<div class="osync-side ${tone}"><div class="osync-side-title">${escapeHtml(title)}</div>` +
+    items
+      .map(([label, html]) => `<div class="osync-side-row"><span class="osync-side-label">${escapeHtml(label)}</span><span class="osync-side-value">${html}</span></div>`)
+      .join("") +
+    `</div>`
+  );
+}
+
+function osyncRenderDetail() {
+  const rows = orderSyncState.visible;
+  const pos = orderSyncState.modalPos;
+  const r = rows[pos];
   if (!r) return;
+
   const title = document.getElementById("osync-modal-title");
-  if (title) {
-    title.textContent = `${r.sh_name || "—"} ⇄ ${r.bo_invoice_number ? "Invoice " + r.bo_invoice_number : "—"}`;
-  }
+  if (title) title.textContent = `${r.sh_name || "No Shopify order"} ⇄ ${r.bo_invoice_number ? `Invoice ${r.bo_invoice_number}` : "No invoice"}`;
+  const posEl = document.getElementById("osync-modal-pos");
+  if (posEl) posEl.textContent = `${pos + 1} / ${rows.length}`;
+  const prev = document.getElementById("osync-modal-prev");
+  const next = document.getElementById("osync-modal-next");
+  if (prev) prev.disabled = pos <= 0;
+  if (next) next.disabled = pos >= rows.length - 1;
+
   const body = document.getElementById("osync-modal-body");
   if (!body) return;
 
-  const headerRows = [
-    ["Status", OSYNC_STATUS_LABELS[r.status] || r.status],
-    ["Match method", r.match_method ? r.match_method + (r.ambiguous ? " (ambiguous)" : "") : "—"],
-    ["Customer", r.sh_customer || r.bo_customer || "—"],
-    ["Shopify date / total", r.sh_date ? `${r.sh_date} · ${osyncMoney(r.sh_total)}` : "—"],
-    ["Invoice date / total", r.bo_date ? `${r.bo_date.slice(0, 10)} · ${osyncMoney(r.bo_total)}` : "—"],
-    ["Total Δ (Shopify − BO)", r.total_delta != null ? osyncMoney(r.total_delta) : "—"],
-    ["Shopify tracking", (r.sh_tracking || []).join(", ") || (r.sh_name ? "MISSING" : "—")],
-    ["BackOffice tracking", r.bo_tracking || (r.bo_invoice_number ? "MISSING" : "—")],
-  ];
-  const linesHtml = (r.line_diffs || [])
+  const shItems = r.sh_orders && r.sh_orders.length
+    ? [
+        ["Order", r.sh_orders.map((o) => `<strong>${escapeHtml(o.name || "")}</strong>${r.sh_orders.length > 1 ? ` <span class="osync-muted">${osyncMoney(o.total)}</span>` : ""}`).join("<br>")],
+        ["Placed", escapeHtml(r.sh_orders.map((o) => o.date).filter(Boolean).join(", "))],
+        ["Customer", escapeHtml(r.sh_customer || "—")],
+        ["Tracking", r.sh_tracking && r.sh_tracking.length ? r.sh_tracking.map((t) => `<span class="osync-mono">${escapeHtml(t)}</span>`).join("<br>") : (r.sh_route || []).length ? "" : '<span class="osync-flag">MISSING</span>'],
+        ...((r.sh_route || []).length ? [["Route", `<span class="osync-route">Route ${escapeHtml(r.sh_route.join("/"))}</span>`]] : []),
+        ["Total", `<strong>${osyncMoney(r.sh_total)}</strong>`],
+      ].filter(([, v]) => v !== "")
+    : [["", '<span class="osync-muted">No Shopify order matched this invoice.</span>']];
+
+  const boItems = r.bo_invoices && r.bo_invoices.length
+    ? [
+        ["Invoice", r.bo_invoices.map((i) => `<strong>${escapeHtml(i.number || "")}</strong>${r.bo_invoices.length > 1 ? ` <span class="osync-muted">${osyncMoney(i.total)}</span>` : ""}`).join("<br>")],
+        ["Invoiced", escapeHtml(r.bo_invoices.map((i) => (i.date || "").slice(0, 10)).filter(Boolean).join(", "))],
+        ["Customer", escapeHtml(r.bo_customer || "—")],
+        ["Tracking", r.bo_tracking ? r.bo_tracking.split(",").map((t) => `<span class="osync-mono">${escapeHtml(t.trim())}</span>`).join("<br>") : (r.bo_route || []).length ? "" : '<span class="osync-flag">MISSING</span>'],
+        ...((r.bo_route || []).length ? [["Route", `<span class="osync-route">Route ${escapeHtml(r.bo_route.join("/"))}</span>`]] : []),
+        ["Total", `<strong>${osyncMoney(r.bo_total)}</strong>`],
+      ].filter(([, v]) => v !== "")
+    : [["", '<span class="osync-muted">No BackOffice invoice matched this order.</span>']];
+
+  const notes = [];
+  if (r.shared_tracking) {
+    const st = r.shared_tracking;
+    notes.push(`Tracking <span class="osync-mono">${escapeHtml(st.tracking)}</span> is shared by ${st.orders.length} Shopify order(s) (${escapeHtml(st.orders.join(", "))}) and ${st.invoices.length} invoice(s) (${escapeHtml(st.invoices.join(", "))})${r.combined ? " — reconciled together as one shipment." : " — paired by closest total, lines and date."}`);
+  }
+  if (r.ambiguous) notes.push("Several invoices were plausible for this order; the closest total and date was picked. Verify before acting on the differences.");
+  if ((r.issue_kinds || []).includes("route")) notes.push(`Route numbers disagree: Shopify says ${escapeHtml((r.sh_route || []).join("/"))}, BackOffice says ${escapeHtml((r.bo_route || []).join("/"))}.`);
+
+  const diffs = r.line_diffs || [];
+  const diffLines = diffs.filter((d) => d.issues.length);
+  const showDiffOnly = orderSyncState.diffOnly && diffLines.length > 0;
+  const listed = showDiffOnly ? diffLines : diffs;
+  const isMatched = r.status === "matched_ok" || r.status === "matched_diffs";
+
+  const sum = (arr, k) => arr.reduce((a, d) => a + (d[k] || 0), 0);
+  const cell = (v, issueKey, fmt, d) => {
+    const bad = d.issues.includes(issueKey);
+    return `<td class="osync-num${bad ? " osync-diff-cell" : ""}">${v == null ? '<span class="osync-muted">—</span>' : fmt(v)}</td>`;
+  };
+  const linesHtml = listed
     .map((d) => {
       const bad = d.issues.length > 0;
-      const cell = (v, issueKey, fmt) => {
-        const cls = d.issues.includes(issueKey) ? ' class="osync-diff-cell"' : "";
-        return `<td style="text-align: right"${cls}>${v == null ? "—" : fmt(v)}</td>`;
-      };
+      const totalIssue = d.issues.includes("qty") || d.issues.includes("price") ? "qty" : "";
       return (
         `<tr${bad ? ' class="osync-line-bad"' : ""}>` +
-        `<td>${escapeHtml(d.barcode || d.sku || d.key)}</td>` +
+        `<td class="osync-mono osync-nowrap">${escapeHtml(d.barcode || d.sku || d.key)}</td>` +
         `<td>${escapeHtml(d.description || "")}</td>` +
-        cell(d.sh_qty, "qty", (v) => v.toLocaleString()) +
-        cell(d.bo_qty, "qty", (v) => v.toLocaleString()) +
-        cell(d.sh_unit_price, "price", osyncMoney) +
-        cell(d.bo_unit_price, "price", osyncMoney) +
-        `<td>${d.issues.map((i) => `<span class="osync-issue">${escapeHtml(i)}</span>`).join(" ")}</td>` +
+        cell(d.sh_qty, "qty", osyncQty, d) +
+        cell(d.bo_qty, "qty", osyncQty, d) +
+        cell(d.sh_unit_price, "price", osyncMoney, d) +
+        cell(d.bo_unit_price, "price", osyncMoney, d) +
+        cell(d.sh_line_total, totalIssue, osyncMoney, d) +
+        cell(d.bo_line_total, totalIssue, osyncMoney, d) +
+        `<td>${d.issues.map((i) => osyncIssueChip(i)).join(" ")}</td>` +
         `</tr>`
       );
     })
     .join("");
 
   body.innerHTML =
-    `<div class="osync-detail-grid">` +
-    headerRows
-      .map(
-        ([label, value]) =>
-          `<div class="osync-detail-label">${escapeHtml(label)}</div>` +
-          `<div class="osync-detail-value">${escapeHtml(String(value))}</div>`,
-      )
-      .join("") +
+    `<div class="osync-sides">` +
+    osyncSideCard("Shopify", "is-shopify", shItems) +
+    `<div class="osync-sides-mid">` +
+    (isMatched
+      ? `<div class="osync-mid-method">${osyncMethodPill(r)}</div>` +
+        `<div class="osync-mid-delta${r.total_delta != null && Math.abs(r.total_delta) > 0.011 ? " is-bad" : " is-ok"}">` +
+        `<span class="osync-mid-delta-label">Δ total</span><span>${r.total_delta != null ? osyncSignedMoney(r.total_delta) : "—"}</span></div>` +
+        `<div class="osync-mid-issues">${(r.issue_kinds || []).length ? r.issue_kinds.map((k) => osyncIssueChip(k)).join(" ") : '<span class="osync-status is-ok">All lines agree</span>'}</div>`
+      : `<div class="osync-status is-bad">${escapeHtml(OSYNC_STATUS_LABELS[r.status] || r.status)}</div>`) +
     `</div>` +
-    (r.line_diffs?.length
-      ? `<div class="table-container" style="margin-top: 1rem;"><table class="data-table">` +
+    osyncSideCard("BackOffice · source of truth", "is-backoffice", boItems) +
+    `</div>` +
+    (notes.length ? `<div class="osync-notes">${notes.map((n) => `<div>${n}</div>`).join("")}</div>` : "") +
+    (diffs.length
+      ? `<div class="osync-lines-head">` +
+        `<span class="osync-lines-title">${isMatched ? "Line comparison" : "Lines"}` +
+        `<span class="osync-muted"> · ${diffs.length} line${diffs.length === 1 ? "" : "s"}${diffLines.length ? `, ${diffLines.length} with differences` : ""}</span></span>` +
+        (diffLines.length && diffLines.length < diffs.length
+          ? `<div class="osync-seg"><button type="button" class="${showDiffOnly ? "active" : ""}" data-osync-lines="diff">Differences (${diffLines.length})</button><button type="button" class="${showDiffOnly ? "" : "active"}" data-osync-lines="all">All lines (${diffs.length})</button></div>`
+          : "") +
+        `</div>` +
+        `<div class="table-container"><table class="data-table osync-lines">` +
         `<thead><tr><th>Barcode / SKU</th><th>Description</th>` +
-        `<th style="text-align: right">Sh Qty</th><th style="text-align: right">BO Qty</th>` +
-        `<th style="text-align: right">Sh Price</th><th style="text-align: right">BO Price</th>` +
-        `<th>Issue</th></tr></thead><tbody>${linesHtml}</tbody></table></div>`
-      : `<p style="color: var(--text-secondary); margin-top: 1rem;">No line details available for this row.</p>`);
+        `<th class="osync-num">Qty Sh</th><th class="osync-num">Qty BO</th>` +
+        `<th class="osync-num">Price Sh</th><th class="osync-num">Price BO</th>` +
+        `<th class="osync-num">Total Sh</th><th class="osync-num">Total BO</th>` +
+        `<th>Issue</th></tr></thead><tbody>${linesHtml}</tbody>` +
+        `<tfoot><tr><td colspan="2">${showDiffOnly ? "Listed lines" : "All lines"}</td>` +
+        `<td class="osync-num">${osyncQty(sum(listed, "sh_qty"))}</td><td class="osync-num">${osyncQty(sum(listed, "bo_qty"))}</td>` +
+        `<td></td><td></td>` +
+        `<td class="osync-num">${osyncMoney(sum(listed, "sh_line_total"))}</td><td class="osync-num">${osyncMoney(sum(listed, "bo_line_total"))}</td>` +
+        `<td></td></tr></tfoot></table></div>`
+      : `<p class="osync-muted" style="margin-top: 1rem;">No line details available for this row.</p>`);
+}
 
-  openModal("osync-modal");
+// ---- Export -----------------------------------------------------------------
+
+function osyncExport() {
+  const rows = orderSyncState.visible.length ? orderSyncState.visible : osyncVisibleRows();
+  if (!rows.length) {
+    showToast("Nothing to export", "info");
+    return;
+  }
+  const data = orderSyncState.data || {};
+  const fname = `order-sync_${data.date_from || ""}_${data.date_to || ""}`;
+  const orderHeader = ["Date", "Status", "Matched by", "Ambiguous", "Shopify order", "Invoice", "Customer",
+    "Tracking", "Route (Shopify)", "Route (BO)", "Shopify total", "BackOffice total", "Delta", "Issues"];
+  const orderRows = rows.map((r) => [
+    osyncRowDate(r), OSYNC_STATUS_LABELS[r.status] || r.status, OSYNC_METHOD_LABELS[r.match_method] || "",
+    r.ambiguous ? "yes" : "", r.sh_name || "", r.bo_invoice_number || "", r.sh_customer || r.bo_customer || "",
+    (r.sh_tracking || []).join(", ") || r.bo_tracking || "", (r.sh_route || []).join("/"), (r.bo_route || []).join("/"),
+    r.sh_total, r.bo_total, r.total_delta, (r.issue_kinds || []).map((k) => OSYNC_ISSUE_LABELS[k] || k).join(", "),
+  ]);
+  const lineHeader = ["Date", "Shopify order", "Invoice", "Barcode", "SKU", "Description",
+    "Qty Shopify", "Qty BackOffice", "Price Shopify", "Price BackOffice", "Total Shopify", "Total BackOffice", "Issue"];
+  const lineRows = [];
+  rows.forEach((r) => {
+    (r.line_diffs || []).filter((d) => d.issues.length).forEach((d) => {
+      lineRows.push([osyncRowDate(r), r.sh_name || "", r.bo_invoice_number || "", d.barcode || "", d.sku || "",
+        d.description || "", d.sh_qty, d.bo_qty, d.sh_unit_price, d.bo_unit_price, d.sh_line_total, d.bo_line_total,
+        d.issues.map((i) => OSYNC_ISSUE_LABELS[i] || i).join(", ")]);
+    });
+  });
+
+  if (typeof XLSX !== "undefined" && XLSX.utils) {
+    const wb = XLSX.utils.book_new();
+    const ws1 = XLSX.utils.aoa_to_sheet([orderHeader, ...orderRows]);
+    ws1["!cols"] = [10, 14, 11, 9, 14, 12, 26, 22, 8, 8, 13, 13, 10, 28].map((w) => ({ wch: w }));
+    XLSX.utils.book_append_sheet(wb, ws1, "Orders");
+    const ws2 = XLSX.utils.aoa_to_sheet([lineHeader, ...lineRows]);
+    ws2["!cols"] = [10, 14, 12, 16, 12, 34, 10, 12, 12, 14, 12, 14, 18].map((w) => ({ wch: w }));
+    XLSX.utils.book_append_sheet(wb, ws2, "Line differences");
+    XLSX.writeFile(wb, `${fname}.xlsx`);
+  } else {
+    bovDownloadSheet({ sheet: "Orders", header: orderHeader, data: orderRows, fname });
+  }
+  showToast(`Exported ${rows.length} rows and ${lineRows.length} line differences`, "success");
 }
 
 // ===== End Order Sync =====

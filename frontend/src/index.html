@@ -4903,8 +4903,10 @@
             </div>
           </div>
 
-          <div id="osync-idle" style="display: none; text-align: center; padding: 3rem 1rem; color: var(--text-secondary);">
-            <p id="osync-idle-title" style="margin-bottom: 1rem;">Pick a date range and run the comparison.</p>
+          <div id="osync-idle" class="osync-idle" style="display: none;">
+            <div class="osync-idle-icon">⇄</div>
+            <p id="osync-idle-title">Pick a date range and run the comparison.</p>
+            <p class="osync-idle-sub">Shopify fulfilled orders are matched to BackOffice invoices by tracking number, then by customer phone, address or name. Matched orders are compared line by line — products, quantities, prices — with BackOffice as the source of truth.</p>
             <button type="button" class="btn btn-primary" id="osync-idle-run">Compare Orders</button>
           </div>
           <div id="osync-loading" style="display: none; padding: 2rem 1rem; color: var(--text-secondary);"></div>
@@ -4913,17 +4915,18 @@
             <p>No shipped orders found on either side for this range.</p>
           </div>
 
-          <!-- Summary tiles double as status filters -->
+          <!-- Results header: context line, status tiles (filters), issue chips -->
           <div id="osync-summary" style="display: none; margin-bottom: 0.75rem;"></div>
 
           <!-- Results table -->
           <div id="osync-table-card" class="card" style="display: none;">
-            <div style="padding: 0.625rem 1rem; display: flex; align-items: center; gap: 0.75rem; border-bottom: 1px solid var(--border-color);">
-              <input type="text" id="osync-search" placeholder="Search order #, invoice #, customer, tracking…" style="max-width: 340px; font-size: 0.8125rem; padding: 0.35rem 0.6rem;">
-              <span id="osync-count" style="font-size: 0.75rem; color: var(--text-tertiary); margin-left: auto;"></span>
+            <div class="osync-toolbar">
+              <input type="text" id="osync-search" placeholder="Search order #, invoice #, customer, tracking…">
+              <span id="osync-count" class="osync-count"></span>
+              <button type="button" class="btn btn-secondary" id="osync-export" style="font-size: 0.75rem; padding: 0.3rem 0.7rem;">Export</button>
             </div>
             <div class="table-container">
-              <table class="data-table" id="osync-table">
+              <table class="data-table osync-table" id="osync-table">
                 <thead id="osync-thead"></thead>
                 <tbody id="osync-tbody"></tbody>
               </table>
@@ -6007,10 +6010,17 @@
     <!-- MSSQL Store Modal -->
     <!-- Order Sync drill-in: side-by-side line comparison -->
     <div id="osync-modal" class="modal">
-      <div class="modal-content" style="max-width: 900px; width: 95%">
-        <div class="modal-header">
-          <h3 id="osync-modal-title">Order comparison</h3>
-          <button type="button" class="modal-close" id="osync-modal-close">&times;</button>
+      <div class="modal-content osync-modal-content">
+        <div class="modal-header osync-modal-header">
+          <div class="osync-modal-titles">
+            <h3 id="osync-modal-title">Order comparison</h3>
+            <span id="osync-modal-pos" class="osync-modal-pos"></span>
+          </div>
+          <div class="osync-modal-nav">
+            <button type="button" class="btn btn-secondary osync-nav-btn" id="osync-modal-prev" title="Previous row (←)">‹</button>
+            <button type="button" class="btn btn-secondary osync-nav-btn" id="osync-modal-next" title="Next row (→)">›</button>
+            <button type="button" class="modal-close" id="osync-modal-close">&times;</button>
+          </div>
         </div>
         <div class="modal-body" id="osync-modal-body" style="padding: 1rem 1.5rem 1.5rem"></div>
       </div>

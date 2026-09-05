@@ -2259,21 +2259,52 @@ class OrderSyncLineDiff(BaseModel):
     bo_qty: Optional[float] = None             # BO QtyShipped (source of truth)
     sh_unit_price: Optional[float] = None      # discounted_total / quantity
     bo_unit_price: Optional[float] = None      # InvoicesDetails UnitPrice (qty-weighted)
+    sh_line_total: Optional[float] = None
+    bo_line_total: Optional[float] = None
     issues: List[str] = []                     # missing_in_backoffice | missing_in_shopify | qty | price
+
+
+class OrderSyncSideOrder(BaseModel):
+    id: Optional[str] = None
+    name: Optional[str] = None
+    date: Optional[str] = None
+    total: Optional[float] = None
+    customer: Optional[str] = None
+    tracking: List[str] = []
+
+
+class OrderSyncSideInvoice(BaseModel):
+    id: Optional[int] = None
+    number: Optional[str] = None
+    date: Optional[str] = None
+    total: Optional[float] = None
+    customer: Optional[str] = None
+    tracking: Optional[str] = None
+
+
+class OrderSyncSharedTracking(BaseModel):
+    tracking: str
+    orders: List[str] = []
+    invoices: List[str] = []
 
 
 class OrderSyncRow(BaseModel):
     status: str                                # matched_ok | matched_diffs | shopify_unmatched | backoffice_unmatched
     match_method: Optional[str] = None         # tracking | phone | address | name_zip
     ambiguous: bool = False
+    combined: bool = False                     # several orders and/or invoices reconciled as one shipment
+    shared_tracking: Optional[OrderSyncSharedTracking] = None
+    sh_orders: List[OrderSyncSideOrder] = []
+    bo_invoices: List[OrderSyncSideInvoice] = []
     # Shopify side (None on backoffice_unmatched rows)
     sh_order_id: Optional[str] = None
     sh_name: Optional[str] = None
     sh_date: Optional[str] = None              # shop-local YYYY-MM-DD
     sh_total: Optional[float] = None
     sh_customer: Optional[str] = None
-    sh_tracking: List[str] = []
-    sh_no_tracking: bool = False               # FULFILLED but no tracking number
+    sh_tracking: List[str] = []                # real carrier numbers (route codes excluded)
+    sh_route: List[str] = []                   # delivery route numbers found in the tracking field
+    sh_no_tracking: bool = False               # FULFILLED but nothing at all in tracking
     # BackOffice side (None on shopify_unmatched rows)
     bo_invoice_id: Optional[int] = None
     bo_invoice_number: Optional[str] = None
@@ -2281,6 +2312,7 @@ class OrderSyncRow(BaseModel):
     bo_total: Optional[float] = None
     bo_customer: Optional[str] = None
     bo_tracking: Optional[str] = None
+    bo_route: List[str] = []
     bo_no_tracking: bool = False               # NULL/''/'0' sentinel
     # Comparison detail (matched rows only)
     total_delta: Optional[float] = None        # sh_total - bo_total
@@ -2297,6 +2329,11 @@ class OrderSyncSummary(BaseModel):
     backoffice_no_tracking: int = 0
     shopify_total: int = 0
     backoffice_total: int = 0
+    matched_orders: int = 0                    # Shopify orders covered by a matched row
+    combined_groups: int = 0
+    ambiguous: int = 0
+    route_deliveries: int = 0
+    issue_counts: Dict[str, int] = {}          # product | qty | price | total | route -> matched rows carrying it
 
 
 class OrderSyncResponse(BaseModel):
