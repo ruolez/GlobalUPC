@@ -27,8 +27,12 @@ _LINES_IN_CHUNK = 1000
 # reported on their own.
 PAD_DAYS = 7
 
-# A cent of float noise must not count as a price difference.
+# Order totals may legitimately differ by a cent when a fractional unit price
+# (10.00 / 3) is rounded on one side, so totals get a cent of slack. Unit
+# prices are compared to half a cent: 27.49 vs 27.50 IS a difference the
+# invoice wants corrected, and float noise is orders of magnitude smaller.
 CENT_TOL = 0.011
+PRICE_TOL = 0.005
 
 
 # ---------------------------------------------------------------------------
@@ -645,7 +649,7 @@ def compare_lines(order: Dict[str, Any],
             if abs(sh_qty - bo_qty) > 1e-6:
                 issues.append("qty")
                 kinds.add("qty")
-            if abs(sh_price - bo_price) > CENT_TOL:
+            if abs(sh_price - bo_price) > PRICE_TOL:
                 issues.append("price")
                 kinds.add("price")
 
@@ -913,7 +917,7 @@ def _add_action(reason: str, diff: Dict[str, Any], qty: float, target_price: flo
     # Below the variant price → a line discount; above it → the variant price
     # is raised to the invoice price for the duration of the edit, then
     # restored (a discount can only lower a price).
-    bump = variant_price + CENT_TOL < target_price
+    bump = variant_price + PRICE_TOL < target_price
     discount_total = 0.0 if bump else round(max(variant_price - target_price, 0.0) * units, 2)
     return {
         "kind": "add", "reason": reason, "key": diff["key"],
@@ -922,7 +926,7 @@ def _add_action(reason: str, diff: Dict[str, Any], qty: float, target_price: flo
         "variant_id": variant["variant_id"], "product_id": variant.get("product_id"),
         "variant_price": round(variant_price, 2), "variant_price_raw": variant.get("price_raw"),
         "variant_title": variant.get("product_title"),
-        "discount_total": discount_total if discount_total > CENT_TOL else 0.0,
+        "discount_total": discount_total if discount_total > PRICE_TOL else 0.0,
         "bump_price": bump,
     }, None
 

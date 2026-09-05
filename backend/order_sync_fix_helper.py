@@ -47,7 +47,7 @@ REQUIRED_SCOPES = [
 
 # A calculated unit price this far from the invoice price is a failed
 # discount, and the edit is abandoned uncommitted.
-_PRICE_TOL = 0.011
+_PRICE_TOL = osync.PRICE_TOL
 
 
 @dataclass
