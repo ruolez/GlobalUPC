@@ -24622,10 +24622,10 @@ function bovRenderQuotationModal(data, row, quotationNumber) {
   }).join("");
   const marginTot = sumPrice > 0 ? ((sumPrice - sumCost) / sumPrice) * 100 : null;
   const basis = {
-    sale: { label: "Stamped cost", note: "Price and cost come from the quotation's own lines in the source store (blank/$0 line cost → its current Items_tbl.UnitCost)." },
-    current: { label: "Current cost", note: "Price is the quoted price from the source store; cost is that store's Items_tbl.UnitCost today." },
-    s2s: { label: "S2S cost", note: "Price is the quoted price from the source store; cost is S2S Items_tbl.UnitCost." },
-  }[bovCostParams().cost_mode] || { label: "Unit cost", note: "" };
+    sale: { label: "Cost", note: "Sale cost: QuotationsDetails_tbl.UnitCost from the source store (blank/$0 → that store's Items_tbl.UnitCost). Price is the quoted price." },
+    current: { label: "Cost", note: "Current cost: the source store's Items_tbl.UnitCost today. Price is the quoted price." },
+    s2s: { label: "Cost", note: "S2S cost: Item Tracker S2S Items_tbl.UnitCost by UPC. Price is the quoted price." },
+  }[bovCostParams().cost_mode] || { label: "Cost", note: "" };
   body.innerHTML =
     `<div class="bov-kv-grid">${kv}</div>` +
     (products.length

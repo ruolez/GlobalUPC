@@ -5729,10 +5729,19 @@ async def _enrich_products_stamped(db: Session, payload: Dict[str, Any], cost_mo
                  or "").strip().lower()
     conn = None
     if source_db:
+        # SourceDB matches the store's database name on some installs and its
+        # display name on others (e.g. "5 stars" for database "primewholesale").
+        by_name = None
         for st in db.query(Store).filter(Store.store_type == StoreType.mssql, Store.is_active == True).all():
-            if st.mssql_connection and (st.mssql_connection.database_name or "").strip().lower() == source_db:
+            if not st.mssql_connection:
+                continue
+            if (st.mssql_connection.database_name or "").strip().lower() == source_db:
                 conn = st.mssql_connection
                 break
+            if by_name is None and (st.name or "").strip().lower() == source_db:
+                by_name = st.mssql_connection
+        if conn is None:
+            conn = by_name
     qn = header.get("quotation_number") or products[0].get("quotation_number")
     stamped: Dict[str, Dict[str, float]] = {}
     if conn is not None and qn:
