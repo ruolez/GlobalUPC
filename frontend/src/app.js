@@ -1798,6 +1798,12 @@ function setTheme(themeName) {
 
   // Save to localStorage
   localStorage.setItem("selectedTheme", themeName);
+  // Remember the page being viewed so a reload triggered by the theme change
+  // lands back on it instead of the default landing page.
+  try {
+    const active = document.querySelector(".nav-item.active[data-page]");
+    if (active) sessionStorage.setItem("resume_page", JSON.stringify({ page: active.dataset.page, at: Date.now() }));
+  } catch (e) { /* storage blocked */ }
 
   // Update active state
   document.querySelectorAll(".theme-option").forEach((option) => {
@@ -5428,11 +5434,12 @@ function selectDescriptionResult(upc, description) {
   }
 }
 
+const HTML_ESCAPE_MAP = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+
+// Safe for text nodes AND quoted attribute values (title="…", data-*="…").
 function escapeHtml(text) {
-  if (!text) return "";
-  const div = document.createElement("div");
-  div.textContent = text;
-  return div.innerHTML;
+  if (text == null || text === false || text === "") return "";
+  return String(text).replace(/[&<>"']/g, (c) => HTML_ESCAPE_MAP[c]);
 }
 
 function getStoreBaseName(storeName) {
@@ -11137,8 +11144,15 @@ document.addEventListener("DOMContentLoaded", () => {
   if (trackerUpc) {
     navigateToItemTrackerWithUpc(trackerUpc, trackerDays ? parseInt(trackerDays, 10) : null, trackerFrom, trackerTo);
   } else {
-    const defaultPage = getDefaultLandingPage();
-    navigateTo(defaultPage);
+    let resume = null;
+    try {
+      const raw = sessionStorage.getItem("resume_page");
+      sessionStorage.removeItem("resume_page");
+      const r = raw ? JSON.parse(raw) : null;
+      // Only honour a very recent hand-off (a reload right after a theme change).
+      if (r && typeof r.page === "string" && Date.now() - (r.at || 0) < 30000 && document.getElementById(`${r.page}-page`)) resume = r.page;
+    } catch (e) { /* ignore */ }
+    navigateTo(resume || getDefaultLandingPage());
   }
 });
 
@@ -18961,11 +18975,12 @@ async function sacrUpdateDataSourceNote() {
 
 const BOV_AUTOREFRESH_MS = 60000;
 const BOV_LIVE_WIDGETS = ["summary", "quotations", "invoicesPeriod", "invoicesOpen", "purchasesIncoming", "shopifyOrders", "shopifyOrders_list", "alerts", "bankBalances"];
-const BOV_SHOPIFY_WIDGETS = ["summary", "top", "shopifyOrders", "shopifyOrders_list", "alerts"];
+// Widgets that read the Shopify mirror (refetched after a catch-up sync lands).
+const BOV_SHOPIFY_WIDGETS = ["shopifyOrders", "shopifyOrders_list"];
 // Rule keys with the form fields they carry (mirror of BOV_DEFAULT_ALERT_RULES).
 const BOV_ALERT_RULE_FIELDS = {
-  unshipped_cutoff: ["cutoff"],
-  open_invoice_age: ["days"],
+  unshipped_cutoff: ["cutoff", "lookback_days"],
+  open_invoice_age: ["days", "lookback_days"],
   quotation_stuck: ["days"],
   po_overdue: ["days"],
   shopify_on_hold: [],
@@ -18976,7 +18991,7 @@ const BOV_ALERT_RULE_FIELDS = {
 };
 const BOV_SHOPIFY_AUTO_REFRESH_MS = 15 * 60 * 1000;
 const BOV_PREFS_KEY = "bov_prefs";
-const BOV_ROWS_COLLAPSED = 12;
+const BOV_ROWS_PAGE = 100;   // Products tab: rows rendered per "Show more"
 const BOV_LIST_LIMIT = 500;
 const BOV_PRESETS = [
   { key: "today", label: "Today" },
@@ -19025,7 +19040,7 @@ const bovState = {
   bucket: "auto",
   splitSources: false,
   storeFilter: [],      // store ids; [] = all configured sources
-  chartsOpen: false,    // revenue/margin charts collapsed by default
+  chartsOpen: true,     // revenue/margin charts open by default (pref remembered)
   costMode: "sale",     // "sale" (invoice line cost) | "current" (store Items_tbl.UnitCost) | "s2s" (S2S UnitCost everywhere)
   estShipping: false,   // shared Est. shipping toggle (Overview profit + Month End rows)
   collapsedCards: {},   // cardId -> true when the user collapsed it
@@ -19042,7 +19057,6 @@ const bovState = {
   tabs: { invoices: "all", purchases: "incoming", top: "customer", shopifyorders: "on_hold" },
   agingFilter: null,
   openInRange: true,    // open invoices limited to those invoiced in the selected period
-  expanded: { quotations: false, invoices: false, purchases: false },
   sort: {
     quotations: { key: "quotation_total", dir: "desc" },
     products: { key: "revenue", dir: "desc" },
@@ -19075,6 +19089,10 @@ const bovState = {
     bankBalances: bovEmptyWidget(),
   },
   seq: 0,
+  today: null,             // "YYYY-MM-DD" in the configured timezone (GET /config)
+  inflight: 0,             // non-silent bovFetchAll runs in progress (drives the spinner)
+  modalSeq: { quotation: 0, invoice: 0, po: 0, shopifyOrder: 0, product: 0 },  // per-kind request tokens
+  productsShown: 0,        // Products tab paging: rows rendered (0 = default page)
   shopifyRefreshing: false,
   qbRefreshing: false,     // manual QuickBooks balance refresh in flight
   lastShopifyRefreshAt: 0,
@@ -19106,7 +19124,9 @@ function bovInt(v) {
 
 function bovMoney(v) {
   if (v == null || v === "") return "—";
-  return formatCurrency(bovNum(v));
+  const n = typeof v === "number" ? v : parseFloat(v);
+  if (!isFinite(n)) return "—";
+  return formatCurrency(n);
 }
 
 // "$12.3K" for tiles and axes; cents only matter in tables and modals.
@@ -19138,12 +19158,23 @@ function bovPct(v, digits = 1) {
 // as UTC midnight and lands on the previous day west of Greenwich.
 function bovParseDate(str) {
   if (!str) return null;
-  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(str));
-  if (!m) {
-    const d = new Date(str);
+  const s = String(str);
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+  // A timestamp that carries an offset ("…T01:30:00Z", "…+00:00") is an
+  // instant: let Date convert it to the viewer's local day. Bare dates and
+  // naive timestamps (MSSQL, shop-local created_local) are taken as-is.
+  if (!m || /^\d{4}-\d{2}-\d{2}T.*(Z|[+-]\d{2}:?\d{2})$/.test(s)) {
+    const d = new Date(s);
     return isNaN(d.getTime()) ? null : d;
   }
   return new Date(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10));
+}
+
+// Shopify rows carry `created_local` ("YYYY-MM-DD HH:MM" in the shop's
+// timezone) next to the UTC `created_at`; prefer it so the lists agree with
+// Month End, which is dated shop-locally.
+function bovShopifyPlaced(r) {
+  return (r && (r.created_local || r.created_at)) || null;
 }
 
 function bovDateShort(str) {
@@ -19172,6 +19203,13 @@ function bovDateMed(str) {
   const d = bovParseDate(str);
   if (!d) return "—";
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
+// Wall-clock "H:MM AM" for a timestamp (ms) — status notes and stale markers.
+function bovClockHm(ts) {
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return "";
+  return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 }
 
 function bovDateTime(str) {
@@ -19208,7 +19246,18 @@ function bovDaysBetween(from, to) {
 // Period / presets
 // ---------------------------------------------------------------------------
 
-function bovPresetToDates(preset, customFrom, customTo, now = new Date()) {
+// "Today" in the configured business timezone (GET /config → today), falling
+// back to the browser clock until the config has loaded.
+function bovTodayStr() {
+  const t = bovState.today;
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(t || "")) ? t : saLocalDateStr(new Date());
+}
+
+function bovNow() {
+  return bovParseDate(bovTodayStr()) || new Date();
+}
+
+function bovPresetToDates(preset, customFrom, customTo, now = bovNow()) {
   const T = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const shift = (d, days) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + days);
   const monday = (d) => shift(d, -((d.getDay() + 6) % 7));
@@ -19272,8 +19321,11 @@ function bovLoadPrefs() {
     }
     if (!raw) return;
     if (p && BOV_PRESETS.some((x) => x.key === p.preset)) bovState.preset = p.preset;
-    if (p && typeof p.customFrom === "string") bovState.customFrom = p.customFrom;
-    if (p && typeof p.customTo === "string") bovState.customTo = p.customTo;
+    const isoDay = (v) => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v) && !!bovParseDate(v);
+    if (p && isoDay(p.customFrom)) bovState.customFrom = p.customFrom;
+    if (p && isoDay(p.customTo)) bovState.customTo = p.customTo;
+    if (bovState.customFrom && bovState.customTo && bovState.customFrom > bovState.customTo) { bovState.customFrom = null; bovState.customTo = null; }
+    if (bovState.preset === "custom" && (!bovState.customFrom || !bovState.customTo)) bovState.preset = "today";
     if (p && ["auto", "day", "week", "month"].includes(p.bucket)) bovState.bucket = p.bucket;
     if (p && typeof p.split === "boolean") bovState.splitSources = p.split;
     if (p && Array.isArray(p.storeIds)) bovState.storeFilter = p.storeIds.map(Number).filter((n) => !isNaN(n));
@@ -19450,6 +19502,7 @@ function bovRenderDateTrigger() {
 }
 
 const BOV_UNLOCK_KEY = "bov_unlocked";
+const BOV_TOKEN_KEY = "bov_token";
 
 // Limited views unlocked by the secondary passwords. A view lists the tabs it
 // exposes, the topbar store types it may query and the widgets it fetches;
@@ -19464,8 +19517,15 @@ const BOV_VIEWS = {
   },
 };
 
+// Signed token issued by /unlock; every /business-overview/* request carries it
+// as X-BOV-Token. A role without a token (legacy sessionStorage) counts as locked.
+function bovToken() {
+  try { return sessionStorage.getItem(BOV_TOKEN_KEY) || null; } catch (e) { return null; }
+}
+
 // Role kept in sessionStorage: "full" | "shopify"; legacy "1" = full.
 function bovRole() {
+  if (!bovToken()) return null;
   try {
     const v = sessionStorage.getItem(BOV_UNLOCK_KEY);
     if (v === "1" || v === "full") return "full";
@@ -19482,9 +19542,24 @@ function bovIsUnlocked() {
 }
 
 function bovLock() {
-  try { sessionStorage.removeItem(BOV_UNLOCK_KEY); } catch (e) { /* ignore */ }
+  try {
+    sessionStorage.removeItem(BOV_UNLOCK_KEY);
+    sessionStorage.removeItem(BOV_TOKEN_KEY);
+  } catch (e) { /* ignore */ }
   stopBovAutoRefresh();
-  bovShowLock(true);
+  if (isBovVisible()) bovShowLock(true);
+}
+
+// fetch() for the Business Overview API: attaches the unlock token and turns a
+// 401 into the lock screen (the session token expired or was revoked).
+function bovFetch(url, options = {}) {
+  const headers = { ...(options.headers || {}) };
+  const tok = bovToken();
+  if (tok) headers["X-BOV-Token"] = tok;
+  return fetch(url, { ...options, headers }).then((resp) => {
+    if (resp.status === 401 && bovIsUnlocked()) bovLock();
+    return resp;
+  });
 }
 
 // Chrome pass for the active view: hides the tabs, toggles and settings entry
@@ -19546,11 +19621,18 @@ function bovBindLockOnce() {
         return;
       }
       let role = "full";
+      let token = null;
       try {
         const body = await resp.json();
         if (body && BOV_VIEWS[body.role]) role = body.role;
+        if (body && typeof body.token === "string" && body.token) token = body.token;
       } catch (e2) { /* plain ok → full */ }
-      try { sessionStorage.setItem(BOV_UNLOCK_KEY, role); } catch (e2) { /* ignore */ }
+      // Until the backend issues tokens, keep the session alive with a local
+      // placeholder (the header is ignored server-side in that case).
+      try {
+        sessionStorage.setItem(BOV_UNLOCK_KEY, role);
+        sessionStorage.setItem(BOV_TOKEN_KEY, token || `local:${Date.now()}`);
+      } catch (e2) { /* ignore */ }
       if (input) input.value = "";
       bovShowLock(false);
       loadBusinessOverviewPage();
@@ -19577,6 +19659,7 @@ async function loadBusinessOverviewPage() {
   bovApplyView();
   bovSyncCostToggle();
   bovSyncShipToggle();
+  bovRenderCostCaption();
   BOV_COLLAPSIBLE_CARDS.forEach(bovApplyCollapsed);
   const home = view ? view.home : "overview";   // always land on the home tab
   bovState.section = home;
@@ -19695,12 +19778,24 @@ function bovSyncCostToggle() {
   });
 }
 
+// One-line description of the active cost basis (and shipping estimate) under
+// the KPI strip — the selector's tooltips alone are invisible on touch.
+function bovRenderCostCaption() {
+  const el = document.getElementById("bov-cost-caption");
+  if (!el) return;
+  const bits = [bovCostBasisLabel()];
+  if (bovState.estShipping) bits.push("Est. shipping on — cost-unknown Shopify orders carry an estimated shipping cost");
+  el.textContent = bits.join(" · ");
+  el.hidden = false;
+}
+
 function bovSetCostMode(mode) {
   const next = BOV_COST_MODES.includes(mode) ? mode : "sale";
   if (bovState.costMode === next) return;
   bovState.costMode = next;
   bovSavePrefs();
   bovSyncCostToggle();
+  bovRenderCostCaption();
   bovState.modalCache.invoice.clear();
   bovState.modalCache.product.clear();
   bovFetchAll({ only: BOV_COST_WIDGETS });
@@ -19716,6 +19811,10 @@ function bovInvalidateMonthEnd() {
   monthEndState.loading = false;
   const hadData = !!monthEndState.data;
   monthEndState.data = null;
+  // Selection mode belongs to the discarded rows.
+  const sel = bovExportSel("monthEnd");
+  sel.on = false; sel.keys.clear(); sel.anchor = null;
+  monthEndState.viewedKey = null;
   meShowIdle(hadData ? "changed" : null);
 }
 
@@ -19731,6 +19830,7 @@ function bovSetEstShipping(on) {
   bovState.estShipping = next;
   bovSavePrefs();
   bovSyncShipToggle();
+  bovRenderCostCaption();
   bovFetchAll({ only: BOV_SHIP_WIDGETS });
   if (monthEndState.data) renderMonthEnd();
 }
@@ -19794,6 +19894,7 @@ function bovToggleStoreChip(value) {
   bovRenderStoreChips();
   bovRenderRangeLabel();
   bovFetchAll();
+  bovInvalidateDependents({ monthEnd: true });   // Inventory ignores the store filter
 }
 
 const BOV_COLLAPSIBLE_CARDS = ["bov-top-card", "bov-shopify-card"];   // list sections are always open
@@ -19846,11 +19947,14 @@ function bovBindOnce() {
   // Keep --bov-topbar-h in sync so sticky table headers pin below the topbar
   // (its height changes when the toolbar wraps).
   const sticky = page.querySelector(".bov-sticky");
-  if (sticky && "ResizeObserver" in window) {
-    new ResizeObserver(() => {
-      page.style.setProperty("--bov-topbar-h", `${sticky.offsetHeight}px`);
-    }).observe(sticky);
-  }
+  const syncTopbarH = () => {
+    if (!sticky) return;
+    const sticks = getComputedStyle(sticky).position === "sticky";
+    page.style.setProperty("--bov-topbar-h", sticks ? `${sticky.offsetHeight}px` : "0px");
+  };
+  if (sticky && "ResizeObserver" in window) new ResizeObserver(syncTopbarH).observe(sticky);
+  window.addEventListener("resize", syncTopbarH);
+  syncTopbarH();
   page.addEventListener("click", (e) => {
     const t = e.target.closest("[data-bov-collapse]");
     if (!t) return;
@@ -19985,9 +20089,9 @@ function bovBindOnce() {
     bovSetEstShipping(e.target.checked);
   });
 
-  // Refresh
+  // Refresh — a plain refetch of every widget; Month End / Inventory keep their result.
   document.getElementById("bov-refresh-btn")?.addEventListener("click", () => {
-    if (bovState.refreshing) return;
+    if (bovState.inflight > 0) return;
     bovState.modalCache.quotation.clear();
     bovState.modalCache.invoice.clear();
     bovState.modalCache.po.clear();
@@ -20110,13 +20214,6 @@ function bovBindOnce() {
       bovToggleSort(sortTh.dataset.bovWidget, sortTh.dataset.bovSort);
       return;
     }
-    const showAll = e.target.closest("[data-bov-show-all]");
-    if (showAll) {
-      const key = showAll.dataset.bovShowAll;
-      bovState.expanded[key] = !bovState.expanded[key];
-      bovRenderCard(key);
-      return;
-    }
     const aging = e.target.closest("[data-bov-aging]");
     if (aging) {
       const val = aging.dataset.bovAging;
@@ -20148,7 +20245,7 @@ function bovBindOnce() {
   document.addEventListener("click", (e) => {
     const scope = e.target.closest && e.target.closest("#business-overview-page, .bov-modal");
     if (!scope) return;
-    if (e.target.closest("[data-bov-action], [data-bov-tab], [data-bov-show-all], [data-bov-aging], [data-bov-retry], [data-bov-series], [data-bov-close]")) return;
+    if (e.target.closest("[data-bov-action], [data-bov-tab], [data-bov-aging], [data-bov-retry], [data-bov-series], [data-bov-close]")) return;
     const meNav = e.target.closest("[data-me-nav]");
     if (meNav) { meNavGo(meNav.dataset.meNav); return; }
     const sortTh = e.target.closest("th[data-bov-sort]");
@@ -20164,13 +20261,40 @@ function bovBindOnce() {
     if (row) bovOpenRow(row);
   });
   document.addEventListener("keydown", (e) => {
-    if (e.key !== "Enter") return;
+    if (e.key !== "Enter" && e.key !== " ") return;
     const scope = e.target.closest && e.target.closest("#business-overview-page, .bov-modal");
     if (!scope) return;
+    if (/^(INPUT|TEXTAREA|SELECT|BUTTON|A)$/.test(e.target.tagName)) return;
+    // Sortable headers are keyboard buttons.
+    const sortTh = e.target.closest("th[data-bov-sort]");
+    if (sortTh) {
+      e.preventDefault();
+      bovToggleSort(sortTh.dataset.bovWidget, sortTh.dataset.bovSort);
+      return;
+    }
     const row = e.target.closest("[data-bov-open]");
-    if (row) {
+    if (row && e.key === "Enter") {
       e.preventDefault();
       bovOpenRow(row);
+      return;
+    }
+    // KPI tiles / footers (role="link") and scroll targets act like their click.
+    const sec = e.target.closest('[data-bov-section][role="link"]');
+    if (sec) {
+      e.preventDefault();
+      if (sec.dataset.bovTab) {
+        const [group, value] = sec.dataset.bovTab.split(":");
+        if (group && value) bovSetTab(group, value);
+      }
+      if (sec.dataset.bovTarget) bovJumpTo(sec.dataset.bovSection, sec.dataset.bovTarget);
+      else bovSetSection(sec.dataset.bovSection);
+      return;
+    }
+    const kpi = e.target.closest("[data-bov-scroll]");
+    if (kpi) {
+      e.preventDefault();
+      const targetId = kpi.dataset.bovScroll;
+      bovJumpTo(BOV_CARD_SECTION[targetId] || bovState.section, targetId);
     }
   });
   // Per-list toolbars: store chips, status chips, search
@@ -20261,7 +20385,7 @@ function bovBindOnce() {
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
       stopBovAutoRefresh();
-    } else if (isBovVisible() && bovState.config) {
+    } else if (isBovVisible() && bovState.config && bovIsUnlocked()) {
       startBovAutoRefresh();
     }
   });
@@ -20287,7 +20411,7 @@ function isBovVisible() {
 function startBovAutoRefresh() {
   stopBovAutoRefresh();
   bovState.refreshTimer = setInterval(() => {
-    if (document.hidden || !isBovVisible()) return;
+    if (document.hidden || !isBovVisible() || !bovIsUnlocked()) return;
     if (bovState.configEditing && document.getElementById("bov-config-modal")?.classList.contains("active")) return;
     bovFetchAll({ only: BOV_LIVE_WIDGETS, silent: true });
     if (Date.now() - bovState.lastShopifyRefreshAt >= BOV_SHOPIFY_AUTO_REFRESH_MS) {
@@ -20305,13 +20429,24 @@ function stopBovAutoRefresh() {
 
 function bovSetUpdatedNow() {
   bovState.lastUpdated = Date.now();
+  bovState.updateFailedAt = 0;
+  bovTickUpdated();
+}
+
+// A refresh in which nothing answered: keep the last good timestamp but say so.
+function bovSetUpdateFailed() {
+  bovState.updateFailedAt = Date.now();
   bovTickUpdated();
 }
 
 function bovTickUpdated() {
   const el = document.getElementById("bov-updated");
   if (!el) return;
-  const updated = bovState.lastUpdated ? `Updated ${formatRelative(new Date(bovState.lastUpdated).toISOString())}` : "";
+  const last = bovState.lastUpdated ? `Updated ${formatRelative(new Date(bovState.lastUpdated).toISOString())}` : "";
+  const updated = bovState.updateFailedAt
+    ? `Update failed ${formatRelative(new Date(bovState.updateFailedAt).toISOString())}${last ? ` · last good ${bovClockHm(bovState.lastUpdated)}` : ""}`
+    : last;
+  el.classList.toggle("is-failed", !!bovState.updateFailedAt);
   const note = bovState.shopifySyncNote;
   if (!note) {
     el.textContent = updated;
@@ -20351,7 +20486,7 @@ async function bovRefreshShopify(opts = {}) {
   const usp = new URLSearchParams({ max_age_minutes: String(maxAge), ...bovStoreParams() });
   let result = null;
   try {
-    const resp = await fetch(`${API_BASE}/business-overview/shopify/refresh?${usp.toString()}`, { method: "POST" });
+    const resp = await bovFetch(`${API_BASE}/business-overview/shopify/refresh?${usp.toString()}`, { method: "POST" });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     result = await resp.json();
     const results = result.results || [];
@@ -20377,9 +20512,13 @@ async function bovRefreshShopify(opts = {}) {
       const summary = `${bovInt(totalOrders)} order${totalOrders === 1 ? "" : "s"} updated${synced.length > 1 ? ` across ${synced.length} stores` : synced.length === 1 ? ` · ${synced[0].store_name}` : ""}`;
       bovSetSyncNote(`Shopify synced just now · ${summary}`, "info", perStore);
       if (!silent) showToast(`✓ Shopify synced · ${summary}`, "success");
-      const only = BOV_SHOPIFY_WIDGETS.slice();
-      if (bovState.chartsOpen) only.push("trend");
-      bovFetchAll({ only, silent: true });
+      // Only the Shopify-backed widgets need the fresh mirror — never the
+      // MSSQL-heavy summary / alerts — and nothing at all when no order changed.
+      if (totalOrders > 0) {
+        const only = BOV_SHOPIFY_WIDGETS.slice();
+        if (bovState.chartsOpen) only.push("top", "trend");
+        bovFetchAll({ only, silent: true });
+      }
     } else if (failed.length) {
       bovSetSyncNote(`Shopify sync failed for ${failed.map((r) => r.store_name).join(", ")} — showing last synced data`, "warn", failed.map((r) => `${r.store_name}: ${r.note || ""}`).join("\n"));
       showToast(`⚠ Shopify sync failed: ${failed.map((r) => r.note || r.store_name).join("; ")}`, "warning");
@@ -20401,7 +20540,7 @@ async function bovRefreshShopify(opts = {}) {
     if (!silent) showToast(`⚠ Shopify sync: ${e.message || e}`, "warning");
   } finally {
     bovState.shopifyRefreshing = false;
-    if (!wasSpinning && !bovState.refreshing) btn?.classList.remove("is-spinning");
+    if (!wasSpinning && !bovState.inflight) btn?.classList.remove("is-spinning");
     bovRenderShopifyOrders();
   }
   return result;
@@ -20731,6 +20870,7 @@ function bovRenderBucketButtons() {
   wrap.querySelectorAll("[data-bov-bucket]").forEach((b) => {
     const k = b.dataset.bovBucket;
     b.classList.toggle("active", k === bovState.bucket);
+    b.setAttribute("aria-checked", k === bovState.bucket ? "true" : "false");
     if (k === "auto") {
       b.textContent = `Auto · ${auto[0].toUpperCase()}${auto.slice(1)}`;
     }
@@ -20759,7 +20899,7 @@ function bovApplyPreset(preset, opts = {}) {
     showToast("Custom range: the start date must be on or before the end date", "warning");
     return;
   }
-  const changed = !bovState.range || bovState.range.from !== dates.from || bovState.range.to !== dates.to || bovState.preset !== preset;
+  const changed = !bovState.range || bovState.range.from !== dates.from || bovState.range.to !== dates.to;
   bovState.preset = preset;
   bovState.range = dates;
   bovState.period = null;
@@ -20767,8 +20907,20 @@ function bovApplyPreset(preset, opts = {}) {
   bovRenderPresetChips();
   bovRenderBucketButtons();
   bovRenderRangeLabel();
-  if (fetch && changed) bovFetchAll();
-  else if (fetch) bovFetchAll();
+  if (!fetch) return;
+  bovFetchAll();
+  // Month End and Inventory share the period: a real change drops their result.
+  if (changed) bovInvalidateDependents({ monthEnd: true, inventory: true });
+}
+
+// Month End keeps its loaded result until an input changes; Inventory refetches
+// when its tab is open (it ignores the store filter, so only the period counts).
+function bovInvalidateDependents(which) {
+  if (which.monthEnd) bovInvalidateMonthEnd();
+  if (which.inventory && invState.initialized) {
+    invState.hasData = false;
+    if (bovState.section === "inventory") fetchInventoryReport();
+  }
 }
 
 function bovRenderRangeLabel() {
@@ -20809,7 +20961,7 @@ async function bovFetchJson(path, params, signal) {
     const s = usp.toString();
     if (s) qs = `?${s}`;
   }
-  const resp = await fetch(`${API_BASE}/business-overview${path}${qs}`, { signal });
+  const resp = await bovFetch(`${API_BASE}/business-overview${path}${qs}`, { signal });
   if (!resp.ok) {
     let detail = `HTTP ${resp.status}`;
     try {
@@ -20838,7 +20990,7 @@ const BOV_WIDGET_DEFS = {
     request: () => ["/summary", { ...bovRangeParams(), open_scope: bovState.openInRange ? "range" : "all", ...bovStoreParams(), ...bovCostParams(), ...bovShipParams() }],
     render: () => {
       bovRenderKpis();
-      bovRenderInvoices();   // margin-floor alerts (from the summary) tint the invoice rows
+      bovRetintLists();   // money alerts derived from the summary re-tint the lists in place
     },
   },
   trend: {
@@ -20869,6 +21021,7 @@ const BOV_WIDGET_DEFS = {
     card: "bov-products-card",
     request: () => ["/products", { ...bovRangeParams(), ...bovStoreParams(), ...bovCostParams() }],
     render: () => {
+      bovState.productsShown = 0;   // fresh data starts back at the first page
       bovRenderProductsTable();
       // The margin-floor alert is evaluated per product from this data.
       bovRenderAttention();
@@ -20922,7 +21075,7 @@ const BOV_WIDGET_DEFS = {
       bovRenderAttention();
       bovRenderNavBadges();
       bovMarkKpiAlerts();
-      bovRerenderLists();
+      bovRetintLists();   // in place — never rebuilds the list tables
     },
   },
   bankBalances: {
@@ -20939,16 +21092,15 @@ async function bovFetchAll(opts = {}) {
   const silent = !!opts.silent;
   if (!bovState.range) bovState.range = bovPresetToDates(bovState.preset, bovState.customFrom, bovState.customTo) || bovPresetToDates("today");
   bovState.seq += 1;
-  const seq = bovState.seq;
-  if (!silent) bovSetRefreshSpinner(true);
-  // Month End shares the topbar period: a full refetch invalidates it too —
-  // reload now if its tab is open, otherwise lazily on the next tab open.
-  if (!opts.only) bovInvalidateMonthEnd();
-  // Inventory shares the topbar period the same way.
-  if (!opts.only && invState.initialized) {
-    invState.hasData = false;
-    if (bovState.section === "inventory") fetchInventoryReport();
+  // The spinner follows a counter of non-silent runs, so a concurrent silent
+  // refetch (Shopify sync landing, the 60 s tick) can never strand it.
+  if (!silent) {
+    bovState.inflight += 1;
+    bovSetRefreshSpinner(true);
   }
+  // Month End and Inventory share the topbar period but are NOT invalidated
+  // here: only the handlers that change their inputs do that (preset, store
+  // chips, cost basis, config save). Refresh is a plain refetch.
 
   const promises = keys.map((key) => {
     const def = BOV_WIDGET_DEFS[key];
@@ -20983,8 +21135,14 @@ async function bovFetchAll(opts = {}) {
   });
 
   await Promise.allSettled(promises);
-  bovSetUpdatedNow();
-  if (seq === bovState.seq && !silent) bovSetRefreshSpinner(false);
+  // "Updated" only when at least one widget answered; otherwise say so.
+  const anyOk = keys.some((k) => { const w = bovState.widgets[k]; return w && w.data && !w.error; });
+  if (anyOk) bovSetUpdatedNow();
+  else if (keys.some((k) => bovState.widgets[k] && bovState.widgets[k].error)) bovSetUpdateFailed();
+  if (!silent) {
+    bovState.inflight = Math.max(0, bovState.inflight - 1);
+    if (bovState.inflight === 0) bovSetRefreshSpinner(false);
+  }
   bovRenderRangeLabel();
 }
 
@@ -21010,6 +21168,7 @@ async function bovFetchWidget(key, seq, signal) {
     if (e && e.name === "AbortError") return;
     if (seq !== w.seq) return;
     w.error = e.message || String(e);
+    w.failedAt = Date.now();
     if (e.status === 404 && (key === "top" || key === "purchasesPurchased")) {
       w.unsupported = true;
     }
@@ -21027,6 +21186,55 @@ async function bovFetchWidget(key, seq, signal) {
   } catch (e) {
     console.error(`[bov] render ${key} failed`, e);
   }
+  bovMarkStale(key);
+}
+
+// A failed refetch keeps the last good data on screen but says so: the card
+// gets `is-stale` and a one-line note with the failure time and a Retry.
+function bovMarkStale(key) {
+  const def = BOV_WIDGET_DEFS[key];
+  const w = bovState.widgets[key];
+  const card = def && document.getElementById(def.card);
+  if (!card || !w) return;
+  // Several widgets share one card (invoices, purchases): stale if any of them is.
+  const shared = Object.keys(BOV_WIDGET_DEFS).filter((k) => BOV_WIDGET_DEFS[k].card === def.card);
+  const staleKeys = shared.filter((k) => { const x = bovState.widgets[k]; return x && x.error && x.data; });
+  const stale = staleKeys.length > 0;
+  card.classList.toggle("is-stale", stale);
+  const noteId = `bov-stale-${def.card}`;
+  let note = document.getElementById(noteId);
+  if (!stale) { if (note) note.remove(); return; }
+  const k = staleKeys[0];
+  const x = bovState.widgets[k];
+  if (!note) {
+    note = document.createElement("div");
+    note.id = noteId;
+    note.className = "bov-stale-note";
+    note.setAttribute("role", "status");
+    if (def.card === "bov-kpi-strip" || def.card === "bov-attention") card.insertAdjacentElement("beforebegin", note);
+    else card.insertAdjacentElement("afterbegin", note);
+  }
+  const err = bovErrorText(x.error);
+  note.title = err.raw;
+  note.innerHTML = `<span>Refresh failed ${escapeHtml(bovClockHm(x.failedAt || Date.now()))} · showing last good data${x.loadedAt ? ` from ${escapeHtml(bovClockHm(x.loadedAt))}` : ""}${err.text ? ` · ${escapeHtml(err.text)}` : ""}</span><button type="button" class="bov-link-btn" data-bov-retry="${escapeHtml(k)}">Retry</button>`;
+}
+
+// Plain-language text for the driver / HTTP errors the backend relays; the raw
+// string stays available for tooltips.
+const BOV_SQLSTATE_TEXT = [
+  [/\b08001\b|\b08S01\b/, "Could not connect to the database server"],
+  [/\bHYT00\b|\bHYT01\b|timed? ?out/i, "The database did not answer in time"],
+  [/\b28000\b|Login failed/i, "Database login was refused — check the store's credentials"],
+  [/\b42S02\b|Invalid object name/i, "A table this report needs is missing in that database"],
+  [/^HTTP 401\b/, "Session expired — unlock the page again"],
+  [/^HTTP 5\d\d\b/, "The server hit an error answering this request"],
+  [/Failed to fetch|NetworkError|Load failed/i, "The server could not be reached"],
+];
+
+function bovErrorText(raw) {
+  const str = raw == null ? "" : String(raw);
+  const hit = BOV_SQLSTATE_TEXT.find(([re]) => re.test(str));
+  return { text: hit ? hit[1] : str, raw: str };
 }
 
 function bovPaintSkeleton(key) {
@@ -21073,7 +21281,9 @@ function bovSkeletonHtml(n) {
 }
 
 function bovInlineErrorHtml(key, message, label) {
-  return `<div class="bov-inline-error" role="alert"><div><strong>${escapeHtml(label || "Could not load")}</strong><div class="bov-inline-error-msg">${escapeHtml(message || "Unknown error")}</div></div><button type="button" class="btn btn-secondary bov-btn-xs" data-bov-retry="${escapeHtml(key)}">Retry</button></div>`;
+  const err = bovErrorText(message || "Unknown error");
+  const differs = err.text !== err.raw;
+  return `<div class="bov-inline-error" role="alert"><div><strong>${escapeHtml(label || "Could not load")}</strong><div class="bov-inline-error-msg"${differs ? ` title="${escapeHtml(err.raw)}"` : ""}>${escapeHtml(err.text)}${differs ? ` <span class="bov-cell-sub" title="${escapeHtml(err.raw)}">details</span>` : ""}</div></div><button type="button" class="btn btn-secondary bov-btn-xs" data-bov-retry="${escapeHtml(key)}">Retry</button></div>`;
 }
 
 function bovUnconfiguredHtml(title, detail, action, actionLabel) {
@@ -21097,6 +21307,13 @@ function bovHandleAction(action, el) {
   }
   if (action.startsWith("export-")) {
     bovExportAction(action.slice("export-".length), el?.dataset.bovWidget);
+  } else if (action.startsWith("inv-")) {
+    invHandleAction(action, el);
+  } else if (action === "products-more" || action === "products-all") {
+    const total = bovProductsVisibleRows().length;
+    const cur = bovState.productsShown > 0 ? bovState.productsShown : BOV_ROWS_PAGE;
+    bovState.productsShown = action === "products-all" ? total : Math.min(total, cur + BOV_ROWS_PAGE);
+    bovRenderProductsTable();
   } else if (action === "config") {
     bovOpenConfigModal({ tab: "sources" });
   } else if (action === "settings-roles") {
@@ -21127,35 +21344,11 @@ function bovHandleAction(action, el) {
 // KPI strip
 // ---------------------------------------------------------------------------
 
-// Delta vs previous period. Colour follows "goodness", the glyph and the sign
-// carry the direction so it never depends on colour alone.
+// Inline delta chip (margin headline) — same descriptor as the KPI tiles.
 function bovDeltaHtml(cur, prev, opts = {}) {
-  const goodWhenUp = opts.goodWhenUp !== false;
-  const mode = opts.mode || "pct"; // pct | pt | abs
-  const suffix = opts.suffix || "vs prev";
-  if (cur == null || prev == null || !isFinite(cur) || !isFinite(prev)) {
-    return `<span class="bov-kpi-delta is-flat">• <small>no prior data</small></span>`;
-  }
-  let diff;
-  let text;
-  if (mode === "pct") {
-    if (!prev) return `<span class="bov-kpi-delta is-flat">• <small>no prior data</small></span>`;
-    diff = ((cur - prev) / Math.abs(prev)) * 100;
-    text = `${Math.abs(diff).toFixed(1)}%`;
-  } else if (mode === "pt") {
-    diff = cur - prev;
-    text = `${Math.abs(diff).toFixed(1)} pt`;
-  } else {
-    diff = cur - prev;
-    text = opts.fmt ? opts.fmt(Math.abs(diff)) : bovCompactNum(Math.abs(diff));
-  }
-  const flat = Math.abs(diff) < (mode === "pct" ? 0.05 : mode === "pt" ? 0.05 : 0.5);
-  if (flat) return `<span class="bov-kpi-delta is-flat">• 0 <small>${escapeHtml(suffix)}</small></span>`;
-  const up = diff > 0;
-  const good = up === goodWhenUp;
-  const cls = good ? "is-good" : "is-bad";
-  const glyph = up ? "▲" : "▼";
-  return `<span class="bov-kpi-delta ${cls}" title="${up ? "Up" : "Down"} ${escapeHtml(text)} ${escapeHtml(suffix)}">${glyph} ${up ? "+" : "−"}${escapeHtml(text)} <small>${escapeHtml(suffix)}</small></span>`;
+  const d = bovDelta(cur, prev, { ...opts, label: opts.suffix || "previous period", fmtPrev: () => "" });
+  const sub = opts.suffix ? ` <small>${escapeHtml(opts.suffix)}</small>` : (d.sub ? ` <small>${escapeHtml(d.sub.trim())}</small>` : "");
+  return `<span class="bov-kpi-delta ${d.cls}" title="${escapeHtml(d.title || d.text)}">${d.glyph} ${escapeHtml(d.text)}${sub}</span>`;
 }
 
 // Tiny inline sparkline: previous period dashed in the de-emphasis hue,
@@ -21288,7 +21481,10 @@ function bovTrendSlot(cur, prev, opts = {}) {
   const a = (cur || []).map(bovNum);
   const n = a.length;
   if (n >= 2) return `${bovSparkline(cur, prev, 260, 36)}<span class="bov-kpi-trend-cap">${escapeHtml(opts.caption || "trend over the period · dashed = previous")}</span>`;
-  return `<span class="bov-kpi-trend-empty">${escapeHtml(opts.empty || "Single-day period — pick a longer range to see the trend")}</span>`;
+  const days = bovState.period && bovState.period.days != null ? bovNum(bovState.period.days)
+    : (bovState.range ? bovDaysBetween(bovState.range.from, bovState.range.to) : 1);
+  const empty = days === 1 ? "Single-day period — pick a longer range to see the trend" : (opts.empty || "No daily data for this range");
+  return `<span class="bov-kpi-trend-empty">${escapeHtml(empty)}</span>`;
 }
 
 function bovAgingBar(aging, total) {
@@ -21536,7 +21732,7 @@ function bovRenderKpis() {
       secondary: money(pin.outstanding_value),
       delta: { cls: "is-flat", glyph: "•", text: `${bovInt(pin.qty_outstanding || 0)} units outstanding`, sub: pin.oldest_po_date ? `oldest placed ${bovDateShort(pin.oldest_po_date)}` : "" },
       trendHtml: prc.configured && !prc.error
-        ? bovTrendSlot(rcSeries, rcPrev, { caption: "goods received per day · dashed = previous", empty: "Single-day period — receipts trend needs a longer range" })
+        ? bovTrendSlot(rcSeries, rcPrev, { caption: "goods received per day · dashed = previous", empty: "No receipts recorded in this range" })
         : `<span class="bov-kpi-trend-empty">Receipts unavailable</span>`,
       facts: [
         prc.configured && !prc.error ? { k: "received in period", v: `${bovInt(rc.purchase_orders || 0)} PO · ${money(rc.value)}` } : null,
@@ -21625,7 +21821,9 @@ function bovMoneyAlerts(summaryData, rules) {
     }
   }
   const rd = rules.revenue_drop || {};
-  if (rd.enabled !== false && rd.pct != null) {
+  // A partial period (today, this week/month, YTD, or any range that reaches
+  // today) always trails a complete previous one — comparing them is noise.
+  if (rd.enabled !== false && rd.pct != null && !bovPeriodIncomplete()) {
     const p = bovNum(prev.revenue);
     const c = bovNum(tot.revenue);
     if (p >= 500 && c < p * (1 - bovNum(rd.pct) / 100)) {
@@ -21639,6 +21837,12 @@ function bovMoneyAlerts(summaryData, rules) {
     }
   }
   return out;
+}
+
+function bovPeriodIncomplete() {
+  if (["today", "this-week", "this-month", "ytd"].includes(bovState.preset)) return true;
+  const to = bovState.range && bovState.range.to;
+  return !!to && to >= bovTodayStr();
 }
 
 function bovAllAlerts() {
@@ -21696,7 +21900,9 @@ function bovRenderAttention() {
   const d = w.data;
   const alerts = bovAllAlerts();
   const errors = d.errors || [];
-  const checked = (d.checked || []).length + 2; // + client money rules
+  const clientRules = (d.rules || (bovState.config && bovState.config.alert_rules) || {});
+  const clientOn = ["margin_floor", "revenue_drop"].filter((k) => clientRules[k] && clientRules[k].enabled !== false).length;
+  const checked = (d.checked || []).length + clientOn;
   const tiers = { "is-critical": 0, "is-warn": 0, "is-info": 0 };
   alerts.forEach((a) => { tiers[bovAlertSevClass(a.severity)] += 1; });
   const sums = [];
@@ -21739,8 +21945,28 @@ function bovMarkKpiAlerts() {
     const hits = alerts.filter((a) => keys.some((k) => a.key === k || a.key.startsWith(`${k}:`)));
     card.classList.toggle("has-alert", hits.length > 0);
     card.classList.toggle("has-alert-critical", hits.some((a) => a.severity === "critical"));
-    if (hits.length) card.dataset.alertTitle = hits.map((a) => a.title).join(" · ");
-    else delete card.dataset.alertTitle;
+    // The corner dot is CSS-only; name it for hover and screen readers.
+    const head = card.querySelector(".bov-kpi-head");
+    let sr = head && head.querySelector(".bov-kpi-alert-name");
+    if (hits.length) {
+      const text = hits.map((a) => a.title).join(" · ");
+      card.dataset.alertTitle = text;
+      card.title = `${label} — alert: ${text}`;
+      if (head) {
+        if (!sr) {
+          sr = document.createElement("span");
+          sr.className = "bov-kpi-alert-name bov-sr-only";
+          sr.style.cssText = "position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap";
+          head.appendChild(sr);
+        }
+        sr.textContent = ` Alert: ${text}`;
+      }
+    } else {
+      delete card.dataset.alertTitle;
+      if (card.dataset.bovSection) card.title = `Open ${card.dataset.bovSection}`;
+      else card.removeAttribute("title");
+      if (sr) sr.remove();
+    }
   });
 }
 
@@ -21808,7 +22034,7 @@ function bovActiveMatches(widgetKey) {
   try { alerts = bovAllAlerts(); } catch (e) { alerts = []; }
   alerts.forEach((a) => {
     const m = a && a.action && a.action.match;
-    if (m && (BOV_HIGHLIGHT_WIDGETS[m.kind] || []).includes(widgetKey)) out.push({ match: m, title: a.title || a.key });
+    if (m && (BOV_HIGHLIGHT_WIDGETS[m.kind] || []).includes(widgetKey)) out.push({ match: m, title: a.title || a.key, count: a.count });
   });
   return out;
 }
@@ -21868,13 +22094,21 @@ function bovRowMatches(m, r) {
   }
 }
 
-function bovFlagBarHtml(widgetKey, rows, matches) {
+// "N of the M flagged … are in this list" — the alert's own count (M) is the
+// whole backlog; N is how many of those rows this list currently shows.
+function bovFlagBarHtml(widgetKey, rows, matches, tint) {
   const list = matches || bovActiveMatches(widgetKey);
   if (!list.length) return "";
-  const hits = list.map((h) => ({ title: h.title, n: rows.reduce((a, r) => a + (bovRowMatches(h.match, r) ? 1 : 0), 0) })).filter((x) => x.n);
+  const hits = list.map((h) => ({ title: h.title, count: h.count, n: rows.reduce((a, r) => a + (bovRowMatches(h.match, r) ? 1 : 0), 0) })).filter((x) => x.n);
   if (!hits.length) return "";
-  const n = rows.reduce((a, r) => a + (bovRowAlerted(widgetKey, r, list) ? 1 : 0), 0);
-  return `<div class="bov-flag-bar" role="status"><span class="bov-flag-dot" aria-hidden="true"></span><span>${bovInt(n)} row${n === 1 ? "" : "s"} flagged: ${hits.map((x) => `<b>${escapeHtml(x.title)}</b>`).join(" · ")}</span></div>`;
+  const t = tint || bovAlertTint(widgetKey, rows, list);
+  const parts = hits.map((x) => {
+    const shown = bovInt(x.n);
+    if (x.count != null && bovNum(x.count) > x.n) return `${shown} of the ${bovInt(x.count)} flagged (<b>${escapeHtml(x.title)}</b>) are in this list`;
+    return `${shown} row${x.n === 1 ? "" : "s"} match <b>${escapeHtml(x.title)}</b>`;
+  });
+  const capNote = !t.tint && t.n ? ` · ${bovInt(t.n)} of ${bovInt(rows.length)} rows match — rows not highlighted` : "";
+  return `<div class="bov-flag-bar" role="status"><span class="bov-flag-dot" aria-hidden="true"></span><span>${parts.join(" · ")}${capNote}</span></div>`;
 }
 
 function bovRenderKpiFoot() {
@@ -21890,14 +22124,19 @@ function bovRenderKpiFoot() {
   if (od && od.configured && !od.filtered_out && !od.error && (od.per_store || []).length) {
     const t = od.totals || {};
     const perTitle = (key) => (od.per_store || []).map((x) => `${x.store_name}: ${x[key] != null ? bovInt(x[key]) : "—"}`).join("\n");
+    // Two labelled groups: the period's own counts vs the live backlog (any date).
     html =
-      `<span class="bov-flow-label">Shopify orders <small>in period · live backlog</small></span>` +
+      `<span class="bov-flow-label">Shopify orders</span>` +
+      `<span class="bov-flow-group" title="Orders placed in the selected period (local mirror)"><span class="bov-flow-group-label">In period</span>` +
       pill(bovInt(t.orders || 0), "placed", perTitle("orders")) +
       pill(bovInt(t.fulfilled_in_period || 0), "fulfilled", perTitle("fulfilled_in_period")) +
-      pill(bovInt(t.unfulfilled_from_period || 0), "still unfulfilled", perTitle("unfulfilled_from_period"), (t.unfulfilled_from_period || 0) ? "warn" : "") +
+      `</span>` +
+      `<span class="bov-flow-divider" aria-hidden="true"></span>` +
+      `<span class="bov-flow-group" title="Live backlog straight from Shopify — any order date"><span class="bov-flow-group-label">Right now</span>` +
+      pill(bovInt(t.to_fulfill || 0), "unfulfilled", `Unfulfilled orders not yet checked or on a picklist, any date\n${perTitle("to_fulfill")}`, (t.to_fulfill || 0) ? "warn" : "") +
       pill(bovInt(t.on_hold || 0), "on hold", perTitle("on_hold"), (t.on_hold || 0) ? "warn" : "") +
-      pill(bovInt(t.to_fulfill || 0), "to fulfil (all)", perTitle("to_fulfill")) +
-      pill(bovInt(t.open_orders || 0), "open (all)", perTitle("open_orders")) +
+      pill(bovInt(t.open_orders || 0), "open", `All open orders, any date\n${perTitle("open_orders")}`) +
+      `</span>` +
       `<span class="bov-flow-go" aria-hidden="true">›</span>`;
   } else if (so.configured && !so.filtered_out) {
     if (so.error) {
@@ -21971,19 +22210,27 @@ function bovRenderShopifyOrders() {
   const n = (v) => (v == null ? "—" : bovInt(v));
   const m = (v) => (v == null ? "—" : bovMoney(v));
   const cell = (v, warn) => `<td class="bov-num">${v}${warn ? `<span class="bov-cell-warn" title="${escapeHtml(warn)}">${escapeHtml(warn.length > 40 ? `${warn.slice(0, 40)}…` : warn)}</span>` : ""}</td>`;
-  const head = `<thead>
+  // Two visible column groups: what happened IN THE PERIOD (mirror) versus the
+  // live backlog RIGHT NOW (any date) — they are not meant to add up.
+  const periodLabel = bovState.range ? bovFmtRangeLabel(bovState.range.from, bovState.range.to) : "selected period";
+  const head = `<colgroup><col style="width:16%"><col span="5" class="bov-colgroup-period"><col span="5" class="bov-colgroup-live"></colgroup><thead>
+      <tr class="bov-colgroup-head">
+        <th></th>
+        <th class="bov-col-group bov-col-group-period" colspan="5" scope="colgroup" title="Orders placed ${escapeHtml(periodLabel)} — from the local mirror">In period · ${escapeHtml(periodLabel)}</th>
+        <th class="bov-col-group bov-col-group-live" colspan="5" scope="colgroup" title="Live backlog straight from Shopify — any order date">Right now · any date</th>
+      </tr>
       <tr>
         <th style="width:16%">Store</th>
-        <th class="bov-num" style="width:8%" title="Orders placed in the selected period (not cancelled)">Orders</th>
-        <th class="bov-num" style="width:10%" title="Product revenue of orders placed in the period">Revenue</th>
-        <th class="bov-num" style="width:9%" title="Orders whose first fulfilment happened in the period">Fulfilled</th>
-        <th class="bov-num" style="width:9%" title="Orders placed in the period that are still unfulfilled">Unfulfilled</th>
-        <th class="bov-num" style="width:8%" title="Orders placed in the period that were cancelled">Cancelled</th>
-        <th class="bov-num" style="width:8%" title="Live: all open orders, any date">Open (all)</th>
-        <th class="bov-num" style="width:8%" title="Live: unfulfilled orders not yet checked or on a picklist">To fulfil</th>
-        <th class="bov-num" style="width:8%" title="Live: unfulfilled orders on a picklist">On picklist</th>
-        <th class="bov-num" style="width:8%" title="Live: unfulfilled orders tagged checked">In process</th>
-        <th class="bov-num" style="width:8%" title="Live: fulfillment on hold">On hold</th>
+        <th class="bov-num" title="Orders placed in the selected period (not cancelled)">Orders</th>
+        <th class="bov-num" title="Product revenue of orders placed in the period">Revenue</th>
+        <th class="bov-num" title="Orders whose first fulfilment happened in the period">Fulfilled</th>
+        <th class="bov-num" title="Orders placed in the period that are still unfulfilled">Not fulfilled</th>
+        <th class="bov-num bov-col-group-end" title="Orders placed in the period that were cancelled">Cancelled</th>
+        <th class="bov-num bov-colgroup-start" title="Live: all open orders, any date">Open</th>
+        <th class="bov-num" title="Live: unfulfilled orders not yet checked or on a picklist">To fulfil</th>
+        <th class="bov-num" title="Live: unfulfilled orders on a picklist">On picklist</th>
+        <th class="bov-num" title="Live: unfulfilled orders tagged checked">In process</th>
+        <th class="bov-num" title="Live: fulfillment on hold">On hold</th>
       </tr></thead>`;
   const bodyRows = rows.map((r) => {
     let storeCell = escapeHtml(r.store_name);
@@ -22000,8 +22247,8 @@ function bovRenderShopifyOrders() {
         ${cell(m(r.revenue))}
         ${cell(n(r.fulfilled_in_period))}
         ${cell(n(r.unfulfilled_from_period))}
-        ${cell(n(r.cancelled))}
-        ${cell(n(r.open_orders), liveErr)}
+        ${cell(n(r.cancelled)).replace('<td class="bov-num"', '<td class="bov-num bov-col-group-end"')}
+        ${cell(n(r.open_orders), liveErr).replace('<td class="bov-num"', '<td class="bov-num bov-colgroup-start"')}
         ${cell(n(r.to_fulfill))}
         ${cell(n(r.on_picklist))}
         ${cell(n(r.in_process))}
@@ -22015,7 +22262,7 @@ function bovRenderShopifyOrders() {
   if (foot) {
     const synced = rows.filter((r) => r.synced && r.last_synced_at);
     const newest = synced.length ? synced.map((r) => r.last_synced_at).sort().slice(-1)[0] : null;
-    const left = `Mirror as of ${newest ? escapeHtml(formatRelative(newest)) : "—"} · live buckets straight from Shopify${d.skipped_stores && d.skipped_stores.length ? ` · not synced: ${escapeHtml(d.skipped_stores.join(", "))}` : ""}`;
+    const left = `"In period" from the mirror as of ${newest ? escapeHtml(formatRelative(newest)) : "—"} · "Right now" straight from Shopify (any date)${d.skipped_stores && d.skipped_stores.length ? ` · not synced: ${escapeHtml(d.skipped_stores.join(", "))}` : ""}`;
     const busy = bovState.shopifyRefreshing;
     foot.innerHTML = `<span class="bov-foot-left">${left}</span><button type="button" class="bov-link-btn" data-bov-action="shopify-sync"${busy ? " disabled" : ""}>${busy ? "Syncing…" : "Sync now"}</button>`;
   }
@@ -22043,13 +22290,12 @@ function bovRenderBankBalances() {
     return;
   }
   const d = w.data;
+  const card = document.getElementById("bov-bank-card");
+  card?.classList.toggle("is-compact", !d.configured);
   if (!d.configured) {
-    body.innerHTML = bovUnconfiguredHtml(
-      "QuickBooks not connected",
-      "Add your Intuit app keys and connect a company under Settings → Roles & Mirrors.",
-      "settings-quickbooks",
-      "Open QuickBooks settings",
-    );
+    // One line, not a full card: an optional integration must not push the
+    // trend below the fold.
+    body.innerHTML = `<div class="bov-bank-notice"><span>QuickBooks not connected — bank balances appear here once a company is linked.</span><a href="#" class="bov-link-btn" data-bov-action="settings-quickbooks">Connect QuickBooks</a></div>`;
     return;
   }
   const accounts = d.accounts || [];
@@ -22610,7 +22856,7 @@ function bovRenderTopBars() {
   const w = bovState.widgets.top;
   const by = bovState.tabs.top;
   if (title) title.textContent = { customer: "Top customers", rep: "Top sales reps", product: "Top products" }[by] || "Top";
-  card.querySelectorAll('[data-bov-tab="top"]').forEach((b) => b.classList.toggle("active", b.dataset.value === by));
+  bovSyncTabButtons("top", by);
   if (w.unsupported) {
     card.hidden = true;
     return;
@@ -22694,7 +22940,7 @@ function bovShopifyOrderRowAttrs(r) {
 
 function bovShopifyOrderCols(multi) {
   const cols = [
-    { key: "name", label: "Order #", width: multi ? "12%" : "14%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.name || String(r.shopify_id))}</span><span class="bov-cell-sub">${escapeHtml(bovDateMdy(r.created_at))}</span>` },
+    { key: "name", label: "Order #", width: multi ? "12%" : "14%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.name || String(r.shopify_id))}</span><span class="bov-cell-sub">${escapeHtml(bovDateMdy(bovShopifyPlaced(r)))}</span>` },
   ];
   if (multi) cols.push({ key: "store_name", label: "Store", width: "10%", render: (r) => `<span class="bov-cell-store">${escapeHtml(bovStoreShort(r.store_name))}</span>` });
   cols.push(
@@ -22730,7 +22976,7 @@ function bovRenderShopifyOrdersList() {
   const key = "shopifyOrders_list";
   const w = bovState.widgets[key];
   const days = bovShopifyOrdersTabLabel();
-  document.querySelectorAll('[data-bov-tab="shopifyorders"]').forEach((b) => b.classList.toggle("active", b.dataset.value === tab));
+  bovSyncTabButtons("shopifyorders", tab);
   // Tab counts from the per-store orders widget (live buckets) when it has loaded.
   const so = bovState.widgets.shopifyOrders.data;
   const t = (so && so.configured && !so.error && !so.filtered_out && so.totals) || null;
@@ -22791,7 +23037,7 @@ function bovRenderShopifyOrdersList() {
   const sorted = bovSortRows(rows, bovState.sort[key]);
   body.innerHTML = bovTableHtml(key, bovShopifyOrderCols(multi), sorted, { rowAttrs: bovShopifyOrderRowAttrs });
   const left = (d.truncated ? `Showing the first ${bovInt(allRows.length)} per store` : "Oldest first · from the local mirror") + partialNote;
-  if (foot) foot.innerHTML = bovFootHtml("shopifyorders", rows.length, sorted.length, left);
+  if (foot) foot.innerHTML = bovFootHtml(rows.length, left);
 }
 
 // ---- Shopify products without cost (view + Excel export) ------------------
@@ -22844,7 +23090,7 @@ async function bovExcludeMissingCostRow(idx) {
     ? { barcode: r.barcode, product_shopify_id: r.product_shopify_id, sku: r.sku, title: r.title }
     : { product_shopify_id: r.product_shopify_id, variant_shopify_id: r.product_shopify_id ? null : r.variant_shopify_id, sku: r.sku, title: r.title, store_id: r.product_shopify_id ? null : r.store_id };
   try {
-    const resp = await fetch(`${API_BASE}/business-overview/shopify/exclusions`, {
+    const resp = await bovFetch(`${API_BASE}/business-overview/shopify/exclusions`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
     });
     if (!resp.ok) {
@@ -22862,7 +23108,7 @@ async function bovExcludeMissingCostRow(idx) {
 
 async function bovIncludeShopifyExclusion(id) {
   try {
-    const resp = await fetch(`${API_BASE}/business-overview/shopify/exclusions/${id}`, { method: "DELETE" });
+    const resp = await bovFetch(`${API_BASE}/business-overview/shopify/exclusions/${id}`, { method: "DELETE" });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     showToast("✓ Product included again", "success");
     await bovReloadMissingCost();
@@ -22948,8 +23194,14 @@ function bovDownloadSheet({ sheet, header, data, widths, fname }) {
     XLSX.writeFile(wb, `${fname}.xlsx`);
     return;
   }
-  const csv = [header, ...data].map((row) => row.map((v) => `"${String(v == null ? "" : v).replace(/"/g, '""')}"`).join(",")).join("\n");
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const cell = (v) => {
+    if (typeof v === "number") return isFinite(v) ? String(v) : "";
+    let t = String(v == null ? "" : v);
+    if (/^[=+\-@\t\r]/.test(t)) t = `'${t}`;   // never let a text cell start a formula
+    return `"${t.replace(/"/g, '""')}"`;
+  };
+  const csv = [header, ...data].map((row) => row.map(cell).join(",")).join("\r\n");
+  const blob = new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   a.download = `${fname}.csv`;
@@ -22978,7 +23230,7 @@ const BOV_EXPORTS = {
   },
   products: {
     bar: "bov-products-export-bar",
-    keyOf: (r) => `${r.store_id}:${r.upc || ""}:${r.sku || ""}:${r.description || ""}`,
+    keyOf: (r) => String(r._idx),
     rows: () => bovProductsVisibleRows(),
     rerender: () => bovRenderProductsTable(),
     period: () => (bovState.widgets.products.data && bovState.widgets.products.data.period) || bovState.period || {},
@@ -23161,6 +23413,7 @@ async function bovOpenShopifyOrderModal(storeId, shopifyId, meCtx) {
   // Month End passes the row's real shipping cost (shipper parcels) so the
   // modal can show real profit; other openers leave it unset.
   bovState.shopifyOrderModalCtx = meCtx || null;
+  const tok = ++bovState.modalSeq.shopifyOrder;   // a later open wins over this response
   if (title) title.textContent = "Shopify order";
   if (metaEl) metaEl.textContent = "";
   openModal("bov-shopify-order-modal");
@@ -23174,8 +23427,10 @@ async function bovOpenShopifyOrderModal(storeId, shopifyId, meCtx) {
   try {
     const data = await bovFetchJson(`/shopify/orders/${storeId}/${shopifyId}`);
     cache.set(cacheKey, data);
+    if (tok !== bovState.modalSeq.shopifyOrder) return;
     bovRenderShopifyOrderModal(data);
   } catch (e) {
+    if (tok !== bovState.modalSeq.shopifyOrder) return;
     bovModalError(body, `Could not load this order: ${e.message || e}`);
   }
 }
@@ -23198,7 +23453,7 @@ function bovRenderShopifyOrderModal(data) {
   const fulf = (h.fulfillments || []).map((f) => `<span class="bov-cell-sub">${escapeHtml(f.display_status || f.status || "—")}${f.created_at ? ` · ${escapeHtml(bovDateMdy(f.created_at))}` : ""}${f.tracking_number ? ` · ${escapeHtml([f.tracking_company, f.tracking_number].filter(Boolean).join(" "))}` : ""}</span>`).join("<br>") || "—";
   const kv = [
     bovKv("Customer", `${escapeHtml(h.customer_name || "—")}${h.email ? `<span class="bov-cell-sub">${escapeHtml(h.email)}</span>` : ""}${h.customer_orders != null ? `<span class="bov-cell-sub">${bovInt(h.customer_orders)} order${h.customer_orders === 1 ? "" : "s"} lifetime</span>` : ""}`),
-    bovKv("Placed", `${escapeHtml(h.created_at ? bovDateMdy(h.created_at) : "—")}${h.age_hours != null ? ` ${bovAgeHoursChip(h.age_hours)}` : ""}`),
+    bovKv("Placed", `${escapeHtml(bovShopifyPlaced(h) ? `${bovDateMdy(bovShopifyPlaced(h))}${h.created_local ? ` ${bovTimeHm(String(h.created_local).replace(" ", "T"))}` : ""}` : "—")}${h.age_hours != null ? ` ${bovAgeHoursChip(h.age_hours)}` : ""}`),
     bovKv("Ship to", escapeHtml(shipTo || "—")),
     bovKv("Shipping method", escapeHtml(h.shipping_line_title || "—")),
     bovKv("Tracking", tracking),
@@ -23223,7 +23478,7 @@ function bovRenderShopifyOrderModal(data) {
         : `<span class="bov-cell-muted${ctx.shipping_missing ? " me-ship-missing" : ""}">${ctx.shipping_missing ? "no parcel found" : "—"}</span>`),
       bovKv(ctx.estimated ? "Real profit (est.)" : "Real profit", (() => {
         if (h.product_profit == null) return `<span class="bov-cell-muted">—</span>`;
-        const real = bovNum(h.product_profit) + bovNum(h.total_shipping) - bovNum(ctx.shipping_cost);
+        const real = bovRealProfit(h.product_profit, h.total_shipping, ctx.shipping_cost);
         const sub = `product ${bovMoney(h.product_profit)} + shipping collected ${bovMoney(h.total_shipping || 0)} − ${ctx.estimated ? "estimated " : ""}shipping cost ${bovMoney(ctx.shipping_cost || 0)}`;
         return `<strong class="bov-profit${real < 0 ? " is-neg" : ""}">${escapeHtml(bovMoney(real))}</strong>` +
           `<span class="bov-cell-sub" title="${escapeHtml(sub)}">${escapeHtml(sub)}</span>`;
@@ -23284,10 +23539,19 @@ function bovActivePurchasesKey() {
   return t === "purchased" ? "purchasesPurchased" : t === "received" ? "purchasesReceived" : "purchasesIncoming";
 }
 
+// Card tab buttons: visual state + aria-pressed follow the active value.
+function bovSyncTabButtons(group, value) {
+  document.querySelectorAll(`[data-bov-tab="${group}"]`).forEach((b) => {
+    const on = b.dataset.value === value;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-pressed", on ? "true" : "false");
+  });
+}
+
 function bovSetTab(group, value) {
   if (!group || !value || bovState.tabs[group] === value) return;
   bovState.tabs[group] = value;
-  document.querySelectorAll(`[data-bov-tab="${group}"]`).forEach((b) => b.classList.toggle("active", b.dataset.value === value));
+  bovSyncTabButtons(group, value);
   if (group === "top") {
     bovState.widgets.top.data = null;
     bovState.widgets.top.error = null;
@@ -23364,6 +23628,9 @@ function bovSortRows(rows, sort) {
 // selection is on (see bovExportSel); the tfoot gets a matching blank cell.
 function bovTableHtml(widgetKey, columns, rows, opts = {}) {
   const alertMatches = bovActiveMatches(widgetKey);
+  const tint = bovAlertTint(widgetKey, rows, alertMatches);
+  if (!bovState.renderedRows) bovState.renderedRows = {};
+  bovState.renderedRows[widgetKey] = rows;
   const sort = bovState.sort[widgetKey] || {};
   const numbered = opts.numbered !== false;   // running line number in the first column
   const sel = opts.select && bovExportSel(widgetKey).on ? bovExportSel(widgetKey) : null;
@@ -23376,14 +23643,16 @@ function bovTableHtml(widgetKey, columns, rows, opts = {}) {
       const sk = c.sortKey || c.key;
       const cls = ["qip-sortable"];
       if (c.num) cls.push("bov-num");
-      if (sort.key === sk) cls.push(sort.dir === "asc" ? "qip-sort-asc" : "qip-sort-desc");
-      return `<th class="${cls.join(" ")}" data-bov-sort="${escapeHtml(sk)}" data-bov-widget="${escapeHtml(widgetKey)}"${c.width ? ` style="width:${c.width}"` : ""}><span>${escapeHtml(c.label)}</span><span class="qip-sort-arrow"></span></th>`;
+      const sorted = sort.key === sk;
+      if (sorted) cls.push(sort.dir === "asc" ? "qip-sort-asc" : "qip-sort-desc");
+      const ariaSort = sorted ? (sort.dir === "asc" ? "ascending" : "descending") : "none";
+      return `<th class="${cls.join(" ")}" tabindex="0" role="button" aria-sort="${ariaSort}" data-bov-sort="${escapeHtml(sk)}" data-bov-widget="${escapeHtml(widgetKey)}"${c.width ? ` style="width:${c.width}"` : ""}${c.title ? ` title="${escapeHtml(c.title)}"` : ""}><span>${escapeHtml(c.label)}</span><span class="qip-sort-arrow"></span></th>`;
     })
     .join("");
   const body = rows
     .map((r, i) => {
       const attrs = opts.rowAttrs ? opts.rowAttrs(r) : "";
-      const alerted = bovRowAlerted(widgetKey, r, alertMatches);
+      const alerted = tint.tint && tint.flags[i];
       const key = sel ? String(keyOf(r)) : null;
       const selected = sel ? sel.keys.has(key) : false;
       const rowCls = `${opts.plainRows ? "" : "bov-row-click"}${alerted ? " bov-row-alert" : ""}${selected ? " is-selected" : ""}`;
@@ -23394,8 +23663,40 @@ function bovTableHtml(widgetKey, columns, rows, opts = {}) {
     })
     .join("");
   const tfoot = sel && opts.tfoot ? opts.tfoot.replace("<tfoot><tr>", `<tfoot><tr><td class="bov-sel"></td>`) : (opts.tfoot || "");
-  const tableAttrs = sel ? ` data-bov-selwidget="${escapeHtml(widgetKey)}"` : "";
-  return `${bovFlagBarHtml(widgetKey, rows, alertMatches)}<div class="bov-table-scroll"><table class="data-table bov-mini-table${sel ? " is-selecting" : ""}"${tableAttrs}><thead><tr>${head}</tr></thead><tbody>${body}</tbody>${tfoot}</table></div>`;
+  const tableAttrs = ` data-bov-table="${escapeHtml(widgetKey)}"${sel ? ` data-bov-selwidget="${escapeHtml(widgetKey)}"` : ""}`;
+  return `<div class="bov-flag-slot" data-bov-flag="${escapeHtml(widgetKey)}">${bovFlagBarHtml(widgetKey, rows, alertMatches, tint)}</div><div class="bov-table-scroll"><table class="data-table bov-mini-table${sel ? " is-selecting" : ""}"${tableAttrs}><thead><tr>${head}</tr></thead><tbody>${body}</tbody>${tfoot}</table></div>`;
+}
+
+// Which listed rows an active alert flags, and whether tinting them is useful:
+// when more than half the list matches the tint says nothing, so it is
+// skipped and the flag bar carries the count instead.
+function bovAlertTint(widgetKey, rows, matches) {
+  const list = matches || bovActiveMatches(widgetKey);
+  const flags = rows.map((r) => bovRowAlerted(widgetKey, r, list));
+  const n = flags.reduce((a, f) => a + (f ? 1 : 0), 0);
+  return { flags, n, tint: n > 0 && n * 2 <= rows.length };
+}
+
+// Re-apply alert tinting to the rendered list tables without rebuilding them
+// (keeps scroll position and focus across the 60 s alert refresh).
+function bovRetintLists() {
+  const rendered = bovState.renderedRows || {};
+  Object.keys(rendered).forEach((widgetKey) => {
+    const table = document.querySelector(`table[data-bov-table="${CSS.escape(widgetKey)}"]`);
+    if (!table) return;
+    const rows = rendered[widgetKey] || [];
+    const matches = bovActiveMatches(widgetKey);
+    const tint = bovAlertTint(widgetKey, rows, matches);
+    const trs = table.querySelectorAll("tbody > tr");
+    trs.forEach((tr, i) => {
+      const on = !!(tint.tint && tint.flags[i]);
+      tr.classList.toggle("bov-row-alert", on);
+      if (on) tr.title = "Flagged by an active alert";
+      else if (tr.title === "Flagged by an active alert" || tr.title === "Flagged by the alert you opened") tr.removeAttribute("title");
+    });
+    const slot = table.parentElement && table.parentElement.previousElementSibling;
+    if (slot && slot.classList.contains("bov-flag-slot")) slot.innerHTML = bovFlagBarHtml(widgetKey, rows, matches, tint);
+  });
 }
 
 function bovStatusChip(status) {
@@ -23419,11 +23720,17 @@ function bovAgeChip(days) {
   return `<span class="dashboard-activity-status ${b.cls} bov-age-chip">${escapeHtml(b.label)}</span>`;
 }
 
-function bovCustomerCell(name, sub) {
-  return `<span class="bov-cell-main" title="${escapeHtml(name || "")}">${escapeHtml(name || "—")}</span>${sub ? `<span class="bov-cell-sub">${escapeHtml(sub)}</span>` : ""}`;
+// Legacy BackOffice text arrives with SQL-doubled apostrophes ("John''s") — undo for display.
+function bovUnquote(v) {
+  return v == null ? v : String(v).replace(/''/g, "'");
 }
 
-function bovFootHtml(widgetKey, total, shown, extraHtml) {
+function bovCustomerCell(name, sub) {
+  const n = bovUnquote(name);
+  return `<span class="bov-cell-main" title="${escapeHtml(n || "")}">${escapeHtml(n || "—")}</span>${sub ? `<span class="bov-cell-sub">${escapeHtml(bovUnquote(sub))}</span>` : ""}`;
+}
+
+function bovFootHtml(total, extraHtml) {
   return `<span class="bov-foot-left">${extraHtml || ""}</span><span class="bov-foot-right">${bovInt(total)} row${total === 1 ? "" : "s"}</span>`;
 }
 
@@ -23623,7 +23930,27 @@ function bovRenderQuotationsTable() {
   const sorted = bovSortRows(rows, bovState.sort.quotations);
   const shown = sorted;  // every row is shown; the card body scrolls
   body.innerHTML = bovTableHtml("quotations", bovQuotationCols(), shown, { rowAttrs: bovQuotationRowAttrs });
-  if (foot) foot.innerHTML = bovFootHtml("quotations", rows.length, shown.length, d.store_name ? `Source: ${escapeHtml(d.store_name)}` : "");
+  if (foot) {
+    const warnings = (d.warnings || []).filter(Boolean);
+    const warnHtml = warnings.length
+      ? `<span class="bov-foot-warn" title="${escapeHtml(warnings.join("\n"))}">⚠ ${escapeHtml(warnings.length === 1 ? warnings[0] : `${warnings[0]} (+${warnings.length - 1} more)`)}</span>`
+      : "";
+    foot.innerHTML = bovFootHtml(rows.length, `${d.store_name ? `Source: ${escapeHtml(d.store_name)}` : ""}${warnHtml}`);
+  }
+}
+
+// Tone class for a margin / profit-% figure: negative → is-neg, thin → is-low.
+function bovMarginTone(pct) {
+  if (pct == null) return "";
+  const m = bovNum(pct);
+  return m < 0 ? " is-neg" : (m < 15 ? " is-low" : "");
+}
+
+// Profit % = profit ÷ denominator (order total for Month End rows and the
+// invoice modal; revenue for line margins), rounded to 2 decimals so it sorts
+// as a real number. null when either side is unknown or the denominator is 0.
+function bovProfitPct(profit, denominator) {
+  return profit != null && bovNum(denominator) > 0 ? Math.round((bovNum(profit) / bovNum(denominator)) * 10000) / 100 : null;
 }
 
 function bovMarginCell(r) {
@@ -23632,7 +23959,7 @@ function bovMarginCell(r) {
     return `<span class="bov-cell-muted" title="${escapeHtml(why)}">—</span>`;
   }
   const m = bovNum(r.margin_pct);
-  const tone = m < 0 ? " is-neg" : (m < 15 ? " is-low" : "");
+  const tone = bovMarginTone(m);
   const cov = r.cost_coverage != null && r.cost_coverage < 0.999 ? ` · cost known for ${Math.round(r.cost_coverage * 100)}% of units` : "";
   return `<span class="bov-margin${tone}" title="${escapeHtml(`Profit ${bovMoney(r.profit)} on ${bovMoney(r.revenue)}${cov}`)}">${escapeHtml(bovPct(m))}</span><span class="bov-cell-sub">${escapeHtml(bovMoney(r.profit))}</span>`;
 }
@@ -23669,7 +23996,7 @@ function bovQuotationCols() {
     { key: "start_date", label: "Started", width: "10%", render: (r) => `${escapeHtml(bovDateMdy(r.start_date))}${bovTimeHm(r.start_date) ? `<span class="bov-cell-sub">${escapeHtml(bovTimeHm(r.start_date))}</span>` : ""}` },
     { key: "business_name", label: "Customer", width: "16%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
     { key: "sales_rep", label: "Rep", width: "6%", render: (r) => escapeHtml(r.sales_rep || "—") },
-    { key: "packer", label: "Packer", width: "7%", render: (r) => `${escapeHtml(r.packer || "—")}${r.checker ? `<span class="bov-cell-sub">chk ${escapeHtml(r.checker)}</span>` : ""}` },
+    { key: "packer", label: "Packer", width: "7%", render: (r) => `<span title="${escapeHtml(r.packer || "")}">${escapeHtml(r.packer || "—")}</span>${r.checker ? `<span class="bov-cell-sub" title="${escapeHtml(`Checker: ${r.checker}`)}">chk ${escapeHtml(r.checker)}</span>` : ""}` },
     { key: "status", label: "Status", width: "9%", render: (r) => bovStatusChip(r.status) },
     { key: "dop2", label: "Scans", width: "20%", render: bovQuotationScanCell },
     { key: "total_qty", label: "Qty", num: true, width: "5%", render: (r) => bovInt(r.total_qty) },
@@ -23721,18 +24048,22 @@ function bovRenderProductsTable() {
     return;
   }
   // Server totals cover every row (even beyond the limit); once a chip/search
-  // narrows the list, the totals row follows what's visible.
+  // narrows the list, the totals row follows what's visible (never just the page).
   const totals = (!bovCardFiltersActive("products") && d.totals) ? d.totals : bovProductsComputeTotals(rows);
-  // Rows open the product drill-in by index into the server list (the key
-  // string may contain quotes, so it is not safe as an attribute value).
-  (d.rows || []).forEach((r, i) => { r._idx = i; });
-  body.innerHTML = bovTableHtml("products", bovProductCols(), rows, { tfoot: bovProductsTfootHtml(totals), select: { keyOf: BOV_EXPORTS.products.keyOf }, rowAttrs: bovProductRowAttrs });
+  // Client-side paging: the table shows the first BOV_ROWS_PAGE rows (more on
+  // demand); search, sort, export and totals still work on the whole list.
+  const limit = bovState.productsShown > 0 ? bovState.productsShown : BOV_ROWS_PAGE;
+  const shown = rows.length > limit ? rows.slice(0, limit) : rows;
+  body.innerHTML = bovTableHtml("products", bovProductCols(), shown, { tfoot: bovProductsTfootHtml(totals), select: { keyOf: BOV_EXPORTS.products.keyOf }, rowAttrs: bovProductRowAttrs })
+    + (shown.length < rows.length
+      ? `<div class="bov-show-more"><span>Showing ${bovInt(shown.length)} of ${bovInt(rows.length)}</span><button type="button" class="btn btn-secondary bov-btn-xs" data-bov-action="products-more">Show ${bovInt(Math.min(BOV_ROWS_PAGE, rows.length - shown.length))} more</button><button type="button" class="btn btn-secondary bov-btn-xs" data-bov-action="products-all">Show all ${bovInt(rows.length)}</button></div>`
+      : "");
   if (foot) {
     const notes = [];
     if (d.truncated) notes.push(`showing top ${bovInt(allRows.length)} of ${bovInt(d.count)} by revenue`);
     if (d.cost_store_name) notes.push(`S2S cost: ${d.cost_store_name}`);
     (d.warnings || []).forEach((msg) => notes.push(msg));
-    foot.innerHTML = bovFootHtml("products", rows.length, rows.length, escapeHtml(notes.join(" · ")));
+    foot.innerHTML = bovFootHtml(rows.length, escapeHtml(notes.join(" · ")));
   }
 }
 
@@ -23740,6 +24071,9 @@ function bovRenderProductsTable() {
 function bovProductsVisibleRows() {
   const d = bovState.widgets.products.data;
   if (!d || !d.configured || d.filtered_out || d.error) return [];
+  // Rows open the drill-in and key the export selection by index into the
+  // server list — the description may carry quotes, so it never lands in an attribute.
+  (d.rows || []).forEach((r, i) => { r._idx = i; });
   const rows = bovApplyCardFilters("products", d.rows || [], {
     storeOf: (r) => r.store_name,
     searchFields: ["description", "upc", "sku"],
@@ -23775,7 +24109,7 @@ function bovProductsTfootHtml(t) {
   const marginCell = (pct, profit, cov) => {
     if (pct == null) return `<span class="bov-cell-muted">—</span>`;
     const m = bovNum(pct);
-    const tone = m < 0 ? " is-neg" : (m < 15 ? " is-low" : "");
+    const tone = bovMarginTone(m);
     const covTxt = cov != null && cov < 99.9 ? ` · cost known for ${Math.round(cov)}% of revenue` : "";
     return `<span class="bov-margin${tone}" title="${escapeHtml(`Profit ${bovMoney(profit)}${covTxt}`)}">${escapeHtml(bovPct(m))}</span>`;
   };
@@ -23808,7 +24142,7 @@ function bovProductMarginCell(r, pctKey, profitKey) {
     return `<span class="bov-cell-muted" title="Cost unknown for this row (UPC not found in the cost source)">—</span>`;
   }
   const m = bovNum(r[pctKey]);
-  const tone = m < 0 ? " is-neg" : (m < 15 ? " is-low" : "");
+  const tone = bovMarginTone(m);
   return `<span class="bov-margin${tone}" title="${escapeHtml(`Profit ${bovMoney(r[profitKey])} on ${bovMoney(r.revenue)}`)}">${escapeHtml(bovPct(m))}</span><span class="bov-cell-sub">${escapeHtml(bovMoney(r[profitKey]))}</span>`;
 }
 
@@ -23860,7 +24194,7 @@ function bovRenderInvoices() {
     const ow = bovState.widgets.invoicesOpen;
     setCount("bov-tab-count-open", ow.data && ow.data.configured && !ow.data.error ? bovInt(ow.data.count || 0) : "");
   }
-  document.querySelectorAll('[data-bov-tab="invoices"]').forEach((b) => b.classList.toggle("active", b.dataset.value === tab));
+  bovSyncTabButtons("invoices", tab);
 
   if (!w.data && !w.error) {
     if (!w.loading) bovPaintSkeleton(key);
@@ -23917,7 +24251,7 @@ function bovRenderInvoices() {
     const sorted = bovSortRows(filtered, bovState.sort.invoicesOpen);
     const shown = sorted;  // every row is shown; the card body scrolls
     body.innerHTML = filtered.length ? bovTableHtml("invoicesOpen", bovOpenInvoiceCols(multi), shown, { rowAttrs: bovInvoiceRowAttrs }) : bovEmptyHtml("No open invoices in this age band.");
-    if (foot) foot.innerHTML = bovFootHtml("invoices", filtered.length, shown.length, `<span class="bov-aging-chips">${chips}</span>${rangeToggle}${partialNote}`);
+    if (foot) foot.innerHTML = bovFootHtml(filtered.length, `<span class="bov-aging-chips">${chips}</span>${rangeToggle}${partialNote}`);
     return;
   }
 
@@ -23944,7 +24278,7 @@ function bovRenderInvoices() {
   const shown = sorted;  // every row is shown; the card body scrolls
   body.innerHTML = bovTableHtml("invoicesPeriod", bovPeriodInvoiceCols(multi), shown, { rowAttrs: bovInvoiceRowAttrs });
   const left = (tab === "open" ? rangeToggle : "") + (d.truncated ? `Showing the first ${bovInt((d.invoices || []).length)} of ${bovInt(d.count)}` : srcNote) + partialNote;
-  if (foot) foot.innerHTML = bovFootHtml("invoices", rows.length, shown.length, left);
+  if (foot) foot.innerHTML = bovFootHtml(rows.length, left);
 }
 
 function bovPeriodInvoiceCols(multi) {
@@ -23995,28 +24329,6 @@ function bovOpenInvoiceCols(multi) {
   ];
 }
 
-function bovShippedInvoiceCols(multi) {
-  return multi ? [
-    { key: "invoice_number", label: "Invoice #", width: "14%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.invoice_number || String(r.invoice_id))}</span>` },
-    { key: "store_name", label: "Store", width: "12%", render: (r) => `<span class="bov-cell-store">${escapeHtml(bovStoreShort(r.store_name))}</span>` },
-    { key: "ship_date", label: "Shipped", width: "12%", render: (r) => escapeHtml(bovDateMdy(r.ship_date || r.invoice_date)) },
-    { key: "business_name", label: "Customer", width: "24%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
-    { key: "sales_rep", label: "Rep", width: "10%", render: (r) => escapeHtml(r.sales_rep || "—") },
-    { key: "shipper", label: "Shipper", width: "11%", render: (r) => `${escapeHtml(r.shipper || "—")}${r.tracking_no ? `<span class="bov-cell-sub bov-cell-mono">${escapeHtml(r.tracking_no)}</span>` : ""}` },
-    { key: "invoice_total", label: "Total", num: true, width: "10%", render: (r) => bovMoney(r.invoice_total) },
-    { key: "net_profit", label: "Profit", num: true, width: "9%", render: bovInvoiceProfitCell },
-    { key: "margin_pct", label: "Margin", num: true, width: "8%", render: bovMarginCell },
-  ] : [
-    { key: "invoice_number", label: "Invoice #", width: "15%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.invoice_number || String(r.invoice_id))}</span>` },
-    { key: "ship_date", label: "Shipped", width: "12%", render: (r) => escapeHtml(bovDateMdy(r.ship_date || r.invoice_date)) },
-    { key: "business_name", label: "Customer", width: "23%", render: (r) => bovCustomerCell(r.business_name, r.account_no) },
-    { key: "sales_rep", label: "Rep", width: "10%", render: (r) => escapeHtml(r.sales_rep || "—") },
-    { key: "shipper", label: "Shipper", width: "13%", render: (r) => `${escapeHtml(r.shipper || "—")}${r.tracking_no ? `<span class="bov-cell-sub bov-cell-mono">${escapeHtml(r.tracking_no)}</span>` : ""}` },
-    { key: "invoice_total", label: "Total", num: true, width: "11%", render: (r) => bovMoney(r.invoice_total) },
-    { key: "net_profit", label: "Profit", num: true, width: "10%", render: bovInvoiceProfitCell },
-    { key: "margin_pct", label: "Margin", num: true, width: "10%", render: bovMarginCell },
-  ];
-}
 
 function bovStoreShort(name) {
   return (typeof getStoreBaseName === "function" ? getStoreBaseName(name || "") : (name || "")) || name || "—";
@@ -24041,7 +24353,7 @@ function bovRenderPurchases() {
   setCount("bov-tab-count-incoming", inc && inc.configured && !inc.error ? bovInt(inc.count || 0) : "");
   setCount("bov-tab-count-purchased", pur && pur.configured && !pur.error ? bovInt(pur.count || 0) : "");
   setCount("bov-tab-count-received", rec && rec.configured && !rec.error && rec.totals ? bovInt((rec.totals.current || {}).purchase_orders || 0) : "");
-  document.querySelectorAll('[data-bov-tab="purchases"]').forEach((b) => b.classList.toggle("active", b.dataset.value === tab));
+  bovSyncTabButtons("purchases", tab);
   const purchasedBtn = document.querySelector('[data-bov-tab="purchases"][data-value="purchased"]');
   if (purchasedBtn) purchasedBtn.hidden = !!bovState.widgets.purchasesPurchased.unsupported;
 
@@ -24111,7 +24423,7 @@ function bovRenderPurchases() {
   const sorted = bovSortRows(rows, bovState.sort[sortKey]);
   const shown = sorted;  // every row is shown; the card body scrolls
   body.innerHTML = bovTableHtml(sortKey, cols, shown, { rowAttrs: bovPoRowAttrs });
-  if (foot) foot.innerHTML = bovFootHtml("purchases", rows.length, shown.length, sourceFoot);
+  if (foot) foot.innerHTML = bovFootHtml(rows.length, sourceFoot);
 }
 
 function bovPoRowAttrs(r) {
@@ -24243,7 +24555,8 @@ async function bovOpenQuotationModal(quotationNumber) {
   const body = document.getElementById("bov-quotation-body");
   if (!body) return;
   const row = ((bovState.widgets.quotations.data || {}).quotations || []).find((q) => q.quotation_number === quotationNumber) || {};
-  if (title) title.textContent = `Quotation ${quotationNumber}${row.business_name ? ` — ${row.business_name}` : ""}`;
+  if (title) title.textContent = `Quotation ${quotationNumber}${row.business_name ? ` — ${bovUnquote(row.business_name)}` : ""}`;
+  const tok = ++bovState.modalSeq.quotation;
   openModal("bov-quotation-modal");
   const cache = bovState.modalCache.quotation;
   const cacheKey = `${bovCostParams().cost_mode}:${quotationNumber}`;
@@ -24261,8 +24574,10 @@ async function bovOpenQuotationModal(quotationNumber) {
     }
     const data = await resp.json();
     cache.set(cacheKey, data);
+    if (tok !== bovState.modalSeq.quotation) return;
     bovRenderQuotationModal(data, row, quotationNumber);
   } catch (e) {
+    if (tok !== bovState.modalSeq.quotation) return;
     bovModalError(body, `Could not load this quotation: ${e.message || e}`);
   }
 }
@@ -24276,7 +24591,7 @@ function bovRenderQuotationModal(data, row, quotationNumber) {
   const total = h.quotation_total != null && h.quotation_total !== "" ? parseFloat(String(h.quotation_total).replace(/[^0-9.-]/g, "")) : row.quotation_total;
   const shipTo = [h.shipto, h.ship_address1, h.ship_address2, [h.ship_city, h.ship_state, h.ship_zip_code].filter(Boolean).join(" ")].filter((x) => x && String(x).trim()).join(", ");
   const kv = [
-    bovKv("Customer", `${escapeHtml(h.business_name || row.business_name || "—")}${(h.account_no || row.account_no) ? `<span class="bov-cell-sub">${escapeHtml(h.account_no || row.account_no)}</span>` : ""}`),
+    bovKv("Customer", `${escapeHtml(bovUnquote(h.business_name || row.business_name) || "—")}${(h.account_no || row.account_no) ? `<span class="bov-cell-sub">${escapeHtml(h.account_no || row.account_no)}</span>` : ""}`),
     bovKv("Sales rep", escapeHtml(h.sales_rep || row.sales_rep || "—")),
     bovKv("Status", `${bovStatusChip(status)}${h.user_status ? ` <span class="bov-cell-sub">${escapeHtml(h.user_status)}</span>` : ""}`),
     bovKv("Source", escapeHtml(h.source_db || row.source_db || "—")),
@@ -24323,6 +24638,7 @@ async function bovOpenInvoiceModal(invoiceId, storeId) {
   const body = document.getElementById("bov-invoice-body");
   if (!body) return;
   if (title) title.textContent = `Invoice`;
+  const tok = ++bovState.modalSeq.invoice;
   openModal("bov-invoice-modal");
   // InvoiceID is only unique within one BackOffice DB — key the cache and the
   // request by store when several sales stores are selected.
@@ -24338,8 +24654,10 @@ async function bovOpenInvoiceModal(invoiceId, storeId) {
   try {
     const data = await bovFetchJson(`/invoices/${invoiceId}`, { ...(sid != null ? { store_id: sid } : {}), ...bovCostParams() });
     cache.set(cacheKey, data);
+    if (tok !== bovState.modalSeq.invoice) return;
     bovRenderInvoiceModal(data);
   } catch (e) {
+    if (tok !== bovState.modalSeq.invoice) return;
     bovModalError(body, `Could not load this invoice: ${e.message || e}`);
   }
 }
@@ -24351,7 +24669,7 @@ function bovRenderInvoiceModal(data) {
   bovState.invoiceModalData = data;
   const h = data.header || {};
   const lines = data.lines || [];
-  if (title) title.textContent = `Invoice ${h.invoice_number || h.invoice_id || ""}${h.business_name ? ` — ${h.business_name}` : ""}${data.store_name && bovSalesStoreIds().length > 1 ? ` · ${data.store_name}` : ""}`;
+  if (title) title.textContent = `Invoice ${h.invoice_number || h.invoice_id || ""}${h.business_name ? ` — ${bovUnquote(h.business_name)}` : ""}${data.store_name && bovSalesStoreIds().length > 1 ? ` · ${data.store_name}` : ""}`;
   const shipTo = [h.ship_to, h.ship_address1, h.ship_address2, [h.ship_city, h.ship_state, h.ship_zip_code].filter(Boolean).join(" ")].filter((x) => x && String(x).trim()).join(", ");
   const statusChip = h.void
     ? `<span class="qip-status-chip pending">Void</span>`
@@ -24359,7 +24677,7 @@ function bovRenderInvoiceModal(data) {
       ? `<span class="qip-status-chip complete">Shipped</span>`
       : `<span class="qip-status-chip picking">Open</span> ${bovAgeChip(h.age_days)}`;
   const kv = [
-    bovKv("Customer", `${escapeHtml(h.business_name || "—")}${h.account_no ? `<span class="bov-cell-sub">${escapeHtml(h.account_no)}</span>` : ""}`),
+    bovKv("Customer", `${escapeHtml(bovUnquote(h.business_name) || "—")}${h.account_no ? `<span class="bov-cell-sub">${escapeHtml(h.account_no)}</span>` : ""}`),
     bovKv("Sales rep", escapeHtml(h.sales_rep || "—")),
     bovKv("Status", statusChip),
     bovKv("Invoice date", escapeHtml(bovDateMdy(h.invoice_date))),
@@ -24377,9 +24695,9 @@ function bovRenderInvoiceModal(data) {
     bovKv("Profit", (() => {
       const net = h.net_profit != null ? h.net_profit : h.profit;
       if (net == null) return "—";
-      const netPct = bovNum(h.revenue) > 0 ? (bovNum(net) / bovNum(h.revenue)) * 100 : null;
+      const netPct = bovProfitPct(net, h.invoice_total);
       const sub = `product ${bovMoney(h.profit)} − shipping ${bovMoney(h.shipping_cost || 0)}`;
-      return `<strong class="bov-profit${bovNum(net) < 0 ? " is-neg" : ""}">${escapeHtml(bovMoney(net))}</strong>${netPct != null ? ` <span class="sa-kpi-pct">${escapeHtml(bovPct(netPct))}</span>` : ""}<span class="bov-cell-sub" title="${escapeHtml(sub)}">${escapeHtml(sub)}</span>`;
+      return `<strong class="bov-profit${bovNum(net) < 0 ? " is-neg" : ""}">${escapeHtml(bovMoney(net))}</strong>${netPct != null ? ` <span class="sa-kpi-pct" title="Profit % = net profit ÷ invoice total (same basis as Month End)">${escapeHtml(bovPct(netPct))}</span>` : ""}<span class="bov-cell-sub" title="${escapeHtml(sub)}">${escapeHtml(sub)}</span>`;
     })()),
     bovKv("Cost basis", data.cost_basis === "s2s"
       ? `<span class="bov-cost-basis is-s2s" title="S2S cost is on — every line costed from the Item Tracker S2S Items_tbl.UnitCost by UPC">S2S UnitCost</span>`
@@ -24409,7 +24727,7 @@ function bovLineProfitCell(profit) {
 function bovLineMarginCell(pct) {
   if (pct == null) return `<span class="bov-cell-muted">—</span>`;
   const m = bovNum(pct);
-  const tone = m < 0 ? " is-neg" : (m < 15 ? " is-low" : "");
+  const tone = bovMarginTone(m);
   return `<span class="bov-margin${tone}">${escapeHtml(bovPct(m))}</span>`;
 }
 
@@ -24456,6 +24774,7 @@ async function bovOpenProductModal(idx) {
       period.start ? bovFmtRangeLabel(period.start, period.end) : null,
     ].filter(Boolean).join(" · ");
   }
+  const tok = ++bovState.modalSeq.product;
   openModal("bov-product-modal");
   const cacheKey = `${row.store_id}:${row.store_type}:${row.upc || ""}:${row.variant_shopify_id || ""}:${row.upc ? "" : (row.description || "")}:${period.start || ""}:${period.end || ""}:${bovState.costMode}`;
   const cache = bovState.modalCache.product;
@@ -24475,8 +24794,10 @@ async function bovOpenProductModal(idx) {
     const data = await bovFetchJson("/products/lines", params);
     data._row = row;
     cache.set(cacheKey, data);
+    if (tok !== bovState.modalSeq.product) return;
     bovRenderProductModal(data);
   } catch (e) {
+    if (tok !== bovState.modalSeq.product) return;
     bovModalError(body, `Could not load the lines for this product: ${e.message || e}`);
   }
 }
@@ -24485,7 +24806,7 @@ function bovProductBasisKv(label, cost, profit, pct, unit, hint) {
   if (cost == null) return bovKv(label, `<span class="bov-cell-muted" title="${escapeHtml(hint || "")}">—</span>`);
   const p = bovNum(profit);
   const m = pct != null ? bovNum(pct) : null;
-  const tone = m == null ? "" : (m < 0 ? " is-neg" : (m < 15 ? " is-low" : ""));
+  const tone = bovMarginTone(m);
   return bovKv(label,
     `<strong>${escapeHtml(bovMoney(cost))}</strong>` +
     `${unit != null ? `<span class="bov-cell-sub">${escapeHtml(bovMoney(unit))} / unit</span>` : ""}` +
@@ -24581,6 +24902,7 @@ async function bovOpenPoModal(poId) {
   const body = document.getElementById("bov-po-body");
   if (!body) return;
   if (title) title.textContent = "Purchase order";
+  const tok = ++bovState.modalSeq.po;
   openModal("bov-po-modal");
   const cache = bovState.modalCache.po;
   if (cache.has(poId)) {
@@ -24591,8 +24913,10 @@ async function bovOpenPoModal(poId) {
   try {
     const data = await bovFetchJson(`/purchases/${poId}`);
     cache.set(poId, data);
+    if (tok !== bovState.modalSeq.po) return;
     bovRenderPoModal(data);
   } catch (e) {
+    if (tok !== bovState.modalSeq.po) return;
     bovModalError(body, `Could not load this purchase order: ${e.message || e}`);
   }
 }
@@ -24650,7 +24974,7 @@ async function bovExcludePoLine(idx) {
   const l = d && (d.lines || [])[idx];
   if (!l || l.product_id == null) return;
   try {
-    const resp = await fetch(`${API_BASE}/business-overview/purchases/exclusions`, {
+    const resp = await bovFetch(`${API_BASE}/business-overview/purchases/exclusions`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ product_id: l.product_id, product_sku: l.product_sku, product_upc: l.product_upc, description: l.product_description }),
     });
@@ -24668,7 +24992,7 @@ async function bovExcludePoLine(idx) {
 
 async function bovIncludePoExclusion(id) {
   try {
-    const resp = await fetch(`${API_BASE}/business-overview/purchases/exclusions/${id}`, { method: "DELETE" });
+    const resp = await bovFetch(`${API_BASE}/business-overview/purchases/exclusions/${id}`, { method: "DELETE" });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     showToast("✓ Product counted in PO calculations again", "success");
     await bovPoExclusionChanged();
@@ -24695,6 +25019,9 @@ async function bovLoadConfig() {
   ]);
   bovState.config = results[0].status === "fulfilled" ? results[0].value : null;
   bovState.options = results[1].status === "fulfilled" ? results[1].value : null;
+  // Presets ("Today", "This month", …) are computed on the configured
+  // timezone's calendar, not the viewer's clock.
+  bovState.today = bovState.config && /^\d{4}-\d{2}-\d{2}$/.test(String(bovState.config.today || "")) ? bovState.config.today : null;
   if (results[0].status === "rejected") {
     console.warn("[bov] config load failed", results[0].reason);
     if (results[0].reason && results[0].reason.status !== 404) {
@@ -24712,11 +25039,6 @@ function bovSalesStoreIds(cfg) {
   return ids.map(Number).filter((n) => !isNaN(n));
 }
 
-function bovSalesStoreLabel(cfg) {
-  cfg = cfg || bovState.config || {};
-  const names = (cfg.sales_store_names && cfg.sales_store_names.length) ? cfg.sales_store_names : (cfg.sales_store_name ? [cfg.sales_store_name] : []);
-  return names.join(", ");
-}
 
 function bovConfigDot(ok, warnOnly) {
   return `<span class="bov-config-dot ${ok ? "ok" : warnOnly ? "warn" : "off"}" aria-hidden="true"></span>`;
@@ -24771,6 +25093,22 @@ const BOV_PER_STORE_RULES = { unshipped_cutoff: "cutoff", open_invoice_age: "day
 // Rules whose per-store overrides also apply to Shopify stores (margin is computed per store for both).
 const BOV_PER_STORE_INCLUDES_SHOPIFY = { margin_floor: true };
 
+// Fields the markup does not carry yet are created next to the rule's controls.
+function bovEnsureRuleField(key, field) {
+  const id = `bov-rule-${key}-${field}`;
+  let el = document.getElementById(id);
+  if (el || field !== "lookback_days") return el;
+  const row = document.querySelector(`.bov-rule-row[data-rule="${key}"]`);
+  const ctl = row && row.querySelector(".bov-rule-ctl");
+  if (!ctl) return null;
+  const span = document.createElement("span");
+  span.className = "bov-rule-ctl bov-rule-ctl-lookback";
+  span.title = "Only invoices dated within this many days are evaluated (blank = default 90)";
+  span.innerHTML = ` · look back <input type="number" id="${id}" class="dark-input" min="1" max="3650" step="1" placeholder="90"> days`;
+  ctl.insertAdjacentElement("afterend", span);
+  return document.getElementById(id);
+}
+
 function bovPopulateAlertRules(rules) {
   rules = rules || {};
   Object.entries(BOV_ALERT_RULE_FIELDS).forEach(([key, fields]) => {
@@ -24778,7 +25116,7 @@ function bovPopulateAlertRules(rules) {
     const en = document.getElementById(`bov-rule-${key}-enabled`);
     if (en) en.checked = r.enabled !== false;
     fields.forEach((f) => {
-      const el = document.getElementById(`bov-rule-${key}-${f}`);
+      const el = bovEnsureRuleField(key, f);
       if (!el) return;
       if (el.type === "checkbox") el.checked = !!r[f];
       else el.value = r[f] != null ? r[f] : "";
@@ -24975,7 +25313,7 @@ async function bovSaveConfig() {
     if (adminVal !== null && adminVal !== adminCur) {
       await bovSaveAdminStore(adminVal);
     }
-    const resp = await fetch(`${API_BASE}/business-overview/config`, {
+    const resp = await bovFetch(`${API_BASE}/business-overview/config`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -24986,6 +25324,7 @@ async function bovSaveConfig() {
       throw new Error(detail);
     }
     bovState.config = await resp.json();
+    if (bovState.config && /^\d{4}-\d{2}-\d{2}$/.test(String(bovState.config.today || ""))) bovState.today = bovState.config.today;
     try { bovState.options = await bovFetchJson("/config/options"); } catch (e) { /* keep old options */ }
     // Staged bank-account toggles go last: the sources are already saved by now.
     let bankErr = null;
@@ -25008,10 +25347,17 @@ async function bovSaveConfig() {
     }
     bovShowSetup(false);
     bovRenderConfigBar();
-    // Reset widget state so unconfigured→configured transitions repaint from a skeleton.
-    Object.keys(bovState.widgets).forEach((k) => { bovState.widgets[k] = bovEmptyWidget(); });
-    if (!bovState.range) bovApplyPreset(bovState.preset, { fetch: false });
+    // Reset widget state so unconfigured→configured transitions repaint from a
+    // skeleton — aborting in-flight requests first so a late response cannot
+    // land on the fresh widget objects.
+    Object.keys(bovState.widgets).forEach((k) => {
+      const w = bovState.widgets[k];
+      if (w && w.abort) { try { w.abort.abort(); } catch (e) { /* ignore */ } }
+      bovState.widgets[k] = bovEmptyWidget();
+    });
+    bovApplyPreset(bovState.preset, { fetch: false });   // timezone may have moved "today"
     bovFetchAll();
+    bovInvalidateDependents({ monthEnd: true, inventory: true });
     startBovAutoRefresh();
     bovScheduleChartRender();
   } catch (e) {
@@ -25331,7 +25677,8 @@ async function fetchMonthEnd() {
   try {
     // SSE: progress events while the backend computes, then one `result` event.
     const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== ""));
-    const resp = await fetch(`${API_BASE}/business-overview/month-end/stream?${qs}`, { signal: ctl.signal });
+    const resp = await bovFetch(`${API_BASE}/business-overview/month-end/stream?${qs}`, { signal: ctl.signal });
+    if (resp.status === 401) { ctl.abort(); return; }   // locked — bovFetch showed the lock screen
     if (!resp.ok || !resp.body) throw new Error(`HTTP ${resp.status}`);
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
@@ -25382,25 +25729,25 @@ async function fetchMonthEnd() {
   }
 }
 
+// Shopify real profit: product profit + shipping collected − shipping cost.
+function bovRealProfit(productProfit, shippingCollected, shippingCost) {
+  if (productProfit == null) return null;
+  return Math.round((bovNum(productProfit) + bovNum(shippingCollected) - bovNum(shippingCost)) * 100) / 100;
+}
+
 function meApplyEstimate(r) {
   // Materialize the estimate onto a row copy so sorting, totals, cells and the
   // modal handoff all see the estimated shipping cost + recomputed profit.
   // Applies when the real cost is unknown: no parcel, or a $0-cost parcel.
   if (r.source !== "shopify" || r.shipping_estimate == null || bovNum(r.shipping_cost) > 0) return r;
-  const profit = r.product_profit != null
-    ? Math.round((r.product_profit + (r.shipping_collected || 0) - r.shipping_estimate) * 100) / 100
-    : null;
+  const profit = bovRealProfit(r.product_profit, r.shipping_collected, r.shipping_estimate);
   return { ...r, shipping_cost: r.shipping_estimate, profit, _estimated: true };
 }
 
 // Profit % = net profit ÷ order total (invoice total / Shopify total_price), as a
 // real numeric key on the row so the generic column sort orders it correctly.
-function meProfitPct(profit, total) {
-  return profit != null && bovNum(total) > 0 ? Math.round((bovNum(profit) / bovNum(total)) * 10000) / 100 : null;
-}
-
 function meDerive(r) {
-  return { ...r, profit_pct: meProfitPct(r.profit, r.total) };
+  return { ...r, profit_pct: bovProfitPct(r.profit, r.total) };
 }
 
 function monthEndVisibleRows() {
@@ -25569,7 +25916,7 @@ function meTotals(rows) {
     if (r.shipping_missing) t.ship_missing++;
     if (r._estimated) { t.est_orders++; t.est_amount += bovNum(r.shipping_cost); }
   });
-  t.profit_pct = t.profit_known ? meProfitPct(t.profit, t.profit_base) : null;
+  t.profit_pct = t.profit_known ? bovProfitPct(t.profit, t.profit_base) : null;
   return t;
 }
 
@@ -25636,11 +25983,6 @@ function meProfitCell(r) {
   return `<span class="bov-profit${n < 0 ? " is-neg" : ""}" title="${escapeHtml(breakdown)}">${escapeHtml(bovMoney(n))}</span>${est}${cov}`;
 }
 
-function meProfitPctTone(pct) {
-  const m = bovNum(pct);
-  return m < 0 ? " is-neg" : (m < 15 ? " is-low" : "");
-}
-
 function meProfitPctCell(r) {
   if (r.profit_pct == null) {
     const why = r.profit == null
@@ -25650,12 +25992,12 @@ function meProfitPctCell(r) {
   }
   const title = `Profit ${bovMoney(r.profit)} on order total ${bovMoney(r.total)}${r._estimated ? " (estimated shipping)" : ""}`;
   const est = r._estimated ? `<span class="bov-cell-sub">est. shipping</span>` : "";
-  return `<span class="bov-margin${meProfitPctTone(r.profit_pct)}" title="${escapeHtml(title)}">${escapeHtml(bovPct(r.profit_pct))}</span>${est}`;
+  return `<span class="bov-margin${bovMarginTone(r.profit_pct)}" title="${escapeHtml(title)}">${escapeHtml(bovPct(r.profit_pct))}</span>${est}`;
 }
 
 function meStateCell(r) {
   const st = String(r.ship_state || "").trim();
-  return st ? `<span class="bov-cell-mono">${escapeHtml(st.toUpperCase())}</span>` : `<span class="bov-cell-muted">—</span>`;
+  return st ? `<span class="bov-cell-mono">${escapeHtml(st.toUpperCase())}</span>` : `<span class="bov-cell-muted" title="${r.source === "backoffice" ? "No ShipState on the invoice" : "No shipping province on the order"}">n/a</span>`;
 }
 
 function meColumns() {
@@ -25663,13 +26005,13 @@ function meColumns() {
     { key: "date", label: "Date", width: "8%", render: (r) => escapeHtml(bovDateMdy(r.date)) },
     { key: "number", label: "Number", width: "10%", render: (r) => `<span class="bov-cell-mono">${escapeHtml(r.number || "—")}</span>` },
     { key: "store_name", label: "Store", width: "12%", render: meStoreCell },
-    { key: "customer", label: "Customer", width: "17%", render: (r) => escapeHtml(r.customer || "—") },
+    { key: "customer", label: "Customer", width: "17%", render: (r) => `<span title="${escapeHtml(bovUnquote(r.customer) || "")}">${escapeHtml(bovUnquote(r.customer) || "—")}</span>` },
     { key: "ship_state", label: "State", width: "6%", render: meStateCell },
     { key: "total", label: "Total", num: true, width: "10%", render: (r) => bovMoney(r.total) },
-    { key: "shipping_collected", label: "Ship collected", num: true, width: "10%", render: meShipCollectedCell },
+    { key: "shipping_collected", label: "Collected", title: "Shipping collected from the customer (Shopify total_shipping)", num: true, width: "10%", render: meShipCollectedCell },
     { key: "shipping_cost", label: "Ship cost", num: true, width: "10%", render: meShipCostCell },
     { key: "profit", label: "Profit", num: true, width: "10%", render: meProfitCell },
-    { key: "profit_pct", label: "Profit %", num: true, width: "7%", render: meProfitPctCell },
+    { key: "profit_pct", label: "Profit %", title: "Net profit ÷ order total (invoice total / Shopify order total) — the invoice modal uses the same basis", num: true, width: "7%", render: meProfitPctCell },
   ];
 }
 
@@ -25694,7 +26036,7 @@ function meTfootHtml(t) {
     `<td class="bov-num">${bovMoney(t.shipping_collected)}</td>` +
     `<td class="bov-num">${bovMoney(t.shipping_cost)}</td>` +
     `<td class="bov-num"><span class="bov-profit${t.profit < 0 ? " is-neg" : ""}">${escapeHtml(bovMoney(t.profit))}</span></td>` +
-    `<td class="bov-num">${t.profit_pct != null ? `<span class="bov-margin${meProfitPctTone(t.profit_pct)}" title="${escapeHtml(`Profit ${bovMoney(t.profit)} on ${bovMoney(t.profit_base)} of orders with a known profit`)}">${escapeHtml(bovPct(t.profit_pct))}</span>` : "—"}</td>` +
+    `<td class="bov-num">${t.profit_pct != null ? `<span class="bov-margin${bovMarginTone(t.profit_pct)}" title="${escapeHtml(`Profit ${bovMoney(t.profit)} on ${bovMoney(t.profit_base)} of orders with a known profit`)}">${escapeHtml(bovPct(t.profit_pct))}</span>` : "—"}</td>` +
     `</tr></tfoot>`;
 }
 
@@ -25711,7 +26053,7 @@ function meSummaryHtml(t) {
     tile("Profit", `<span class="bov-profit${t.profit < 0 ? " is-neg" : ""}">${escapeHtml(bovMoney(t.profit))}</span>`,
       t.profit_known < t.orders ? `${bovInt(t.orders - t.profit_known)} orders without a known profit` : ""),
     tile("Profit %", t.profit_pct != null
-      ? `<span class="bov-margin${meProfitPctTone(t.profit_pct)}">${escapeHtml(bovPct(t.profit_pct))}</span>` : "—",
+      ? `<span class="bov-margin${bovMarginTone(t.profit_pct)}">${escapeHtml(bovPct(t.profit_pct))}</span>` : "—",
       t.profit_pct != null && t.profit_known < t.orders ? `of ${bovMoney(t.profit_base)} in orders with a known profit` : ""),
   ].join("");
 }
@@ -25816,22 +26158,26 @@ function renderMonthEnd() {
 // ===== BOV Inventory tab =====
 // Clone of the Sales report as a Business Overview tab. Config is read-only
 // from the Sales page (GET /sales/config); the period follows the BOV topbar.
+// Everything binds through the page delegation (data-bov-action="inv-…") or
+// the panel's own change/input/keydown listeners — no inline handlers.
 
 const INV_COLUMNS = [
-  { key: "upc",            label: "UPC",         soldOnly: false, baseWidth: 10, align: "left",  thStyle: "",                    tdStyle: "font-family: monospace; font-size: 0.8125rem",                                                                      hasFilter: true },
-  { key: "description",    label: "Description", soldOnly: false, baseWidth: 25, align: "left",  thStyle: "",                    tdStyle: "font-size: 0.8125rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap",                               hasFilter: true },
-  { key: "subcategory",    label: "Subcategory", soldOnly: false, baseWidth: 12, align: "left",  thStyle: "",                    tdStyle: "font-size: 0.8125rem; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap", hasFilter: true },
-  { key: "bin_location",   label: "Bin",         soldOnly: false, baseWidth: 8,  align: "left",  thStyle: "",                    tdStyle: "font-size: 0.8125rem",                                                                                              hasFilter: false },
-  { key: "reorder_level",  label: "Reorder",     soldOnly: false, baseWidth: 6,  align: "right", thStyle: "text-align: right;",  tdStyle: "text-align: right; font-size: 0.8125rem",                                                                           hasFilter: true },
-  { key: "quant_on_hand",  label: "On Hand",     soldOnly: false, baseWidth: 7,  align: "right", thStyle: "text-align: right;",  tdStyle: "text-align: right; font-size: 0.8125rem",                                                                           hasFilter: false },
-  { key: "s2s_cost",       label: "S2S Cost",    soldOnly: false, baseWidth: 7,  align: "right", thStyle: "text-align: right;",  tdStyle: "text-align: right; font-size: 0.8125rem",                                                                           hasFilter: false, money: true },
-  { key: "total_cost",     label: "Total Cost",  soldOnly: false, baseWidth: 7,  align: "right", thStyle: "text-align: right;",  tdStyle: "text-align: right; font-size: 0.8125rem; font-weight: 600",                                                         hasFilter: false, money: true },
-  { key: "total_sold",     label: "Sold",        soldOnly: true,  baseWidth: 6,  align: "right", thStyle: "text-align: right;",  tdStyle: "text-align: right; font-size: 0.8125rem",                                                                           hasFilter: false },
-  { key: "total_returned", label: "Returns",     soldOnly: true,  baseWidth: 6,  align: "right", thStyle: "text-align: right;",  tdStyle: "text-align: right; font-size: 0.8125rem; color: var(--warning)",                                                    hasFilter: false },
-  { key: "net_sold",       label: "Net Sold",    soldOnly: true,  baseWidth: 7,  align: "right", thStyle: "text-align: right;",  tdStyle: "text-align: right; font-size: 0.8125rem; font-weight: 600",                                                         hasFilter: false },
+  { key: "upc",            label: "UPC",         soldOnly: false, baseWidth: 10, num: false, cls: "inv-cell-mono",     hasFilter: true },
+  { key: "description",    label: "Description", soldOnly: false, baseWidth: 25, num: false, cls: "inv-cell-ellipsis", hasFilter: true },
+  { key: "subcategory",    label: "Subcategory", soldOnly: false, baseWidth: 12, num: false, cls: "inv-cell-ellipsis inv-cell-muted", hasFilter: true },
+  { key: "bin_location",   label: "Bin",         soldOnly: false, baseWidth: 8,  num: false, cls: "",                  hasFilter: false },
+  { key: "reorder_level",  label: "Reorder",     soldOnly: false, baseWidth: 6,  num: true,  cls: "",                  hasFilter: true },
+  { key: "quant_on_hand",  label: "On Hand",     soldOnly: false, baseWidth: 7,  num: true,  cls: "",                  hasFilter: false },
+  { key: "s2s_cost",       label: "S2S Cost",    soldOnly: false, baseWidth: 7,  num: true,  cls: "",                  hasFilter: false, money: true },
+  { key: "total_cost",     label: "Total Cost",  soldOnly: false, baseWidth: 7,  num: true,  cls: "inv-cell-strong",   hasFilter: false, money: true },
+  { key: "total_sold",     label: "Sold",        soldOnly: true,  baseWidth: 6,  num: true,  cls: "",                  hasFilter: false },
+  { key: "total_returned", label: "Returns",     soldOnly: true,  baseWidth: 6,  num: true,  cls: "inv-cell-warn",     hasFilter: false },
+  { key: "net_sold",       label: "Net Sold",    soldOnly: true,  baseWidth: 7,  num: true,  cls: "inv-cell-strong",   hasFilter: false },
 ];
+const INV_COLUMN_KEYS = INV_COLUMNS.map((c) => c.key);
+const INV_PAGE_SIZES = [50, 100, 250, 500];
 
-let invState = {
+const invState = {
   initialized: false,
   isLoading: false,
   hasData: false,
@@ -25842,7 +26188,7 @@ let invState = {
   sortColumn: "net_sold",
   sortDirection: "desc",
   currentPage: 0,
-  pageSize: parseInt(localStorage.getItem("inv_page_size") || "100"),
+  pageSize: 100,
   summary: null,
   stores: [],
   config: null,
@@ -25853,18 +26199,79 @@ let invState = {
   searchFilter: "",
   selectedReorderLevels: [],
   binsFilter: "",
-  hiddenColumns: JSON.parse(localStorage.getItem("inv_hidden_columns") || "[]"),
+  instockOnly: false,
+  hiddenColumns: [],
 };
 
+// localStorage is read lazily and defensively: a corrupt value or a browser
+// that throws on storage access must never take the whole SPA down.
+function invStorageGet(key) {
+  try { return localStorage.getItem(key); } catch (e) { return null; }
+}
+
+function invStorageSet(key, value) {
+  try {
+    if (value == null) localStorage.removeItem(key);
+    else localStorage.setItem(key, value);
+  } catch (e) { /* storage blocked / full — non-fatal */ }
+}
+
+function invParseJson(raw, check) {
+  try {
+    const v = JSON.parse(raw);
+    return check(v) ? v : null;
+  } catch (e) { return null; }
+}
+
+function invLoadPrefs() {
+  const size = parseInt(invStorageGet("inv_page_size") || "", 10);
+  invState.pageSize = INV_PAGE_SIZES.includes(size) ? size : 100;
+  const hidden = invParseJson(invStorageGet("inv_hidden_columns") || "[]", (v) => Array.isArray(v) && v.every((k) => typeof k === "string"));
+  invState.hiddenColumns = (hidden || []).filter((k) => INV_COLUMN_KEYS.includes(k));
+  if (invState.hiddenColumns.length >= INV_COLUMN_KEYS.length) invState.hiddenColumns = [];
+  const view = invStorageGet("inv_view_mode");
+  invState.viewMode = ["all", "sold", "not-sold"].includes(view) ? view : "all";
+  const search = invStorageGet("inv_filter_search");
+  invState.searchFilter = typeof search === "string" ? search.slice(0, 200) : "";
+  const reorder = invParseJson(invStorageGet("inv_filter_reorder") || "[]", (v) => Array.isArray(v) && v.every((n) => typeof n === "number" && isFinite(n)));
+  invState.selectedReorderLevels = reorder || [];
+  const subcats = invParseJson(invStorageGet("inv_filter_subcategories") || "[]", (v) => Array.isArray(v) && v.every((x) => typeof x === "string"));
+  invState.selectedSubcategories = subcats || [];
+  invState.instockOnly = invStorageGet("inv_filter_instock") === "1";
+  const bins = invStorageGet("inv_filter_bins");
+  invState.binsFilter = ["", "no-bins", "bins-only"].includes(bins) ? bins : "";
+}
+
+function invSaveFilterPrefs() {
+  invStorageSet("inv_filter_search", invState.searchFilter);
+  invStorageSet("inv_filter_reorder", JSON.stringify(invState.selectedReorderLevels));
+  invStorageSet("inv_filter_subcategories", JSON.stringify(invState.selectedSubcategories));
+  invStorageSet("inv_filter_instock", invState.instockOnly ? "1" : "0");
+  invStorageSet("inv_filter_bins", invState.binsFilter);
+}
+
+function invShow(id, visible) {
+  const el = document.getElementById(id);
+  if (el) el.hidden = !visible;
+}
+
+function invShowError(message) {
+  const el = document.getElementById("inv-error");
+  if (!el) return;
+  el.textContent = message;
+  el.hidden = false;
+  invShow("inv-progress", false);
+}
+
 function invGetVisibleColumns(isSold) {
-  const cols = INV_COLUMNS.filter(col => {
+  const cols = INV_COLUMNS.filter((col) => {
     if (col.soldOnly && !isSold) return false;
     return !invState.hiddenColumns.includes(col.key);
   });
-  const totalBase = cols.reduce((s, c) => s + c.baseWidth, 0);
+  const totalBase = cols.reduce((sum, c) => sum + c.baseWidth, 0);
   const target = 98;
-  cols.forEach(col => {
-    col.width = ((col.baseWidth / totalBase) * target).toFixed(1) + "%";
+  cols.forEach((col) => {
+    col.width = `${((col.baseWidth / totalBase) * target).toFixed(1)}%`;
   });
   return cols;
 }
@@ -25872,20 +26279,10 @@ function invGetVisibleColumns(isSold) {
 function invBuildColumnTogglePills() {
   const container = document.getElementById("inv-column-pills");
   if (!container) return;
-  container.innerHTML = "";
-  INV_COLUMNS.forEach(col => {
-    const isVisible = !invState.hiddenColumns.includes(col.key);
-    const label = document.createElement("label");
-    label.style.cssText = `display: inline-flex; align-items: center; gap: 0.25rem; font-size: 0.75rem; cursor: pointer; padding: 0.2rem 0.5rem; border-radius: 1rem; border: 1px solid var(--border-color); background: ${isVisible ? "var(--bg-tertiary, rgba(255,255,255,0.08))" : "transparent"}; white-space: nowrap; opacity: ${isVisible ? "1" : "0.5"}; transition: opacity 0.15s, background 0.15s;`;
-    const cb = document.createElement("input");
-    cb.type = "checkbox";
-    cb.checked = isVisible;
-    cb.style.cssText = "margin: 0; cursor: pointer;";
-    cb.onchange = () => invToggleColumn(col.key);
-    label.appendChild(cb);
-    label.appendChild(document.createTextNode(col.label));
-    container.appendChild(label);
-  });
+  container.innerHTML = INV_COLUMNS.map((col) => {
+    const on = !invState.hiddenColumns.includes(col.key);
+    return `<label class="inv-pill${on ? " is-on" : ""}"><input type="checkbox" class="inv-column-cb" value="${escapeHtml(col.key)}"${on ? " checked" : ""}> ${escapeHtml(col.label)}</label>`;
+  }).join("");
 }
 
 function invToggleColumn(key) {
@@ -25893,7 +26290,7 @@ function invToggleColumn(key) {
   if (idx >= 0) {
     invState.hiddenColumns.splice(idx, 1);
   } else {
-    const visibleCount = INV_COLUMNS.filter(c => !invState.hiddenColumns.includes(c.key)).length;
+    const visibleCount = INV_COLUMNS.filter((c) => !invState.hiddenColumns.includes(c.key)).length;
     if (visibleCount <= 1) {
       showToast("At least one column must remain visible", "warning");
       invBuildColumnTogglePills();
@@ -25901,53 +26298,114 @@ function invToggleColumn(key) {
     }
     invState.hiddenColumns.push(key);
   }
-  localStorage.setItem("inv_hidden_columns", JSON.stringify(invState.hiddenColumns));
+  invStorageSet("inv_hidden_columns", JSON.stringify(invState.hiddenColumns));
   invBuildColumnTogglePills();
-  const filterRow = document.getElementById("inv-table-filters");
-  if (filterRow) filterRow.dataset.viewKey = "";
+  invResetFilterRow();
   renderInvTable();
 }
 
 function resetInvColumns() {
   invState.hiddenColumns = [];
-  localStorage.removeItem("inv_hidden_columns");
+  invStorageSet("inv_hidden_columns", null);
   invBuildColumnTogglePills();
+  invResetFilterRow();
+  renderInvTable();
+}
+
+function invResetFilterRow() {
   const filterRow = document.getElementById("inv-table-filters");
   if (filterRow) filterRow.dataset.viewKey = "";
-  renderInvTable();
+}
+
+function invSetViewButtons() {
+  document.querySelectorAll(".inv-toggle-btn[data-inv-view]").forEach((b) => {
+    const on = b.dataset.invView === invState.viewMode;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-pressed", on ? "true" : "false");
+  });
+}
+
+// Inventory-only actions routed from bovHandleAction (data-bov-action="inv-…").
+function invHandleAction(action, el) {
+  switch (action) {
+    case "inv-view": toggleInventoryView(el?.dataset.invView || "all"); break;
+    case "inv-selling": invSelectSellingSubcategories(); break;
+    case "inv-clear": clearInvFilters(); break;
+    case "inv-reset-columns": resetInvColumns(); break;
+    case "inv-page": changeInvPage(parseInt(el?.dataset.invPage || "0", 10)); break;
+    case "inv-subcat-toggle": invToggleDropdown("inv-subcat-dropdown", "inv-subcat-trigger"); break;
+    case "inv-subcat-all": invSubcatCheckAll(true); break;
+    case "inv-subcat-none": invSubcatCheckAll(false); break;
+    case "inv-reorder-toggle": invToggleDropdown("inv-reorder-dropdown", "inv-reorder-trigger"); break;
+    case "inv-reorder-all": invReorderCheckAll(true); break;
+    case "inv-reorder-none": invReorderCheckAll(false); break;
+    default: break;
+  }
+}
+
+function invBindOnce() {
+  const panel = document.querySelector('#business-overview-page .bov-panel[data-bov-panel="inventory"]');
+  if (!panel || panel.dataset.invBound === "1") return;
+  panel.dataset.invBound = "1";
+  panel.addEventListener("change", (e) => {
+    const t = e.target;
+    if (!t) return;
+    if (t.classList.contains("inv-column-cb")) { invToggleColumn(t.value); return; }
+    if (t.classList.contains("inv-subcat-cb")) { onInvSubcatChange(); return; }
+    if (t.classList.contains("inv-reorder-cb")) { onInvReorderChange(); return; }
+    if (t.id === "inv-page-size") { changeInvPageSize(); return; }
+    if (t.id === "inv-filter-bins" || t.id === "inv-filter-instock") applyInvFilters();
+  });
+  panel.addEventListener("input", (e) => {
+    if (e.target && e.target.id === "inv-filter-search") applyInvFilters();
+  });
+  panel.addEventListener("click", (e) => {
+    const th = e.target.closest("th[data-inv-sort]");
+    if (th) handleInvSort(th.dataset.invSort);
+  });
+  panel.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    const th = e.target.closest("th[data-inv-sort]");
+    if (!th) return;
+    e.preventDefault();
+    handleInvSort(th.dataset.invSort);
+  });
 }
 
 async function loadInventoryTab() {
   if (!invState.initialized) {
     invState.initialized = true;
+    invLoadPrefs();
     invBuildColumnTogglePills();
-    const refreshBtn = document.getElementById("inv-refresh");
-    if (refreshBtn) refreshBtn.addEventListener("click", () => {
-      invState.hasData = false;
-      fetchInventoryReport();
-    });
+    invBindOnce();
+    invSetViewButtons();
   }
 
+  // Plain fetch: apiRequest() alert()s on failure, which this page never does.
+  let config = null;
   try {
-    const config = await apiRequest("/sales/config");
-    if (!config || !config.s2s_store_id) {
-      document.getElementById("inv-not-configured").style.display = "block";
-      document.getElementById("inv-toolbar").style.display = "none";
-      return;
-    }
-    invState.config = config;
-    invState.excludedSubcategories = config.excluded_subcategories || [];
-    document.getElementById("inv-not-configured").style.display = "none";
-    document.getElementById("inv-toolbar").style.display = "block";
-    const sources = document.getElementById("inv-sources-line");
-    if (sources) {
-      const stores = (config.mssql_store_names || []).concat(config.shopify_store_names || []);
-      sources.textContent = `S2S: ${config.s2s_store_name || "?"} · Stores: ${stores.join(", ") || "None"}`;
-    }
+    const resp = await fetch(`${API_BASE}/sales/config`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    config = await resp.json();
   } catch (e) {
-    document.getElementById("inv-not-configured").style.display = "block";
-    document.getElementById("inv-toolbar").style.display = "none";
+    invShow("inv-not-configured", true);
+    invShow("inv-toolbar", false);
+    invShowError(`Could not load the Sales configuration: ${e.message || e}`);
     return;
+  }
+  if (!config || !config.s2s_store_id) {
+    invShow("inv-not-configured", true);
+    invShow("inv-toolbar", false);
+    return;
+  }
+  invState.config = config;
+  invState.excludedSubcategories = Array.isArray(config.excluded_subcategories) ? config.excluded_subcategories : [];
+  invShow("inv-not-configured", false);
+  invShow("inv-toolbar", true);
+  const sources = document.getElementById("inv-sources-line");
+  if (sources) {
+    const stores = (config.mssql_store_names || []).concat(config.shopify_store_names || []);
+    sources.textContent = `S2S: ${config.s2s_store_name || "?"} · Stores: ${stores.join(", ") || "None"}`;
   }
 
   if (!invState.hasData && !invState.isLoading) fetchInventoryReport();
@@ -25960,8 +26418,7 @@ async function fetchInventoryReport() {
   const mssqlStoreIds = config.mssql_store_ids || [];
   const shopifyStoreIds = config.shopify_store_ids || [];
   if (mssqlStoreIds.length === 0 && shopifyStoreIds.length === 0) {
-    document.getElementById("inv-error").style.display = "block";
-    document.getElementById("inv-error").textContent = "No sales stores configured — pick at least one on the Sales page.";
+    invShowError("No sales stores configured — pick at least one on the Sales page.");
     return;
   }
 
@@ -25975,13 +26432,11 @@ async function fetchInventoryReport() {
   const rangeEl = document.getElementById("inv-range-label");
   if (rangeEl) rangeEl.textContent = `${bovDateMdy(range.date_from)} – ${bovDateMdy(range.date_to)}`;
 
-  document.getElementById("inv-results").style.display = "none";
-  document.getElementById("inv-empty").style.display = "none";
-  document.getElementById("inv-summary").style.display = "none";
-  document.getElementById("inv-error").style.display = "none";
-  document.getElementById("inv-progress").style.display = "block";
+  ["inv-results", "inv-empty", "inv-summary", "inv-error"].forEach((id) => invShow(id, false));
+  invShow("inv-progress", true);
   const progressList = document.getElementById("inv-progress-list");
-  progressList.innerHTML = "";
+  if (progressList) progressList.innerHTML = "";
+  let gotProducts = false;
 
   try {
     const response = await fetch(`${API_BASE}/sales/report/stream`, {
@@ -25995,6 +26450,11 @@ async function fetchInventoryReport() {
         date_to: range.date_to || null,
       }),
     });
+    if (!response.ok || !response.body) {
+      let detail = `HTTP ${response.status}`;
+      try { const j = await response.json(); if (j && j.detail) detail = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail); } catch (e) { /* keep status */ }
+      throw new Error(detail);
+    }
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -26012,6 +26472,7 @@ async function fetchInventoryReport() {
         if (line.startsWith("data: ")) {
           try {
             const data = JSON.parse(line.substring(6));
+            if (data && data.products) gotProducts = true;
             invHandleProgress(data, progressList);
           } catch (e) {
             // skip malformed
@@ -26019,9 +26480,10 @@ async function fetchInventoryReport() {
         }
       }
     }
+    if (!gotProducts && !controller.signal.aborted) throw new Error("the report stream ended without a result");
   } catch (e) {
-    if (e.name !== "AbortError") {
-      invAddProgressItem(progressList, `Error: ${e.message}`, "var(--danger)");
+    if (e.name !== "AbortError" && !controller.signal.aborted) {
+      invShowError(`Could not load the inventory report: ${bovErrorText(e.message || String(e)).text}`);
     }
   } finally {
     if (invState.abort === controller) {
@@ -26033,99 +26495,84 @@ async function fetchInventoryReport() {
 
 function invHandleProgress(data, progressList) {
   if (data.message && !data.status) {
-    invAddProgressItem(progressList, data.message, "var(--danger)");
+    invAddProgressItem(progressList, data.message, "is-error");
     return;
   }
 
   switch (data.status) {
     case "fetching_products":
-      invAddProgressItem(progressList, "Fetching active products from primary database...", "var(--text-secondary)");
+      invAddProgressItem(progressList, "Fetching active products from primary database...", "is-muted");
       break;
     case "products_fetched":
-      invAddProgressItem(progressList, `Found ${data.count.toLocaleString()} active products`, "var(--success)");
+      invAddProgressItem(progressList, `Found ${bovInt(data.count)} active products`, "is-ok");
       break;
     case "searching_store":
-      invAddProgressItem(progressList, `Searching ${data.store_name} (${data.store_type})...`, "var(--text-secondary)");
+      invAddProgressItem(progressList, `Searching ${data.store_name} (${data.store_type})...`, "is-muted");
       break;
     case "completed_store":
-      invAddProgressItem(progressList, `${data.store_name}: ${data.products_found.toLocaleString()} products with sales (${data.completed}/${data.total_stores})`, "var(--success)");
+      invAddProgressItem(progressList, `${data.store_name}: ${bovInt(data.products_found)} products with sales (${data.completed}/${data.total_stores})`, "is-ok");
       break;
     case "error_store":
-      invAddProgressItem(progressList, `${data.store_name}: ${data.message}`, "var(--danger)");
+      invAddProgressItem(progressList, `${data.store_name}: ${data.message}`, "is-error");
       break;
     case "merging":
-      invAddProgressItem(progressList, "Merging results...", "var(--text-secondary)");
+      invAddProgressItem(progressList, "Merging results...", "is-muted");
+      break;
+    default:
       break;
   }
 
   if (data.products) {
-    document.getElementById("inv-progress").style.display = "none";
-    if (data.products.length === 0) {
-      document.getElementById("inv-empty").style.display = "block";
-    } else {
-      displayInventoryResults(data);
-    }
+    invShow("inv-progress", false);
+    if (data.products.length === 0) invShow("inv-empty", true);
+    else displayInventoryResults(data);
   }
 }
 
-function invAddProgressItem(container, text, color) {
+function invAddProgressItem(container, text, tone) {
+  if (!container) return;
   const li = document.createElement("li");
-  li.style.cssText = `padding: 0.25rem 0; color: ${color};`;
+  li.className = `inv-progress-item${tone ? ` ${tone}` : ""}`;
   li.textContent = text;
   container.appendChild(li);
 }
 
 function displayInventoryResults(data) {
   invState.hasData = true;
-  data.products.forEach((p) => {
+  const products = Array.isArray(data.products) ? data.products : [];
+  products.forEach((p, i) => {
     p.total_cost = (p.quant_on_hand || 0) * (p.s2s_cost || 0);
+    p._idx = i;   // export selection key
   });
-  invState.allProducts = data.products;
+  invState.allProducts = products;
   invState.summary = data.summary;
   invState.stores = data.stores || [];
   invState.allSubcategories = data.subcategories || [];
   invState.subcategories = data.subcategories || [];
-  invState.selectedSubcategories = [];
 
-  const savedView = localStorage.getItem("inv_view_mode");
-  invState.viewMode = savedView || "all";
   invState.sortColumn = invState.viewMode === "sold" ? "net_sold" : "description";
   invState.sortDirection = invState.viewMode === "sold" ? "desc" : "asc";
   invState.currentPage = 0;
+  invSetViewButtons();
 
-  document.querySelectorAll(".inv-toggle-btn").forEach((b) => b.classList.remove("active"));
-  const activeBtn = document.querySelector(`.inv-toggle-btn[data-view="${invState.viewMode}"]`);
-  if (activeBtn) activeBtn.classList.add("active");
-
-  invState.searchFilter = localStorage.getItem("inv_filter_search") || "";
-
-  const savedReorder = JSON.parse(localStorage.getItem("inv_filter_reorder") || "[]");
-  if (savedReorder.length > 0) {
-    invState.selectedReorderLevels = savedReorder;
-  }
-
-  const savedSubcats = JSON.parse(localStorage.getItem("inv_filter_subcategories") || "[]");
-  if (savedSubcats.length > 0 && savedSubcats.length < (data.subcategories || []).length) {
-    invState.selectedSubcategories = savedSubcats.filter((s) => (data.subcategories || []).includes(s));
-  }
+  // Saved subcategory selection applies only while it is a real subset.
+  const saved = invState.selectedSubcategories || [];
+  invState.selectedSubcategories = saved.length > 0 && saved.length < invState.subcategories.length
+    ? saved.filter((sc) => invState.subcategories.includes(sc))
+    : [];
+  invResetFilterRow();
+  const sel = bovExportSel("inventory");
+  sel.on = false; sel.keys.clear(); sel.anchor = null;
 
   applyInvFilters();
-
-  const instockEl = document.getElementById("inv-filter-instock");
-  const binsEl = document.getElementById("inv-filter-bins");
-  if (instockEl) instockEl.checked = localStorage.getItem("inv_filter_instock") === "1";
-  const savedBins = localStorage.getItem("inv_filter_bins") || "";
-  invState.binsFilter = savedBins;
-  if (binsEl) binsEl.value = savedBins;
-
-  applyInvFilters();
-  document.getElementById("inv-results").style.display = "block";
+  invShow("inv-results", true);
 }
 
 function toggleInventoryView(mode) {
+  if (!["all", "sold", "not-sold"].includes(mode)) mode = "all";
   invState.viewMode = mode;
   invState.currentPage = 0;
-  localStorage.setItem("inv_view_mode", mode);
+  invStorageSet("inv_view_mode", mode);
 
   if (mode === "sold" || mode === "all") {
     invState.sortColumn = "net_sold";
@@ -26134,44 +26581,36 @@ function toggleInventoryView(mode) {
     invState.sortColumn = "description";
     invState.sortDirection = "asc";
   }
-
-  document.querySelectorAll(".inv-toggle-btn").forEach((b) => b.classList.remove("active"));
-  const activeBtn = document.querySelector(`.inv-toggle-btn[data-view="${mode}"]`);
-  if (activeBtn) activeBtn.classList.add("active");
-
+  invSetViewButtons();
+  invResetFilterRow();
   applyInvFilters();
 }
 
 function applyInvFilters() {
   const searchEl = document.getElementById("inv-filter-search");
-  const searchFilter = searchEl ? searchEl.value.toLowerCase().trim() : (invState.searchFilter || "");
-  const subcatFilters = invState.selectedSubcategories || [];
-  const reorderFilters = invState.selectedReorderLevels || [];
   const instockEl = document.getElementById("inv-filter-instock");
   const binsEl = document.getElementById("inv-filter-bins");
-  const instockOnly = instockEl ? instockEl.checked : false;
-  const binsFilter = binsEl ? binsEl.value : (invState.binsFilter || "");
+  if (searchEl) invState.searchFilter = searchEl.value.toLowerCase().trim();
+  if (instockEl) invState.instockOnly = !!instockEl.checked;
+  if (binsEl) invState.binsFilter = binsEl.value;
+  const searchFilter = (invState.searchFilter || "").toLowerCase();
+  const subcatFilters = invState.selectedSubcategories || [];
+  const reorderFilters = invState.selectedReorderLevels || [];
+  const instockOnly = invState.instockOnly;
+  const binsFilter = invState.binsFilter || "";
+  invSaveFilterPrefs();
 
-  invState.searchFilter = searchFilter;
-  invState.binsFilter = binsFilter;
-
-  localStorage.setItem("inv_filter_search", searchFilter);
-  localStorage.setItem("inv_filter_reorder", JSON.stringify(reorderFilters));
-  localStorage.setItem("inv_filter_subcategories", JSON.stringify(subcatFilters));
-  localStorage.setItem("inv_filter_instock", instockOnly ? "1" : "0");
-  localStorage.setItem("inv_filter_bins", binsFilter);
-
-  const allReorderLevels = [...new Set(invState.allProducts.map(p => p.reorder_level || 0))];
+  const allReorderLevels = [...new Set(invState.allProducts.map((p) => p.reorder_level || 0))];
   const reorderActive = reorderFilters.length > 0 && reorderFilters.length < allReorderLevels.length;
 
   const matchesFilters = (p) => {
-    if (searchFilter && !p.upc.toLowerCase().includes(searchFilter) && !p.description.toLowerCase().includes(searchFilter)) return false;
+    if (searchFilter && !String(p.upc || "").toLowerCase().includes(searchFilter) && !String(p.description || "").toLowerCase().includes(searchFilter)) return false;
     if (subcatFilters.length > 0 && !subcatFilters.includes(p.subcategory || "")) return false;
     if (reorderActive && !reorderFilters.includes(p.reorder_level || 0)) return false;
     return true;
   };
 
-  let filtered = invState.allProducts.filter((p) => {
+  invState.filteredProducts = invState.allProducts.filter((p) => {
     if (invState.viewMode === "sold" && p.net_sold <= 0) return false;
     if (invState.viewMode === "not-sold" && p.net_sold > 0) return false;
     if (instockOnly && p.quant_on_hand <= 0) return false;
@@ -26179,25 +26618,18 @@ function applyInvFilters() {
     if (binsFilter === "bins-only" && !p.bin_location) return false;
     return matchesFilters(p);
   });
-
-  invState.filteredProducts = filtered;
   sortInvProducts();
   invState.currentPage = 0;
 
-  const soldCount = invState.allProducts.filter((p) => {
-    if (p.net_sold <= 0) return false;
-    return matchesFilters(p);
-  }).length;
-  const notSoldCount = invState.allProducts.filter((p) => {
-    if (p.net_sold > 0) return false;
-    return matchesFilters(p);
-  }).length;
-  const soldBtn = document.querySelector('.inv-toggle-btn[data-view="sold"]');
-  const notSoldBtn = document.querySelector('.inv-toggle-btn[data-view="not-sold"]');
-  const allBtn = document.querySelector('.inv-toggle-btn[data-view="all"]');
-  if (soldBtn) soldBtn.textContent = `Sold (${soldCount.toLocaleString()})`;
-  if (notSoldBtn) notSoldBtn.textContent = `Not Sold (${notSoldCount.toLocaleString()})`;
-  if (allBtn) allBtn.textContent = `All (${(soldCount + notSoldCount).toLocaleString()})`;
+  const soldCount = invState.allProducts.filter((p) => p.net_sold > 0 && matchesFilters(p)).length;
+  const notSoldCount = invState.allProducts.filter((p) => p.net_sold <= 0 && matchesFilters(p)).length;
+  const setLabel = (view, text) => {
+    const b = document.querySelector(`.inv-toggle-btn[data-inv-view="${view}"]`);
+    if (b) b.textContent = text;
+  };
+  setLabel("sold", `Sold (${bovInt(soldCount)})`);
+  setLabel("not-sold", `Not Sold (${bovInt(notSoldCount)})`);
+  setLabel("all", `All (${bovInt(soldCount + notSoldCount)})`);
 
   renderInvTable();
   invRenderSummaryTiles();
@@ -26206,42 +26638,37 @@ function applyInvFilters() {
 function clearInvFilters() {
   invState.searchFilter = "";
   invState.binsFilter = "";
+  invState.instockOnly = false;
   const searchEl = document.getElementById("inv-filter-search");
   if (searchEl) searchEl.value = "";
-  invState.selectedSubcategories = [...(invState.subcategories || [])];
-  document.querySelectorAll(".inv-subcat-cb").forEach((cb) => (cb.checked = true));
+  invState.selectedSubcategories = [];
+  document.querySelectorAll(".inv-subcat-cb").forEach((cb) => { cb.checked = true; });
   invUpdateSubcatLabel();
-  const reorderLevels = [...new Set(invState.allProducts.map(p => p.reorder_level || 0))].sort((a, b) => a - b);
-  invState.selectedReorderLevels = [...reorderLevels];
-  document.querySelectorAll(".inv-reorder-cb").forEach((cb) => (cb.checked = true));
+  invState.selectedReorderLevels = [];
+  document.querySelectorAll(".inv-reorder-cb").forEach((cb) => { cb.checked = true; });
   invUpdateReorderLabel();
   const instockEl = document.getElementById("inv-filter-instock");
   const binsEl = document.getElementById("inv-filter-bins");
   if (instockEl) instockEl.checked = false;
   if (binsEl) binsEl.value = "";
-  localStorage.removeItem("inv_filter_search");
-  localStorage.removeItem("inv_filter_reorder");
-  localStorage.removeItem("inv_filter_subcategories");
-  localStorage.removeItem("inv_filter_instock");
-  localStorage.removeItem("inv_filter_bins");
   applyInvFilters();
 }
 
 function sortInvProducts() {
   const col = invState.sortColumn;
   const dir = invState.sortDirection === "asc" ? 1 : -1;
-
   invState.filteredProducts.sort((a, b) => {
-    let va = a[col];
-    let vb = b[col];
+    const va = a[col];
+    const vb = b[col];
     if (typeof va === "string" || typeof vb === "string") {
-      return (va || "").localeCompare(vb || "") * dir;
+      return String(va || "").localeCompare(String(vb || ""), undefined, { numeric: true, sensitivity: "base" }) * dir;
     }
     return ((va || 0) - (vb || 0)) * dir;
   });
 }
 
 function handleInvSort(column) {
+  if (!INV_COLUMN_KEYS.includes(column)) return;
   if (invState.sortColumn === column) {
     invState.sortDirection = invState.sortDirection === "asc" ? "desc" : "asc";
   } else {
@@ -26268,6 +26695,7 @@ function invComputeTotals() {
 function invRenderSummaryTiles() {
   const el = document.getElementById("inv-summary");
   if (!el) return;
+  if (!invState.hasData) { el.hidden = true; return; }
   const t = invComputeTotals();
   const tile = (label, value, sub) =>
     `<div class="me-tile"><div class="me-tile-label">${escapeHtml(label)}</div>` +
@@ -26280,7 +26708,20 @@ function invRenderSummaryTiles() {
     tile("Returns", bovInt(t.returned)),
     tile("Net Sold", bovInt(t.net)),
   ].join("");
-  el.style.display = "grid";
+  el.hidden = false;
+}
+
+function invCellValue(p, col) {
+  if (col.key === "subcategory") return p.subcategory || "";
+  if (col.key === "bin_location") return p.bin_location || "";
+  if (col.key === "reorder_level") return p.reorder_level || 0;
+  return p[col.key];
+}
+
+function invDropdownTrigger(prefix, minWidthCls) {
+  return `<div id="inv-${prefix}-trigger" class="dark-input inv-filter-trigger" role="button" tabindex="0" aria-haspopup="dialog" aria-expanded="false" aria-controls="inv-${prefix}-dropdown" data-bov-action="inv-${prefix}-toggle">` +
+    `<span id="inv-${prefix}-label" class="inv-filter-trigger-label">All</span><span class="inv-filter-caret" aria-hidden="true">▼</span></div>` +
+    `<div id="inv-${prefix}-dropdown" class="inv-dropdown${minWidthCls ? ` ${minWidthCls}` : ""}" hidden></div>`;
 }
 
 function renderInvTable() {
@@ -26289,59 +26730,51 @@ function renderInvTable() {
   const filterRow = document.getElementById("inv-table-filters");
   const tbody = document.getElementById("inv-table-body");
   const tfoot = document.getElementById("inv-table-foot");
+  const table = document.getElementById("inv-table");
+  if (!thead || !filterRow || !tbody || !tfoot || !table) return;
   const visibleCols = invGetVisibleColumns(isSold);
+  const sel = bovExportSel("inventory").on ? bovExportSel("inventory") : null;
+  table.classList.toggle("is-selecting", !!sel);
+  if (sel) table.dataset.bovSelwidget = "inventory"; else delete table.dataset.bovSelwidget;
 
-  const sortIcon = (col) => {
-    if (invState.sortColumn !== col) return "";
-    return invState.sortDirection === "asc" ? " ▲" : " ▼";
-  };
-  const sortStyle = 'cursor: pointer; user-select: none;';
-
-  let headHtml = `<th style="width: 20px; text-align: center">#</th>`;
-  visibleCols.forEach(col => {
-    const widthStyle = col.width ? `width: ${col.width};` : "";
-    headHtml += `<th style="${widthStyle} ${col.thStyle} ${sortStyle}" onclick="handleInvSort('${col.key}')">${col.label}${sortIcon(col.key)}</th>`;
+  const selHead = sel
+    ? `<th class="bov-sel" data-bov-widget="inventory" title="Select all listed rows"><input type="checkbox" data-bov-sel-all="inventory" aria-label="Select all listed rows"></th>`
+    : "";
+  let headHtml = `${selHead}<th class="inv-line-no" aria-label="Line">#</th>`;
+  visibleCols.forEach((col) => {
+    const sorted = invState.sortColumn === col.key;
+    const cls = ["qip-sortable"];
+    if (col.num) cls.push("bov-num");
+    if (sorted) cls.push(invState.sortDirection === "asc" ? "qip-sort-asc" : "qip-sort-desc");
+    const ariaSort = sorted ? (invState.sortDirection === "asc" ? "ascending" : "descending") : "none";
+    headHtml += `<th class="${cls.join(" ")}" style="width:${col.width}" tabindex="0" role="button" aria-sort="${ariaSort}" data-inv-sort="${escapeHtml(col.key)}"><span>${escapeHtml(col.label)}</span><span class="qip-sort-arrow"></span></th>`;
   });
   thead.innerHTML = headHtml;
 
-  // Build filter row — only rebuild when view mode or visible columns change
-  const filterCacheKey = `${isSold ? "sold" : "not-sold"}|${invState.hiddenColumns.join(",")}`;
+  // Build filter row — only rebuild when view mode, visible columns or selection mode change
+  const filterCacheKey = `${isSold ? "sold" : "not-sold"}|${invState.hiddenColumns.join(",")}|${sel ? 1 : 0}`;
   if (filterRow.dataset.viewKey !== filterCacheKey) {
     filterRow.dataset.viewKey = filterCacheKey;
-
-    const subcatTrigger = `<div id="inv-subcat-trigger" onclick="invToggleSubcatDropdown()" class="dark-input" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center; font-size: 0.75rem; padding: 0.2rem 0.4rem; user-select: none;">
-      <span id="inv-subcat-label" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">All</span>
-      <span style="font-size: 0.5rem; color: var(--text-tertiary);">▼</span>
-    </div>
-    <div id="inv-subcat-dropdown" style="display: none; position: fixed; z-index: 100; max-height: 500px; overflow-y: auto; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-md); box-shadow: var(--shadow-md); min-width: 280px;"></div>`;
-
-    const reorderTrigger = `<div id="inv-reorder-trigger" onclick="invToggleReorderDropdown()" class="dark-input" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center; font-size: 0.75rem; padding: 0.2rem 0.4rem; user-select: none;">
-      <span id="inv-reorder-label" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">All</span>
-      <span style="font-size: 0.5rem; color: var(--text-tertiary);">▼</span>
-    </div>
-    <div id="inv-reorder-dropdown" style="display: none; position: fixed; z-index: 100; max-height: 500px; overflow-y: auto; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-md); box-shadow: var(--shadow-md); min-width: 180px;"></div>`;
-
-    let filterHtml = `<td style="width: 20px;"></td>`;
+    let filterHtml = `${sel ? `<td class="bov-sel"></td>` : ""}<td class="inv-line-no"></td>`;
     // One combined UPC/Description search field spanning both columns when visible
-    const searchSpan = visibleCols.filter(c => c.key === "upc" || c.key === "description").length;
+    const searchSpan = visibleCols.filter((c) => c.key === "upc" || c.key === "description").length;
     let searchPlaced = false;
-    visibleCols.forEach(col => {
-      const w = col.width ? `width: ${col.width};` : "";
+    visibleCols.forEach((col) => {
       if (col.key === "upc" || col.key === "description") {
         if (!searchPlaced) {
-          filterHtml += `<td colspan="${searchSpan}"><input type="text" id="inv-filter-search" class="dark-input" placeholder="UPC / Description..." oninput="applyInvFilters()" style="width: 100%;"></td>`;
+          filterHtml += `<td colspan="${searchSpan}"><input type="text" id="inv-filter-search" class="dark-input inv-filter-input" placeholder="UPC / Description..." aria-label="Filter by UPC or description"></td>`;
           searchPlaced = true;
         }
       } else if (col.key === "subcategory") {
-        filterHtml += `<td style="${w}">${subcatTrigger}</td>`;
+        filterHtml += `<td>${invDropdownTrigger("subcat", "inv-dropdown-wide")}</td>`;
       } else if (col.key === "reorder_level") {
-        filterHtml += `<td style="${w}">${reorderTrigger}</td>`;
+        filterHtml += `<td>${invDropdownTrigger("reorder", "")}</td>`;
       } else if (col.key === "bin_location") {
-        filterHtml += `<td style="${w}"><select id="inv-filter-bins" class="dark-input" onchange="applyInvFilters()" style="font-size: 0.75rem; padding: 0.2rem 0.3rem;"><option value="">All</option><option value="no-bins">No Bins</option><option value="bins-only">Bins Only</option></select></td>`;
+        filterHtml += `<td><select id="inv-filter-bins" class="dark-input inv-filter-input" aria-label="Bin filter"><option value="">All</option><option value="no-bins">No Bins</option><option value="bins-only">Bins Only</option></select></td>`;
       } else if (col.key === "quant_on_hand") {
-        filterHtml += `<td style="${w}"><label style="display: flex; align-items: center; gap: 0.25rem; font-size: 0.75rem; cursor: pointer; white-space: nowrap;"><input type="checkbox" id="inv-filter-instock" onchange="applyInvFilters()"> In Stock</label></td>`;
+        filterHtml += `<td><label class="inv-filter-check"><input type="checkbox" id="inv-filter-instock"> In Stock</label></td>`;
       } else {
-        filterHtml += `<td style="${w}"></td>`;
+        filterHtml += `<td></td>`;
       }
     });
     filterRow.innerHTML = filterHtml;
@@ -26349,104 +26782,85 @@ function renderInvTable() {
     // Restore filter input values from state
     const searchEl = document.getElementById("inv-filter-search");
     if (searchEl) searchEl.value = invState.searchFilter || "";
-
-    // Rebuild subcategory dropdown, preserving any saved selections
-    const savedSubcats = invState.selectedSubcategories ? [...invState.selectedSubcategories] : [];
-    invBuildSubcatDropdown(invState.allSubcategories || invState.subcategories || []);
-    if (savedSubcats.length > 0 && savedSubcats.length < (invState.subcategories || []).length) {
-      invState.selectedSubcategories = savedSubcats.filter(s => (invState.subcategories || []).includes(s));
-      document.querySelectorAll(".inv-subcat-cb").forEach(cb => {
-        cb.checked = invState.selectedSubcategories.includes(cb.value);
-      });
-    }
-    invUpdateSubcatLabel();
-
-    // Build reorder dropdown, preserving any saved selections
-    const reorderLevels = [...new Set(invState.allProducts.map(p => p.reorder_level || 0))].sort((a, b) => a - b);
-    const savedReorders = invState.selectedReorderLevels.length > 0 ? [...invState.selectedReorderLevels] : [];
-    invBuildReorderDropdown(reorderLevels);
-    if (savedReorders.length > 0 && savedReorders.length < reorderLevels.length) {
-      invState.selectedReorderLevels = savedReorders.filter(v => reorderLevels.includes(v));
-      document.querySelectorAll(".inv-reorder-cb").forEach(cb => {
-        cb.checked = invState.selectedReorderLevels.includes(Number(cb.value));
-      });
-    }
-    invUpdateReorderLabel();
-
-    // Restore bins dropdown
+    const instockEl = document.getElementById("inv-filter-instock");
+    if (instockEl) instockEl.checked = !!invState.instockOnly;
     const binsEl = document.getElementById("inv-filter-bins");
     if (binsEl) binsEl.value = invState.binsFilter || "";
-  } else {
-    // Update reorder dropdown options without full rebuild (dataset may have changed)
-    const reorderLevels = [...new Set(invState.allProducts.map(p => p.reorder_level || 0))].sort((a, b) => a - b);
-    const currentSelected = invState.selectedReorderLevels;
-    invBuildReorderDropdown(reorderLevels);
-    if (currentSelected.length > 0 && currentSelected.length < reorderLevels.length) {
-      invState.selectedReorderLevels = currentSelected.filter(v => reorderLevels.includes(v));
-      document.querySelectorAll(".inv-reorder-cb").forEach(cb => {
-        cb.checked = invState.selectedReorderLevels.includes(Number(cb.value));
-      });
+
+    // Rebuild subcategory dropdown, preserving any saved selections
+    const savedSubcats = [...(invState.selectedSubcategories || [])];
+    invBuildSubcatDropdown(invState.allSubcategories || invState.subcategories || []);
+    if (savedSubcats.length > 0 && savedSubcats.length < (invState.subcategories || []).length) {
+      invState.selectedSubcategories = savedSubcats.filter((s) => (invState.subcategories || []).includes(s));
+      document.querySelectorAll(".inv-subcat-cb").forEach((cb) => { cb.checked = invState.selectedSubcategories.includes(cb.value); });
     }
-    invUpdateReorderLabel();
+    invUpdateSubcatLabel();
   }
+
+  // Reorder dropdown options follow the data set
+  const reorderLevels = [...new Set(invState.allProducts.map((p) => p.reorder_level || 0))].sort((a, b) => a - b);
+  const savedReorders = [...(invState.selectedReorderLevels || [])];
+  invBuildReorderDropdown(reorderLevels);
+  if (savedReorders.length > 0 && savedReorders.length < reorderLevels.length) {
+    invState.selectedReorderLevels = savedReorders.filter((v) => reorderLevels.includes(v));
+    document.querySelectorAll(".inv-reorder-cb").forEach((cb) => { cb.checked = invState.selectedReorderLevels.includes(Number(cb.value)); });
+  }
+  invUpdateReorderLabel();
 
   const start = invState.currentPage * invState.pageSize;
   const end = Math.min(start + invState.pageSize, invState.filteredProducts.length);
   const pageData = invState.filteredProducts.slice(start, end);
 
-  tbody.innerHTML = "";
-  pageData.forEach((p, i) => {
-    const row = document.createElement("tr");
-    let cellsHtml = `<td style="text-align: center; color: var(--text-tertiary); font-size: 0.75rem">${start + i + 1}</td>`;
-    visibleCols.forEach(col => {
-      const raw = col.key === "subcategory" ? (p.subcategory || "") :
-                  col.key === "bin_location" ? (p.bin_location || "") :
-                  col.key === "reorder_level" ? (p.reorder_level || 0) :
-                  p[col.key];
-      const display = col.money ? bovMoney(raw) : typeof raw === "number" ? raw.toLocaleString() : raw;
-      const titleAttr = (col.key === "description" || col.key === "subcategory" || col.key === "bin_location") ? ` title="${raw}"` : "";
-      cellsHtml += `<td style="${col.tdStyle}"${titleAttr}>${display}</td>`;
-    });
-    row.innerHTML = cellsHtml;
-    tbody.appendChild(row);
-  });
+  // Every cell value is escaped: description / subcategory / bin are free text from Items_tbl.
+  tbody.innerHTML = pageData.map((p, i) => {
+    const key = String(p._idx);
+    const selected = sel ? sel.keys.has(key) : false;
+    const selCell = sel ? `<td class="bov-sel" data-bov-widget="inventory"><input type="checkbox" data-bov-sel="${escapeHtml(key)}" aria-label="Select row"${selected ? " checked" : ""}></td>` : "";
+    const cells = visibleCols.map((col) => {
+      const raw = invCellValue(p, col);
+      const display = col.money ? bovMoney(raw) : typeof raw === "number" ? raw.toLocaleString() : (raw == null ? "" : String(raw));
+      const titled = col.key === "description" || col.key === "subcategory" || col.key === "bin_location";
+      return `<td class="${col.num ? "bov-num" : ""}${col.cls ? ` ${col.cls}` : ""}"${titled ? ` title="${escapeHtml(raw == null ? "" : String(raw))}"` : ""}>${escapeHtml(display)}</td>`;
+    }).join("");
+    return `<tr class="${selected ? "is-selected" : ""}"${sel ? ` data-bov-selkey="${escapeHtml(key)}"` : ""}>${selCell}<td class="inv-line-no">${start + i + 1}</td>${cells}</tr>`;
+  }).join("");
 
   tfoot.innerHTML = "";
   if (pageData.length > 0) {
     const t = invComputeTotals();
     const totalsMap = { quant_on_hand: t.onHand, total_cost: t.value, total_sold: t.sold, total_returned: t.returned, net_sold: t.net };
-    const hasDesc = visibleCols.some(c => c.key === "description");
-
-    let footHtml = `<td></td>`;
+    const hasDesc = visibleCols.some((c) => c.key === "description");
+    let footHtml = `${sel ? `<td class="bov-sel"></td>` : ""}<td class="inv-line-no"></td>`;
     let labelPlaced = false;
     visibleCols.forEach((col, idx) => {
-      if (col.key === "description") {
-        footHtml += `<td style="font-size: 0.8125rem">Totals</td>`;
-        labelPlaced = true;
-      } else if (!labelPlaced && !hasDesc && idx === 0) {
-        footHtml += `<td style="font-size: 0.8125rem">Totals</td>`;
+      if (col.key === "description" || (!labelPlaced && !hasDesc && idx === 0)) {
+        footHtml += `<td>Totals</td>`;
         labelPlaced = true;
       } else if (totalsMap[col.key] !== undefined) {
-        const colorStyle = col.key === "total_returned" ? " color: var(--warning);" : "";
         const display = col.key === "total_cost" ? bovMoney(totalsMap[col.key]) : totalsMap[col.key].toLocaleString();
         const titleAttr = col.key === "total_cost" ? ' title="Inventory Value = Σ On Hand × S2S Cost"' : "";
-        footHtml += `<td style="text-align: right; font-size: 0.8125rem;${colorStyle}"${titleAttr}>${display}</td>`;
+        footHtml += `<td class="bov-num${col.key === "total_returned" ? " inv-cell-warn" : ""}"${titleAttr}>${escapeHtml(display)}</td>`;
       } else {
         footHtml += `<td></td>`;
       }
     });
-    tfoot.innerHTML = `<tr style="font-weight: 700; border-top: 2px solid var(--border-color);">${footHtml}</tr>`;
+    tfoot.innerHTML = `<tr class="inv-totals-row">${footHtml}</tr>`;
   }
 
   const total = invState.filteredProducts.length;
   const totalPages = Math.max(1, Math.ceil(total / invState.pageSize));
-  document.getElementById("inv-total-records").textContent = `${total.toLocaleString()} records`;
-  document.getElementById("inv-page-info").textContent = `Page ${invState.currentPage + 1} of ${totalPages}`;
-  document.getElementById("inv-prev-page").disabled = invState.currentPage === 0;
-  document.getElementById("inv-next-page").disabled = invState.currentPage >= totalPages - 1;
+  const setText = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
+  setText("inv-total-records", `${bovInt(total)} records`);
+  setText("inv-page-info", `Page ${invState.currentPage + 1} of ${totalPages}`);
+  const prev = document.getElementById("inv-prev-page");
+  const next = document.getElementById("inv-next-page");
+  if (prev) prev.disabled = invState.currentPage === 0;
+  if (next) next.disabled = invState.currentPage >= totalPages - 1;
   const viewLabel = invState.viewMode === "sold" ? "products sold" : invState.viewMode === "not-sold" ? "products not sold" : "products";
-  document.getElementById("inv-results-count").textContent = `Showing ${total === 0 ? 0 : start + 1}-${end} of ${total.toLocaleString()} ${viewLabel}`;
-  document.getElementById("inv-page-size").value = invState.pageSize;
+  setText("inv-results-count", `Showing ${total === 0 ? 0 : start + 1}-${end} of ${bovInt(total)} ${viewLabel}`);
+  const sizeEl = document.getElementById("inv-page-size");
+  if (sizeEl) sizeEl.value = String(invState.pageSize);
+  bovExportSyncDom("inventory");
 }
 
 function changeInvPage(delta) {
@@ -26459,202 +26873,146 @@ function changeInvPage(delta) {
 }
 
 function changeInvPageSize() {
-  invState.pageSize = parseInt(document.getElementById("inv-page-size").value);
+  const size = parseInt(document.getElementById("inv-page-size")?.value || "", 10);
+  invState.pageSize = INV_PAGE_SIZES.includes(size) ? size : 100;
   invState.currentPage = 0;
-  localStorage.setItem("inv_page_size", invState.pageSize);
+  invStorageSet("inv_page_size", String(invState.pageSize));
   renderInvTable();
 }
 
-function exportInventoryReport() {
-  if (!invState.filteredProducts || invState.filteredProducts.length === 0) return;
-
+// Export sheet for the select-then-"Export N" flow (BOV_EXPORTS.inventory):
+// the visible columns only, plus a totals row over the exported rows.
+function invExportSheet(rows) {
   const isSold = invState.viewMode === "sold" || invState.viewMode === "all";
   const visibleCols = invGetVisibleColumns(isSold);
-  const headers = visibleCols.map(col => col.label);
-
-  const dataRows = invState.filteredProducts.map((p) =>
-    visibleCols.map(col => {
-      if (col.key === "subcategory") return p.subcategory || "";
-      if (col.key === "bin_location") return p.bin_location || "";
-      if (col.key === "reorder_level") return p.reorder_level || 0;
-      return p[col.key];
-    })
-  );
-
-  const t = invComputeTotals();
-  const totalsMap = { quant_on_hand: t.onHand, total_cost: t.value, total_sold: t.sold, total_returned: t.returned, net_sold: t.net };
-  const totalsRow = visibleCols.map(col => {
-    if (col.key === "description") return "Totals";
-    if (totalsMap[col.key] !== undefined) return totalsMap[col.key];
-    return "";
+  const data = rows.map((p) => visibleCols.map((col) => {
+    const v = invCellValue(p, col);
+    return typeof v === "number" ? bovXlsNum(v, col.money ? 2 : 0) : (v == null ? "" : v);
+  }));
+  const sums = { quant_on_hand: 0, total_cost: 0, total_sold: 0, total_returned: 0, net_sold: 0 };
+  rows.forEach((p) => {
+    sums.quant_on_hand += p.quant_on_hand || 0;
+    sums.total_cost += (p.quant_on_hand || 0) * (p.s2s_cost || 0);
+    sums.total_sold += p.total_sold || 0;
+    sums.total_returned += p.total_returned || 0;
+    sums.net_sold += p.net_sold || 0;
   });
-  dataRows.push(totalsRow);
-
-  const wsData = [headers, ...dataRows];
-  const ws = XLSX.utils.aoa_to_sheet(wsData);
-  ws["!cols"] = headers.map(() => ({ wch: 18 }));
-
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, "Inventory");
-
-  const dateStr = new Date().toISOString().split("T")[0];
-  XLSX.writeFile(wb, `inventory-report-${invState.viewMode}-${dateStr}.xlsx`);
+  data.push(visibleCols.map((col) => (col.key === "description" ? "Totals" : sums[col.key] !== undefined ? bovXlsNum(sums[col.key], col.money ? 2 : 0) : "")));
+  return { sheet: "Inventory", header: visibleCols.map((c) => c.label), widths: visibleCols.map(() => 18), data };
 }
 
+BOV_EXPORTS.inventory = {
+  bar: "inv-export-bar",
+  keyOf: (r) => String(r._idx),
+  rows: () => invState.filteredProducts || [],
+  rerender: () => renderInvTable(),
+  period: () => { const r = bovRangeParams(); return { start: r.date_from, end: r.date_to }; },
+  sheet: invExportSheet,
+  fname: `inventory-${invState.viewMode}`,
+};
+
 function invSelectSellingSubcategories() {
-  const sellingSubcats = new Set();
+  const selling = new Set();
   invState.allProducts.forEach((p) => {
-    if (p.net_sold > 0 && p.subcategory) sellingSubcats.add(p.subcategory);
+    if (p.net_sold > 0 && p.subcategory) selling.add(p.subcategory);
   });
-  invState.selectedSubcategories = [...sellingSubcats];
-  document.querySelectorAll(".inv-subcat-cb").forEach((cb) => {
-    cb.checked = sellingSubcats.has(cb.value);
-  });
+  invState.selectedSubcategories = [...selling];
+  document.querySelectorAll(".inv-subcat-cb").forEach((cb) => { cb.checked = selling.has(cb.value); });
   invUpdateSubcatLabel();
   applyInvFilters();
+}
+
+function invDropdownHtml(prefix, items) {
+  return `<div class="inv-dropdown-controls">` +
+    `<button type="button" class="btn btn-secondary bov-btn-xs" data-bov-action="inv-${prefix}-all">All</button>` +
+    `<button type="button" class="btn btn-secondary bov-btn-xs" data-bov-action="inv-${prefix}-none">None</button>` +
+    `</div>` +
+    items.map(([value, label, checked]) =>
+      `<label class="inv-dropdown-item"><input type="checkbox" class="inv-${prefix}-cb" value="${escapeHtml(String(value))}"${checked ? " checked" : ""}> ${escapeHtml(String(label))}</label>`).join("");
 }
 
 function invBuildSubcatDropdown(subcategories) {
   const container = document.getElementById("inv-subcat-dropdown");
   if (!container) return;
-  container.innerHTML = "";
-
   // Excluded subcategories are managed on the Sales page; applied read-only here.
-  const excludedSubcats = invState.excludedSubcategories || [];
-  const visibleSubcats = subcategories.filter((sc) => !excludedSubcats.includes(sc));
-  invState.subcategories = visibleSubcats;
-
-  const controls = document.createElement("div");
-  controls.style.cssText = "display: flex; justify-content: space-between; align-items: center; padding: 0.375rem 0.75rem; border-bottom: 2px solid var(--border-color); gap: 0.25rem;";
-  controls.innerHTML = `
-    <div style="display: flex; gap: 0.375rem;">
-      <button type="button" class="btn btn-secondary" onclick="invSubcatCheckAll(true)" style="font-size: 0.625rem; padding: 0.15rem 0.4rem;">All</button>
-      <button type="button" class="btn btn-secondary" onclick="invSubcatCheckAll(false)" style="font-size: 0.625rem; padding: 0.15rem 0.4rem;">None</button>
-    </div>
-  `;
-  container.appendChild(controls);
-
-  visibleSubcats.forEach((sc) => {
-    const label = document.createElement("label");
-    label.style.cssText = "display: flex; align-items: center; gap: 0.5rem; padding: 0.375rem 0.75rem; cursor: pointer; font-size: 0.8125rem; border-bottom: 1px solid var(--border-color);";
-    label.innerHTML = `<input type="checkbox" class="inv-subcat-cb" value="${sc}" checked onchange="onInvSubcatChange()"> ${sc}`;
-    container.appendChild(label);
-  });
-  invState.selectedSubcategories = [...visibleSubcats];
+  const excluded = invState.excludedSubcategories || [];
+  const visible = (subcategories || []).filter((sc) => !excluded.includes(sc));
+  invState.subcategories = visible;
+  container.innerHTML = invDropdownHtml("subcat", visible.map((sc) => [sc, sc, true]));
+  invState.selectedSubcategories = [];
 }
 
 function invSubcatCheckAll(checked) {
-  document.querySelectorAll(".inv-subcat-cb").forEach((cb) => (cb.checked = checked));
+  document.querySelectorAll(".inv-subcat-cb").forEach((cb) => { cb.checked = checked; });
   onInvSubcatChange();
 }
 
-function invToggleSubcatDropdown() {
-  const dd = document.getElementById("inv-subcat-dropdown");
-  if (dd.style.display === "none") {
-    const trigger = document.getElementById("inv-subcat-trigger");
+function invToggleDropdown(ddId, triggerId) {
+  const dd = document.getElementById(ddId);
+  const trigger = document.getElementById(triggerId);
+  if (!dd || !trigger) return;
+  const open = dd.hidden;
+  if (open) {
     const rect = trigger.getBoundingClientRect();
-    dd.style.position = "fixed";
-    dd.style.top = (rect.bottom + 2) + "px";
-    dd.style.left = rect.left + "px";
-    dd.style.display = "block";
-  } else {
-    dd.style.display = "none";
+    dd.style.top = `${rect.bottom + 2}px`;
+    dd.style.left = `${rect.left}px`;
   }
+  dd.hidden = !open;
+  trigger.setAttribute("aria-expanded", open ? "true" : "false");
 }
 
 function onInvSubcatChange() {
-  invState.selectedSubcategories = Array.from(document.querySelectorAll(".inv-subcat-cb:checked")).map((cb) => cb.value);
+  const checked = Array.from(document.querySelectorAll(".inv-subcat-cb:checked")).map((cb) => cb.value);
+  invState.selectedSubcategories = checked.length >= (invState.subcategories || []).length ? [] : checked;
   invUpdateSubcatLabel();
   applyInvFilters();
 }
 
 function invUpdateSubcatLabel() {
-  const sel = invState.selectedSubcategories || [];
-  const total = invState.subcategories ? invState.subcategories.length : 0;
   const label = document.getElementById("inv-subcat-label");
   if (!label) return;
-  if (sel.length === 0 || sel.length === total) {
-    label.textContent = "All";
-  } else {
-    const unchecked = total - sel.length;
-    label.textContent = `${unchecked} excluded`;
-  }
+  const checked = document.querySelectorAll(".inv-subcat-cb:checked").length;
+  const total = document.querySelectorAll(".inv-subcat-cb").length;
+  label.textContent = checked === 0 || checked === total ? "All" : `${total - checked} excluded`;
 }
 
 function invBuildReorderDropdown(levels) {
   const container = document.getElementById("inv-reorder-dropdown");
   if (!container) return;
-  container.innerHTML = "";
-
-  const controls = document.createElement("div");
-  controls.style.cssText = "display: flex; justify-content: space-between; align-items: center; padding: 0.375rem 0.75rem; border-bottom: 2px solid var(--border-color); gap: 0.25rem;";
-  controls.innerHTML = `
-    <div style="display: flex; gap: 0.375rem;">
-      <button type="button" class="btn btn-secondary" onclick="invReorderCheckAll(true)" style="font-size: 0.625rem; padding: 0.15rem 0.4rem;">All</button>
-      <button type="button" class="btn btn-secondary" onclick="invReorderCheckAll(false)" style="font-size: 0.625rem; padding: 0.15rem 0.4rem;">None</button>
-    </div>
-  `;
-  container.appendChild(controls);
-
-  levels.forEach((lvl) => {
-    const label = document.createElement("label");
-    label.style.cssText = "display: flex; align-items: center; gap: 0.5rem; padding: 0.375rem 0.75rem; cursor: pointer; font-size: 0.8125rem; border-bottom: 1px solid var(--border-color);";
-    label.innerHTML = `<input type="checkbox" class="inv-reorder-cb" value="${lvl}" checked onchange="onInvReorderChange()"> ${lvl}`;
-    container.appendChild(label);
-  });
-  invState.selectedReorderLevels = [...levels];
+  container.innerHTML = invDropdownHtml("reorder", levels.map((lvl) => [lvl, lvl, true]));
+  invState.selectedReorderLevels = [];
 }
 
 function invReorderCheckAll(checked) {
-  document.querySelectorAll(".inv-reorder-cb").forEach((cb) => (cb.checked = checked));
+  document.querySelectorAll(".inv-reorder-cb").forEach((cb) => { cb.checked = checked; });
   onInvReorderChange();
 }
 
-function invToggleReorderDropdown() {
-  const dd = document.getElementById("inv-reorder-dropdown");
-  if (dd.style.display === "none") {
-    const trigger = document.getElementById("inv-reorder-trigger");
-    const rect = trigger.getBoundingClientRect();
-    dd.style.position = "fixed";
-    dd.style.top = (rect.bottom + 2) + "px";
-    dd.style.left = rect.left + "px";
-    dd.style.display = "block";
-  } else {
-    dd.style.display = "none";
-  }
-}
-
 function onInvReorderChange() {
-  invState.selectedReorderLevels = Array.from(document.querySelectorAll(".inv-reorder-cb:checked")).map((cb) => Number(cb.value));
+  const checked = Array.from(document.querySelectorAll(".inv-reorder-cb:checked")).map((cb) => Number(cb.value));
+  const total = document.querySelectorAll(".inv-reorder-cb").length;
+  invState.selectedReorderLevels = checked.length >= total ? [] : checked;
   invUpdateReorderLabel();
   applyInvFilters();
 }
 
 function invUpdateReorderLabel() {
-  const sel = invState.selectedReorderLevels || [];
-  const allLevels = [...new Set(invState.allProducts.map(p => p.reorder_level || 0))];
-  const total = allLevels.length;
   const label = document.getElementById("inv-reorder-label");
   if (!label) return;
-  if (sel.length === 0 || sel.length === total) {
-    label.textContent = "All";
-  } else {
-    const unchecked = total - sel.length;
-    label.textContent = `${unchecked} excluded`;
-  }
+  const checked = document.querySelectorAll(".inv-reorder-cb:checked").length;
+  const total = document.querySelectorAll(".inv-reorder-cb").length;
+  label.textContent = checked === 0 || checked === total ? "All" : `${total - checked} excluded`;
 }
 
 document.addEventListener("click", (e) => {
-  const trigger = document.getElementById("inv-subcat-trigger");
-  const dropdown = document.getElementById("inv-subcat-dropdown");
-  if (trigger && dropdown && !trigger.contains(e.target) && !dropdown.contains(e.target)) {
-    dropdown.style.display = "none";
-  }
-  const reorderTrigger = document.getElementById("inv-reorder-trigger");
-  const reorderDropdown = document.getElementById("inv-reorder-dropdown");
-  if (reorderTrigger && reorderDropdown && !reorderTrigger.contains(e.target) && !reorderDropdown.contains(e.target)) {
-    reorderDropdown.style.display = "none";
-  }
+  [["inv-subcat-trigger", "inv-subcat-dropdown"], ["inv-reorder-trigger", "inv-reorder-dropdown"]].forEach(([tId, dId]) => {
+    const trigger = document.getElementById(tId);
+    const dropdown = document.getElementById(dId);
+    if (trigger && dropdown && !dropdown.hidden && !trigger.contains(e.target) && !dropdown.contains(e.target)) {
+      dropdown.hidden = true;
+      trigger.setAttribute("aria-expanded", "false");
+    }
+  });
 });
 
 // ===== End BOV Inventory tab =====

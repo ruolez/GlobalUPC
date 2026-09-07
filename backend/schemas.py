@@ -1069,14 +1069,18 @@ BOV_DEFAULT_QUOTATION_STATUSES = ["In Progress", "Locked"]
 # merged over these defaults (see bov_merge_alert_rules) so new rules show up
 # without a migration. Thresholds are validated in the config endpoint.
 BOV_DEFAULT_ALERT_RULES: Dict[str, Dict] = {
-    "unshipped_cutoff":        {"enabled": True, "cutoff": "14:00"},
-    "open_invoice_age":        {"enabled": True, "days": 2},
+    # lookback_days bounds the invoice scans (InvoiceDate >= today - lookback_days)
+    # so a legacy backlog without tracking numbers cannot flag the whole business.
+    "unshipped_cutoff":        {"enabled": True, "cutoff": "14:00", "lookback_days": 90},
+    "open_invoice_age":        {"enabled": True, "days": 2, "lookback_days": 90},
     "quotation_stuck":         {"enabled": True, "days": 1},
     "po_overdue":              {"enabled": True, "days": 14},
     "shopify_on_hold":         {"enabled": True},
     "shopify_unfulfilled_age": {"enabled": True, "days": 2},
     "shopify_sync_stale":      {"enabled": True, "days": 1},
-    "margin_floor":            {"enabled": True, "pct": 15, "per_store": True},
+    # Off for new configs: a fixed floor flags most products when real margins sit
+    # near it (stored rules keep whatever the owner saved).
+    "margin_floor":            {"enabled": False, "pct": 15, "per_store": True},
     "revenue_drop":            {"enabled": True, "pct": 20},
 }
 
@@ -1132,6 +1136,13 @@ def _bov_validate_rule_fields(key: str, r: Dict) -> Optional[str]:
                 return f"{key}: {num} must be a number"
             if v < 0 or v > 10000:
                 return f"{key}: {num} out of range"
+    if "lookback_days" in r:
+        try:
+            v = float(r["lookback_days"])
+        except (TypeError, ValueError):
+            return f"{key}: lookback_days must be a number"
+        if v < 1 or v > 3650:
+            return f"{key}: lookback_days must be between 1 and 3650"
     if "pct" in r:
         try:
             v = float(r["pct"])
@@ -1208,6 +1219,7 @@ class BusinessOverviewConfigResponse(BaseModel):
     shopify_store_names: List[str] = []
     quotation_statuses: List[str] = []
     timezone: str = "America/Chicago"
+    today: Optional[str] = None               # ISO date in `timezone` (the server's notion of today)
     alert_rules: Dict[str, Dict] = {}
     # Resolved read-only context (not stored on this table)
     admin_store_id: Optional[int] = None
@@ -1271,7 +1283,7 @@ class BOVSeriesPoint(BaseModel):
     start: str
     end: str
     label: str
-    values: Dict[str, float] = {}
+    values: Dict[str, Optional[float]] = {}   # profit is None when cost is unknown
 
 
 class BOVRangeTotals(BaseModel):
@@ -1320,6 +1332,7 @@ class BOVQuotationsBlock(BOVBlockStatus):
     total_qty: float = 0.0
     by_status: List[BOVQuotationStatusCount] = []
     statuses: List[str] = []
+    warnings: List[str] = []                  # e.g. "cost unavailable for N quotations: <reason>"
 
 
 class BOVQuotationsResponse(BOVQuotationsBlock):
@@ -1578,8 +1591,9 @@ class BOVPurchaseOrderDetailResponse(BaseModel):
 # ---- Sales / margin ---------------------------------------------------------
 class BOVSalesSourceTotals(BaseModel):
     revenue: float = 0.0
+    gross_revenue: Optional[float] = None   # pre-return revenue (Shopify order subtotals); None when not emitted
     cost: float = 0.0
-    profit: float = 0.0                     # revenue − cost − shipping_cost + shipping_collected
+    profit: Optional[float] = None          # revenue − cost − shipping_cost + shipping_collected; None when cost is unknown
     shipping_cost: float = 0.0              # BackOffice Invoices_tbl.ShippingCost + Shopify shipper parcels (± estimates when est_shipping)
     shipping_collected: float = 0.0         # Shopify total_shipping charged to customers; 0 for BackOffice
     margin_pct: Optional[float] = None      # product-based: shipping never enters margin
@@ -1614,8 +1628,9 @@ class BOVSalesStoreTotals(BaseModel):
     store_name: str
     source: str                          # backoffice | shopify
     revenue: float = 0.0
+    gross_revenue: Optional[float] = None
     cost: float = 0.0
-    profit: float = 0.0
+    profit: Optional[float] = None       # None when cost is unknown
     shipping_cost: float = 0.0
     shipping_collected: float = 0.0
     margin_pct: Optional[float] = None
@@ -1736,6 +1751,7 @@ class BOVShopifyOrderRow(BaseModel):
     shopify_id: int
     name: Optional[str] = None
     created_at: Optional[str] = None
+    created_local: Optional[str] = None          # shop-local "YYYY-MM-DD HH:MM" (same basis as Month End)
     processed_at: Optional[str] = None
     fulfilled_at: Optional[str] = None
     closed_at: Optional[str] = None

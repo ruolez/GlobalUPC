@@ -21,6 +21,7 @@ import asyncio
 import bisect
 import calendar
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -40,7 +41,9 @@ DEFAULT_LIST_LIMIT = 500
 MAX_LIST_LIMIT = 5000
 MAX_PARAMS = 2000
 MAX_RANGE_DAYS = 400
-MSSQL_TIMEOUT = 15
+MSSQL_TIMEOUT = 15            # login timeout (seconds)
+MSSQL_QUERY_TIMEOUT = 60      # per-statement timeout (seconds), set on every connection
+PRODUCTS_MAX_ROWS = 20000     # upper bound on the per-store Products query (revenue-descending)
 
 BUCKETS = ("day", "week", "month")
 PRESETS = (
@@ -118,6 +121,29 @@ def today_in_tz(tz_name: Optional[str]) -> date:
 def upper_bound(d: date) -> str:
     """Exclusive upper bound for an inclusive end date."""
     return (d + timedelta(days=1)).isoformat()
+
+
+_BIND_DT_FORMATS = ("%Y-%m-%d", "%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S")
+
+
+def _bind_dt(v: Any) -> Any:
+    """
+    Date bound for a pyodbc parameter: 'YYYY-MM-DD[ HH:MM[:SS]]' strings and
+    date objects become datetimes, so SQL Server never parses them under the
+    session's DATEFORMAT. Anything else is bound as-is.
+    """
+    if isinstance(v, datetime):
+        return v
+    if isinstance(v, date):
+        return datetime(v.year, v.month, v.day)
+    if isinstance(v, str):
+        s = v.strip()
+        for fmt in _BIND_DT_FORMATS:
+            try:
+                return datetime.strptime(s, fmt)
+            except ValueError:
+                continue
+    return v
 
 
 def _month_add(d: date, months: int) -> date:
@@ -358,20 +384,33 @@ def aging_bucket(days: Optional[int]) -> Optional[str]:
 # ============================================================================
 
 def _connect(host, port, database, username, password):
-    return pyodbc.connect(
+    conn = pyodbc.connect(
         get_mssql_connection_string(host, port, database, username, password),
         timeout=MSSQL_TIMEOUT,
     )
+    conn.timeout = MSSQL_QUERY_TIMEOUT
+    return conn
 
 
 def _tables_present(cursor, names: List[str]) -> Dict[str, bool]:
+    """
+    {table: exists} for `names`. When Items_tbl is asked for and exists, the
+    map also carries "Items_tbl.Discontinued" so the current-cost lookup can
+    prefer live rows over discontinued ones (see _local_cost_apply).
+    """
     placeholders = ",".join(["?"] * len(names))
     cursor.execute(
         f"SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME IN ({placeholders})",
         names,
     )
     found = {row[0] for row in cursor.fetchall()}
-    return {n: (n in found) for n in names}
+    present = {n: (n in found) for n in names}
+    if present.get("Items_tbl"):
+        cursor.execute(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'Items_tbl' AND COLUMN_NAME = 'Discontinued'"
+        )
+        present["Items_tbl.Discontinued"] = bool((cursor.fetchone() or [0])[0])
+    return present
 
 
 # BackOffice cost bases (cost_mode):
@@ -381,11 +420,24 @@ def _tables_present(cursor, names: List[str]) -> Dict[str, bool]:
 #             line cost when the item is missing.
 #   s2s     — SQL computes "current"; the caller re-costs every row from the S2S store.
 COST_MODES = ("sale", "current", "s2s")
-_LOCAL_COST_APPLY = """
+# Duplicate UPCs exist in Items_tbl (the app ships a duplicate-UPC audit), so
+# the TOP 1 current-cost row is picked deterministically: live rows before
+# discontinued ones, then the newest ProductID.
+_LOCAL_COST_ORDER = "ORDER BY CASE WHEN ISNULL(i.Discontinued, 0) = 0 THEN 0 ELSE 1 END, i.ProductID DESC"
+_LOCAL_COST_ORDER_NO_FLAG = "ORDER BY i.ProductID DESC"
+
+
+def _local_cost_apply(present: Dict[str, bool]) -> str:
+    """OUTER APPLY fragment resolving the store's current Items_tbl.UnitCost for line `d`."""
+    order = _LOCAL_COST_ORDER if present.get("Items_tbl.Discontinued") else _LOCAL_COST_ORDER_NO_FLAG
+    return f"""
     OUTER APPLY (SELECT TOP 1 i.UnitCost AS ItemUnitCost
                  FROM Items_tbl i
-                 WHERE i.ProductUPC = d.ProductUPC AND d.ProductUPC IS NOT NULL AND LTRIM(RTRIM(d.ProductUPC)) <> '') ic
+                 WHERE i.ProductUPC = d.ProductUPC AND d.ProductUPC IS NOT NULL AND LTRIM(RTRIM(d.ProductUPC)) <> ''
+                 {order}) ic
 """
+
+
 _LOCAL_COST_EXPR = "ISNULL(d.QtyShipped, 0) * ISNULL(ic.ItemUnitCost, ISNULL(d.UnitCost, 0))"
 _SALE_COST_EXPR = "ISNULL(d.QtyShipped, 0) * COALESCE(NULLIF(d.UnitCost, 0), ic.ItemUnitCost, 0)"
 _LINE_COST_EXPR = "ISNULL(d.QtyShipped, 0) * ISNULL(d.UnitCost, 0)"
@@ -395,7 +447,7 @@ def _cost_sql(present: Dict[str, bool], cost_mode: str = "sale") -> Tuple[str, s
     """(OUTER APPLY fragment, per-line cost expression) for the store-local basis."""
     if not present.get("Items_tbl"):
         return "", _LINE_COST_EXPR
-    return _LOCAL_COST_APPLY, (_SALE_COST_EXPR if cost_mode == "sale" else _LOCAL_COST_EXPR)
+    return _local_cost_apply(present), (_SALE_COST_EXPR if cost_mode == "sale" else _LOCAL_COST_EXPR)
 
 
 def _unit_cost_for(cost_mode: str, line_cost: Optional[float], item_cost: Optional[float]) -> Optional[float]:
@@ -580,18 +632,19 @@ def _quotations_in_progress_sync(
     if started_before:
         # "stuck" quotations: the earliest pick started before this instant
         having_parts.append("MIN(qip.StartDate) < ?")
-        having_params.append(started_before)
+        having_params.append(_bind_dt(started_before))
     if clean_statuses:
+        # Filter on the very expression the row reports as `status`, so the
+        # by-status split can never include a status the owner did not select.
         ph = ",".join(["?"] * len(clean_statuses))
-        having_parts.append(f"(MAX(qs.Status) IN ({ph}) OR MAX(qip.Status) IN ({ph}))")
-        having_params += clean_statuses + clean_statuses
+        having_parts.append(f"COALESCE(MAX(qs.Status), MAX(qip.Status)) IN ({ph})")
+        having_params += clean_statuses
     # Customer exclusions (same list as sales): the quotation's customer is the
     # aggregated QuotationsStatus.BusinessName, so this belongs in HAVING.
-    clean_excl = [str(n).strip() for n in (excluded_names or []) if n and str(n).strip()]
-    if clean_excl:
-        ph = ",".join(["?"] * len(clean_excl))
-        having_parts.append(f"(MAX(qs.BusinessName) IS NULL OR LTRIM(RTRIM(MAX(qs.BusinessName))) NOT IN ({ph}))")
-        having_params += clean_excl
+    excl_sql, excl_params = _excl_clause(excluded_names or [], "MAX(qs.BusinessName)")
+    if excl_sql:
+        having_parts.append(excl_sql[len(" AND "):])
+        having_params += excl_params
     having_sql = ("HAVING " + " AND ".join(having_parts)) if having_parts else ""
     # Store filter: SourceDB holds the originating BackOffice database name.
     # A row predicate, so it belongs in WHERE (before the GROUP BY).
@@ -744,6 +797,8 @@ def _quotation_stamped_costs_sync(host, port, database, username, password,
     following the invoice cost bases: sale = the cost stamped on each line
     (blank/$0 → current Items_tbl cost), current = Items_tbl cost (line cost when
     the item is missing). Quotations absent from Quotations_tbl are omitted.
+    A number reissued with a new header is costed from its newest header only
+    (MAX(QuotationID)), never from every header sharing the number.
     """
     try:
         with _connect(host, port, database, username, password) as conn:
@@ -752,7 +807,7 @@ def _quotation_stamped_costs_sync(host, port, database, username, password,
             if not (present.get("Quotations_tbl") and present.get("QuotationsDetails_tbl")):
                 return True, None, {}
             if present.get("Items_tbl"):
-                apply_sql = _LOCAL_COST_APPLY
+                apply_sql = _local_cost_apply(present)
                 expr = _QUOTATION_SALE_COST_EXPR if cost_mode == "sale" else _QUOTATION_LOCAL_COST_EXPR
             else:
                 apply_sql = ""
@@ -764,10 +819,12 @@ def _quotation_stamped_costs_sync(host, port, database, username, password,
                 ph = ",".join("?" * len(chunk))
                 cur.execute(f"""
                     SELECT q.QuotationNumber AS qn, SUM({expr}) AS cost
-                    FROM Quotations_tbl q
+                    FROM (SELECT QuotationNumber, MAX(QuotationID) AS QuotationID
+                          FROM Quotations_tbl
+                          WHERE QuotationNumber IN ({ph})
+                          GROUP BY QuotationNumber) q
                     JOIN QuotationsDetails_tbl d ON d.QuotationID = q.QuotationID
                     {apply_sql}
-                    WHERE q.QuotationNumber IN ({ph})
                     GROUP BY q.QuotationNumber
                 """, chunk)
                 for r in _rows(cur):
@@ -782,7 +839,8 @@ def _quotation_line_prices_sync(host, port, database, username, password,
                                 ) -> Tuple[bool, Optional[str], Dict[str, Dict[str, float]]]:
     """
     Qty-weighted stamped unit price + sale/current unit costs per UPC for one
-    quotation, from the source store's own Quotations/QuotationsDetails tables.
+    quotation, from the source store's own Quotations/QuotationsDetails tables
+    (newest header for the number, as in _quotation_stamped_costs_sync).
     """
     try:
         with _connect(host, port, database, username, password) as conn:
@@ -791,7 +849,7 @@ def _quotation_line_prices_sync(host, port, database, username, password,
             if not (present.get("Quotations_tbl") and present.get("QuotationsDetails_tbl")):
                 return True, None, {}
             if present.get("Items_tbl"):
-                apply_sql = _LOCAL_COST_APPLY
+                apply_sql = _local_cost_apply(present)
                 sale_expr, cur_expr = _QUOTATION_SALE_COST_EXPR, _QUOTATION_LOCAL_COST_EXPR
             else:
                 apply_sql = ""
@@ -802,10 +860,9 @@ def _quotation_line_prices_sync(host, port, database, username, password,
                        SUM(ISNULL(d.Qty, 0) * ISNULL(d.UnitPrice, 0)) AS price_total,
                        SUM({sale_expr}) AS sale_cost_total,
                        SUM({cur_expr}) AS current_cost_total
-                FROM Quotations_tbl q
+                FROM (SELECT MAX(QuotationID) AS QuotationID FROM Quotations_tbl WHERE QuotationNumber = ?) q
                 JOIN QuotationsDetails_tbl d ON d.QuotationID = q.QuotationID
                 {apply_sql}
-                WHERE q.QuotationNumber = ?
                 GROUP BY LTRIM(RTRIM(d.ProductUPC))
             """, [quotation_number])
             out: Dict[str, Dict[str, float]] = {}
@@ -997,10 +1054,10 @@ def _open_invoices_sync(
     params: List[Any] = []
     if date_from:
         where += " AND h.InvoiceDate >= ?"
-        params.append(date_from)
+        params.append(_bind_dt(date_from))
     if date_to_excl:
         where += " AND h.InvoiceDate < ?"
-        params.append(date_to_excl)
+        params.append(_bind_dt(date_to_excl))
     excl_sql, excl_params = _excl_clause(excluded_names or [])
     where += excl_sql
     params.extend(excl_params)
@@ -1088,7 +1145,7 @@ def _open_invoices_count_sync(
                        MIN(h.InvoiceDate) AS oldest_invoice_date
                 FROM Invoices_tbl h
                 WHERE {_UNSHIPPED_WHERE} AND h.InvoiceDate < ? {excl_sql}
-            """, [dated_before] + excl_params)
+            """, [_bind_dt(dated_before)] + excl_params)
             agg = _rows(cur)[0]
         return True, None, {"count": int(agg.get("invoices") or 0),
                             "total_amount": round(_f(agg.get("total_amount")), 2),
@@ -1109,8 +1166,9 @@ def _shipped_invoices_sync(
     excluded_names: Optional[List[str]] = None,
     cost_mode: str = "sale",
 ) -> Tuple[bool, Optional[str], Dict[str, Any]]:
-    """List = shipped in [date_from, date_to_excl); daily = [series_from, date_to_excl)."""
+    """List = shipped in [date_from, date_to_excl); daily = [series_from, date_to_excl). Both dated by InvoiceDate."""
     limit = _clamp_limit(limit)
+    date_from, date_to_excl, series_from = _bind_dt(date_from), _bind_dt(date_to_excl), _bind_dt(series_from)
     units_by_upc: Dict[int, List[Tuple[str, float]]] = {}
     excl_sql, excl_params = _excl_clause(excluded_names or [])
     try:
@@ -1188,7 +1246,7 @@ def _invoices_in_period_sync(
     limit = _clamp_limit(limit)
     tracking_blank = _TRACKING_BLANK
     where = "ISNULL(h.Void, 0) = 0 AND h.InvoiceDate >= ? AND h.InvoiceDate < ?"
-    params: List[Any] = [date_from, date_to_excl]
+    params: List[Any] = [_bind_dt(date_from), _bind_dt(date_to_excl)]
     excl_sql, excl_params = _excl_clause(excluded_names or [])
     where += excl_sql
     params.extend(excl_params)
@@ -1305,7 +1363,7 @@ def _invoice_detail_sync(host, port, database, username, password, invoice_id: i
                            d.Discount, d.ds_Percent, d.ExtendedPrice, d.ExtendedCost, ISNULL(d.Void,0) AS Void
                            {", ic.ItemUnitCost" if has_items else ", CAST(NULL AS money) AS ItemUnitCost"}
                     FROM InvoicesDetails_tbl d
-                    {_LOCAL_COST_APPLY if has_items else ""}
+                    {_local_cost_apply(present) if has_items else ""}
                     WHERE d.InvoiceID = ?
                     ORDER BY d.LineID
                 """, [int(invoice_id)])
@@ -1402,6 +1460,32 @@ def _po_lines_apply(excl_sql: str) -> str:
 """
 
 
+def _po_received_apply(excl_sql: str) -> str:
+    """
+    Per-header line rollup for the received-in-range list when PO product
+    exclusions are active. One APPLY yields ordered / received over every
+    non-excluded line AND the slice received in [date_from, date_to_excl), so
+    the exclusion list is bound once (the two date bounds bind just before it).
+    `excl_sql` must be built with column="dx.ProductID".
+    """
+    return f"""
+    CROSS APPLY (
+        SELECT
+            SUM(ISNULL(dx.QtyOrdered,0))  AS qty_ordered,
+            SUM(ISNULL(dx.QtyReceived,0)) AS qty_received,
+            MAX(CASE WHEN dx.in_range = 1 THEN dx.DateReceived END)                                  AS last_received,
+            SUM(CASE WHEN dx.in_range = 1 THEN ISNULL(dx.QtyReceived,0) ELSE 0 END)                  AS rcv_qty,
+            SUM(CASE WHEN dx.in_range = 1 THEN ISNULL(dx.QtyReceived,0) * ISNULL(dx.UnitCost,0) ELSE 0 END) AS rcv_value,
+            SUM(CASE WHEN dx.in_range = 1 THEN 1 ELSE 0 END)                                         AS rcv_lines
+        FROM (SELECT dx.QtyOrdered, dx.QtyReceived, dx.UnitCost, dx.DateReceived,
+                     CASE WHEN dx.DateReceived >= ? AND dx.DateReceived < ? AND ISNULL(dx.QtyReceived,0) > 0
+                          THEN 1 ELSE 0 END AS in_range
+              FROM PurchaseOrdersDetails_tbl dx
+              WHERE dx.PoID = h.PoID{excl_sql}) dx
+    ) ov
+"""
+
+
 def _po_row(d: Dict[str, Any]) -> Dict[str, Any]:
     ord_q = _fo(d.get("TotQtyOrd"))
     rcv_q = _fo(d.get("TotQtyRcv"))
@@ -1456,7 +1540,7 @@ def _incoming_purchases_sync(
         list_qty_cols = """h.Status, h.PoTotal, h.NoLines, h.TotQtyOrd, h.TotQtyRcv,
                         ISNULL(h.TotQtyOrd,0) - ISNULL(h.TotQtyRcv,0) AS qty_outstanding,"""
         sortable = SORTABLE_PO_COLUMNS
-    wparams: List[Any] = [placed_before] if placed_before else []
+    wparams: List[Any] = [_bind_dt(placed_before)] if placed_before else []
     try:
         with _connect(host, port, database, username, password) as conn:
             cur = conn.cursor()
@@ -1584,6 +1668,7 @@ def _received_in_range_sync(
     excluded_product_ids: Optional[List[int]] = None,
 ) -> Tuple[bool, Optional[str], Dict[str, Any]]:
     limit = _clamp_limit(limit)
+    date_from, date_to_excl, series_from = _bind_dt(date_from), _bind_dt(date_to_excl), _bind_dt(series_from)
     excl_sql, excl_params = _po_excl_clause(excluded_product_ids, "d.ProductID")
     try:
         with _connect(host, port, database, username, password) as conn:
@@ -1612,27 +1697,27 @@ def _received_in_range_sync(
             if include_list:
                 if excl_sql:
                     # Re-derive per-PO ordered/received from non-excluded lines so the
-                    # "X of Y ordered" / partial-vs-complete displays ignore excluded products.
+                    # "X of Y ordered" / partial-vs-complete displays ignore excluded
+                    # products. Candidate POs are found by the date-bounded seek; the
+                    # APPLY (exclusions bound once) then decides which still count.
                     apply_excl_sql, apply_excl_params = _po_excl_clause(excluded_product_ids, "dx.ProductID")
                     cur.execute(f"""
                         SELECT TOP (?)
                             h.PoID, h.PoNumber, h.PoDate, h.RequiredDate, h.SupplierID, h.BusinessName, h.AccountNo,
                             h.Status, h.PoTotal, h.NoLines,
-                            MAX(ov.qty_ordered)                                     AS TotQtyOrd,
-                            MAX(ov.qty_received)                                    AS TotQtyRcv,
-                            MAX(d.DateReceived)                                     AS last_received,
-                            SUM(ISNULL(d.QtyReceived,0))                            AS qty_received,
-                            SUM(ISNULL(d.QtyReceived,0) * ISNULL(d.UnitCost,0))     AS received_value,
-                            COUNT(*)                                                AS lines_received
-                        FROM PurchaseOrdersDetails_tbl d
-                        INNER JOIN PurchaseOrders_tbl h ON h.PoID = d.PoID
-                        {_po_lines_apply(apply_excl_sql)}
-                        WHERE d.DateReceived >= ? AND d.DateReceived < ?
-                          AND ISNULL(d.QtyReceived, 0) > 0{excl_sql}
-                        GROUP BY h.PoID, h.PoNumber, h.PoDate, h.RequiredDate, h.SupplierID, h.BusinessName, h.AccountNo,
-                                 h.Status, h.PoTotal, h.NoLines
-                        ORDER BY MAX(d.DateReceived) DESC, h.PoID DESC
-                    """, [limit] + apply_excl_params + [date_from, date_to_excl] + excl_params)
+                            ov.qty_ordered  AS TotQtyOrd,
+                            ov.qty_received AS TotQtyRcv,
+                            ov.last_received,
+                            ov.rcv_qty      AS qty_received,
+                            ov.rcv_value    AS received_value,
+                            ov.rcv_lines    AS lines_received
+                        FROM PurchaseOrders_tbl h
+                        {_po_received_apply(apply_excl_sql)}
+                        WHERE h.PoID IN (SELECT d.PoID FROM PurchaseOrdersDetails_tbl d
+                                         WHERE d.DateReceived >= ? AND d.DateReceived < ? AND ISNULL(d.QtyReceived, 0) > 0)
+                          AND ov.rcv_qty > 0
+                        ORDER BY ov.last_received DESC, h.PoID DESC
+                    """, [limit, date_from, date_to_excl] + apply_excl_params + [date_from, date_to_excl])
                 else:
                     cur.execute("""
                         SELECT TOP (?)
@@ -1769,6 +1854,7 @@ def _backoffice_daily_sales_sync(
     """
     excl_sql, excl_params = _excl_clause(excluded_sales_names or [])
     ret_excl_sql, ret_excl_params = _excl_clause(excluded_return_names or [])
+    date_from, date_to_excl = _bind_dt(date_from), _bind_dt(date_to_excl)
     try:
         with _connect(host, port, database, username, password) as conn:
             cur = conn.cursor()
@@ -1886,7 +1972,7 @@ def _backoffice_breakdown_sync(
             j = _invoice_joins(present)
             cost_apply, cost_expr = ("", "NULL") if cost_mode == "s2s" else _cost_sql(present, cost_mode)
             base_where = f"ISNULL(h.Void,0)=0 AND h.InvoiceDate >= ? AND h.InvoiceDate < ? {excl_sql}"
-            params = [limit, date_from, date_to_excl] + excl_params
+            params = [limit, _bind_dt(date_from), _bind_dt(date_to_excl)] + excl_params
             if by == "rep":
                 sql = f"""
                     SELECT TOP (?) h.SalesRepID AS k, {j['rep_agg_expr']} AS name, CAST(NULL AS nvarchar(20)) AS secondary,
@@ -1963,10 +2049,14 @@ def _backoffice_products_sold_sync(
     """
     Every product sold in the period, grouped by trimmed UPC, with the store's
     local cost on the `cost_mode` basis (sale = stamped line cost, current =
-    Items_tbl.UnitCost; s2s is costed by the caller). No TOP clamp — the
-    Products tab wants the full list; the endpoint applies the limit.
+    Items_tbl.UnitCost; s2s is costed by the caller). The Products tab wants
+    the full list, so the only clamp is PRODUCTS_MAX_ROWS (revenue-descending)
+    as a runaway guard; the endpoint applies the display limit. Products are
+    kept when they have net shipped units OR revenue, so billed-but-unshipped
+    lines and sale/return pairs still reconcile with the trend revenue.
     """
     excl_sql, excl_params = _excl_clause(excluded_sales_names or [])
+    date_from, date_to_excl = _bind_dt(date_from), _bind_dt(date_to_excl)
     try:
         with _connect(host, port, database, username, password) as conn:
             cur = conn.cursor()
@@ -1975,7 +2065,8 @@ def _backoffice_products_sold_sync(
                 return False, "Invoices_tbl / InvoicesDetails_tbl not found on this store", []
             cost_apply, cost_expr = _cost_sql(present, cost_mode)
             cur.execute(f"""
-                SELECT LTRIM(RTRIM(d.ProductUPC))       AS upc,
+                SELECT TOP (?)
+                       LTRIM(RTRIM(d.ProductUPC))       AS upc,
                        MAX(d.ProductDescription)        AS name,
                        MAX(d.ProductSKU)                AS sku,
                        COUNT(DISTINCT h.InvoiceID)      AS orders,
@@ -1990,9 +2081,9 @@ def _backoffice_products_sold_sync(
                   AND h.InvoiceDate <  ?
                   {excl_sql}
                 GROUP BY LTRIM(RTRIM(d.ProductUPC))
-                HAVING SUM(ISNULL(d.QtyShipped, 0)) <> 0
+                HAVING SUM(ISNULL(d.QtyShipped, 0)) <> 0 OR SUM(ISNULL(d.ExtendedPrice, 0)) <> 0
                 ORDER BY revenue DESC
-            """, [date_from, date_to_excl] + excl_params)
+            """, [PRODUCTS_MAX_ROWS, date_from, date_to_excl] + excl_params)
             rows: List[Dict[str, Any]] = []
             for r in _rows(cur):
                 rows.append({
@@ -2043,14 +2134,14 @@ def _backoffice_product_lines_sync(
                        {", ic.ItemUnitCost" if has_items else ", CAST(NULL AS money) AS ItemUnitCost"}
                 FROM InvoicesDetails_tbl d
                 INNER JOIN Invoices_tbl h ON h.InvoiceID = d.InvoiceID
-                {_LOCAL_COST_APPLY if has_items else ""}
+                {_local_cost_apply(present) if has_items else ""}
                 WHERE ISNULL(h.Void, 0) = 0
                   AND h.InvoiceDate >= ?
                   AND h.InvoiceDate <  ?
                   {excl_sql}
                   AND {upc_sql}
                 ORDER BY h.InvoiceDate DESC, h.InvoiceID DESC, d.LineID
-            """, [limit + 1, date_from, date_to_excl] + excl_params + upc_params)
+            """, [limit + 1, _bind_dt(date_from), _bind_dt(date_to_excl)] + excl_params + upc_params)
             raw = _rows(cur)
         truncated = len(raw) > limit
         rows: List[Dict[str, Any]] = []
@@ -2147,27 +2238,40 @@ def compute_backoffice_series(payload: Dict[str, Any], period: Period, bucket: s
 
 def _totals_dict(revenue: float, cost: float, returns: float, orders: int, units: float,
                  cost_coverage: Optional[float] = None, shipping: float = 0.0,
-                 shipping_collected: float = 0.0) -> Dict[str, Any]:
+                 shipping_collected: float = 0.0, gross_revenue: Optional[float] = None,
+                 net_revenue: Optional[float] = None) -> Dict[str, Any]:
+    """
+    One totals block. `revenue` is the basis profit and margin are computed
+    from. `gross_revenue` (default = revenue) is the pre-return figure kept for
+    reporting; `net_revenue` (default = revenue − returns) the post-return one.
+    BackOffice passes invoice-line revenue with credit memos as `returns`.
+    Shopify passes line-level revenue that already carries nothing for refunded
+    units (same basis as Products / Month End), so it supplies
+    net_revenue = revenue and gross_revenue = the order-level subtotals.
+    cost_coverage == 0 with units sold means no cost could be resolved: profit
+    and margin are then unknown (None), never revenue − 0.
+    """
     revenue = _f(revenue)
     cost = _f(cost)
     returns = _f(returns)
     shipping = _f(shipping)
     shipping_collected = _f(shipping_collected)
-    # cost_coverage == 0 means units were sold but no cost could be resolved:
-    # report margin as unknown rather than a misleading 100%.
     unknown_cost = (cost_coverage is not None and cost_coverage == 0 and _f(units) > 0)
+    gross = revenue if gross_revenue is None else _f(gross_revenue)
+    net = (revenue - returns) if net_revenue is None else _f(net_revenue)
     return {
         "revenue": round(revenue, 2),
+        "gross_revenue": round(gross, 2),
         "cost": round(cost, 2),
         # Real profit: shipping charged to customers (Shopify total_shipping) is
         # income, shipping paid out (BackOffice invoice header / shipper parcels)
         # is a cost. Margin stays product-based — shipping never enters it.
-        "profit": round(revenue - cost - shipping + shipping_collected, 2),
+        "profit": (None if unknown_cost else round(revenue - cost - shipping + shipping_collected, 2)),
         "shipping_cost": round(shipping, 2),
         "shipping_collected": round(shipping_collected, 2),
         "margin_pct": (None if unknown_cost else margin_pct(revenue, cost)),
         "returns": round(returns, 2),
-        "net_revenue": round(revenue - returns, 2),
+        "net_revenue": round(net, 2),
         "orders": int(orders or 0),
         "units": round(_f(units), 2),
         "cost_coverage": cost_coverage,
@@ -2178,8 +2282,20 @@ def empty_totals() -> Dict[str, Any]:
     return _totals_dict(0.0, 0.0, 0.0, 0, 0.0)
 
 
+def _gross_of(t: Dict[str, Any]) -> float:
+    return _f(t.get("gross_revenue", t.get("revenue")))
+
+
+def _net_of(t: Dict[str, Any]) -> float:
+    return _f(t["net_revenue"]) if t.get("net_revenue") is not None else _f(t.get("revenue")) - _f(t.get("returns"))
+
+
 def add_totals(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:
-    """Sum two totals dicts, recomputing derived fields."""
+    """
+    Sum two totals dicts, recomputing derived fields. An unknown profit on
+    either side (no cost resolved) stays unknown in the sum — it is never
+    treated as revenue − 0.
+    """
     revenue = _f(a.get("revenue")) + _f(b.get("revenue"))
     cost = _f(a.get("cost")) + _f(b.get("cost"))
     returns = _f(a.get("returns")) + _f(b.get("returns"))
@@ -2192,24 +2308,33 @@ def add_totals(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:
     if cov_a is not None or cov_b is not None:
         known = (cov_a or 0.0) * ua + (cov_b or 0.0) * ub if (ua + ub) else 0.0
         cov = round(known / (ua + ub), 4) if (ua + ub) else None
-    return _totals_dict(revenue, cost, returns, orders, units, cov, shipping=shipping,
-                        shipping_collected=_f(a.get("shipping_collected")) + _f(b.get("shipping_collected")))
+    out = _totals_dict(revenue, cost, returns, orders, units, cov, shipping=shipping,
+                       shipping_collected=_f(a.get("shipping_collected")) + _f(b.get("shipping_collected")),
+                       gross_revenue=_gross_of(a) + _gross_of(b), net_revenue=_net_of(a) + _net_of(b))
+    if a.get("profit") is None or b.get("profit") is None:
+        out["profit"] = None
+        out["margin_pct"] = None
+    return out
 
 
 def add_shipping_cost(totals: Dict[str, Any], amount: float) -> None:
     """Fold an extra shipping cost into an already-built totals dict, keeping
-    profit derived the same way _totals_dict derives it."""
+    profit derived the same way _totals_dict derives it (an unknown profit stays unknown)."""
     if not amount:
         return
     totals["shipping_cost"] = round(_f(totals.get("shipping_cost")) + _f(amount), 2)
+    if totals.get("profit") is None:
+        return
     totals["profit"] = round(_f(totals.get("revenue")) - _f(totals.get("cost"))
                              - _f(totals.get("shipping_cost")) + _f(totals.get("shipping_collected")), 2)
 
 
 def totals_change(cur: Dict[str, Any], prev: Dict[str, Any]) -> Dict[str, Optional[float]]:
+    """Period-over-period change per field; None whenever either side is unknown or the base is 0."""
     out: Dict[str, Optional[float]] = {}
-    for k in ("revenue", "cost", "profit", "shipping_cost", "shipping_collected", "orders", "units", "returns", "net_revenue"):
-        out[k] = pct_change(_f(cur.get(k)), _f(prev.get(k)))
+    for k in ("revenue", "gross_revenue", "cost", "profit", "shipping_cost", "shipping_collected",
+              "orders", "units", "returns", "net_revenue"):
+        out[k] = pct_change(_fo(cur.get(k)), _fo(prev.get(k)))
     mc, mp = cur.get("margin_pct"), prev.get("margin_pct")
     out["margin_pct"] = (round(mc - mp, 2) if (mc is not None and mp is not None) else None)  # points, not %
     return out
@@ -2221,12 +2346,16 @@ def totals_change(cur: Dict[str, Any], prev: Dict[str, Any]) -> Dict[str, Option
 
 _SHOPIFY_COMPLETED = "o.cancelled_at IS NULL AND o.financial_status IS DISTINCT FROM 'REFUNDED'"
 
-# Order-level Shopify revenue (subtotal before "returns" are subtracted as
-# `refunded`). Shopify's subtotal_price never drops when a line is refunded
-# for $0 — which is how Order Sync removes or reprices a shipped line — but
-# current_subtotal_price does, so cap by it: net revenue becomes
-# MIN(subtotal − refunded, current_subtotal), i.e. money refunds keep their
-# effect and records-only refunds remove the line's value.
+# Order-level Shopify subtotal, reported as `gross_revenue` only — profit and
+# margin come from the line-level basis below. Formula:
+#   LEAST(subtotal_price, current_subtotal_price + total_refunded)
+# A money refund lowers current_subtotal_price by the refunded amount while
+# total_refunded rises by it, so the sum equals subtotal_price: the gross
+# figure keeps the refunded value (reported separately as `returns`). A
+# records-only $0 refund — how Order Sync removes or reprices a shipped line —
+# lowers current_subtotal_price and leaves total_refunded alone, so the LEAST
+# drops that line's value. Rows synced before migration 029 have a NULL
+# current_subtotal_price and fall back to subtotal_price.
 _SHOPIFY_ORDER_REVENUE = (
     "LEAST(COALESCE(o.subtotal_price, 0), "
     "COALESCE(o.current_subtotal_price, o.subtotal_price, 0) + COALESCE(o.total_refunded, 0))"
@@ -2242,6 +2371,18 @@ _SHOPIFY_LINE_REVENUE = (
     f"THEN COALESCE(li.discounted_total, 0) * {_SHOPIFY_LINE_UNITS} / li.quantity "
     "ELSE COALESCE(li.discounted_total, 0) END"
 )
+
+
+# Grouping key for line-level product rollups: barcode when present, otherwise
+# the variant (title as a last resort) so barcode-less lines — shipping
+# protection, gift cards, un-barcoded variants — never merge into one row.
+_SHOPIFY_LINE_GROUP = ("COALESCE(NULLIF(BTRIM(li.barcode),''), "
+                       "'variant:' || COALESCE(li.variant_shopify_id::text, li.product_title, li.title, ''))")
+
+
+def _pg(conn=None):
+    """Context manager yielding `conn` when given, else a fresh engine connection."""
+    return nullcontext(conn) if conn is not None else engine.connect()
 
 
 def shopify_line_net_revenue(discounted_total: Any, quantity: Any, current_quantity: Any) -> float:
@@ -2307,8 +2448,8 @@ def _shopify_excl_clause(store_id: int, exclusions: Optional[List[Dict[str, Any]
 
 
 def _shopify_excluded_revenue_by_bucket_sync(store_id: int, tz: str, date_from: str, date_to_excl: str, bucket: str,
-                                             exclusions: Optional[List[Dict[str, Any]]]) -> Dict[date, float]:
-    """Line revenue of excluded products per bucket — subtracted from order-level revenue."""
+                                             exclusions: Optional[List[Dict[str, Any]]], conn=None) -> Dict[date, float]:
+    """Line-level revenue (_SHOPIFY_LINE_REVENUE) of excluded products per bucket — subtracted from `gross_revenue`."""
     excl_sql, excl_params = _shopify_excl_clause(store_id, exclusions)
     if not excl_sql:
         return {}
@@ -2326,8 +2467,8 @@ def _shopify_excluded_revenue_by_bucket_sync(store_id: int, tz: str, date_from: 
         GROUP BY 1
     """
     out: Dict[date, float] = {}
-    with engine.connect() as conn:
-        for r in conn.execute(text(sql), {"sid": store_id, "tz": tz, "start": date_from, "end_excl": date_to_excl, **excl_params}).mappings():
+    with _pg(conn) as c:
+        for r in c.execute(text(sql), {"sid": store_id, "tz": tz, "start": date_from, "end_excl": date_to_excl, **excl_params}).mappings():
             b = r["b"]
             if isinstance(b, datetime):
                 b = b.date()
@@ -2335,7 +2476,9 @@ def _shopify_excluded_revenue_by_bucket_sync(store_id: int, tz: str, date_from: 
     return out
 
 
-def _shopify_bucketed_orders_sync(store_id: int, tz: str, date_from: str, date_to_excl: str, bucket: str) -> Dict[date, Dict[str, float]]:
+def _shopify_bucketed_orders_sync(store_id: int, tz: str, date_from: str, date_to_excl: str, bucket: str,
+                                  conn=None) -> Dict[date, Dict[str, float]]:
+    """Order-level figures per bucket: count, gross subtotal (_SHOPIFY_ORDER_REVENUE), refunded, shipping collected."""
     bucket = _check_bucket(bucket)
     tz = _safe_tz(tz)
     sql = f"""
@@ -2354,8 +2497,8 @@ def _shopify_bucketed_orders_sync(store_id: int, tz: str, date_from: str, date_t
         GROUP BY 1 ORDER BY 1
     """
     out: Dict[date, Dict[str, float]] = {}
-    with engine.connect() as conn:
-        rows = conn.execute(text(sql), {"sid": store_id, "tz": tz, "start": date_from, "end_excl": date_to_excl}).mappings().all()
+    with _pg(conn) as c:
+        rows = c.execute(text(sql), {"sid": store_id, "tz": tz, "start": date_from, "end_excl": date_to_excl}).mappings().all()
     for r in rows:
         b = r["b"]
         if isinstance(b, datetime):
@@ -2366,7 +2509,9 @@ def _shopify_bucketed_orders_sync(store_id: int, tz: str, date_from: str, date_t
 
 
 def _shopify_bucketed_line_items_sync(store_id: int, tz: str, date_from: str, date_to_excl: str, bucket: str,
-                                      exclusions: Optional[List[Dict[str, Any]]] = None) -> List[Tuple[date, Optional[str], float, float]]:
+                                      exclusions: Optional[List[Dict[str, Any]]] = None,
+                                      conn=None) -> List[Tuple[date, Optional[str], float, float]]:
+    """(bucket, barcode, units, net line revenue) for completed orders, excluded products dropped."""
     bucket = _check_bucket(bucket)
     tz = _safe_tz(tz)
     excl_sql, excl_params = _shopify_excl_clause(store_id, exclusions)
@@ -2386,8 +2531,8 @@ def _shopify_bucketed_line_items_sync(store_id: int, tz: str, date_from: str, da
           {excl_where}
         GROUP BY 1, 2
     """
-    with engine.connect() as conn:
-        rows = conn.execute(text(sql), {"sid": store_id, "tz": tz, "start": date_from, "end_excl": date_to_excl, **excl_params}).mappings().all()
+    with _pg(conn) as c:
+        rows = c.execute(text(sql), {"sid": store_id, "tz": tz, "start": date_from, "end_excl": date_to_excl, **excl_params}).mappings().all()
     out: List[Tuple[date, Optional[str], float, float]] = []
     for r in rows:
         b = r["b"]
@@ -2405,14 +2550,17 @@ def _shopify_period_orders_sync(store_id: int, tz: str, date_from: str, date_to_
                                 exclusions: Optional[List[Dict[str, Any]]] = None) -> Dict[str, float]:
     """
     Order-flow counts for one store over [date_from, date_to_excl) in the shop's
-    calendar: placed (non-cancelled), revenue, cancelled, still-unfulfilled among
-    those placed, and orders whose first fulfillment happened in the period.
+    calendar: placed (non-cancelled), cancelled, still-unfulfilled among those
+    placed, and orders whose first fulfillment happened in the period. `revenue`
+    is the completed-order line revenue net of refunded units and exclusions —
+    the same basis as the product rows it serves as a share denominator for.
     """
     tz = _safe_tz(tz)
+    excl_sql, excl_params = _shopify_excl_clause(store_id, exclusions)
+    excl_where = f"AND NOT {excl_sql}" if excl_sql else ""
     with engine.connect() as conn:
         placed = conn.execute(text(f"""
             SELECT COUNT(*) FILTER (WHERE o.cancelled_at IS NULL)                                   AS orders,
-                   COALESCE(SUM({_SHOPIFY_ORDER_REVENUE}) FILTER (WHERE o.cancelled_at IS NULL), 0) AS revenue,
                    COUNT(*) FILTER (WHERE o.cancelled_at IS NOT NULL)                               AS cancelled,
                    COUNT(*) FILTER (WHERE o.cancelled_at IS NULL
                                       AND o.fulfillment_status IN ({_SHOPIFY_UNFULFILLED}))         AS unfulfilled_from_period,
@@ -2434,12 +2582,18 @@ def _shopify_period_orders_sync(store_id: int, tz: str, date_from: str, date_to_
               AND o.fulfilled_at >= (CAST(:start AS date)::timestamp AT TIME ZONE :tz)
               AND o.fulfilled_at <  (CAST(:end_excl AS date)::timestamp AT TIME ZONE :tz)
         """), {"sid": store_id, "start": date_from, "end_excl": date_to_excl, "tz": tz}).mappings().first()
-    ex_rev = 0.0
-    if exclusions:
-        ex_rev = sum(_shopify_excluded_revenue_by_bucket_sync(store_id, tz, date_from, date_to_excl, "month", exclusions).values())
+        revenue = conn.execute(text(f"""
+            SELECT COALESCE(SUM({_SHOPIFY_LINE_REVENUE}), 0) AS revenue
+            FROM shopify_orders o
+            JOIN shopify_order_line_items li ON li.store_id = o.store_id AND li.order_shopify_id = o.shopify_id
+            WHERE o.store_id = :sid AND {_SHOPIFY_COMPLETED}
+              AND o.created_at >= (CAST(:start AS date)::timestamp AT TIME ZONE :tz)
+              AND o.created_at <  (CAST(:end_excl AS date)::timestamp AT TIME ZONE :tz)
+              {excl_where}
+        """), {"sid": store_id, "start": date_from, "end_excl": date_to_excl, "tz": tz, **excl_params}).scalar()
     return {
         "orders": int(placed["orders"] or 0),
-        "revenue": round(max(0.0, _f(placed["revenue"]) - ex_rev), 2),
+        "revenue": round(max(0.0, _f(revenue)), 2),
         "cancelled": int(placed["cancelled"] or 0),
         "unfulfilled_from_period": int(placed["unfulfilled_from_period"] or 0),
         "fulfilled_from_period": int(placed["fulfilled_from_period"] or 0),
@@ -2580,7 +2734,7 @@ def _shopify_products_sold_sync(store_id: int, tz: str, date_from: str, date_to_
     excl_where = f"AND NOT {excl_sql}" if excl_sql else ""
     sql = f"""
         SELECT NULLIF(BTRIM(li.barcode),'') AS barcode,
-               COALESCE(NULLIF(BTRIM(li.barcode),''), 'variant:' || COALESCE(li.variant_shopify_id::text, li.product_title, li.title, '')) AS grp,
+               {_SHOPIFY_LINE_GROUP} AS grp,
                MAX(li.sku) AS sku, MAX(li.vendor) AS vendor,
                MAX(COALESCE(li.product_title, li.title)) AS title, MAX(li.variant_title) AS variant_title,
                MAX(li.product_shopify_id) AS product_shopify_id, MAX(li.variant_shopify_id) AS variant_shopify_id,
@@ -2720,7 +2874,7 @@ def _shopify_top_products_sync(store_id: int, tz: str, date_from: str, date_to_e
     excl_sql, excl_params = _shopify_excl_clause(store_id, exclusions)
     excl_where = f"AND NOT {excl_sql}" if excl_sql else ""
     sql = f"""
-        SELECT NULLIF(BTRIM(li.barcode),'') AS upc, MAX(li.sku) AS sku,
+        SELECT NULLIF(BTRIM(li.barcode),'') AS upc, {_SHOPIFY_LINE_GROUP} AS grp, MAX(li.sku) AS sku,
                MAX(COALESCE(li.product_title, li.title)) AS name,
                COUNT(DISTINCT o.shopify_id) AS orders,
                SUM({_SHOPIFY_LINE_REVENUE}) AS revenue,
@@ -2731,7 +2885,7 @@ def _shopify_top_products_sync(store_id: int, tz: str, date_from: str, date_to_e
           AND o.created_at >= (CAST(:start AS date)::timestamp AT TIME ZONE :tz)
           AND o.created_at <  (CAST(:end_excl AS date)::timestamp AT TIME ZONE :tz)
           {excl_where}
-        GROUP BY 1 ORDER BY revenue DESC LIMIT :limit
+        GROUP BY 1, 2 ORDER BY revenue DESC LIMIT :limit
     """
     with engine.connect() as conn:
         rows = conn.execute(text(sql), {"sid": store_id, "tz": tz, "start": date_from,
@@ -2751,44 +2905,57 @@ async def compute_shopify_series(
     """
     Per-store Shopify buckets for the current and previous ranges. Cost via
     `cost_lookup(barcodes) -> {barcode: unit_cost}` (async, memoised by caller).
-    Excluded products (see _shopify_excl_clause) drop out of units/cost and their
-    line revenue is subtracted from the order-level revenue.
-    Returns {"current": [...], "previous": [...], "totals": {...}, "previous_totals": {...}}.
+
+    Revenue basis: `revenue` (what profit / margin use) is the line-level net
+    figure — Σ _SHOPIFY_LINE_REVENUE over completed orders, refunded units
+    carrying nothing, excluded products dropped — i.e. exactly what Products
+    and Month End report. `gross_revenue` is the order-level subtotal
+    (_SHOPIFY_ORDER_REVENUE minus excluded-line revenue), `returns` the money
+    refunded and `net_revenue` = revenue (already net).
+
+    All six mirror queries run sequentially on ONE Postgres connection so a
+    summary never pins several pool sessions per store. A failed cost lookup
+    is reported in `warnings` (cost = 0, coverage 0 → profit/margin unknown).
+    Returns {"current", "previous", "totals", "previous_totals", "warnings"}.
     """
     sid = int(store["id"])
     tz = _safe_tz(tz)
     exclusions = exclusions if exclusions is not None else store.get("_exclusions")
+    ranges = [(period.start, period.end), (period.prev_start, period.prev_end)]
+    raw = await asyncio.to_thread(
+        _shopify_series_ranges_sync, sid, tz, [(s.isoformat(), upper_bound(e)) for s, e in ranges], bucket, exclusions)
+    warnings: List[str] = []
+    barcodes = sorted({b for (_o, lines, _x) in raw for (_, b, _, _) in lines if b})
+    costs: Dict[str, float] = {}
+    if barcodes:
+        try:
+            costs = await cost_lookup(barcodes) or {}
+        except Exception as e:
+            costs = {}
+            warnings.append(f"{store.get('name') or f'Shopify store {sid}'}: cost lookup failed — "
+                            f"cost/margin unavailable: {e}")
 
-    async def _range(start: date, end: date) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-        s, e_excl = start.isoformat(), upper_bound(end)
-        orders_by_b, lines, ex_rev = await asyncio.gather(
-            asyncio.to_thread(_shopify_bucketed_orders_sync, sid, tz, s, e_excl, bucket),
-            asyncio.to_thread(_shopify_bucketed_line_items_sync, sid, tz, s, e_excl, bucket, exclusions),
-            asyncio.to_thread(_shopify_excluded_revenue_by_bucket_sync, sid, tz, s, e_excl, bucket, exclusions),
-        )
-        barcodes = sorted({b for (_, b, _, _) in lines if b})
-        costs: Dict[str, float] = {}
-        if barcodes:
-            try:
-                costs = await cost_lookup(barcodes) or {}
-            except Exception:
-                costs = {}
-        # cost + coverage per bucket
+    def _assemble(start: date, end: date, orders_by_b: Dict[date, Dict[str, float]],
+                  lines: List[Tuple[date, Optional[str], float, float]], ex_rev: Dict[date, float],
+                  ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        rev_by_b: Dict[date, float] = {}
         cost_by_b: Dict[date, float] = {}
         units_by_b: Dict[date, float] = {}
         known_by_b: Dict[date, float] = {}
-        for (b, bc, units, _rev) in lines:
+        for (b, bc, units, line_rev) in lines:
+            rev_by_b[b] = rev_by_b.get(b, 0.0) + line_rev
             units_by_b[b] = units_by_b.get(b, 0.0) + units
             c = costs.get(bc) if bc else None
             if c is not None:
                 cost_by_b[b] = cost_by_b.get(b, 0.0) + units * _f(c)
                 known_by_b[b] = known_by_b.get(b, 0.0) + units
         out: List[Dict[str, Any]] = []
-        agg_rev = agg_cost = agg_ret = agg_units = agg_known = agg_shipc = 0.0
+        agg_rev = agg_gross = agg_cost = agg_ret = agg_units = agg_known = agg_shipc = 0.0
         agg_orders = 0
         for k, cs, ce in iter_buckets(start, end, bucket):
             o = orders_by_b.get(k) or {}
-            rev = max(0.0, _f(o.get("revenue")) - _f(ex_rev.get(k)))
+            rev = rev_by_b.get(k, 0.0)
+            gross = max(0.0, _f(o.get("revenue")) - _f(ex_rev.get(k)))
             ret = _f(o.get("refunded"))
             orders = int(_f(o.get("orders")))
             ship_col = _f(o.get("shipping"))
@@ -2798,17 +2965,32 @@ async def compute_shopify_series(
             cov = (round(known / units, 4) if units else None)
             out.append({"key": k.isoformat(), "start": cs.isoformat(), "end": ce.isoformat(),
                         "label": bucket_label(k, bucket),
-                        "totals": _totals_dict(rev, cost, ret, orders, units, cov, shipping_collected=ship_col)})
-            agg_rev += rev; agg_cost += cost; agg_ret += ret; agg_units += units; agg_known += known; agg_orders += orders
-            agg_shipc += ship_col
+                        "totals": _totals_dict(rev, cost, ret, orders, units, cov, shipping_collected=ship_col,
+                                               gross_revenue=gross, net_revenue=rev)})
+            agg_rev += rev; agg_gross += gross; agg_cost += cost; agg_ret += ret; agg_units += units
+            agg_known += known; agg_orders += orders; agg_shipc += ship_col
         cov_all = (round(agg_known / agg_units, 4) if agg_units else None)
-        return out, _totals_dict(agg_rev, agg_cost, agg_ret, agg_orders, agg_units, cov_all, shipping_collected=agg_shipc)
+        return out, _totals_dict(agg_rev, agg_cost, agg_ret, agg_orders, agg_units, cov_all, shipping_collected=agg_shipc,
+                                 gross_revenue=agg_gross, net_revenue=agg_rev)
 
-    (cur, cur_tot), (prev, prev_tot) = await asyncio.gather(
-        _range(period.start, period.end),
-        _range(period.prev_start, period.prev_end),
-    )
-    return {"current": cur, "previous": prev, "totals": cur_tot, "previous_totals": prev_tot}
+    cur, cur_tot = _assemble(period.start, period.end, *raw[0])
+    prev, prev_tot = _assemble(period.prev_start, period.prev_end, *raw[1])
+    return {"current": cur, "previous": prev, "totals": cur_tot, "previous_totals": prev_tot, "warnings": warnings}
+
+
+def _shopify_series_ranges_sync(store_id: int, tz: str, ranges: List[Tuple[str, str]], bucket: str,
+                                exclusions: Optional[List[Dict[str, Any]]],
+                                ) -> List[Tuple[Dict[date, Dict[str, float]], List[Tuple[date, Optional[str], float, float]], Dict[date, float]]]:
+    """(orders per bucket, line items, excluded-line revenue) for every (start, end_excl) range, one connection."""
+    out = []
+    with engine.connect() as conn:
+        for s, e in ranges:
+            out.append((
+                _shopify_bucketed_orders_sync(store_id, tz, s, e, bucket, conn=conn),
+                _shopify_bucketed_line_items_sync(store_id, tz, s, e, bucket, exclusions, conn=conn),
+                _shopify_excluded_revenue_by_bucket_sync(store_id, tz, s, e, bucket, exclusions, conn=conn),
+            ))
+    return out
 
 
 def merge_bucket_lists(lists: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
@@ -3054,7 +3236,7 @@ def _parcel_costs_window_sync(host, port, database, username, password,
                 FROM parcels
                 WHERE created_at >= ? AND created_at < ?
                 GROUP BY order_number
-            """, [date_from, date_to_excl])
+            """, [_bind_dt(date_from), _bind_dt(date_to_excl)])
             out: Dict[str, Dict[str, float]] = {}
             for r in _rows(cur):
                 key = normalize_order_number(r.get("order_number"))
@@ -3152,17 +3334,30 @@ async def easyship_parcel_costs_async(base_url: str, order_numbers: List[str],
                         body = (await response.text())[:200]
                         return False, f"EasyShip returned HTTP {response.status}: {body}", out
                     payload = await response.json(content_type=None)
-                for order in payload.get("orders") or []:
+                if not isinstance(payload, dict):
+                    return False, f"EasyShip returned an unexpected {type(payload).__name__} body from {url}", out
+                orders = payload.get("orders") or []
+                if not isinstance(orders, list):
+                    return False, f"EasyShip response 'orders' is not a list ({url})", out
+                for order in orders:
+                    if not isinstance(order, dict):
+                        continue
                     key = normalize_order_number(order.get("order_number"))
                     if not key:
                         continue
-                    boxes = sum(len(s.get("boxes") or []) for s in order.get("shipments") or [])
+                    shipments = order.get("shipments")
+                    boxes = 0
+                    for s in (shipments if isinstance(shipments, list) else []):
+                        b = s.get("boxes") if isinstance(s, dict) else None
+                        boxes += len(b) if isinstance(b, list) else 0
                     out[key] = {"cost": round(_f(order.get("total_shipping_cost")), 2),
                                 "parcels": boxes or 1}
         return True, None, out
     except asyncio.TimeoutError:
         return False, f"Timed out after {EASYSHIP_LOOKUP_TIMEOUT}s talking to {url}", out
-    except (aiohttp.ClientError, ValueError) as e:
+    except Exception as e:
+        # aiohttp errors, bad JSON, or any unexpected shape: degrade to a warning
+        # with whatever was collected, never abort the caller's run.
         return False, str(e) or type(e).__name__, out
 
 

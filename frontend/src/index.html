@@ -217,11 +217,11 @@
                 <input type="password" id="bov-lock-password" class="dark-input" placeholder="Password" aria-label="Password" autocomplete="current-password">
                 <button type="submit" class="btn btn-primary" id="bov-lock-submit">Unlock</button>
               </div>
-              <p class="bov-lock-error" id="bov-lock-error" hidden>Incorrect password.</p>
+              <p class="bov-lock-error" id="bov-lock-error" role="alert" hidden>Incorrect password.</p>
             </form>
           </div>
           <div id="bov-guarded">
-          <div class="bov-sticky">
+          <div class="bov-head">
             <header class="bov-topbar">
               <div class="bov-topbar-title">
                 <h2>Business Overview <span class="bov-view-badge" id="bov-view-badge" hidden><span id="bov-view-badge-text"></span><button type="button" class="bov-view-lock" id="bov-view-lock" title="Lock the Overview and go back to the password screen">Lock</button></span></h2>
@@ -251,7 +251,7 @@
                 </div>
                 <!-- Stores -->
                 <div class="bov-filter" id="bov-store-filter">
-                  <button type="button" class="bov-filter-trigger" id="bov-store-trigger" aria-haspopup="listbox" aria-expanded="false" aria-controls="bov-store-popover">
+                  <button type="button" class="bov-filter-trigger" id="bov-store-trigger" aria-haspopup="dialog" aria-expanded="false" aria-controls="bov-store-popover">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 9.5 5 4h14l2 5.5M3 9.5c0 1.5 1.3 2.5 3 2.5s3-1 3-2.5c0 1.5 1.3 2.5 3 2.5s3-1 3-2.5c0 1.5 1.3 2.5 3 2.5s3-1 3-2.5M5 12v8h14v-8" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
                     <span class="bov-filter-text"><span class="bov-filter-key">Stores</span><span class="bov-filter-value" id="bov-store-trigger-value">All stores</span></span>
                     <span class="qip-ms-count" id="bov-store-trigger-count" hidden>0</span>
@@ -292,36 +292,36 @@
                 </div>
               </div>
             </header>
-            <nav class="bov-subnav" id="bov-subnav" role="tablist" aria-label="Overview sections">
-              <button type="button" class="bov-subnav-item active" role="tab" aria-selected="true" data-bov-section="overview">
+            <nav class="bov-subnav bov-sticky" id="bov-subnav" role="tablist" aria-label="Overview sections">
+              <button type="button" class="bov-subnav-item active" role="tab" aria-selected="true" id="bov-tab-overview" aria-controls="bov-panel-overview" data-bov-section="overview">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
                 <span>Overview</span><span class="bov-subnav-badge" id="bov-nav-count-overview" hidden></span>
               </button>
-              <button type="button" class="bov-subnav-item" role="tab" aria-selected="false" data-bov-section="quotations">
+              <button type="button" class="bov-subnav-item" role="tab" aria-selected="false" id="bov-tab-quotations" aria-controls="bov-panel-quotations" data-bov-section="quotations">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M8 4h8l4 4v12H4V4h4z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M8 12h8M8 16h5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
                 <span>Quotations</span><span class="bov-subnav-badge" id="bov-nav-count-quotations" hidden></span>
               </button>
-              <button type="button" class="bov-subnav-item" role="tab" aria-selected="false" data-bov-section="products">
+              <button type="button" class="bov-subnav-item" role="tab" aria-selected="false" id="bov-tab-products" aria-controls="bov-panel-products" data-bov-section="products">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M4 7.5l8 4.5 8-4.5M12 12v9" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
                 <span>Products</span><span class="bov-subnav-badge" id="bov-nav-count-products" hidden></span>
               </button>
-              <button type="button" class="bov-subnav-item" role="tab" aria-selected="false" data-bov-section="invoices">
+              <button type="button" class="bov-subnav-item" role="tab" aria-selected="false" id="bov-tab-invoices" aria-controls="bov-panel-invoices" data-bov-section="invoices">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 3h14v18l-3-2-2 2-2-2-2 2-2-2-3 2V3z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M8 8h8M8 12h8" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
                 <span>Invoices</span><span class="bov-subnav-badge" id="bov-nav-count-invoices" hidden></span>
               </button>
-              <button type="button" class="bov-subnav-item" role="tab" aria-selected="false" data-bov-section="purchasing">
+              <button type="button" class="bov-subnav-item" role="tab" aria-selected="false" id="bov-tab-purchasing" aria-controls="bov-panel-purchasing" data-bov-section="purchasing">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 4h2l2 12h11l2-8H6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><circle cx="9" cy="20" r="1.5" fill="currentColor"/><circle cx="17" cy="20" r="1.5" fill="currentColor"/></svg>
                 <span>Purchasing</span><span class="bov-subnav-badge" id="bov-nav-count-purchasing" hidden></span>
               </button>
-              <button type="button" class="bov-subnav-item" role="tab" aria-selected="false" data-bov-section="shopify">
+              <button type="button" class="bov-subnav-item" role="tab" aria-selected="false" id="bov-tab-shopify" aria-controls="bov-panel-shopify" data-bov-section="shopify">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 7h12l1 13H5L6 7z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M9 10V6a3 3 0 0 1 6 0v4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
                 <span>Shopify</span><span class="bov-subnav-badge" id="bov-nav-count-shopify" hidden></span>
               </button>
-              <button type="button" class="bov-subnav-item" role="tab" aria-selected="false" data-bov-section="inventory">
+              <button type="button" class="bov-subnav-item" role="tab" aria-selected="false" id="bov-tab-inventory" aria-controls="bov-panel-inventory" data-bov-section="inventory">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3.5" y="12.5" width="7.5" height="7.5" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><rect x="13" y="12.5" width="7.5" height="7.5" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><rect x="8.25" y="4" width="7.5" height="7.5" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
                 <span>Inventory</span><span class="bov-subnav-badge" id="bov-nav-count-inventory" hidden></span>
               </button>
-              <button type="button" class="bov-subnav-item" role="tab" aria-selected="false" data-bov-section="month-end">
+              <button type="button" class="bov-subnav-item" role="tab" aria-selected="false" id="bov-tab-month-end" aria-controls="bov-panel-month-end" data-bov-section="month-end">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2" stroke="currentColor" stroke-width="1.7"/><path d="M3 9.5h18" stroke="currentColor" stroke-width="1.7"/><path d="M8 3v4M16 3v4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="m8.5 15 2.5 2.5 4.5-4.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
                 <span>Month End</span><span class="bov-subnav-badge" id="bov-nav-count-month-end" hidden></span>
               </button>
@@ -341,16 +341,17 @@
 
           <div id="bov-content" hidden>
             <!-- Overview section -->
-            <section class="bov-panel" data-bov-panel="overview">
+            <section class="bov-panel" id="bov-panel-overview" role="tabpanel" aria-labelledby="bov-tab-overview" data-bov-panel="overview">
               <!-- KPI strip -->
-              <section class="bov-attention" id="bov-attention" aria-label="Attention" aria-live="polite">
+              <section class="bov-attention" id="bov-attention" aria-label="Attention">
                 <div class="bov-attention-head">
                   <span class="bov-attention-title">Attention</span>
-                  <span class="bov-attention-cap" id="bov-attention-cap"></span>
+                  <span class="bov-attention-cap" id="bov-attention-cap" aria-live="polite"></span>
                 </div>
                 <div class="bov-attention-body" id="bov-attention-body"></div>
               </section>
               <section class="bov-kpi-grid" id="bov-kpi-strip" aria-label="Key figures"></section>
+              <p id="bov-cost-caption" class="bov-cost-caption"></p>
 
             <!-- Bank & credit cards (QuickBooks Online) -->
             <div class="bov-grid-ops" id="bov-bank-row">
@@ -380,10 +381,10 @@
                   <div class="sancm-chart-controls">
                     <span class="bov-toolbar-label bov-charts-only">Group by</span>
                     <div class="sancm-mode-group bov-charts-only" id="bov-bucket" role="radiogroup" aria-label="Bucket">
-                      <button type="button" class="sancm-mode-btn active" data-bov-bucket="auto">Auto</button>
-                      <button type="button" class="sancm-mode-btn" data-bov-bucket="day">Day</button>
-                      <button type="button" class="sancm-mode-btn" data-bov-bucket="week">Week</button>
-                      <button type="button" class="sancm-mode-btn" data-bov-bucket="month">Month</button>
+                      <button type="button" class="sancm-mode-btn active" role="radio" aria-checked="true" data-bov-bucket="auto">Auto</button>
+                      <button type="button" class="sancm-mode-btn" role="radio" aria-checked="false" data-bov-bucket="day">Day</button>
+                      <button type="button" class="sancm-mode-btn" role="radio" aria-checked="false" data-bov-bucket="week">Week</button>
+                      <button type="button" class="sancm-mode-btn" role="radio" aria-checked="false" data-bov-bucket="month">Month</button>
                     </div>
                     <label class="sancm-toggle bov-charts-only"><input type="checkbox" id="bov-split-toggle"> Split BackOffice / Shopify</label>
                     <button type="button" class="btn btn-secondary bov-btn-sm" id="bov-charts-toggle" aria-expanded="false" aria-controls="bov-trend-wrap bov-margin-card">Show charts</button>
@@ -426,7 +427,7 @@
 
             </section>
 
-            <section class="bov-panel" data-bov-panel="quotations" hidden>
+            <section class="bov-panel" id="bov-panel-quotations" role="tabpanel" aria-labelledby="bov-tab-quotations" data-bov-panel="quotations" hidden>
               <div class="dashboard-card bov-card" id="bov-quotations-card">
                 <div class="dashboard-card-header bov-card-head">
                   <div class="bov-card-title-wrap">
@@ -442,7 +443,7 @@
                     <button type="button" data-bov-scan="none" title="No scans yet"><span class="qip-seg-dot none"></span>No scans</button>
                   </div>
                   <div class="bov-filter" id="bov-quotations-rep-filter" hidden>
-                    <button type="button" class="bov-filter-trigger" id="bov-quotations-reps-trigger" aria-haspopup="listbox" aria-expanded="false" aria-controls="bov-quotations-reps-popover">
+                    <button type="button" class="bov-filter-trigger" id="bov-quotations-reps-trigger" aria-haspopup="dialog" aria-expanded="false" aria-controls="bov-quotations-reps-popover">
                       <span class="bov-filter-text"><span class="bov-filter-key">Rep</span><span class="bov-filter-value" id="bov-quotations-reps-value">All reps</span></span>
                       <span class="qip-ms-count" id="bov-quotations-reps-count" hidden>0</span>
                       <svg class="bov-filter-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true"><polyline points="6 9 12 15 18 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -462,7 +463,7 @@
 
             </section>
 
-            <section class="bov-panel" data-bov-panel="products" hidden>
+            <section class="bov-panel" id="bov-panel-products" role="tabpanel" aria-labelledby="bov-tab-products" data-bov-panel="products" hidden>
               <div class="dashboard-card bov-card" id="bov-products-card">
                 <div class="dashboard-card-header bov-card-head">
                   <div class="bov-card-title-wrap">
@@ -482,7 +483,7 @@
 
             </section>
 
-            <section class="bov-panel" data-bov-panel="invoices" hidden>
+            <section class="bov-panel" id="bov-panel-invoices" role="tabpanel" aria-labelledby="bov-tab-invoices" data-bov-panel="invoices" hidden>
               <div class="dashboard-card bov-card" id="bov-invoices-card">
                 <div class="dashboard-card-header bov-card-head">
                   <div class="bov-card-title-wrap">
@@ -506,7 +507,7 @@
 
             </section>
 
-            <section class="bov-panel" data-bov-panel="purchasing" hidden>
+            <section class="bov-panel" id="bov-panel-purchasing" role="tabpanel" aria-labelledby="bov-tab-purchasing" data-bov-panel="purchasing" hidden>
               <div class="dashboard-card bov-card" id="bov-purchases-card">
                 <div class="dashboard-card-header bov-card-head">
                   <div class="bov-card-title-wrap">
@@ -530,7 +531,7 @@
 
             </section>
 
-            <section class="bov-panel" data-bov-panel="shopify" hidden>
+            <section class="bov-panel" id="bov-panel-shopify" role="tabpanel" aria-labelledby="bov-tab-shopify" data-bov-panel="shopify" hidden>
               <div class="dashboard-card bov-card" id="bov-shopify-card">
                 <div class="dashboard-card-header bov-card-head">
                   <div class="bov-card-title-wrap">
@@ -569,7 +570,7 @@
             </section>
 
             <!-- Month End section -->
-            <section class="bov-panel" data-bov-panel="month-end" hidden>
+            <section class="bov-panel" id="bov-panel-month-end" role="tabpanel" aria-labelledby="bov-tab-month-end" data-bov-panel="month-end" hidden>
               <div id="me-not-configured" class="card" style="display: none; margin-bottom: 1.5rem;">
                 <div style="padding: 1.5rem; color: var(--text-secondary); font-size: 0.875rem; display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
                   <span>No data sources are configured — pick the BackOffice sales stores and Shopify stores to use Month End.</span>
@@ -587,9 +588,9 @@
                     <button type="button" class="me-chip" data-me-type="backoffice">BackOffice</button>
                     <button type="button" class="me-chip" data-me-type="shopify">Shopify</button>
                   </div>
-                  <div class="me-toolbar-group" id="me-store-chips" aria-label="Stores"></div>
+                  <div class="me-toolbar-group" id="me-store-chips" role="group" aria-label="Stores"></div>
                   <div class="me-toolbar-group bov-filter" id="me-rep-filter" hidden>
-                    <button type="button" class="bov-filter-trigger" id="me-reps-trigger" aria-haspopup="listbox" aria-expanded="false" aria-controls="me-reps-popover" title="Filter BackOffice invoices by sales rep">
+                    <button type="button" class="bov-filter-trigger" id="me-reps-trigger" aria-haspopup="dialog" aria-expanded="false" aria-controls="me-reps-popover" title="Filter BackOffice invoices by sales rep">
                       <span class="bov-filter-text"><span class="bov-filter-key">Rep</span><span class="bov-filter-value" id="me-reps-value">All reps</span></span>
                       <span class="qip-ms-count" id="me-reps-count" hidden>0</span>
                       <svg class="bov-filter-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true"><polyline points="6 9 12 15 18 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -599,7 +600,7 @@
                     </div>
                   </div>
                   <div class="me-toolbar-group me-toolbar-right">
-                    <input type="search" id="me-search" placeholder="Search number, customer or state…" />
+                    <input type="search" id="me-search" placeholder="Search number, customer or state…" aria-label="Search Month End orders by number, customer or state" autocomplete="off" />
                     <span id="me-export-bar" class="bov-export-slot"></span>
                     <button type="button" class="btn btn-primary me-btn-sm" id="me-run" title="Run Month End for the period and stores selected in the topbar">Run report</button>
                   </div>
@@ -629,88 +630,75 @@
             </section>
 
             <!-- Inventory section (Sales report clone; config read-only from the Sales page) -->
-            <section class="bov-panel" data-bov-panel="inventory" hidden>
-              <div id="inv-not-configured" class="card" style="display: none; margin-bottom: 1.5rem;">
-                <div style="padding: 1.5rem; color: var(--text-secondary); font-size: 0.875rem;">
-                  Sales configuration is not set — configure the primary DB and stores on the Sales page.
+            <section class="bov-panel" data-bov-panel="inventory" id="bov-panel-inventory" role="tabpanel" aria-labelledby="bov-tab-inventory" hidden>
+              <div id="inv-not-configured" class="card inv-notice" hidden>
+                Sales configuration is not set — configure the primary DB and stores on the Sales page.
+              </div>
+
+              <div id="inv-toolbar" class="card inv-toolbar" hidden>
+                <div class="inv-toolbar-row">
+                  <span id="inv-range-label" class="me-range-label" title="Inventory follows the period selected in the Business Overview topbar"></span>
+                  <span id="inv-sources-line" class="inv-sources"></span>
+                  <div class="inv-toggle-group inv-toolbar-group" role="group" aria-label="Product view">
+                    <button type="button" class="inv-toggle-btn active" data-view="all" data-bov-action="inv-view" data-inv-view="all" aria-pressed="true">All</button>
+                    <button type="button" class="inv-toggle-btn" data-view="sold" data-bov-action="inv-view" data-inv-view="sold" aria-pressed="false">Sold</button>
+                    <button type="button" class="inv-toggle-btn" data-view="not-sold" data-bov-action="inv-view" data-inv-view="not-sold" aria-pressed="false">Not Sold</button>
+                  </div>
+                  <div class="inv-actions">
+                    <button type="button" class="btn btn-secondary me-btn-sm" data-bov-action="inv-selling" title="Select only subcategories that have sold products">Selling</button>
+                    <button type="button" class="btn btn-secondary me-btn-sm" data-bov-action="inv-clear" title="Clear every filter">Clear</button>
+                    <span id="inv-export-bar" class="inv-export-bar"></span>
+                  </div>
+                </div>
+                <div class="inv-toolbar-row inv-columns-row">
+                  <span class="inv-columns-label">Columns</span>
+                  <div id="inv-column-pills" class="inv-column-pills"></div>
+                  <button type="button" class="bov-link-btn inv-reset-link" data-bov-action="inv-reset-columns">Reset</button>
                 </div>
               </div>
 
-              <div id="inv-toolbar" style="display: none;">
-                <div class="card" style="margin-bottom: 0.75rem">
-                  <div style="padding: 0.625rem 1rem; display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;">
-                    <span id="inv-range-label" class="me-range-label" title="Inventory follows the period selected in the Business Overview topbar"></span>
-                    <span id="inv-sources-line" style="font-size: 0.75rem; color: var(--text-tertiary);"></span>
-                    <div class="inv-toggle-group" style="flex-shrink: 0; margin-left: auto;">
-                      <button type="button" class="inv-toggle-btn active" data-view="all" onclick="toggleInventoryView('all')">All</button>
-                      <button type="button" class="inv-toggle-btn" data-view="sold" onclick="toggleInventoryView('sold')">Sold</button>
-                      <button type="button" class="inv-toggle-btn" data-view="not-sold" onclick="toggleInventoryView('not-sold')">Not Sold</button>
-                    </div>
-                    <div style="display: flex; gap: 0.375rem; flex-shrink: 0;">
-                      <button type="button" class="btn btn-secondary" onclick="invSelectSellingSubcategories()" style="font-size: 0.8125rem; padding: 0.4rem 0.75rem;" title="Select only subcategories that have sold products">Selling</button>
-                      <button type="button" class="btn btn-secondary" onclick="clearInvFilters()" style="font-size: 0.8125rem; padding: 0.4rem 0.75rem;">Clear</button>
-                      <button type="button" class="btn btn-secondary" onclick="exportInventoryReport()" style="font-size: 0.8125rem; padding: 0.4rem 0.75rem;">Excel</button>
-                      <button type="button" class="btn btn-secondary" id="inv-refresh" style="font-size: 0.8125rem; padding: 0.4rem 0.75rem;" title="Reload">Refresh</button>
-                    </div>
-                  </div>
-                  <div style="padding: 0.5rem 1rem 0.625rem; border-top: 1px solid var(--border-color); display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
-                    <span style="font-size: 0.6875rem; color: var(--text-tertiary); font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em;">Columns</span>
-                    <div id="inv-column-pills" style="display: flex; flex-wrap: wrap; gap: 0.375rem;"></div>
-                    <a href="#" onclick="event.preventDefault(); resetInvColumns();" style="font-size: 0.6875rem; color: var(--text-tertiary);">Reset</a>
-                  </div>
-                </div>
+              <div id="inv-progress" class="card inv-progress" hidden>
+                <div class="card-header"><h3>Generating report…</h3></div>
+                <ul id="inv-progress-list" class="inv-progress-list"></ul>
               </div>
 
-              <div id="inv-progress" style="display: none">
-                <div class="card" style="margin-bottom: 1.5rem">
-                  <div class="card-header"><h3>Generating Report...</h3></div>
-                  <div style="padding: 1rem 1.5rem">
-                    <ul id="inv-progress-list" style="list-style: none; padding: 0; margin: 0; font-size: 0.8125rem; color: var(--text-secondary)"></ul>
-                  </div>
-                </div>
+              <div id="inv-error" class="qip-error inv-error" role="alert" hidden></div>
+
+              <div id="inv-empty" class="card inv-empty" hidden>
+                <p>No products found in the primary database.</p>
               </div>
 
-              <div id="inv-error" class="qip-error" style="display: none; margin-bottom: 1.5rem;"></div>
+              <div id="inv-summary" class="me-summary inv-summary" hidden></div>
 
-              <div id="inv-empty" style="display: none">
-                <div class="card" style="text-align: center; padding: 3rem">
-                  <p style="color: var(--text-secondary)">No products found in the primary database.</p>
+              <div id="inv-results" class="card inv-results" hidden>
+                <div class="inv-results-head">
+                  <span id="inv-results-count" class="inv-results-count"></span>
                 </div>
-              </div>
-
-              <div id="inv-summary" class="me-summary" style="display: none; margin-bottom: 1rem;"></div>
-
-              <div id="inv-results" style="display: none">
-                <div class="card">
-                  <div style="padding: 0.75rem 1.5rem; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center;">
-                    <span id="inv-results-count" style="font-size: 0.8125rem; color: var(--text-secondary)"></span>
+                <div class="inv-table-wrap">
+                  <table class="data-table inv-table" id="inv-table">
+                    <thead>
+                      <tr id="inv-table-filters"></tr>
+                      <tr id="inv-table-head"></tr>
+                    </thead>
+                    <tbody id="inv-table-body"></tbody>
+                    <tfoot id="inv-table-foot"></tfoot>
+                  </table>
+                </div>
+                <div class="inv-pager">
+                  <div class="inv-pager-left">
+                    <span id="inv-total-records"></span>
+                    <select id="inv-page-size" class="dark-input inv-page-size" aria-label="Rows per page">
+                      <option value="50">50</option>
+                      <option value="100" selected>100</option>
+                      <option value="250">250</option>
+                      <option value="500">500</option>
+                    </select>
+                    <span>per page</span>
                   </div>
-                  <div style="overflow: auto; max-height: 75vh;">
-                    <table class="data-table" id="inv-table">
-                      <thead>
-                        <tr id="inv-table-filters"></tr>
-                        <tr id="inv-table-head"></tr>
-                      </thead>
-                      <tbody id="inv-table-body"></tbody>
-                      <tfoot id="inv-table-foot"></tfoot>
-                    </table>
-                  </div>
-                  <div style="padding: 0.75rem 1.5rem; border-top: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem;">
-                    <div style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.8125rem; color: var(--text-secondary)">
-                      <span id="inv-total-records"></span>
-                      <select id="inv-page-size" style="padding: 0.25rem 0.5rem;" onchange="changeInvPageSize()">
-                        <option value="50">50</option>
-                        <option value="100" selected>100</option>
-                        <option value="250">250</option>
-                        <option value="500">500</option>
-                      </select>
-                      <span>per page</span>
-                    </div>
-                    <div style="display: flex; align-items: center; gap: 0.5rem;">
-                      <button type="button" class="btn btn-secondary" id="inv-prev-page" onclick="changeInvPage(-1)" style="font-size: 0.75rem; padding: 0.3rem 0.6rem;">Prev</button>
-                      <span id="inv-page-info" style="font-size: 0.8125rem; color: var(--text-secondary)"></span>
-                      <button type="button" class="btn btn-secondary" id="inv-next-page" onclick="changeInvPage(1)" style="font-size: 0.75rem; padding: 0.3rem 0.6rem;">Next</button>
-                    </div>
+                  <div class="inv-pager-right">
+                    <button type="button" class="btn btn-secondary me-btn-sm" id="inv-prev-page" data-bov-action="inv-page" data-inv-page="-1">Prev</button>
+                    <span id="inv-page-info" class="inv-page-info"></span>
+                    <button type="button" class="btn btn-secondary me-btn-sm" id="inv-next-page" data-bov-action="inv-page" data-inv-page="1">Next</button>
                   </div>
                 </div>
               </div>
