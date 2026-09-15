@@ -22,10 +22,11 @@ _ordsync_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ordsyn
 _LINES_IN_CHUNK = 1000
 
 # Invoices are fetched in a window padded on both sides so an order placed at
-# the edge of the selected range still finds its invoice dated a few days
-# earlier/later. Padded-only rows may be consumed by a match but are never
-# reported on their own.
-PAD_DAYS = 7
+# the edge of the selected range still finds its invoice. Same-day pairs only
+# need a few days, but orders entered into Shopify after the fact (pass 4)
+# trail their invoice by up to a few weeks. Padded-only rows may be consumed
+# by a match but are never reported on their own.
+PAD_DAYS = 31
 
 # Order totals may legitimately differ by a cent when a fractional unit price
 # (10.00 / 3) is rounded on one side, so totals get a cent of slack. Unit
@@ -172,9 +173,23 @@ def line_key(barcode: Any, sku: Any, description: Any) -> str:
     return f"desc:{(description or '').strip().lower()}"
 
 
+# Both systems bill shipping as a pseudo product (UPC "ship", SKU "shipment"),
+# but Shopify carries it on most orders as a shipping line instead, so the
+# item is dropped from both sides: it is neither compared nor matched on,
+# and never planned for a fix. Shipping still counts in the order totals.
+SHIPPING_BARCODES = {"ship"}
+SHIPPING_SKUS = {"shipment"}
+
+
+def is_shipping_line(barcode: Any, sku: Any) -> bool:
+    return ((barcode or "").strip().lower() in SHIPPING_BARCODES
+            or (sku or "").strip().lower() in SHIPPING_SKUS)
+
+
 def _fetch_lines(cursor, invoice_ids: List[int]) -> Dict[int, List[Dict[str, Any]]]:
     """Detail lines for the given invoices, chunked IN (...), aggregated per
-    trimmed UPC (duplicate UPC lines sum quantity; unit price is qty-weighted)."""
+    trimmed UPC (duplicate UPC lines sum quantity; unit price is qty-weighted).
+    Shipping pseudo-lines are dropped (see is_shipping_line)."""
     agg: Dict[int, Dict[str, Dict[str, Any]]] = {}
     for start in range(0, len(invoice_ids), _LINES_IN_CHUNK):
         chunk = invoice_ids[start:start + _LINES_IN_CHUNK]
@@ -188,6 +203,8 @@ def _fetch_lines(cursor, invoice_ids: List[int]) -> Dict[int, List[Dict[str, Any
             WHERE d.InvoiceID IN ({placeholders}) AND ISNULL(d.Void, 0) = 0
         """, chunk)
         for inv_id, upc, sku, desc, qty, unit_price, ext_price in cursor.fetchall():
+            if is_shipping_line(upc, sku):
+                continue
             key = line_key(upc, sku, desc)
             per_inv = agg.setdefault(inv_id, {})
             line = per_inv.setdefault(key, {
@@ -314,10 +331,16 @@ def _day_delta(order: Dict[str, Any], invoice: Dict[str, Any]) -> int:
         return 9999
 
 
+def _invoice_lines(invoice: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Invoice lines minus shipping (fetched lines are already filtered;
+    this keeps any other source honest)."""
+    return [li for li in invoice.get("lines", []) if not is_shipping_line(li.get("barcode"), li.get("sku"))]
+
+
 def _line_keys(side: Dict[str, Any], shopify: bool) -> set:
     if shopify:
         return set(_shopify_lines_by_key(side))
-    return {li["key"] for li in side.get("lines", [])}
+    return {li["key"] for li in _invoice_lines(side)}
 
 
 def _pair_score(order: Dict[str, Any], invoice: Dict[str, Any]) -> Tuple[int, float, int, float]:
@@ -355,13 +378,26 @@ def _line_jaccard(order: Dict[str, Any], invoice: Dict[str, Any]) -> float:
     return (len(ok & ik) / union) if union else 0.0
 
 
-def _identity_plausible(order: Dict[str, Any], invoice: Dict[str, Any]) -> bool:
+def _basket_match(order: Dict[str, Any], invoice: Dict[str, Any]) -> bool:
+    """The same basket: near-identical line set, or half the lines plus the
+    same total to within a percent."""
+    j = _line_jaccard(order, invoice)
+    if j >= BASKET_MIN_OVERLAP:
+        return True
+    total = order.get("total") or 0
+    rel = abs(total - (invoice.get("total") or 0)) / total if total else 1.0
+    return j >= BASKET_MIN_OVERLAP_WITH_TOTAL and rel <= BASKET_TOTAL_TOL_PCT
+
+
+def _identity_plausible(order: Dict[str, Any], invoice: Dict[str, Any],
+                        max_day_lag: Optional[int] = IDENTITY_MAX_DAY_LAG) -> bool:
     # Invoice must be dated within a day of the order — a repeat customer's
-    # invoice from another week is another order.
+    # invoice from another week is another order. Pass 4 lifts the cap
+    # (None) because it demands the basket instead.
     try:
         placed = datetime.strptime(order["local_date"], "%Y-%m-%d")
         invoiced = datetime.strptime(invoice["date"], "%Y-%m-%d")
-        if abs((invoiced - placed).days) > IDENTITY_MAX_DAY_LAG:
+        if max_day_lag is not None and abs((invoiced - placed).days) > max_day_lag:
             return False
     except (KeyError, TypeError, ValueError):
         pass
@@ -434,7 +470,13 @@ def match_orders(orders: List[Dict[str, Any]],
     unmatched, annotated with the shared tracking so the UI can explain why.
 
     Pass 2 matches the remaining orders on customer identity: phone, then
-    street address+zip, then name+zip.
+    street address+zip, then name+zip — invoice dated within a day.
+
+    Pass 3 pairs same-day identical baskets whose customer text differs.
+
+    Pass 4 catches orders entered into Shopify days or weeks after the
+    invoice shipped: same identity key as pass 2 AND the same basket, any
+    day lag inside the fetched window.
 
     Each match is {"orders": [...], "invoices": [...], "method", "ambiguous",
     "shared_tracking"}; unmatched entries carry the same shared_tracking
@@ -524,14 +566,22 @@ def match_orders(orders: List[Dict[str, Any]],
         emit([order], [inv], method, ambiguous, shared_note.get(("o", order["id"])))
         return True
 
+    def identity_keys(order):
+        return (
+            [normalize_phone(p) for p in order.get("phones", [])],
+            [normalize_address(order.get("address1"), order.get("zip"))],
+            [normalize_name_zip(order.get("customer_name"), order.get("zip"))],
+        )
+
     for order in orders:
         if order["id"] in used_orders:
             continue
-        if take(order, [normalize_phone(p) for p in order.get("phones", [])], by_phone, "phone"):
+        phones, addrs, namezips = identity_keys(order)
+        if take(order, phones, by_phone, "phone"):
             continue
-        if take(order, [normalize_address(order.get("address1"), order.get("zip"))], by_addr, "address"):
+        if take(order, addrs, by_addr, "address"):
             continue
-        take(order, [normalize_name_zip(order.get("customer_name"), order.get("zip"))], by_namezip, "name_zip")
+        take(order, namezips, by_namezip, "name_zip")
 
     # Pass 3 — same-day basket fingerprint over whatever is still unmatched,
     # best overlap first so each invoice goes to its closest order.
@@ -551,16 +601,46 @@ def match_orders(orders: List[Dict[str, Any]],
             for inv in by_day.get(day, []):
                 if not _identity_plausible(order, inv):
                     continue
-                j = _line_jaccard(order, inv)
-                total = order.get("total") or 0
-                rel = abs(total - (inv.get("total") or 0)) / total if total else 1.0
-                if j >= BASKET_MIN_OVERLAP or (j >= BASKET_MIN_OVERLAP_WITH_TOTAL and rel <= BASKET_TOTAL_TOL_PCT):
-                    scored.append((-j, rel, order, inv))
+                if _basket_match(order, inv):
+                    total = order.get("total") or 0
+                    rel = abs(total - (inv.get("total") or 0)) / total if total else 1.0
+                    scored.append((-_line_jaccard(order, inv), rel, order, inv))
     scored.sort(key=lambda t: (t[0], t[1]))
     for _, _, order, inv in scored:
         if order["id"] in used_orders or inv["invoice_id"] in used_invoices:
             continue
         emit([order], [inv], "products", False, shared_note.get(("o", order["id"])))
+
+    # Pass 4 — orders keyed into Shopify after the fact (no tracking, dated
+    # days after the invoice). Identity alone would pair a repeat customer's
+    # orders at random and the basket alone would pair strangers, so both are
+    # required; among a customer's identical weekly baskets the closest
+    # invoice date wins and an exact tie is flagged ambiguous.
+    late: List[Tuple[float, int, float, Dict[str, Any], Dict[str, Any]]] = []
+    for order in orders:
+        if order["id"] in used_orders:
+            continue
+        phones, addrs, namezips = identity_keys(order)
+        seen: set = set()
+        for keys, index in ((phones, by_phone), (addrs, by_addr), (namezips, by_namezip)):
+            for k in keys:
+                for inv in index.get(k, []):
+                    if inv["invoice_id"] in used_invoices or inv["invoice_id"] in seen:
+                        continue
+                    seen.add(inv["invoice_id"])
+                    if not _basket_match(order, inv) or not _identity_plausible(order, inv, max_day_lag=None):
+                        continue
+                    late.append((-_line_jaccard(order, inv), _day_delta(order, inv),
+                                 abs((order.get("total") or 0) - (inv.get("total") or 0)), order, inv))
+    late.sort(key=lambda t: t[:3])
+    for j, day, _, order, inv in late:
+        if order["id"] in used_orders or inv["invoice_id"] in used_invoices:
+            continue
+        ambiguous = any(
+            o2["id"] == order["id"] and i2["invoice_id"] not in used_invoices
+            and i2["invoice_id"] != inv["invoice_id"] and (j2, d2) == (j, day)
+            for j2, d2, _, o2, i2 in late)
+        emit([order], [inv], "identity_basket", ambiguous, shared_note.get(("o", order["id"])))
 
     unmatched_orders = [o for o in orders if o["id"] not in used_orders]
     unmatched_invoices = [inv for inv in invoices if inv["invoice_id"] not in used_invoices]
@@ -581,6 +661,8 @@ def _shopify_lines_by_key(order: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     for li in order.get("lines", []):
         barcode = (li.get("barcode") or "").strip()
         sku = (li.get("sku") or "").strip()
+        if is_shipping_line(barcode, sku):
+            continue
         key = line_key(barcode, sku, li.get("title"))
         line = agg.setdefault(key, {
             "key": key, "barcode": barcode, "sku": sku,
@@ -609,7 +691,7 @@ def _merge_invoices(invoices: List[Dict[str, Any]]) -> Dict[str, Any]:
         return invoices[0]
     agg: Dict[str, Dict[str, Any]] = {}
     for inv in invoices:
-        for li in inv.get("lines", []):
+        for li in _invoice_lines(inv):
             line = agg.setdefault(li["key"], {**li, "qty_shipped": 0.0, "_amount": 0.0})
             line["qty_shipped"] += li["qty_shipped"]
             line["_amount"] += li["qty_shipped"] * li["unit_price"]
@@ -626,7 +708,7 @@ def compare_lines(order: Dict[str, Any],
     """Union of both sides' lines keyed by barcode (sku/description fallback).
     Returns (issue_kinds, line_diffs). BackOffice QtyShipped is the truth."""
     sh_lines = _shopify_lines_by_key(order)
-    bo_lines = {li["key"]: li for li in invoice.get("lines", [])}
+    bo_lines = {li["key"]: li for li in _invoice_lines(invoice)}
 
     kinds: set = set()
     diffs: List[Dict[str, Any]] = []
@@ -760,7 +842,7 @@ def _invoice_only_lines(invoice: Dict[str, Any]) -> List[Dict[str, Any]]:
         "sh_unit_price": None, "bo_unit_price": li["unit_price"],
         "sh_line_total": None, "bo_line_total": round(li["qty_shipped"] * li["unit_price"], 2),
         "issues": [],
-    } for li in invoice.get("lines", [])]
+    } for li in _invoice_lines(invoice)]
 
 
 def build_pair_row(orders: List[Dict[str, Any]], invoices: List[Dict[str, Any]],
@@ -883,6 +965,8 @@ STORE_PRICE_MESSAGES = {
 def _raw_lines_by_key(order: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
     by_key: Dict[str, List[Dict[str, Any]]] = {}
     for li in order.get("lines", []):
+        if is_shipping_line(li.get("barcode"), li.get("sku")):
+            continue
         by_key.setdefault(line_key(li.get("barcode"), li.get("sku"), li.get("title")), []).append(li)
     return by_key
 

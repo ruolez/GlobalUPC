@@ -27051,6 +27051,7 @@ const OSYNC_METHOD_LABELS = {
   address: "Address",
   name_zip: "Name + ZIP",
   products: "Same basket",
+  identity_basket: "Identity + basket",
 };
 
 const OSYNC_ISSUE_LABELS = {
