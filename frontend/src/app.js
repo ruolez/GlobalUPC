@@ -28115,6 +28115,12 @@ function osyncFixActionLines(actions) {
       out.push(["paid", `Mark the outstanding balance of <strong>${osyncMoney(a.amount)}</strong> as paid <span class="osync-muted">(left by an earlier run; no money is collected)</span>`]);
       return;
     }
+    if (a.kind === "variant_price") {
+      const e = byKey.get(a.key) || {};
+      e.price = a;
+      byKey.set(a.key, e);
+      return;
+    }
     if (a.reason === "replace") {
       const e = byKey.get(a.key) || {};
       e[a.kind] = a;
@@ -28128,16 +28134,27 @@ function osyncFixActionLines(actions) {
   });
   byKey.forEach((e) => {
     const a = e.add || e.refund;
-    const what = `${a.qty} × <span class="osync-mono">${escapeHtml(a.barcode || a.key || "")}</span> ${escapeHtml(a.description || "")}`;
-    if (e.add && e.refund) {
-      out.push(["reprice", `${what} <span class="osync-muted">${osyncMoney(e.refund.unit_price)} →</span> <strong>${osyncMoney(e.add.unit_price)}</strong> ${osyncFixPriceNote(e.add)}`]);
-    } else if (e.refund) {
-      out.push(["remove", `${what} <span class="osync-muted">— refund all units, $0</span>`]);
-    } else {
-      out.push(["add", `+${what} at ${osyncMoney(a.unit_price)} ${osyncFixPriceNote(a)}`]);
+    if (a) {
+      const what = `${a.qty} × <span class="osync-mono">${escapeHtml(a.barcode || a.key || "")}</span> ${escapeHtml(a.description || "")}`;
+      if (e.add && e.refund) {
+        out.push(["reprice", `${what} <span class="osync-muted">${osyncMoney(e.refund.unit_price)} →</span> <strong>${osyncMoney(e.add.unit_price)}</strong> ${osyncFixPriceNote(e.add)}`]);
+      } else if (e.refund) {
+        out.push(["remove", `${what} <span class="osync-muted">— refund all units, $0</span>`]);
+      } else {
+        out.push(["add", `+${what} at ${osyncMoney(a.unit_price)} ${osyncFixPriceNote(a)}`]);
+      }
+    }
+    if (e.price) {
+      // Storefront price for future orders: Items_tbl.UnitPrice by barcode.
+      out.push(["price", `<span class="osync-mono">${escapeHtml(e.price.barcode || e.price.key || "")}</span> ${escapeHtml(e.price.description || "")} <span class="osync-muted">${osyncMoney(e.price.variant_price)} →</span> <strong>${osyncMoney(e.price.unit_price)}</strong> <span class="osync-muted">(BackOffice item price, for future orders)</span>`]);
     }
   });
   return out;
+}
+
+function osyncFixNoteLines(notes) {
+  return (notes || []).map((n) =>
+    ["price", `<span class="osync-mono">${escapeHtml(n.barcode || n.key || "")}</span> ${escapeHtml(n.description || "")} <span class="osync-muted">— ${escapeHtml(n.message)}</span>`]);
 }
 
 function osyncFixPriceNote(a) {
@@ -28146,7 +28163,7 @@ function osyncFixPriceNote(a) {
   return "";
 }
 
-const OSYNC_FIX_KIND_LABELS = { add: "Add", remove: "Remove", reduce: "Reduce", reprice: "Reprice", tracking: "Tracking", paid: "Paid" };
+const OSYNC_FIX_KIND_LABELS = { add: "Add", remove: "Remove", reduce: "Reduce", reprice: "Reprice", price: "Store price", tracking: "Tracking", paid: "Paid" };
 const OSYNC_FIX_STATUS = {
   ready: ["Ready", "is-ok"], noop: ["Nothing to do", "is-muted"], skipped: ["Skipped", "is-warn"], error: ["Error", "is-bad"],
   applied: ["Applied", "is-ok"], partial: ["Partially applied", "is-warn"], failed: ["Failed", "is-bad"],
@@ -28160,7 +28177,7 @@ function osyncFixStatusPill(status) {
 
 function osyncFixOrderCard(p, { status, message, steps, after = null, extraCls = "" }) {
   const row = osyncFix.targets.find((r) => r.sh_order_id === p.sh_order_id);
-  const lines = osyncFixActionLines(p.actions || []);
+  const lines = osyncFixActionLines(p.actions || []).concat(osyncFixNoteLines(p.notes));
   const unsupported = p.unsupported || [];
   const afterPill = after
     ? ` <span class="osync-status ${after === "matched_ok" ? "is-ok" : after === "matched_diffs" ? "is-warn" : "is-bad"}" title="Row status after re-comparing fresh data">now ${escapeHtml(OSYNC_STATUS_LABELS[after] || after)}</span>`
@@ -28194,7 +28211,7 @@ function osyncFixOrderCard(p, { status, message, steps, after = null, extraCls =
   );
 }
 
-const OSYNC_FIX_STEP_LABELS = { refund: "Refund", edit: "Order edit", fulfill: "Fulfillment", mark_paid: "Mark paid", tracking: "Tracking", shopify: "Shopify", unexpected: "Error" };
+const OSYNC_FIX_STEP_LABELS = { refund: "Refund", edit: "Order edit", fulfill: "Fulfillment", mark_paid: "Mark paid", tracking: "Tracking", variant_price: "Store price", shopify: "Shopify", unexpected: "Error" };
 
 function osyncFixRenderPlan(plan) {
   const body = document.getElementById("osync-fix-body");
@@ -28207,9 +28224,10 @@ function osyncFixRenderPlan(plan) {
     acc.add += s.add_units || 0;
     acc.amount += s.add_amount || 0;
     acc.tracking += s.tracking ? 1 : 0;
+    acc.prices += s.variant_prices || 0;
     acc.unsupported += s.unsupported || 0;
     return acc;
-  }, { refund: 0, add: 0, amount: 0, tracking: 0, unsupported: 0 });
+  }, { refund: 0, add: 0, amount: 0, tracking: 0, prices: 0, unsupported: 0 });
   const unsupportedTotal = plans.reduce((n, p) => n + (p.unsupported || []).length, 0);
   const blocked = (plan.scopes_missing || []).length > 0;
 
@@ -28217,6 +28235,7 @@ function osyncFixRenderPlan(plan) {
   if (tot.refund) bits.push(`<strong>${tot.refund}</strong> unit${tot.refund === 1 ? "" : "s"} refunded ($0)`);
   if (tot.add) bits.push(`<strong>${tot.add}</strong> unit${tot.add === 1 ? "" : "s"} added (${osyncMoney(tot.amount)})`);
   if (tot.tracking) bits.push(`tracking on <strong>${tot.tracking}</strong> order${tot.tracking === 1 ? "" : "s"}`);
+  if (tot.prices) bits.push(`store price on <strong>${tot.prices}</strong> product${tot.prices === 1 ? "" : "s"}`);
   if (unsupportedTotal) bits.push(`<span class="osync-fix-warn-text"><strong>${unsupportedTotal}</strong> line${unsupportedTotal === 1 ? "" : "s"} can't be fixed</span>`);
 
   body.innerHTML =

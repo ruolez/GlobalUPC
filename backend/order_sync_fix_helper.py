@@ -16,11 +16,18 @@ touches unfulfilled line items, so the executor combines three APIs:
            fulfillment order (so the order returns to FULFILLED) →
            orderMarkAsPaid for the created balance.
   tracking fulfillmentTrackingInfoUpdate on fulfillments lacking a number.
+  variant_price
+           productVariantsBulkUpdate: for every repriced line, the variant's
+           storefront price is set to the BackOffice item price
+           (Items_tbl.UnitPrice by ProductUPC = barcode) so future orders come
+           in at that price. Runs LAST — the edit step restores the temporary
+           price bump in a finally block and would undo an earlier write.
 
 The customer is never notified. Steps run refund → edit → fulfill → mark paid
-→ tracking; the first failure stops the chain, and the caller re-fetches the
-order so the reported row (and any later re-run) reflects what actually
-happened — a re-run plans only what is still different.
+→ tracking → store price; the first failure stops the chain, and the caller
+re-fetches the order so the reported row (and any later re-run) reflects what
+actually happened — a re-run plans only what is still different (so a failed
+store-price step is not retried: the order no longer shows a price difference).
 """
 
 import asyncio
@@ -30,6 +37,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import aiohttp
 
 import order_sync_helper as osync
+from mssql_helper import get_item_prices_batch_async
 from shopify_helper import (
     ShopifyFetchError,
     _money,
@@ -204,7 +212,8 @@ async def _discount_line(ctx: ShopifyCtx, calc_id: str, line_id: str, amount: fl
     return _payload(data, "orderEditAddLineItemDiscount", "edit").get("calculatedLineItem") or {}
 
 
-async def set_variant_price(ctx: ShopifyCtx, product_id: str, variant_id: str, price: str) -> None:
+async def set_variant_price(ctx: ShopifyCtx, product_id: str, variant_id: str, price: str,
+                            step: str = "edit") -> None:
     mutation = """
     mutation orderFixVariantPrice($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
       productVariantsBulkUpdate(productId: $productId, variants: $variants) {
@@ -214,7 +223,7 @@ async def set_variant_price(ctx: ShopifyCtx, product_id: str, variant_id: str, p
     }
     """
     data = await _gql(ctx, mutation, {"productId": product_id, "variants": [{"id": variant_id, "price": price}]})
-    _payload(data, "productVariantsBulkUpdate", "edit")
+    _payload(data, "productVariantsBulkUpdate", step)
 
 
 async def add_lines(ctx: ShopifyCtx, order_gid: str, adds: List[Dict[str, Any]],
@@ -371,6 +380,25 @@ async def push_tracking(ctx: ShopifyCtx, fulfillment_ids: List[str], numbers: Li
     return done
 
 
+async def set_store_prices(ctx: ShopifyCtx, actions: List[Dict[str, Any]]) -> Tuple[List[str], List[str]]:
+    """Set each variant's storefront price to the BackOffice item price.
+    Products are independent, so one failure does not stop the others;
+    returns (variant ids done, error strings)."""
+    done: List[str] = []
+    errors: List[str] = []
+    for a in actions:
+        if not a.get("product_id"):
+            errors.append(f"{a.get('barcode')}: product unknown")
+            continue
+        try:
+            await set_variant_price(ctx, a["product_id"], a["variant_id"],
+                                    f"{float(a['unit_price']):.2f}", step="variant_price")
+            done.append(a["variant_id"])
+        except (FixStepError, ShopifyFetchError) as e:
+            errors.append(f"{a.get('barcode')}: {getattr(e, 'message', None) or e}")
+    return done, errors
+
+
 # ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
@@ -385,16 +413,22 @@ def _editable_guard(order: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def _barcodes_needing_variants(order: Dict[str, Any], invoice: Dict[str, Any]) -> List[str]:
+def _fix_barcodes(order: Dict[str, Any], invoice: Dict[str, Any]) -> Tuple[List[str], List[str]]:
+    """(barcodes that need a Shopify variant, barcodes whose line is repriced)."""
     _kinds, diffs = osync.compare_lines(order, invoice)
-    out: List[str] = []
+    need_variant: List[str] = []
+    repriced: List[str] = []
     for d in diffs:
         issues = d.get("issues") or []
+        if not d.get("barcode"):
+            continue
         needs_add = ("missing_in_shopify" in issues or "price" in issues
                      or ("qty" in issues and (d.get("sh_qty") or 0) < (d.get("bo_qty") or 0)))
-        if needs_add and d.get("barcode"):
-            out.append(d["barcode"])
-    return out
+        if needs_add:
+            need_variant.append(d["barcode"])
+        if "price" in issues:
+            repriced.append(d["barcode"])
+    return need_variant, repriced
 
 
 async def prepare_target(ctx: ShopifyCtx, tz: Optional[str], target: Dict[str, Any],
@@ -419,7 +453,7 @@ async def prepare_target(ctx: ShopifyCtx, tz: Optional[str], target: Dict[str, A
         return {**base, "status": "skipped", "message": guard, "order": order, "invoice": invoice}
 
     variants: Dict[str, Dict[str, Any]] = {}
-    barcodes = _barcodes_needing_variants(order, invoice)
+    barcodes, repriced = _fix_barcodes(order, invoice)
     if barcodes:
         try:
             variants = await find_variants_by_barcode(
@@ -427,7 +461,17 @@ async def prepare_target(ctx: ShopifyCtx, tz: Optional[str], target: Dict[str, A
         except ShopifyFetchError as e:
             return {**base, "status": "error", "message": f"Variant lookup failed: {e}", "order": order, "invoice": invoice}
 
-    plan = osync.plan_order_fix(order, invoice, variants, push_tracking=push_tracking_numbers)
+    # Storefront price source for repriced lines. A failed lookup must not
+    # block the order-line fix — the planner turns it into a note.
+    item_prices: Optional[Dict[str, Dict[str, Any]]] = None
+    item_price_error: Optional[str] = None
+    if repriced:
+        ok_p, err_p, item_prices = await get_item_prices_batch_async(**invoice_conn, upcs=repriced)
+        if not ok_p:
+            item_prices, item_price_error = None, err_p or "unknown error"
+
+    plan = osync.plan_order_fix(order, invoice, variants, push_tracking=push_tracking_numbers,
+                                item_prices=item_prices, item_price_error=item_price_error)
     return {
         **base,
         "status": "noop" if plan["noop"] else "ready",
@@ -468,6 +512,7 @@ async def apply_order_fix(ctx: ShopifyCtx, tz: Optional[str], target: Dict[str, 
     refunds = [a for a in actions if a["kind"] == "refund"]
     adds = [a for a in actions if a["kind"] == "add"]
     tracking = next((a for a in actions if a["kind"] == "tracking"), None)
+    store_prices = [a for a in actions if a["kind"] == "variant_price"]
     outstanding = float(order.get("outstanding") or 0)   # balance left by an earlier partial run
     steps: List[Dict[str, Any]] = result["steps"]
     bo_numbers, _ = osync.split_routes(osync.split_tracking(invoice.get("tracking_no")))
@@ -505,6 +550,20 @@ async def apply_order_fix(ctx: ShopifyCtx, tz: Optional[str], target: Dict[str, 
             n = await _with_retry(lambda: push_tracking(ctx, tracking["fulfillment_ids"], tracking["numbers"]))
             step("tracking", True, f"Tracking {', '.join(tracking['numbers'])} set on {n} fulfillment(s)", [])
 
+        if store_prices:
+            # Last on purpose: add_lines restores any temporary price bump in
+            # its finally block, which would overwrite an earlier write.
+            done_ids, errors = await _with_retry(lambda: set_store_prices(ctx, store_prices))
+            if errors:
+                raise FixStepError(
+                    "variant_price",
+                    f"Store price set on {len(done_ids)} of {len(store_prices)} product(s); failed: " + "; ".join(errors),
+                )
+            changed = ", ".join(
+                f"{a.get('barcode')} {float(a['variant_price']):.2f} → {float(a['unit_price']):.2f}"
+                for a in store_prices)
+            step("variant_price", True, f"Store price {changed}", done_ids)
+
     except FixStepError as e:
         failed = e.step
         step(e.step, False, e.message, [])
@@ -523,6 +582,8 @@ async def apply_order_fix(ctx: ShopifyCtx, tz: Optional[str], target: Dict[str, 
             result["message"] = (result["message"] or "") + " — added items are UNFULFILLED in Shopify; fulfill them there or the order drops out of Month End"
         elif failed == "mark_paid":
             result["message"] = (result["message"] or "") + " — lines are corrected; run the fix again to mark the balance paid"
+        elif failed == "variant_price":
+            result["message"] = (result["message"] or "") + " — order lines are corrected; a re-run will not retry this, set the store price manually in Shopify"
     else:
         result["status"] = "applied"
         result["message"] = None

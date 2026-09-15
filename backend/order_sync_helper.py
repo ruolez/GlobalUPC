@@ -859,6 +859,9 @@ def build_report(orders: List[Dict[str, Any]], invoices: List[Dict[str, Any]],
 #   replace — refund every current unit of a line + add it back at the
 #             invoice price (the only way to change a fulfilled line's price)
 #   tracking— push the invoice tracking number onto fulfillments lacking one
+#   variant_price — for every repriced line, set the variant's storefront
+#             price to the BackOffice item price (Items_tbl.UnitPrice by
+#             ProductUPC = barcode) so future orders come in at that price
 # A key whose fix would be half-possible (e.g. refund OK but the re-add has
 # no variant) is left untouched and reported as unsupported.
 
@@ -866,6 +869,14 @@ UNSUPPORTED_MESSAGES = {
     "no_barcode": "Line has no barcode — cannot be located in Shopify",
     "no_variant": "No Shopify variant carries this barcode",
     "not_refundable": "Not enough refundable units on the Shopify line",
+}
+
+# Why a repriced line's storefront price is NOT being updated (plan `notes`).
+STORE_PRICE_MESSAGES = {
+    "lookup_failed": "BackOffice item price lookup failed — store price left unchanged",
+    "not_found": "Not in BackOffice Items_tbl (or discontinued) — store price left unchanged",
+    "no_price": "BackOffice item price is empty or zero — store price left unchanged",
+    "unchanged": "Store price already matches the BackOffice item price",
 }
 
 
@@ -932,17 +943,50 @@ def _add_action(reason: str, diff: Dict[str, Any], qty: float, target_price: flo
     }, None
 
 
+def _variant_price_action(diff: Dict[str, Any], add: Dict[str, Any],
+                          item_prices: Optional[Dict[str, Dict[str, Any]]],
+                          lookup_error: Optional[str]
+                          ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Storefront price change for a repriced line: (action, None) or
+    (None, note reason); (None, None) when no lookup was attempted.
+    `unit_price` on the action is the NEW storefront price
+    (Items_tbl.UnitPrice); `variant_price` is the current one."""
+    if item_prices is None:
+        return None, "lookup_failed" if lookup_error else None
+    item = item_prices.get(add["barcode"])
+    if not item:
+        return None, "not_found"
+    new_price = item.get("unit_price")
+    if new_price is None or float(new_price) <= 0:
+        return None, "no_price"
+    new_price = round(float(new_price), 2)
+    if abs(float(add["variant_price"]) - new_price) <= PRICE_TOL:
+        return None, "unchanged"
+    return {
+        "kind": "variant_price", "reason": "price", "key": diff["key"],
+        "barcode": add["barcode"], "description": add.get("description"),
+        "variant_id": add["variant_id"], "product_id": add.get("product_id"),
+        "variant_price": add["variant_price"], "variant_price_raw": add.get("variant_price_raw"),
+        "unit_price": new_price,
+    }, None
+
+
 def plan_order_fix(order: Dict[str, Any], invoice: Dict[str, Any],
                    variants_by_barcode: Dict[str, Dict[str, Any]],
-                   push_tracking: bool = True) -> Dict[str, Any]:
+                   push_tracking: bool = True,
+                   item_prices: Optional[Dict[str, Dict[str, Any]]] = None,
+                   item_price_error: Optional[str] = None) -> Dict[str, Any]:
     """Actions that bring the Shopify order's lines to the invoice's lines.
     Pure: `order` is a fetch_order_for_sync dict (line ids present),
-    `variants_by_barcode` comes from find_variants_by_barcode."""
+    `variants_by_barcode` comes from find_variants_by_barcode, `item_prices`
+    from get_item_prices_batch_async on the BackOffice store (None when that
+    lookup failed — `item_price_error` says why)."""
     _kinds, diffs = compare_lines(order, invoice)
     raw_by_key = _raw_lines_by_key(order)
 
     actions: List[Dict[str, Any]] = []
     unsupported: List[Dict[str, Any]] = []
+    notes: List[Dict[str, Any]] = []
     for d in diffs:
         issues = d.get("issues") or []
         if not issues:
@@ -978,6 +1022,20 @@ def plan_order_fix(order: Dict[str, Any], invoice: Dict[str, Any],
             continue
         actions.extend(a for a, _r in planned if a)
 
+        if "price" in issues:
+            add = next((a for a, _r in planned if a and a["kind"] == "add"), None)
+            if add:
+                vp, why = _variant_price_action(d, add, item_prices, item_price_error)
+                if vp:
+                    actions.append(vp)
+                elif why:
+                    message = STORE_PRICE_MESSAGES[why]
+                    if why == "lookup_failed" and item_price_error:
+                        message += f": {item_price_error}"
+                    notes.append({"key": d["key"], "barcode": d.get("barcode"),
+                                  "description": d.get("description"),
+                                  "reason": why, "message": message})
+
     if push_tracking:
         sh_real, _ = split_routes(order.get("tracking_numbers", []))
         bo_real, _ = split_routes(split_tracking(invoice.get("tracking_no")))
@@ -997,6 +1055,7 @@ def plan_order_fix(order: Dict[str, Any], invoice: Dict[str, Any],
     return {
         "actions": actions,
         "unsupported": unsupported,
+        "notes": notes,
         "summary": {
             "refunds": len(refunds), "refund_units": sum(a["qty"] for a in refunds),
             "adds": len(adds), "add_units": sum(a["qty"] for a in adds),
@@ -1004,6 +1063,7 @@ def plan_order_fix(order: Dict[str, Any], invoice: Dict[str, Any],
             "tracking": any(a["kind"] == "tracking" for a in actions),
             "mark_paid": outstanding if outstanding > 0.004 else 0.0,
             "unsupported": len(unsupported),
+            "variant_prices": sum(1 for a in actions if a["kind"] == "variant_price"),
         },
         "noop": not actions,
     }

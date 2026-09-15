@@ -2387,17 +2387,17 @@ class OrderSyncFixRequest(BaseModel):
 
 
 class OrderSyncFixAction(BaseModel):
-    kind: str                                  # refund | add | tracking
-    reason: str                                # remove | reduce | replace | add | increase | tracking
+    kind: str                                  # refund | add | tracking | mark_paid | variant_price
+    reason: str                                # remove | reduce | replace | add | increase | tracking | mark_paid | price
     key: Optional[str] = None
     barcode: Optional[str] = None
     description: Optional[str] = None
     qty: Optional[int] = None
-    unit_price: Optional[float] = None
+    unit_price: Optional[float] = None         # add: invoice price; variant_price: NEW storefront price (Items_tbl.UnitPrice)
     line_items: List[Dict[str, Any]] = []      # refund: [{line_item_id, quantity}]
-    variant_id: Optional[str] = None           # add
+    variant_id: Optional[str] = None           # add | variant_price
     product_id: Optional[str] = None
-    variant_price: Optional[float] = None
+    variant_price: Optional[float] = None      # current storefront price
     variant_price_raw: Optional[str] = None
     variant_title: Optional[str] = None
     discount_total: Optional[float] = None
@@ -2420,6 +2420,15 @@ class OrderSyncFixUnsupported(BaseModel):
     bo_unit_price: Optional[float] = None
 
 
+class OrderSyncFixNote(BaseModel):
+    """A repriced line whose storefront price is NOT being updated, and why."""
+    key: Optional[str] = None
+    barcode: Optional[str] = None
+    description: Optional[str] = None
+    reason: str                                # lookup_failed | not_found | no_price | unchanged
+    message: str
+
+
 class OrderSyncFixPlan(BaseModel):
     sh_order_id: str
     sh_name: Optional[str] = None
@@ -2430,6 +2439,7 @@ class OrderSyncFixPlan(BaseModel):
     message: Optional[str] = None
     actions: List[OrderSyncFixAction] = []
     unsupported: List[OrderSyncFixUnsupported] = []
+    notes: List[OrderSyncFixNote] = []
     summary: Dict[str, Any] = {}
 
 
@@ -2441,7 +2451,7 @@ class OrderSyncFixPlanResponse(BaseModel):
 
 
 class OrderSyncFixStep(BaseModel):
-    step: str                                  # refund | edit | fulfill | mark_paid | tracking
+    step: str                                  # refund | edit | fulfill | mark_paid | tracking | variant_price
     ok: bool
     message: Optional[str] = None
     ids: List[str] = []

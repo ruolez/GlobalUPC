@@ -13692,6 +13692,7 @@ async def plan_order_sync_fix(req: OrderSyncFixRequest):
                 "fixable": prep["status"] == "ready",
                 "status": prep["status"], "message": prep.get("message"),
                 "actions": plan.get("actions", []), "unsupported": plan.get("unsupported", []),
+                "notes": plan.get("notes", []),
                 "summary": plan.get("summary", {}),
             }
 
