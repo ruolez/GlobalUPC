@@ -89,6 +89,10 @@ _TRANSIENT_MARKERS = ("temporarily unavailable", "try again", "currently being m
 _RETRY_DELAYS = (1.5, 2.5, 4.0, 6.0, 8.0)
 
 
+def _is_already_paid(message: str) -> bool:
+    return "cannot be marked as paid" in (message or "").lower()
+
+
 def _is_transient(message: str) -> bool:
     m = (message or "").lower()
     return any(k in m for k in _TRANSIENT_MARKERS)
@@ -361,6 +365,9 @@ async def _add_lines(ctx: ShopifyCtx, order_gid: str, adds: List[Dict[str, Any]]
         order {
           id
           totalOutstandingSet { shopMoney { amount } }
+          currentTotalPriceSet { shopMoney { amount } }
+          netPaymentSet { shopMoney { amount } }
+          canMarkAsPaid
           fulfillmentOrders(first: 20) { nodes { id status } }
         }
         userErrors { field message }
@@ -412,7 +419,9 @@ async def _add_lines(ctx: ShopifyCtx, order_gid: str, adds: List[Dict[str, Any]]
         "calculated_order_id": calc_id,
         "added": added,
         "open_fulfillment_order_ids": open_fos,
-        "outstanding": _money(order.get("totalOutstandingSet")),
+        "outstanding": osync.collectible_balance(
+            _money(order.get("currentTotalPriceSet")), _money(order.get("netPaymentSet")), order.get("canMarkAsPaid", True)),
+        "gross_outstanding": _money(order.get("totalOutstandingSet")),
     }
 
 
@@ -604,7 +613,8 @@ async def apply_order_fix(ctx: ShopifyCtx, tz: Optional[str], target: Dict[str, 
     tracking = next((a for a in actions if a["kind"] == "tracking"), None)
     store_prices = [a for a in actions if a["kind"] == "variant_price"]
     shipping = [a for a in actions if a["kind"] == "shipping_line"]
-    outstanding = float(order.get("outstanding") or 0)   # balance left by an earlier partial run
+    outstanding = float(order.get("outstanding") or 0)   # collectible balance left by an earlier partial run
+    gross_outstanding = float(order.get("gross_outstanding") or 0)
     steps: List[Dict[str, Any]] = result["steps"]
     bo_numbers, _ = osync.split_routes(osync.split_tracking(invoice.get("tracking_no")))
 
@@ -629,6 +639,7 @@ async def apply_order_fix(ctx: ShopifyCtx, tz: Optional[str], target: Dict[str, 
                              else f"shipping line set to ${float(s['amount']):.2f} (was ${s.get('sh_amount') or 0:.2f})")
             step("edit", True, "; ".join(parts), [edit["calculated_order_id"]])
             outstanding = edit["outstanding"]
+            gross_outstanding = edit.get("gross_outstanding") or 0.0
 
             fo_ids = edit["open_fulfillment_order_ids"]
             if fo_ids:
@@ -638,10 +649,18 @@ async def apply_order_fix(ctx: ShopifyCtx, tz: Optional[str], target: Dict[str, 
                 step("fulfill", True, "No open fulfillment order after the edit", [])
 
         if outstanding > 0.004:
-            status = await _with_retry(lambda: mark_paid(ctx, order["id"]))
-            step("mark_paid", True, f"Marked ${outstanding:.2f} as paid ({status})", [])
+            try:
+                status = await _with_retry(lambda: mark_paid(ctx, order["id"]))
+                step("mark_paid", True, f"Marked ${gross_outstanding or outstanding:.2f} as paid ({status})", [])
+            except FixStepError as e:
+                if not _is_already_paid(e.message):
+                    raise
+                step("mark_paid", True, f"Shopify already shows the order as paid — {e.message}", [])
         elif adds or shipping:
-            step("mark_paid", True, "No outstanding balance", [])
+            step("mark_paid", True,
+                 "No balance to collect — Shopify shows the order as paid"
+                 + (f" (earlier $0 refunds left a credit covering the ${gross_outstanding:.2f} added)" if gross_outstanding > 0.004 else ""),
+                 [])
 
         if tracking:
             n = await _with_retry(lambda: push_tracking(ctx, tracking["fulfillment_ids"], tracking["numbers"]))

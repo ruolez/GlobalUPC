@@ -1322,6 +1322,8 @@ _ORDER_SYNC_ORDER_FIELDS = f"""
                 totalShippingPriceSet {{ shopMoney {{ amount }} }}
                 totalRefundedSet {{ shopMoney {{ amount }} }}
                 totalOutstandingSet {{ shopMoney {{ amount }} }}
+                netPaymentSet {{ shopMoney {{ amount }} }}
+                canMarkAsPaid
                 shippingLines(first: 10) {{
                   nodes {{
                     id
@@ -1409,6 +1411,9 @@ def _sync_order_passes(node: Dict[str, Any]) -> bool:
             and node.get("displayFulfillmentStatus") == "FULFILLED")
 
 
+from order_sync_helper import collectible_balance  # noqa: E402
+
+
 async def _shape_sync_order(node: Dict[str, Any], placed_on: Optional[str], post_gql) -> Dict[str, Any]:
     """Order dict for the reconciliation; fetches line-item continuation pages
     through `post_gql` when an order carries more than 100 lines."""
@@ -1456,7 +1461,14 @@ async def _shape_sync_order(node: Dict[str, Any], placed_on: Optional[str], post
         "subtotal": _money(node.get("currentSubtotalPriceSet")) if node.get("currentSubtotalPriceSet") else _money(node.get("subtotalPriceSet")),
         "shipping": _money(node.get("totalShippingPriceSet")),
         "refunded": _money(node.get("totalRefundedSet")),
-        "outstanding": _money(node.get("totalOutstandingSet")),
+        # Balance a fix can still mark paid (see order_sync_helper.collectible_balance);
+        # Shopify's gross figure is kept for reference.
+        "outstanding": collectible_balance(
+            _money(node.get("currentTotalPriceSet")) if node.get("currentTotalPriceSet") else _money(node.get("totalPriceSet")),
+            _money(node.get("netPaymentSet")), node.get("canMarkAsPaid", True)),
+        "gross_outstanding": _money(node.get("totalOutstandingSet")),
+        "net_payment": _money(node.get("netPaymentSet")),
+        "can_mark_as_paid": bool(node.get("canMarkAsPaid", True)),
         "email": (node.get("email") or "").strip(),
         "customer_name": (ship.get("name") or cust.get("displayName") or "").strip(),
         "phones": [p for p in (ship.get("phone"), node.get("phone"), cust.get("phone")) if p],

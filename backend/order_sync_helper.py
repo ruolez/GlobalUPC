@@ -944,6 +944,25 @@ def build_report(orders: List[Dict[str, Any]], invoices: List[Dict[str, Any]],
 
 
 # ---------------------------------------------------------------------------
+# Balance Shopify will actually let us mark as paid (pure)
+# ---------------------------------------------------------------------------
+
+def collectible_balance(current_total: Any, net_payment: Any, can_mark_as_paid: Any) -> float:
+    """What orderMarkAsPaid can still collect. Shopify's totalOutstanding is
+    gross (order total minus payments, ignoring $0 item refunds), but it only
+    allows a manual payment while the CURRENT total — after those refunds —
+    exceeds what was received; a fix's $0 refund leaves a credit that later
+    additions consume first. Zero whenever Shopify says the order is paid."""
+    if not can_mark_as_paid:
+        return 0.0
+    try:
+        balance = float(current_total or 0) - float(net_payment or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    return round(balance, 2) if balance > 0.004 else 0.0
+
+
+# ---------------------------------------------------------------------------
 # Products on BackOffice-only invoices that the Shopify catalog lacks (pure)
 # ---------------------------------------------------------------------------
 
