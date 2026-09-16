@@ -27051,7 +27051,16 @@ const OSYNC_METHOD_LABELS = {
   address: "Address",
   name_zip: "Name + ZIP",
   products: "Same basket",
-  identity_basket: "Identity + basket",
+  identity_basket: "Late order",
+};
+
+const OSYNC_METHOD_HINTS = {
+  tracking: "Same tracking number on both sides.",
+  phone: "Same phone number, invoice dated within a day.",
+  address: "Same street address and ZIP, invoice dated within a day.",
+  name_zip: "Same customer name and ZIP, invoice dated within a day.",
+  products: "Same products on the same day; the customer text differs.",
+  identity_basket: "Shopify order entered days after the invoice shipped: same customer (phone, address or name) and the same products.",
 };
 
 const OSYNC_ISSUE_LABELS = {
@@ -27508,7 +27517,7 @@ function osyncMethodPill(r) {
   if (!r.match_method) return osyncDash();
   const strong = r.match_method === "tracking";
   return (
-    `<span class="osync-method${strong ? " is-strong" : ""}">${escapeHtml(OSYNC_METHOD_LABELS[r.match_method] || r.match_method)}</span>` +
+    `<span class="osync-method${strong ? " is-strong" : ""}" title="${escapeHtml(OSYNC_METHOD_HINTS[r.match_method] || "")}">${escapeHtml(OSYNC_METHOD_LABELS[r.match_method] || r.match_method)}</span>` +
     (r.ambiguous
       ? ' <span class="osync-ambig" title="Several invoices were plausible — closest total and date was picked. Worth a look.">?</span>'
       : "")
