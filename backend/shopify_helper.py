@@ -1322,6 +1322,14 @@ _ORDER_SYNC_ORDER_FIELDS = f"""
                 totalShippingPriceSet {{ shopMoney {{ amount }} }}
                 totalRefundedSet {{ shopMoney {{ amount }} }}
                 totalOutstandingSet {{ shopMoney {{ amount }} }}
+                shippingLines(first: 10) {{
+                  nodes {{
+                    id
+                    title
+                    originalPriceSet {{ shopMoney {{ amount }} }}
+                    discountedPriceSet {{ shopMoney {{ amount }} }}
+                  }}
+                }}
                 fulfillments(first: 50) {{
                   id
                   createdAt
@@ -1459,6 +1467,13 @@ async def _shape_sync_order(node: Dict[str, Any], placed_on: Optional[str], post
         "zip": (ship.get("zip") or "").strip(),
         "country": (ship.get("countryCodeV2") or "").strip(),
         "tracking_numbers": tracking_numbers,
+        # Shipping charged as a shipping line (the other convention is a
+        # "ship" pseudo-product line item, which lands in `lines`).
+        "shipping_lines": [
+            {"id": sl.get("id"), "title": sl.get("title") or "Shipping",
+             "price": _money(sl.get("discountedPriceSet")) if sl.get("discountedPriceSet") else _money(sl.get("originalPriceSet"))}
+            for sl in ((node.get("shippingLines") or {}).get("nodes") or []) if sl.get("id")
+        ],
         "fulfillment_ids_without_tracking": [
             f.get("id") for f in fulfillments
             if f.get("id") and not any((t.get("number") or "").strip() for t in (f.get("trackingInfo") or []))

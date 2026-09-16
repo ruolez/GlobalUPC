@@ -45,7 +45,7 @@ class FakeStore:
     async def read_price(self, ctx, variant_id):
         return self.price
 
-    async def add_lines(self, ctx, order_gid, adds, note, bumped):
+    async def add_lines(self, ctx, order_gid, adds, note, bumped, shipping=None):
         for a in adds:
             if a.get("bump_price"):
                 await ofix._bump_variant_price(ctx, a, float(a["unit_price"]), bumped)
@@ -81,7 +81,7 @@ class BumpSerializationTests(unittest.TestCase):
         ])
 
     def test_price_is_restored_even_when_the_edit_fails(self):
-        async def failing(ctx, order_gid, adds, note, bumped):
+        async def failing(ctx, order_gid, adds, note, bumped, shipping=None):
             await ofix._bump_variant_price(ctx, adds[0], float(adds[0]["unit_price"]), bumped)
             raise ofix.FixStepError("edit", "boom")
         ofix._add_lines = failing

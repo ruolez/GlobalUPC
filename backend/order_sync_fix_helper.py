@@ -270,22 +270,23 @@ async def _bump_variant_price(ctx: ShopifyCtx, add: Dict[str, Any], target: floa
 
 
 async def add_lines(ctx: ShopifyCtx, order_gid: str, adds: List[Dict[str, Any]],
-                    note: str) -> Dict[str, Any]:
-    """Begin an edit, add every planned line at the invoice price, verify,
-    commit. Nothing changes on the order unless the commit runs. Variants
-    whose price had to be raised are restored afterwards no matter what,
-    and such edits are serialized across orders (see _bump_lock)."""
+                    note: str, shipping: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    """Begin an edit, add every planned line at the invoice price and apply
+    every shipping-line replacement, verify, commit. Nothing changes on the
+    order unless the commit runs. Variants whose price had to be raised are
+    restored afterwards no matter what, and such edits are serialized across
+    orders (see _bump_lock)."""
     if not any(a.get("bump_price") for a in adds):
-        return await _add_lines(ctx, order_gid, adds, note, [])
+        return await _add_lines(ctx, order_gid, adds, note, [], shipping)
     async with _bump_lock:
-        return await _add_lines_restoring(ctx, order_gid, adds, note)
+        return await _add_lines_restoring(ctx, order_gid, adds, note, shipping)
 
 
 async def _add_lines_restoring(ctx: ShopifyCtx, order_gid: str, adds: List[Dict[str, Any]],
-                               note: str) -> Dict[str, Any]:
+                               note: str, shipping: Optional[List[Dict[str, Any]]]) -> Dict[str, Any]:
     bumped: List[Dict[str, Any]] = []
     try:
-        return await _add_lines(ctx, order_gid, adds, note, bumped)
+        return await _add_lines(ctx, order_gid, adds, note, bumped, shipping)
     finally:
         restore_errors: List[str] = []
         for b in bumped:
@@ -300,8 +301,44 @@ async def _add_lines_restoring(ctx: ShopifyCtx, order_gid: str, adds: List[Dict[
             )
 
 
+async def _replace_shipping_lines(ctx: ShopifyCtx, calc_id: str, action: Dict[str, Any]) -> None:
+    """Drop the order's existing shipping line(s); when the invoice carries
+    shipping, add one back at that amount under the same title."""
+    remove = """
+    mutation orderFixRemoveShipping($id: ID!, $shippingLineId: ID!) {
+      orderEditRemoveShippingLine(id: $id, shippingLineId: $shippingLineId) {
+        calculatedOrder { id }
+        userErrors { field message }
+      }
+    }
+    """
+    add = """
+    mutation orderFixAddShipping($id: ID!, $shippingLine: OrderEditAddShippingLineInput!) {
+      orderEditAddShippingLine(id: $id, shippingLine: $shippingLine) {
+        calculatedShippingLine { id title price { shopMoney { amount } } }
+        userErrors { field message }
+      }
+    }
+    """
+    for sid in action.get("remove_ids") or []:
+        data = await _gql(ctx, remove, {"id": calc_id, "shippingLineId": sid})
+        _payload(data, "orderEditRemoveShippingLine", "edit")
+    amount = action.get("amount")
+    if amount is None:
+        return
+    data = await _gql(ctx, add, {"id": calc_id, "shippingLine": {
+        "title": action.get("title") or "Shipping",
+        "price": {"amount": f"{float(amount):.2f}", "currencyCode": ctx.currency},
+    }})
+    line = _payload(data, "orderEditAddShippingLine", "edit").get("calculatedShippingLine") or {}
+    got = _money(line.get("price"))
+    if abs(got - float(amount)) > _PRICE_TOL:
+        raise FixStepError("edit", f"shipping: could not set the shipping line to {float(amount):.2f} (Shopify calculated {got:.2f}); edit abandoned")
+
+
 async def _add_lines(ctx: ShopifyCtx, order_gid: str, adds: List[Dict[str, Any]],
-                     note: str, bumped: List[Dict[str, Any]]) -> Dict[str, Any]:
+                     note: str, bumped: List[Dict[str, Any]],
+                     shipping: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     begin = """
     mutation orderFixBegin($id: ID!) {
       orderEditBegin(id: $id) {
@@ -363,6 +400,9 @@ async def _add_lines(ctx: ShopifyCtx, order_gid: str, adds: List[Dict[str, Any]]
                     f"{a.get('barcode')}: could not set unit price to {target:.2f} (Shopify calculated {got:.2f}); edit abandoned",
                 )
         added.append({"barcode": a.get("barcode"), "qty": qty, "unit_price": target, "calculated_line_id": line_id})
+
+    for s in shipping or []:
+        await _replace_shipping_lines(ctx, calc_id, s)
 
     data = await _gql(ctx, commit, {"id": calc_id, "note": note})
     order = _payload(data, "orderEditCommit", "edit").get("order") or {}
@@ -476,7 +516,7 @@ def _fix_barcodes(order: Dict[str, Any], invoice: Dict[str, Any]) -> Tuple[List[
                      or ("qty" in issues and (d.get("sh_qty") or 0) < (d.get("bo_qty") or 0)))
         if needs_add:
             need_variant.append(d["barcode"])
-        if "price" in issues:
+        if "price" in issues and d["key"] != osync.SHIPPING_KEY:
             repriced.append(d["barcode"])
     return need_variant, repriced
 
@@ -563,6 +603,7 @@ async def apply_order_fix(ctx: ShopifyCtx, tz: Optional[str], target: Dict[str, 
     adds = [a for a in actions if a["kind"] == "add"]
     tracking = next((a for a in actions if a["kind"] == "tracking"), None)
     store_prices = [a for a in actions if a["kind"] == "variant_price"]
+    shipping = [a for a in actions if a["kind"] == "shipping_line"]
     outstanding = float(order.get("outstanding") or 0)   # balance left by an earlier partial run
     steps: List[Dict[str, Any]] = result["steps"]
     bo_numbers, _ = osync.split_routes(osync.split_tracking(invoice.get("tracking_no")))
@@ -577,10 +618,16 @@ async def apply_order_fix(ctx: ShopifyCtx, tz: Optional[str], target: Dict[str, 
             refund_id, amount = await _with_retry(lambda: refund_units(ctx, order["id"], refunds, note))
             step("refund", True, f"Refunded {units} unit(s), ${amount:.2f} returned", [refund_id])
 
-        if adds:
-            edit = await _with_retry(lambda: add_lines(ctx, order["id"], adds, note))
+        if adds or shipping:
+            edit = await _with_retry(lambda: add_lines(ctx, order["id"], adds, note, shipping))
             units = sum(a["qty"] for a in adds)
-            step("edit", True, f"Added {units} unit(s) across {len(adds)} line(s)", [edit["calculated_order_id"]])
+            parts = []
+            if adds:
+                parts.append(f"Added {units} unit(s) across {len(adds)} line(s)")
+            for s in shipping:
+                parts.append(f"shipping line removed (${s.get('sh_amount') or 0:.2f})" if s.get("amount") is None
+                             else f"shipping line set to ${float(s['amount']):.2f} (was ${s.get('sh_amount') or 0:.2f})")
+            step("edit", True, "; ".join(parts), [edit["calculated_order_id"]])
             outstanding = edit["outstanding"]
 
             fo_ids = edit["open_fulfillment_order_ids"]
@@ -593,7 +640,7 @@ async def apply_order_fix(ctx: ShopifyCtx, tz: Optional[str], target: Dict[str, 
         if outstanding > 0.004:
             status = await _with_retry(lambda: mark_paid(ctx, order["id"]))
             step("mark_paid", True, f"Marked ${outstanding:.2f} as paid ({status})", [])
-        elif adds:
+        elif adds or shipping:
             step("mark_paid", True, "No outstanding balance", [])
 
         if tracking:

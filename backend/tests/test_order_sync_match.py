@@ -117,20 +117,79 @@ def _ship_invoice_line(price=SHIP_PRICE):
             "qty_shipped": 1.0, "unit_price": price}
 
 
+SHIPPING_LINE_ID = "gid://shopify/ShippingLine/1"
+
+
+def _shipping_line(price=SHIP_PRICE, title="Standard Shipping"):
+    return {"id": SHIPPING_LINE_ID, "title": title, "price": price}
+
+
+def _issue(diffs, key):
+    return next(d["issues"] for d in diffs if d["key"] == key)
+
+
 class ShippingLineTests(unittest.TestCase):
-    def test_invoice_shipping_line_is_not_reported_missing_in_shopify(self):
+    def test_invoice_shipping_with_no_shopify_shipping_is_missing_in_shopify(self):
         invoice = _invoice()
         invoice["lines"].append(_ship_invoice_line())
         kinds, diffs = osync.compare_lines(_order(), invoice)
-        self.assertEqual((kinds, [d["key"] for d in diffs]), ([], BASKET))
+        self.assertEqual((kinds, _issue(diffs, "ship")), (["product"], ["missing_in_shopify"]))
 
-    def test_shipping_price_difference_is_not_a_line_issue(self):
+    def test_shipping_item_price_difference_is_a_price_issue(self):
         order = _order()
         order["lines"].append(_ship_order_line(SHIP_PRICE))
         invoice = _invoice()
         invoice["lines"].append(_ship_invoice_line(SHIP_PRICE - 2.5))
         kinds, diffs = osync.compare_lines(order, invoice)
-        self.assertEqual((kinds, [d["key"] for d in diffs]), ([], BASKET))
+        self.assertEqual((kinds, _issue(diffs, "ship")), (["price"], ["price"]))
+
+    def test_shopify_shipping_line_compares_like_the_shipping_item(self):
+        order = _order()
+        order["shipping_lines"] = [_shipping_line(SHIP_PRICE)]
+        invoice = _invoice()
+        invoice["lines"].append(_ship_invoice_line(SHIP_PRICE))
+        kinds, diffs = osync.compare_lines(order, invoice)
+        ship = next(d for d in diffs if d["key"] == "ship")
+        self.assertEqual((kinds, ship["issues"], ship["sh_qty"], ship["sh_unit_price"]), ([], [], 1.0, SHIP_PRICE))
+
+    def test_zero_priced_shipping_line_counts_as_no_shipping(self):
+        order = _order()
+        order["shipping_lines"] = [_shipping_line(0.0)]
+        self.assertNotIn("ship", osync._shopify_lines_by_key(order))
+
+    def test_shipping_line_form_is_fixed_by_replacing_the_shipping_line(self):
+        order = _order()
+        order["shipping_lines"] = [_shipping_line(SHIP_PRICE - 2.5)]
+        invoice = _invoice()
+        invoice["lines"].append(_ship_invoice_line(SHIP_PRICE))
+        plan = osync.plan_order_fix(order, invoice, {}, push_tracking=False)
+        self.assertEqual(plan["actions"], [{
+            "kind": "shipping_line", "reason": "shipping", "key": "ship", "barcode": "ship",
+            "description": "Shipping & Handling", "title": "Standard Shipping",
+            "remove_ids": [SHIPPING_LINE_ID], "sh_amount": SHIP_PRICE - 2.5,
+            "amount": SHIP_PRICE, "unit_price": SHIP_PRICE,
+        }])
+        self.assertEqual(plan["summary"]["shipping_lines"], 1)
+
+    def test_shipping_line_with_no_invoice_shipping_is_removed(self):
+        order = _order()
+        order["shipping_lines"] = [_shipping_line(SHIP_PRICE)]
+        plan = osync.plan_order_fix(order, _invoice(), {}, push_tracking=False)
+        self.assertEqual([(a["kind"], a["reason"], a["amount"], a["remove_ids"]) for a in plan["actions"]],
+                         [("shipping_line", "shipping_remove", None, [SHIPPING_LINE_ID])])
+
+    def test_shipping_item_form_is_repriced_like_a_product_without_a_store_price_step(self):
+        order = _order()
+        order["lines"].append(_ship_order_line(SHIP_PRICE - 2.5))
+        invoice = _invoice()
+        invoice["lines"].append(_ship_invoice_line(SHIP_PRICE))
+        variants = {"ship": {"variant_id": "gid://shopify/ProductVariant/ship", "product_id": "gid://shopify/Product/ship",
+                             "price": SHIP_PRICE - 2.5, "price_raw": f"{SHIP_PRICE - 2.5:.2f}", "product_title": "Shipping"}}
+        plan = osync.plan_order_fix(order, invoice, variants, push_tracking=False,
+                                    item_prices={"ship": {"unit_price": 1.0}})
+        self.assertEqual([(a["kind"], a["reason"], a["key"]) for a in plan["actions"]],
+                         [("refund", "replace", "ship"), ("add", "replace", "ship")])
+        self.assertEqual(plan["notes"], [])
 
     def test_shipping_line_does_not_count_toward_basket_overlap(self):
         order = _order(barcodes=OTHER_BASKET)
@@ -139,13 +198,12 @@ class ShippingLineTests(unittest.TestCase):
         invoice["lines"].append(_ship_invoice_line())
         self.assertEqual(osync._line_jaccard(order, invoice), 1 / 9)
 
-    def test_shipping_line_is_never_planned_for_a_fix(self):
+    def test_shipping_never_counts_toward_matching_keys(self):
         order = _order()
-        order["lines"].append(_ship_order_line())
+        order["shipping_lines"] = [_shipping_line()]
         invoice = _invoice()
-        invoice["lines"].append(_ship_invoice_line(SHIP_PRICE - 2.5))
-        plan = osync.plan_order_fix(order, invoice, {}, {})
-        self.assertEqual((plan["actions"], plan["unsupported"]), ([], []))
+        invoice["lines"].append(_ship_invoice_line())
+        self.assertEqual((osync._line_keys(order, True), osync._line_keys(invoice, False)), (set(BASKET), set(BASKET)))
 
 
 if __name__ == "__main__":

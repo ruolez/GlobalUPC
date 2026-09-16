@@ -2427,8 +2427,11 @@ class OrderSyncFixRequest(BaseModel):
 
 
 class OrderSyncFixAction(BaseModel):
-    kind: str                                  # refund | add | tracking | mark_paid | variant_price
-    reason: str                                # remove | reduce | replace | add | increase | tracking | mark_paid | price
+    kind: str                                  # refund | add | tracking | mark_paid | variant_price | shipping_line
+    reason: str                                # remove | reduce | replace | add | increase | tracking | mark_paid | price | shipping | shipping_remove
+    title: Optional[str] = None                # shipping_line: Shopify shipping line title
+    remove_ids: List[str] = []                 # shipping_line: existing shipping line ids to drop
+    sh_amount: Optional[float] = None          # shipping_line: current Shopify shipping amount
     key: Optional[str] = None
     barcode: Optional[str] = None
     description: Optional[str] = None

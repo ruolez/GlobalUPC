@@ -120,7 +120,7 @@ class VariantPriceActionTests(unittest.TestCase):
         self.assertEqual(plan["notes"], [])
         self.assertEqual(plan["summary"], {
             "refunds": 1, "refund_units": 2, "adds": 1, "add_units": 2, "add_amount": 19.0,
-            "tracking": False, "mark_paid": 0.0, "unsupported": 0, "variant_prices": 0,
+            "tracking": False, "shipping_lines": 0, "mark_paid": 0.0, "unsupported": 0, "variant_prices": 0,
         })
 
 

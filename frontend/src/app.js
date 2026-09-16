@@ -28137,6 +28137,15 @@ function osyncFixActionLines(actions) {
       out.push(["paid", `Mark the outstanding balance of <strong>${osyncMoney(a.amount)}</strong> as paid <span class="osync-muted">(left by an earlier run; no money is collected)</span>`]);
       return;
     }
+    if (a.kind === "shipping_line") {
+      const title = escapeHtml(a.title || "Shipping");
+      if (a.reason === "shipping_remove") {
+        out.push(["remove", `Shipping line "${title}" <span class="osync-muted">${osyncMoney(a.sh_amount)} — removed, the invoice has no shipping</span>`]);
+      } else {
+        out.push(["reprice", `Shipping line "${title}" <span class="osync-muted">${osyncMoney(a.sh_amount)} →</span> <strong>${osyncMoney(a.amount)}</strong> <span class="osync-muted">(replaced with the invoice's shipping)</span>`]);
+      }
+      return;
+    }
     if (a.kind === "variant_price") {
       const e = byKey.get(a.key) || {};
       e.price = a;
@@ -28247,9 +28256,10 @@ function osyncFixRenderPlan(plan) {
     acc.amount += s.add_amount || 0;
     acc.tracking += s.tracking ? 1 : 0;
     acc.prices += s.variant_prices || 0;
+    acc.shipping += s.shipping_lines || 0;
     acc.unsupported += s.unsupported || 0;
     return acc;
-  }, { refund: 0, add: 0, amount: 0, tracking: 0, prices: 0, unsupported: 0 });
+  }, { refund: 0, add: 0, amount: 0, tracking: 0, prices: 0, shipping: 0, unsupported: 0 });
   const unsupportedTotal = plans.reduce((n, p) => n + (p.unsupported || []).length, 0);
   const blocked = (plan.scopes_missing || []).length > 0;
 
@@ -28258,6 +28268,7 @@ function osyncFixRenderPlan(plan) {
   if (tot.add) bits.push(`<strong>${tot.add}</strong> unit${tot.add === 1 ? "" : "s"} added (${osyncMoney(tot.amount)})`);
   if (tot.tracking) bits.push(`tracking on <strong>${tot.tracking}</strong> order${tot.tracking === 1 ? "" : "s"}`);
   if (tot.prices) bits.push(`store price on <strong>${tot.prices}</strong> product${tot.prices === 1 ? "" : "s"}`);
+  if (tot.shipping) bits.push(`shipping line on <strong>${tot.shipping}</strong> order${tot.shipping === 1 ? "" : "s"}`);
   if (unsupportedTotal) bits.push(`<span class="osync-fix-warn-text"><strong>${unsupportedTotal}</strong> line${unsupportedTotal === 1 ? "" : "s"} can't be fixed</span>`);
 
   body.innerHTML =

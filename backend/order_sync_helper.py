@@ -173,12 +173,15 @@ def line_key(barcode: Any, sku: Any, description: Any) -> str:
     return f"desc:{(description or '').strip().lower()}"
 
 
-# Both systems bill shipping as a pseudo product (UPC "ship", SKU "shipment"),
-# but Shopify carries it on most orders as a shipping line instead, so the
-# item is dropped from both sides: it is neither compared nor matched on,
-# and never planned for a fix. Shipping still counts in the order totals.
+# Both systems bill shipping as a pseudo product (UPC "ship", SKU "shipment").
+# Shopify carries it either as that line item or as a real shipping line;
+# the latter is folded into a synthetic "ship" line (see _shopify_lines_by_key)
+# so shipping is compared and corrected like any product. It never counts
+# toward basket matching (nearly every order has it) and its storefront price
+# is never touched (it varies per order).
 SHIPPING_BARCODES = {"ship"}
 SHIPPING_SKUS = {"shipment"}
+SHIPPING_KEY = "ship"
 
 
 def is_shipping_line(barcode: Any, sku: Any) -> bool:
@@ -189,7 +192,7 @@ def is_shipping_line(barcode: Any, sku: Any) -> bool:
 def _fetch_lines(cursor, invoice_ids: List[int]) -> Dict[int, List[Dict[str, Any]]]:
     """Detail lines for the given invoices, chunked IN (...), aggregated per
     trimmed UPC (duplicate UPC lines sum quantity; unit price is qty-weighted).
-    Shipping pseudo-lines are dropped (see is_shipping_line)."""
+    Shipping pseudo-lines are keyed SHIPPING_KEY whatever their spelling."""
     agg: Dict[int, Dict[str, Dict[str, Any]]] = {}
     for start in range(0, len(invoice_ids), _LINES_IN_CHUNK):
         chunk = invoice_ids[start:start + _LINES_IN_CHUNK]
@@ -203,9 +206,7 @@ def _fetch_lines(cursor, invoice_ids: List[int]) -> Dict[int, List[Dict[str, Any
             WHERE d.InvoiceID IN ({placeholders}) AND ISNULL(d.Void, 0) = 0
         """, chunk)
         for inv_id, upc, sku, desc, qty, unit_price, ext_price in cursor.fetchall():
-            if is_shipping_line(upc, sku):
-                continue
-            key = line_key(upc, sku, desc)
+            key = SHIPPING_KEY if is_shipping_line(upc, sku) else line_key(upc, sku, desc)
             per_inv = agg.setdefault(inv_id, {})
             line = per_inv.setdefault(key, {
                 "key": key, "barcode": upc, "sku": sku,
@@ -332,15 +333,20 @@ def _day_delta(order: Dict[str, Any], invoice: Dict[str, Any]) -> int:
 
 
 def _invoice_lines(invoice: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Invoice lines minus shipping (fetched lines are already filtered;
-    this keeps any other source honest)."""
-    return [li for li in invoice.get("lines", []) if not is_shipping_line(li.get("barcode"), li.get("sku"))]
+    """Invoice lines with shipping keyed SHIPPING_KEY (fetched lines already
+    are; this keeps any other source honest)."""
+    out = []
+    for li in invoice.get("lines", []):
+        if is_shipping_line(li.get("barcode"), li.get("sku")) and li.get("key") != SHIPPING_KEY:
+            li = {**li, "key": SHIPPING_KEY}
+        out.append(li)
+    return out
 
 
 def _line_keys(side: Dict[str, Any], shopify: bool) -> set:
-    if shopify:
-        return set(_shopify_lines_by_key(side))
-    return {li["key"] for li in _invoice_lines(side)}
+    """Keys used for basket matching — shipping excluded."""
+    lines = _shopify_lines_by_key(side).values() if shopify else _invoice_lines(side)
+    return {li["key"] for li in lines if li["key"] != SHIPPING_KEY}
 
 
 def _pair_score(order: Dict[str, Any], invoice: Dict[str, Any]) -> Tuple[int, float, int, float]:
@@ -657,13 +663,14 @@ def match_orders(orders: List[Dict[str, Any]],
 # ---------------------------------------------------------------------------
 
 def _shopify_lines_by_key(order: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """Line items aggregated per key. Shipping charged as a shipping line
+    (no "ship" line item) becomes one synthetic SHIPPING_KEY line carrying
+    `shipping_line_ids`, so both Shopify conventions compare alike."""
     agg: Dict[str, Dict[str, Any]] = {}
     for li in order.get("lines", []):
         barcode = (li.get("barcode") or "").strip()
         sku = (li.get("sku") or "").strip()
-        if is_shipping_line(barcode, sku):
-            continue
-        key = line_key(barcode, sku, li.get("title"))
+        key = SHIPPING_KEY if is_shipping_line(barcode, sku) else line_key(barcode, sku, li.get("title"))
         line = agg.setdefault(key, {
             "key": key, "barcode": barcode, "sku": sku,
             "title": li.get("title") or "", "qty": 0.0,
@@ -672,6 +679,14 @@ def _shopify_lines_by_key(order: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
         line["qty"] += float(li.get("current_quantity") or 0)
         line["amount"] += float(li.get("discounted_total") or 0)
         line["ordered"] += float(li.get("quantity") or 0)
+    shipping_lines = [sl for sl in order.get("shipping_lines", []) if sl.get("id")]
+    if SHIPPING_KEY not in agg and shipping_lines and sum(float(sl.get("price") or 0) for sl in shipping_lines) > 0:
+        agg[SHIPPING_KEY] = {
+            "key": SHIPPING_KEY, "barcode": SHIPPING_KEY, "sku": "shipment",
+            "title": shipping_lines[0].get("title") or "Shipping", "qty": 1.0,
+            "amount": round(sum(float(sl.get("price") or 0) for sl in shipping_lines), 2), "ordered": 1.0,
+            "shipping_line_ids": [sl["id"] for sl in shipping_lines],
+        }
     return agg
 
 
@@ -682,6 +697,7 @@ def _merge_orders(orders: List[Dict[str, Any]]) -> Dict[str, Any]:
         return orders[0]
     return {
         "lines": [li for o in orders for li in o.get("lines", [])],
+        "shipping_lines": [sl for o in orders for sl in o.get("shipping_lines", [])],
         "total": sum(o.get("total") or 0 for o in orders),
     }
 
@@ -1010,9 +1026,8 @@ STORE_PRICE_MESSAGES = {
 def _raw_lines_by_key(order: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
     by_key: Dict[str, List[Dict[str, Any]]] = {}
     for li in order.get("lines", []):
-        if is_shipping_line(li.get("barcode"), li.get("sku")):
-            continue
-        by_key.setdefault(line_key(li.get("barcode"), li.get("sku"), li.get("title")), []).append(li)
+        key = SHIPPING_KEY if is_shipping_line(li.get("barcode"), li.get("sku")) else line_key(li.get("barcode"), li.get("sku"), li.get("title"))
+        by_key.setdefault(key, []).append(li)
     return by_key
 
 
@@ -1072,6 +1087,26 @@ def _add_action(reason: str, diff: Dict[str, Any], qty: float, target_price: flo
     }, None
 
 
+def _shipping_line_action(diff: Dict[str, Any], sh_shipping: Dict[str, Any]) -> Dict[str, Any]:
+    """Replace the order's shipping line(s) with one at the invoice's
+    shipping amount (qty × unit price), or remove them when the invoice
+    carries no shipping."""
+    bo_qty = diff.get("bo_qty") or 0.0
+    bo_price = diff.get("bo_unit_price") or 0.0
+    amount = round(bo_qty * bo_price, 2) if diff.get("bo_qty") is not None else None
+    return {
+        "kind": "shipping_line",
+        "reason": "shipping" if amount is not None else "shipping_remove",
+        "key": SHIPPING_KEY, "barcode": SHIPPING_KEY,
+        "description": diff.get("description") or sh_shipping.get("title") or "Shipping",
+        "title": sh_shipping.get("title") or "Shipping",
+        "remove_ids": list(sh_shipping.get("shipping_line_ids") or []),
+        "sh_amount": round(float(sh_shipping.get("amount") or 0), 2),
+        "amount": amount,
+        "unit_price": amount,
+    }
+
+
 def _variant_price_action(diff: Dict[str, Any], add: Dict[str, Any],
                           item_prices: Optional[Dict[str, Dict[str, Any]]],
                           lookup_error: Optional[str]
@@ -1112,6 +1147,7 @@ def plan_order_fix(order: Dict[str, Any], invoice: Dict[str, Any],
     lookup failed — `item_price_error` says why)."""
     _kinds, diffs = compare_lines(order, invoice)
     raw_by_key = _raw_lines_by_key(order)
+    sh_shipping = _shopify_lines_by_key(order).get(SHIPPING_KEY) or {}
 
     actions: List[Dict[str, Any]] = []
     unsupported: List[Dict[str, Any]] = []
@@ -1119,6 +1155,11 @@ def plan_order_fix(order: Dict[str, Any], invoice: Dict[str, Any],
     for d in diffs:
         issues = d.get("issues") or []
         if not issues:
+            continue
+        if d["key"] == SHIPPING_KEY and sh_shipping.get("shipping_line_ids"):
+            # Shopify charges this as a shipping line, not a line item:
+            # replace the line(s) with one at the invoice amount, or drop them.
+            actions.append(_shipping_line_action(d, sh_shipping))
             continue
         lines = raw_by_key.get(d["key"], [])
         sh_qty = d.get("sh_qty") or 0.0
@@ -1151,7 +1192,7 @@ def plan_order_fix(order: Dict[str, Any], invoice: Dict[str, Any],
             continue
         actions.extend(a for a, _r in planned if a)
 
-        if "price" in issues:
+        if "price" in issues and d["key"] != SHIPPING_KEY:
             add = next((a for a, _r in planned if a and a["kind"] == "add"), None)
             if add:
                 vp, why = _variant_price_action(d, add, item_prices, item_price_error)
@@ -1190,6 +1231,7 @@ def plan_order_fix(order: Dict[str, Any], invoice: Dict[str, Any],
             "adds": len(adds), "add_units": sum(a["qty"] for a in adds),
             "add_amount": round(sum(a["qty"] * a["unit_price"] for a in adds), 2),
             "tracking": any(a["kind"] == "tracking" for a in actions),
+            "shipping_lines": sum(1 for a in actions if a["kind"] == "shipping_line"),
             "mark_paid": outstanding if outstanding > 0.004 else 0.0,
             "unsupported": len(unsupported),
             "variant_prices": sum(1 for a in actions if a["kind"] == "variant_price"),
