@@ -91,6 +91,30 @@ class LateIdentityBasketTests(unittest.TestCase):
         result = osync.match_orders([_order()], [before, after])
         self.assertEqual([p[2:] for p in _pairs(result)], [("identity_basket", True)])
 
+    def test_order_entered_with_part_of_the_invoice_pairs_on_shared_identity(self):
+        # 53 of 67 lines seen live: every order line on the invoice, order covers 79 % of it
+        invoice_lines = [f"{n:04d}" for n in range(1, 68)]
+        order = _order(barcodes=invoice_lines[:53])
+        result = osync.match_orders([order], [_invoice(barcodes=invoice_lines)])
+        self.assertEqual(_pairs(result), [("FSDo1", "90001", "identity_basket", False)])
+
+    def test_small_reorder_inside_a_big_invoice_stays_unmatched(self):
+        invoice_lines = [f"{n:04d}" for n in range(1, 68)]
+        result = osync.match_orders([_order(barcodes=invoice_lines[:2])], [_invoice(barcodes=invoice_lines)])
+        self.assertEqual(_pairs(result), [])
+
+    def test_partial_order_without_identity_stays_unmatched(self):
+        invoice_lines = [f"{n:04d}" for n in range(1, 68)]
+        order = _order(barcodes=invoice_lines[:53], phones=(), address1="1 Other St", zip_code="99999", name="Someone Else")
+        result = osync.match_orders([order], [_invoice(barcodes=invoice_lines)])
+        self.assertEqual(_pairs(result), [])
+
+    def test_order_with_lines_the_invoice_lacks_is_not_a_subset(self):
+        invoice_lines = [f"{n:04d}" for n in range(1, 68)]
+        order = _order(barcodes=invoice_lines[:40] + OTHER_BASKET)
+        result = osync.match_orders([order], [_invoice(barcodes=invoice_lines)])
+        self.assertEqual(_pairs(result), [])
+
     def test_same_day_pair_is_still_claimed_by_the_identity_pass(self):
         result = osync.match_orders([_order(date="2026-08-27")], [_invoice()])
         self.assertEqual(_pairs(result), [("FSDo1", "90001", "phone", False)])

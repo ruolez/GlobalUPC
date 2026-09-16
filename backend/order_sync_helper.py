@@ -376,6 +376,13 @@ BASKET_MIN_OVERLAP = 0.8
 BASKET_MIN_OVERLAP_WITH_TOTAL = 0.5
 BASKET_TOTAL_TOL_PCT = 0.01
 
+# Pass 4 only — a Shopify order entered with PART of the invoice (seen live:
+# 53 of 67 invoice lines, no other order carrying the rest). Every order line
+# must be on the invoice, and the order must still cover half the invoice's
+# lines so a two-line reorder cannot latch onto a big weekly invoice.
+BASKET_CONTAINMENT_MIN = 0.9
+BASKET_CONTAINMENT_INVOICE_COVER = 0.5
+
 
 def _line_jaccard(order: Dict[str, Any], invoice: Dict[str, Any]) -> float:
     ok = _line_keys(order, True)
@@ -393,6 +400,17 @@ def _basket_match(order: Dict[str, Any], invoice: Dict[str, Any]) -> bool:
     total = order.get("total") or 0
     rel = abs(total - (invoice.get("total") or 0)) / total if total else 1.0
     return j >= BASKET_MIN_OVERLAP_WITH_TOTAL and rel <= BASKET_TOTAL_TOL_PCT
+
+
+def _basket_contained(order: Dict[str, Any], invoice: Dict[str, Any]) -> bool:
+    """The order is a large subset of the invoice (see BASKET_CONTAINMENT_*)."""
+    ok = _line_keys(order, True)
+    ik = _line_keys(invoice, False)
+    if not ok or not ik:
+        return False
+    common = len(ok & ik)
+    return (common / len(ok) >= BASKET_CONTAINMENT_MIN
+            and common / len(ik) >= BASKET_CONTAINMENT_INVOICE_COVER)
 
 
 def _identity_plausible(order: Dict[str, Any], invoice: Dict[str, Any],
@@ -481,8 +499,9 @@ def match_orders(orders: List[Dict[str, Any]],
     Pass 3 pairs same-day identical baskets whose customer text differs.
 
     Pass 4 catches orders entered into Shopify days or weeks after the
-    invoice shipped: same identity key as pass 2 AND the same basket, any
-    day lag inside the fetched window.
+    invoice shipped: same identity key as pass 2 AND the same basket (or
+    the order is a large subset of the invoice), any day lag inside the
+    fetched window.
 
     Each match is {"orders": [...], "invoices": [...], "method", "ambiguous",
     "shared_tracking"}; unmatched entries carry the same shared_tracking
@@ -634,7 +653,9 @@ def match_orders(orders: List[Dict[str, Any]],
                     if inv["invoice_id"] in used_invoices or inv["invoice_id"] in seen:
                         continue
                     seen.add(inv["invoice_id"])
-                    if not _basket_match(order, inv) or not _identity_plausible(order, inv, max_day_lag=None):
+                    if not (_basket_match(order, inv) or _basket_contained(order, inv)):
+                        continue
+                    if not _identity_plausible(order, inv, max_day_lag=None):
                         continue
                     late.append((-_line_jaccard(order, inv), _day_delta(order, inv),
                                  abs((order.get("total") or 0) - (inv.get("total") or 0)), order, inv))
