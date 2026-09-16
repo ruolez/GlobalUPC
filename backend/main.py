@@ -13824,5 +13824,41 @@ async def stream_order_sync_fix(req: OrderSyncFixRequest):
                                       "X-Accel-Buffering": "no"})
 
 
+# ===== Order Sync: products on BackOffice-only invoices missing from Shopify =====
+
+from schemas import OrderSyncMissingProductsRequest, OrderSyncMissingProductsResponse, OrderSyncMissingProduct
+from shopify_helper import find_barcodes_in_catalog, ShopifyFetchError
+
+
+@app.post("/api/order-sync/missing-products", response_model=OrderSyncMissingProductsResponse)
+async def order_sync_missing_products(req: OrderSyncMissingProductsRequest):
+    """Which barcodes on the given BackOffice-only invoices have no ACTIVE
+    variant in the configured Shopify store. Read-only."""
+    ctx = await _order_sync_fix_context()
+    orders = [o.model_dump() for o in req.orders]
+    barcodes = sorted({
+        (li.get("barcode") or "").strip()
+        for o in orders for li in o["lines"]
+        if (li.get("barcode") or "").strip() and not osync.is_shipping_line(li.get("barcode"), li.get("sku"))
+    })
+    warnings: List[str] = []
+    found: Dict[str, Dict[str, Any]] = {}
+    if barcodes:
+        async with aiohttp.ClientSession() as session:
+            try:
+                found = await find_barcodes_in_catalog(
+                    session, ctx["shop_domain"], ctx["admin_api_key"], ctx["api_version"], barcodes)
+            except ShopifyFetchError as e:
+                raise HTTPException(status_code=502, detail=f"Shopify catalog lookup failed: {e}")
+    products = osync.aggregate_missing_products(orders, found)
+    return OrderSyncMissingProductsResponse(
+        configured=True,
+        shopify_store_name=ctx["shopify_store_name"],
+        orders_checked=len(orders),
+        barcodes_checked=len(barcodes),
+        products=[OrderSyncMissingProduct(**p) for p in products],
+        warnings=warnings,
+    )
+
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

@@ -27114,7 +27114,12 @@ function initOrderSyncPage() {
   document.getElementById("osync-modal-prev")?.addEventListener("click", () => osyncStepDetail(-1));
   document.getElementById("osync-modal-next")?.addEventListener("click", () => osyncStepDetail(1));
   document.addEventListener("keydown", (e) => {
-    // The fix modal stacks above the drill-in: Escape closes the top one only.
+    // The fix / missing modals stack above the drill-in: Escape closes the top one only.
+    const missingModal = document.getElementById("osync-missing-modal");
+    if (missingModal && missingModal.classList.contains("active")) {
+      if (e.key === "Escape") closeModal("osync-missing-modal");
+      return;
+    }
     const fixModal = document.getElementById("osync-fix-modal");
     if (fixModal && fixModal.classList.contains("active")) {
       if (e.key === "Escape") osyncFixClose();
@@ -27143,6 +27148,12 @@ function initOrderSyncPage() {
   document.getElementById("osync-fix-cancel")?.addEventListener("click", osyncFixClose);
   document.getElementById("osync-fix-done")?.addEventListener("click", osyncFixClose);
   document.getElementById("osync-fix-apply")?.addEventListener("click", osyncFixApply);
+
+  // Missing in Shopify: products on BackOffice-only orders the store lacks
+  document.getElementById("osync-missing")?.addEventListener("click", osyncMissingOpen);
+  document.getElementById("osync-missing-x")?.addEventListener("click", () => closeModal("osync-missing-modal"));
+  document.getElementById("osync-missing-close")?.addEventListener("click", () => closeModal("osync-missing-modal"));
+  document.getElementById("osync-missing-export")?.addEventListener("click", osyncMissingExport);
   // No backdrop close while mutations are in flight.
   document.getElementById("osync-fix-modal")?.addEventListener("click", (e) => {
     if (osyncFix.applying && e.target.id === "osync-fix-modal") e.stopImmediatePropagation();
@@ -27665,6 +27676,7 @@ function osyncRenderTable() {
   const thead = document.getElementById("osync-thead");
   const tbody = document.getElementById("osync-tbody");
   if (!thead || !tbody) return;
+  osyncMissingRenderButton();
   const { key: sortKey, dir } = orderSyncState.sort;
   const selecting = osyncFix.selecting;
   const cols = selecting ? [{ key: "_sel", width: 34 }, ...OSYNC_COLUMNS] : OSYNC_COLUMNS;
@@ -28444,6 +28456,144 @@ function osyncFixRefreshAfterApply() {
 function osyncFixClose() {
   if (osyncFix.applying) return;
   closeModal("osync-fix-modal");
+}
+
+// ---- Missing in Shopify -----------------------------------------------------
+// Products on the report's BackOffice-only orders (every one, not just the
+// rows currently listed) that no ACTIVE Shopify variant carries.
+
+const osyncMissing = { loading: false, data: null, key: null };
+
+const OSYNC_MISSING_STATUS_LABELS = { MISSING: "Not in store", DRAFT: "Draft", ARCHIVED: "Archived", UNLISTED: "Unlisted" };
+
+function osyncMissingOrders() {
+  return ((orderSyncState.data || {}).rows || []).filter((r) => r.status === "backoffice_unmatched");
+}
+
+function osyncMissingRenderButton() {
+  const btn = document.getElementById("osync-missing");
+  if (!btn) return;
+  const n = osyncMissingOrders().length;
+  btn.disabled = n === 0 || osyncMissing.loading;
+  btn.title = n
+    ? `Check the ${n} BackOffice-only order${n === 1 ? "" : "s"} for products the Shopify store does not carry`
+    : "No BackOffice-only orders in this report";
+}
+
+async function osyncMissingOpen() {
+  const orders = osyncMissingOrders();
+  if (!orders.length) {
+    showToast("No BackOffice-only orders in this report", "info");
+    return;
+  }
+  const data = orderSyncState.data || {};
+  const key = `${data.date_from}|${data.date_to}|${orders.map((r) => r.bo_invoice_id).join(",")}`;
+  openModal("osync-missing-modal");
+  if (osyncMissing.data && osyncMissing.key === key) {
+    osyncMissingRender();
+    return;
+  }
+  osyncMissing.loading = true;
+  osyncMissing.data = null;
+  osyncMissing.key = key;
+  osyncMissingRenderButton();
+  osyncMissingRender();
+  try {
+    const payload = {
+      orders: orders.map((r) => ({
+        invoice_number: r.bo_invoice_number || "", date: r.bo_date || "", customer: r.bo_customer || "",
+        lines: (r.line_diffs || []).map((d) => ({
+          barcode: d.barcode || "", sku: d.sku || "", description: d.description || "", qty: d.bo_qty || 0,
+        })),
+      })),
+    };
+    osyncMissing.data = await osyncPost("/order-sync/missing-products", payload);
+  } catch (e) {
+    osyncMissing.data = { error: e.message || String(e) };
+  } finally {
+    osyncMissing.loading = false;
+    osyncMissingRenderButton();
+    osyncMissingRender();
+  }
+}
+
+function osyncMissingRender() {
+  const body = document.getElementById("osync-missing-body");
+  const sub = document.getElementById("osync-missing-sub");
+  const note = document.getElementById("osync-missing-note");
+  const exportBtn = document.getElementById("osync-missing-export");
+  if (!body) return;
+  const orders = osyncMissingOrders();
+  const d = osyncMissing.data;
+  if (sub) sub.textContent = `${orders.length} BackOffice-only order${orders.length === 1 ? "" : "s"}`;
+  if (exportBtn) exportBtn.disabled = !(d && (d.products || []).length);
+  if (note) note.textContent = "";
+
+  if (osyncMissing.loading || !d) {
+    body.innerHTML = `<div class="osync-fix-loading"><span class="progress-spinner"></span>Checking the Shopify catalog…</div>`;
+    return;
+  }
+  if (d.error) {
+    body.innerHTML = `<div class="osync-fix-error">${escapeHtml(d.error)}</div>`;
+    return;
+  }
+  const products = d.products || [];
+  const missing = products.filter((p) => p.shopify_status === "MISSING").length;
+  const inactive = products.length - missing;
+  if (note) {
+    note.textContent = `${d.barcodes_checked} barcode${d.barcodes_checked === 1 ? "" : "s"} checked against ${d.shopify_store_name || "Shopify"}`;
+  }
+  if (!products.length) {
+    body.innerHTML = `<div class="osync-missing-empty">Every product on these orders is an active product in ${escapeHtml(d.shopify_store_name || "Shopify")}.</div>`;
+    return;
+  }
+  const summary =
+    `<div class="osync-fix-summary">` +
+    `<span><strong>${missing}</strong> not in the store</span>` +
+    (inactive ? `<span>· <strong>${inactive}</strong> present but draft / archived</span>` : "") +
+    `<span>· across <strong>${d.orders_checked}</strong> order${d.orders_checked === 1 ? "" : "s"}</span>` +
+    `</div>`;
+  const rows = products.map((p) => {
+    const inv = p.invoices || [];
+    const invText = inv.length <= 3 ? inv.join(", ") : `${inv.slice(0, 3).join(", ")} +${inv.length - 3}`;
+    const cls = p.shopify_status === "MISSING" ? "" : " is-inactive";
+    const title = p.shopify_title && p.shopify_title !== p.description ? ` title="Shopify: ${escapeHtml(p.shopify_title)}"` : "";
+    return `<tr>` +
+      `<td class="osync-mono">${escapeHtml(p.barcode)}</td>` +
+      `<td class="osync-mono">${escapeHtml(p.sku || "")}</td>` +
+      `<td class="osync-missing-desc">${escapeHtml(p.description || p.shopify_title || "")}</td>` +
+      `<td><span class="osync-missing-status${cls}"${title}>${escapeHtml(OSYNC_MISSING_STATUS_LABELS[p.shopify_status] || p.shopify_status)}</span></td>` +
+      `<td class="osync-num">${osyncQty(p.total_qty)}</td>` +
+      `<td class="osync-num">${p.invoice_count}</td>` +
+      `<td class="osync-missing-invoices" title="${escapeHtml(inv.join(", "))}">${escapeHtml(invText)}</td>` +
+      `<td>${escapeHtml(p.last_date || "")}</td>` +
+      `</tr>`;
+  }).join("");
+  body.innerHTML = summary +
+    `<table class="osync-missing-table"><thead><tr>` +
+    `<th>Barcode</th><th>SKU</th><th>Description</th><th>Shopify</th>` +
+    `<th class="osync-num">Units</th><th class="osync-num">Orders</th><th>Invoices</th><th>Last invoice</th>` +
+    `</tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function osyncMissingExport() {
+  const d = osyncMissing.data;
+  const products = (d && d.products) || [];
+  if (!products.length) {
+    showToast("Nothing to export", "info");
+    return;
+  }
+  const data = orderSyncState.data || {};
+  bovDownloadSheet({
+    sheet: "Missing in Shopify",
+    header: ["Barcode", "SKU", "Description", "Shopify status", "Shopify title", "Units", "Orders", "Invoices", "Last invoice"],
+    data: products.map((p) => [
+      p.barcode, p.sku || "", p.description || "", OSYNC_MISSING_STATUS_LABELS[p.shopify_status] || p.shopify_status,
+      p.shopify_title || "", p.total_qty, p.invoice_count, (p.invoices || []).join(", "), p.last_date || "",
+    ]),
+    widths: [16, 18, 48, 14, 36, 8, 8, 30, 12],
+    fname: `missing-in-shopify_${data.date_from || ""}_${data.date_to || ""}`,
+  });
 }
 
 // ===== End Order Sync =====

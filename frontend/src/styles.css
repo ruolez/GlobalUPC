@@ -9388,3 +9388,40 @@ tr.bov-row-click:focus-visible { outline: 2px solid var(--accent-primary); outli
 .inv-pager-left, .inv-pager-right { display: inline-flex; align-items: center; gap: 0.5rem; }
 .inv-page-size { width: auto; font-size: 0.8rem; padding: 0.25rem 0.4rem; }
 .inv-page-info { min-width: 6rem; text-align: center; }
+
+/* Order Sync — "Missing in Shopify" modal */
+.osync-missing-table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; }
+.osync-missing-table th,
+.osync-missing-table td { padding: 0.45rem 0.6rem; border-bottom: 1px solid var(--border-color); text-align: left; vertical-align: top; }
+.osync-missing-table th {
+  position: sticky;
+  top: 0;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-weight: 600;
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  z-index: 1;
+}
+.osync-missing-table td.osync-num,
+.osync-missing-table th.osync-num { text-align: right; font-variant-numeric: tabular-nums; }
+.osync-missing-table .osync-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.75rem; }
+.osync-missing-table .osync-missing-desc { color: var(--text-primary); }
+.osync-missing-table .osync-missing-invoices { color: var(--text-tertiary); font-size: 0.75rem; white-space: nowrap; }
+.osync-missing-table td:last-child { white-space: nowrap; }
+.osync-missing-status {
+  display: inline-block;
+  white-space: nowrap;
+  padding: 0.1rem 0.45rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, var(--bg-secondary));
+}
+.osync-missing-status.is-inactive {
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 12%, var(--bg-secondary));
+}
+.osync-missing-empty { padding: 1.5rem 0; color: var(--text-secondary); font-size: 0.875rem; text-align: center; }

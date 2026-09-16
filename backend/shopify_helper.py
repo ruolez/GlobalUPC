@@ -1533,6 +1533,72 @@ async def fetch_order_for_sync(
         return False, f"Unexpected error: {str(e)}", None
 
 
+_CATALOG_BARCODE_CHUNK = 20
+
+
+async def find_barcodes_in_catalog(
+    session: aiohttp.ClientSession,
+    shop_domain: str,
+    admin_api_key: str,
+    api_version: str,
+    barcodes: List[str],
+) -> Dict[str, Dict[str, Any]]:
+    """
+    barcode -> {variant_id, product_id, product_title, product_status, sku}
+    for every barcode that at least one variant carries exactly, ACTIVE
+    products preferred. Batched OR-queries (unlike find_variants_by_barcode,
+    which is one request per barcode). Raises ShopifyFetchError on transport
+    failure.
+    """
+    query_gql = """
+    query catalogBarcodes($q: String!) {
+      productVariants(first: 250, query: $q) {
+        nodes {
+          id
+          barcode
+          sku
+          product {
+            id
+            title
+            status
+          }
+        }
+      }
+    }
+    """
+    wanted = []
+    for b in barcodes:
+        b = (b or "").strip()
+        if b and b not in wanted:
+            wanted.append(b)
+    found: Dict[str, Dict[str, Any]] = {}
+    for start in range(0, len(wanted), _CATALOG_BARCODE_CHUNK):
+        chunk = wanted[start:start + _CATALOG_BARCODE_CHUNK]
+        q = " OR ".join(f'barcode:"{b}"' for b in chunk)
+        data, _warnings = await _shopify_graphql(
+            session, shop_domain, admin_api_key, api_version,
+            query_gql, {"q": q}, op_name="catalog_barcodes",
+        )
+        nodes = ((data or {}).get("productVariants") or {}).get("nodes") or []
+        for n in nodes:
+            b = (n.get("barcode") or "").strip()
+            if b not in chunk:
+                continue
+            product = n.get("product") or {}
+            status = product.get("status")
+            prev = found.get(b)
+            if prev and (prev["product_status"] == "ACTIVE" or status != "ACTIVE"):
+                continue
+            found[b] = {
+                "variant_id": n.get("id"),
+                "product_id": product.get("id"),
+                "product_title": product.get("title") or "",
+                "product_status": status,
+                "sku": (n.get("sku") or "").strip(),
+            }
+    return found
+
+
 async def find_variants_by_barcode(
     session: aiohttp.ClientSession,
     shop_domain: str,

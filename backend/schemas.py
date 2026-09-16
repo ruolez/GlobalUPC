@@ -2382,6 +2382,46 @@ class OrderSyncFixTarget(BaseModel):
         return v
 
 
+class OrderSyncMissingLine(BaseModel):
+    barcode: Optional[str] = None
+    sku: Optional[str] = None
+    description: Optional[str] = None
+    qty: Optional[float] = None
+
+
+class OrderSyncMissingOrder(BaseModel):
+    invoice_number: Optional[str] = None
+    date: Optional[str] = None
+    customer: Optional[str] = None
+    lines: List[OrderSyncMissingLine] = Field(default_factory=list, max_length=2000)
+
+
+class OrderSyncMissingProductsRequest(BaseModel):
+    """BackOffice-only rows of a report, as listed by the client."""
+    orders: List[OrderSyncMissingOrder] = Field(..., min_length=1, max_length=2000)
+
+
+class OrderSyncMissingProduct(BaseModel):
+    barcode: str
+    sku: Optional[str] = None
+    description: Optional[str] = None
+    shopify_status: str                        # MISSING | DRAFT | ARCHIVED | UNLISTED
+    shopify_title: Optional[str] = None
+    invoice_count: int
+    total_qty: float
+    invoices: List[str] = []
+    last_date: Optional[str] = None
+
+
+class OrderSyncMissingProductsResponse(BaseModel):
+    configured: bool
+    shopify_store_name: Optional[str] = None
+    orders_checked: int = 0
+    barcodes_checked: int = 0
+    products: List[OrderSyncMissingProduct] = []
+    warnings: List[str] = []
+
+
 class OrderSyncFixRequest(BaseModel):
     targets: List[OrderSyncFixTarget] = Field(..., min_length=1, max_length=200)
 

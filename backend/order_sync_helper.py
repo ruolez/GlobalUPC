@@ -928,6 +928,51 @@ def build_report(orders: List[Dict[str, Any]], invoices: List[Dict[str, Any]],
 
 
 # ---------------------------------------------------------------------------
+# Products on BackOffice-only invoices that the Shopify catalog lacks (pure)
+# ---------------------------------------------------------------------------
+
+def aggregate_missing_products(orders: List[Dict[str, Any]],
+                               found: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """One row per barcode used on the given invoices that no ACTIVE Shopify
+    variant carries. `found` is find_barcodes_in_catalog's map: a barcode
+    absent from it is "missing"; present on a DRAFT/ARCHIVED product it is
+    reported with that status. Lines without a barcode and shipping
+    pseudo-lines are skipped. Sorted by most invoices, then most units."""
+    agg: Dict[str, Dict[str, Any]] = {}
+    for order in orders:
+        number = str(order.get("invoice_number") or "")
+        date = (order.get("date") or "")[:10]
+        seen_here: set = set()
+        for li in order.get("lines", []):
+            barcode = (li.get("barcode") or "").strip()
+            if not barcode or is_shipping_line(barcode, li.get("sku")):
+                continue
+            hit = found.get(barcode)
+            if hit and hit.get("product_status") == "ACTIVE":
+                continue
+            row = agg.setdefault(barcode, {
+                "barcode": barcode, "sku": (li.get("sku") or "").strip() or None,
+                "description": (li.get("description") or "").strip() or None,
+                "shopify_status": (hit or {}).get("product_status") or "MISSING",
+                "shopify_title": (hit or {}).get("product_title") or None,
+                "invoice_count": 0, "total_qty": 0.0, "invoices": [], "last_date": None,
+            })
+            row["total_qty"] += float(li.get("qty") or 0)
+            if not row["description"] and (li.get("description") or "").strip():
+                row["description"] = li["description"].strip()
+            if barcode not in seen_here:
+                seen_here.add(barcode)
+                row["invoice_count"] += 1
+                if number and number not in row["invoices"]:
+                    row["invoices"].append(number)
+            if date and (row["last_date"] is None or date > row["last_date"]):
+                row["last_date"] = date
+    rows = list(agg.values())
+    rows.sort(key=lambda r: (-r["invoice_count"], -r["total_qty"], r["barcode"]))
+    return rows
+
+
+# ---------------------------------------------------------------------------
 # Fix planning (pure)
 # ---------------------------------------------------------------------------
 #

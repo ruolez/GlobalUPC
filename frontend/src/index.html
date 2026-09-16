@@ -4912,6 +4912,7 @@
               <input type="text" id="osync-search" class="dark-input" placeholder="Search order #, invoice #, customer, tracking…">
               <span id="osync-count" class="osync-count"></span>
               <button type="button" class="btn btn-secondary" id="osync-export" style="font-size: 0.75rem; padding: 0.3rem 0.7rem;">Export</button>
+              <button type="button" class="btn btn-secondary" id="osync-missing" style="font-size: 0.75rem; padding: 0.3rem 0.7rem;" title="Products on BackOffice-only orders that the Shopify store does not carry">Missing in Shopify…</button>
               <button type="button" class="btn btn-primary" id="osync-fix" style="font-size: 0.75rem; padding: 0.3rem 0.7rem;">Fix in Shopify…</button>
             </div>
             <!-- Selection strip, shown while picking orders to fix -->
@@ -6044,6 +6045,26 @@
           <button type="button" class="btn btn-secondary" id="osync-fix-cancel">Cancel</button>
           <button type="button" class="btn btn-primary" id="osync-fix-apply" disabled>Apply</button>
           <button type="button" class="btn btn-primary" id="osync-fix-done" style="display: none;">Done</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="osync-missing-modal" class="modal">
+      <div class="modal-content osync-fix-modal-content">
+        <div class="modal-header osync-modal-header">
+          <div class="osync-modal-titles">
+            <h3>Missing in Shopify</h3>
+            <span id="osync-missing-sub" class="osync-modal-pos"></span>
+          </div>
+          <div class="osync-modal-nav">
+            <button type="button" class="modal-close" id="osync-missing-x">&times;</button>
+          </div>
+        </div>
+        <div class="modal-body osync-fix-body" id="osync-missing-body"></div>
+        <div class="modal-footer osync-modal-footer">
+          <span id="osync-missing-note" class="osync-modal-fix-note"></span>
+          <button type="button" class="btn btn-secondary" id="osync-missing-export" disabled>Export</button>
+          <button type="button" class="btn btn-primary" id="osync-missing-close">Close</button>
         </div>
       </div>
     </div>
