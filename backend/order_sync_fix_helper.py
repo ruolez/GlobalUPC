@@ -226,11 +226,63 @@ async def set_variant_price(ctx: ShopifyCtx, product_id: str, variant_id: str, p
     _payload(data, "productVariantsBulkUpdate", step)
 
 
+# A raised variant price is store-wide state. Two orders fixed in parallel
+# that both bump the same variant interleave bump / add / restore and one of
+# them adds its line at the other's price (seen live: 53.55 instead of the
+# bumped 56.50), so edits that need a bump run one at a time. Edits with no
+# bump never touch the catalog and stay parallel.
+_bump_lock = asyncio.Lock()
+
+_BUMP_READBACK_ATTEMPTS = 5
+_BUMP_READBACK_DELAY_SECONDS = 1.0
+
+
+async def _read_variant_price(ctx: ShopifyCtx, variant_id: str) -> Optional[float]:
+    query = """
+    query orderFixVariantPrice($id: ID!) {
+      productVariant(id: $id) { id price }
+    }
+    """
+    data = await _gql(ctx, query, {"id": variant_id})
+    try:
+        return float(((data or {}).get("productVariant") or {}).get("price"))
+    except (TypeError, ValueError):
+        return None
+
+
+async def _bump_variant_price(ctx: ShopifyCtx, add: Dict[str, Any], target: float,
+                              bumped: List[Dict[str, Any]]) -> None:
+    """Raise the variant to `target` and wait until Shopify reads it back at
+    that price, so the add that follows cannot be priced off a stale value."""
+    await set_variant_price(ctx, add["product_id"], add["variant_id"], f"{target:.2f}")
+    bumped.append({"product_id": add["product_id"], "variant_id": add["variant_id"],
+                   "price": str(add["variant_price_raw"]), "barcode": add.get("barcode")})
+    for attempt in range(_BUMP_READBACK_ATTEMPTS):
+        price = await _read_variant_price(ctx, add["variant_id"])
+        if price is not None and abs(price - target) <= _PRICE_TOL:
+            return
+        if attempt + 1 < _BUMP_READBACK_ATTEMPTS:
+            await asyncio.sleep(_BUMP_READBACK_DELAY_SECONDS)
+    raise FixStepError(
+        "edit",
+        f"{add.get('barcode')}: variant price did not settle at {target:.2f} after the raise (reads {price}); edit abandoned",
+    )
+
+
 async def add_lines(ctx: ShopifyCtx, order_gid: str, adds: List[Dict[str, Any]],
                     note: str) -> Dict[str, Any]:
     """Begin an edit, add every planned line at the invoice price, verify,
     commit. Nothing changes on the order unless the commit runs. Variants
-    whose price had to be raised are restored afterwards no matter what."""
+    whose price had to be raised are restored afterwards no matter what,
+    and such edits are serialized across orders (see _bump_lock)."""
+    if not any(a.get("bump_price") for a in adds):
+        return await _add_lines(ctx, order_gid, adds, note, [])
+    async with _bump_lock:
+        return await _add_lines_restoring(ctx, order_gid, adds, note)
+
+
+async def _add_lines_restoring(ctx: ShopifyCtx, order_gid: str, adds: List[Dict[str, Any]],
+                               note: str) -> Dict[str, Any]:
     bumped: List[Dict[str, Any]] = []
     try:
         return await _add_lines(ctx, order_gid, adds, note, bumped)
@@ -290,9 +342,7 @@ async def _add_lines(ctx: ShopifyCtx, order_gid: str, adds: List[Dict[str, Any]]
         if a.get("bump_price"):
             if not a.get("product_id") or a.get("variant_price_raw") is None:
                 raise FixStepError("edit", f"{a.get('barcode')}: cannot raise the variant price (product unknown)")
-            await set_variant_price(ctx, a["product_id"], a["variant_id"], f"{target:.2f}")
-            bumped.append({"product_id": a["product_id"], "variant_id": a["variant_id"],
-                           "price": str(a["variant_price_raw"]), "barcode": a.get("barcode")})
+            await _bump_variant_price(ctx, a, target, bumped)
         data = await _gql(ctx, add_variant, {"id": calc_id, "variantId": a["variant_id"], "quantity": qty})
         line = _payload(data, "orderEditAddVariant", "edit").get("calculatedLineItem") or {}
         line_id = line.get("id")
