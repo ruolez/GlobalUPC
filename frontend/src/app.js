@@ -27516,6 +27516,10 @@ function osyncRowDate(r) {
   return r.sh_date || (r.bo_date ? r.bo_date.slice(0, 10) : "");
 }
 
+function osyncTrackingConflictHint(r) {
+  return `Tracking numbers differ — Shopify ${(r.sh_tracking || []).join(", ") || "none"} · BackOffice ${r.bo_tracking || "none"}. Same day, same basket and total, so it was paired anyway; the box was probably relabelled.`;
+}
+
 function osyncDash() {
   return '<span class="osync-muted">—</span>';
 }
@@ -27531,6 +27535,9 @@ function osyncMethodPill(r) {
     `<span class="osync-method${strong ? " is-strong" : ""}" title="${escapeHtml(OSYNC_METHOD_HINTS[r.match_method] || "")}">${escapeHtml(OSYNC_METHOD_LABELS[r.match_method] || r.match_method)}</span>` +
     (r.ambiguous
       ? ' <span class="osync-ambig" title="Several invoices were plausible — closest total and date was picked. Worth a look.">?</span>'
+      : "") +
+    (r.tracking_conflict
+      ? ` <span class="osync-ambig" title="${escapeHtml(osyncTrackingConflictHint(r))}">≠</span>`
       : "")
   );
 }
@@ -28218,6 +28225,7 @@ function osyncFixOrderCard(p, { status, message, steps, after = null, extraCls =
     `<div class="osync-fix-order-head">` +
     `<span class="osync-fix-order-title"><strong>${escapeHtml(p.sh_name || "")}</strong> <span class="osync-muted">⇄</span> Invoice <strong>${escapeHtml(p.bo_invoice_number || String(p.bo_invoice_id))}</strong>` +
     (row && row.ambiguous ? ' <span class="osync-ambig" title="Ambiguous match — several invoices were plausible">?</span>' : "") +
+    (row && row.tracking_conflict ? ` <span class="osync-ambig" title="${escapeHtml(osyncTrackingConflictHint(row))}">≠</span>` : "") +
     `</span>` +
     `<span class="osync-fix-order-status">${osyncFixStatusPill(status)}${afterPill}</span>` +
     `</div>` +

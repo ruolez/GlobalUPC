@@ -2309,6 +2309,7 @@ class OrderSyncRow(BaseModel):
     status: str                                # matched_ok | matched_diffs | shopify_unmatched | backoffice_unmatched
     match_method: Optional[str] = None         # tracking | phone | address | name_zip
     ambiguous: bool = False
+    tracking_conflict: bool = False            # paired on identity + basket although both sides carry different tracking numbers
     combined: bool = False                     # several orders and/or invoices reconciled as one shipment
     shared_tracking: Optional[OrderSyncSharedTracking] = None
     sh_orders: List[OrderSyncSideOrder] = []

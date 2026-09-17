@@ -115,6 +115,29 @@ class LateIdentityBasketTests(unittest.TestCase):
         result = osync.match_orders([order], [_invoice(barcodes=invoice_lines)])
         self.assertEqual(_pairs(result), [])
 
+    def test_relabelled_box_pairs_when_day_basket_and_total_agree(self):
+        order = _order(date="2026-09-08", tracking=("SP2512680387",))
+        invoice = _invoice(date="2026-09-08", tracking="SP2572623794")
+        result = osync.match_orders([order], [invoice])
+        self.assertEqual(_pairs(result), [("FSDo1", "90001", "phone", False)])
+        self.assertTrue(osync.tracking_conflict([order], [invoice]))
+
+    def test_different_tracking_with_a_day_lag_still_blocks(self):
+        order = _order(date="2026-09-12", tracking=("SP2512680387",))
+        result = osync.match_orders([order], [_invoice(date="2026-09-08", tracking="SP2572623794")])
+        self.assertEqual(_pairs(result), [])
+
+    def test_different_tracking_with_a_different_total_still_blocks(self):
+        order = _order(date="2026-09-08", tracking=("SP2512680387",))
+        order["total"] = order["total"] * 1.1
+        result = osync.match_orders([order], [_invoice(date="2026-09-08", tracking="SP2572623794")])
+        self.assertEqual(_pairs(result), [])
+
+    def test_shared_tracking_pair_is_not_flagged(self):
+        order = _order(date="2026-09-08", tracking=("1Z1",))
+        invoice = _invoice(date="2026-09-08", tracking="1Z1")
+        self.assertFalse(osync.tracking_conflict([order], [invoice]))
+
     def test_same_day_pair_is_still_claimed_by_the_identity_pass(self):
         result = osync.match_orders([_order(date="2026-08-27")], [_invoice()])
         self.assertEqual(_pairs(result), [("FSDo1", "90001", "phone", False)])

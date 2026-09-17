@@ -402,6 +402,27 @@ def _basket_match(order: Dict[str, Any], invoice: Dict[str, Any]) -> bool:
     return j >= BASKET_MIN_OVERLAP_WITH_TOTAL and rel <= BASKET_TOTAL_TOL_PCT
 
 
+def _same_shipment_despite_tracking(order: Dict[str, Any], invoice: Dict[str, Any]) -> bool:
+    """Seen live: BackOffice relabelled a box six days after shipping, so the
+    invoice carried a newer carrier number than the Shopify order. Same day,
+    same basket and the same total leave no doubt it is one order; the row
+    is flagged (tracking_conflict) so the numbers can be reconciled by hand."""
+    if _day_delta(order, invoice) > IDENTITY_MAX_DAY_LAG:
+        return False
+    if _line_jaccard(order, invoice) < BASKET_MIN_OVERLAP:
+        return False
+    total = order.get("total") or 0
+    rel = abs(total - (invoice.get("total") or 0)) / total if total else 1.0
+    return rel <= BASKET_TOTAL_TOL_PCT
+
+
+def tracking_conflict(orders: List[Dict[str, Any]], invoices: List[Dict[str, Any]]) -> bool:
+    """Both sides carry real tracking numbers and share none of them."""
+    o_real = {n for o in orders for n in split_routes(o.get("tracking_numbers", []))[0]}
+    i_real = {n for i in invoices for n in split_routes(split_tracking(i.get("tracking_no")))[0]}
+    return bool(o_real and i_real and not (o_real & i_real))
+
+
 def _basket_contained(order: Dict[str, Any], invoice: Dict[str, Any]) -> bool:
     """The order is a large subset of the invoice (see BASKET_CONTAINMENT_*)."""
     ok = _line_keys(order, True)
@@ -425,10 +446,12 @@ def _identity_plausible(order: Dict[str, Any], invoice: Dict[str, Any],
             return False
     except (KeyError, TypeError, ValueError):
         pass
-    # Both sides carrying different real tracking numbers = different shipments.
+    # Both sides carrying different real tracking numbers = different
+    # shipments — unless the order is unmistakable anyway (see
+    # _same_shipment_despite_tracking: a relabelled / reshipped box).
     o_real = set(split_routes(order.get("tracking_numbers", []))[0])
     i_real = set(split_routes(split_tracking(invoice["tracking_no"]))[0])
-    if o_real and i_real and not (o_real & i_real):
+    if o_real and i_real and not (o_real & i_real) and not _same_shipment_despite_tracking(order, invoice):
         return False
     # Totals far apart AND barely any products in common = another order.
     total = order.get("total") or 0
@@ -897,6 +920,7 @@ def build_pair_row(orders: List[Dict[str, Any]], invoices: List[Dict[str, Any]],
         "status": "matched_ok" if not kinds else "matched_diffs",
         "match_method": method, "ambiguous": ambiguous,
         "shared_tracking": shared_tracking,
+        "tracking_conflict": tracking_conflict(orders, invoices),
         "combined": len(orders) > 1 or len(invoices) > 1,
         **_order_side(orders), **_invoice_side(invoices),
         "total_delta": total_delta, "issue_kinds": kinds, "line_diffs": diffs,
