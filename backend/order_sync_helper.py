@@ -28,6 +28,14 @@ _LINES_IN_CHUNK = 1000
 # by a match but are never reported on their own.
 PAD_DAYS = 31
 
+# Shopify orders are fetched for the exact range first. When in-range
+# invoices are left unmatched, a second fetch pulls orders placed shortly
+# before the range and up to a month after it (clipped at today — orders
+# are keyed into Shopify days or weeks after the invoice ships). Padded
+# orders may pair with an in-range invoice but are never reported alone.
+ORDER_PAD_BEFORE_DAYS = 3
+ORDER_PAD_AFTER_DAYS = 31
+
 # Order totals may legitimately differ by a cent when a fractional unit price
 # (10.00 / 3) is rounded on one side, so totals get a cent of slack. Unit
 # prices are compared to half a cent: 27.49 vs 27.50 IS a difference the
@@ -504,6 +512,45 @@ def _combined_totals_match(orders: List[Dict[str, Any]], invoices: List[Dict[str
     return abs(so - si) <= CENT_TOL
 
 
+def order_pad_windows(date_from: str, date_to: str, today: str,
+                      before_days: int = ORDER_PAD_BEFORE_DAYS,
+                      after_days: int = ORDER_PAD_AFTER_DAYS) -> List[Tuple[str, str]]:
+    """Date windows (inclusive) for the second Shopify fetch: a few days
+    before the range and up to `after_days` after it, never past `today`.
+    Empty windows are omitted."""
+    lo = datetime.strptime(date_from, "%Y-%m-%d")
+    hi = datetime.strptime(date_to, "%Y-%m-%d")
+    now = datetime.strptime(today, "%Y-%m-%d")
+    windows: List[Tuple[str, str]] = []
+    if before_days > 0:
+        windows.append(((lo - timedelta(days=before_days)).strftime("%Y-%m-%d"),
+                        (lo - timedelta(days=1)).strftime("%Y-%m-%d")))
+    after_hi = min(hi + timedelta(days=after_days), now)
+    if after_days > 0 and after_hi > hi:
+        windows.append(((hi + timedelta(days=1)).strftime("%Y-%m-%d"), after_hi.strftime("%Y-%m-%d")))
+    return windows
+
+
+def match_orders_staged(orders: List[Dict[str, Any]], invoices: List[Dict[str, Any]],
+                        padded_orders: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Stage 1 pairs the in-range orders with every invoice; stage 2 offers
+    the padded orders only to the in-range invoices still unmatched, so a
+    stage-1 pair is final and no pairing changes because the pool grew.
+    Same result shape as match_orders."""
+    first = match_orders(orders, invoices)
+    leftovers = [inv for inv in first["unmatched_invoices"] if inv.get("in_range", True)]
+    if not padded_orders or not leftovers:
+        return {**first, "unmatched_orders": first["unmatched_orders"] + list(padded_orders or [])}
+    second = match_orders(padded_orders, leftovers)
+    taken = {inv["invoice_id"] for m in second["matches"] for inv in m["invoices"]}
+    return {
+        "matches": first["matches"] + second["matches"],
+        "unmatched_orders": first["unmatched_orders"] + second["unmatched_orders"],
+        "unmatched_invoices": [inv for inv in first["unmatched_invoices"] if inv["invoice_id"] not in taken],
+        "shared_note": {**first["shared_note"], **second["shared_note"]},
+    }
+
+
 def match_orders(orders: List[Dict[str, Any]],
                  invoices: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
@@ -928,11 +975,17 @@ def build_pair_row(orders: List[Dict[str, Any]], invoices: List[Dict[str, Any]],
 
 
 def build_report(orders: List[Dict[str, Any]], invoices: List[Dict[str, Any]],
-                 date_from: str, date_to: str) -> Dict[str, Any]:
-    """Match, compare, and assemble rows + summary. Out-of-range invoices
-    (fetched only as padding) may be consumed by matches but are dropped when
-    unmatched; a matched pair is reported when either side is in range."""
-    result = match_orders(orders, invoices)
+                 date_from: str, date_to: str,
+                 padded_orders: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    """Match, compare, and assemble rows + summary. Out-of-range invoices and
+    padded orders (fetched only to find late counterparts) may be consumed by
+    matches but are dropped when unmatched; a matched pair is reported when
+    either side is in range. Totals count in-range rows only."""
+    for o in orders:
+        o.setdefault("in_range", True)
+    for o in padded_orders or []:
+        o["in_range"] = False
+    result = match_orders_staged(orders, invoices, padded_orders or [])
     shared_note = result["shared_note"]
 
     rows: List[Dict[str, Any]] = []
@@ -959,6 +1012,8 @@ def build_report(orders: List[Dict[str, Any]], invoices: List[Dict[str, Any]],
             summary["issue_counts"][k] = summary["issue_counts"].get(k, 0) + 1
 
     for order in result["unmatched_orders"]:
+        if not order.get("in_range", True):
+            continue
         rows.append({
             "status": "shopify_unmatched", "match_method": None, "ambiguous": False,
             "shared_tracking": shared_note.get(("o", order["id"])), "combined": False,
@@ -979,8 +1034,9 @@ def build_report(orders: List[Dict[str, Any]], invoices: List[Dict[str, Any]],
         summary["backoffice_unmatched"] += 1
 
     summary["backoffice_total"] = sum(1 for inv in invoices if inv["in_range"])
+    summary["shopify_total"] = sum(1 for o in orders if o.get("in_range", True))
     summary["shopify_no_tracking"] = sum(
-        1 for o in orders if not o.get("tracking_numbers"))
+        1 for o in orders if o.get("in_range", True) and not o.get("tracking_numbers"))
     summary["backoffice_no_tracking"] = sum(
         1 for inv in invoices if inv["in_range"] and not inv["has_tracking"])
 

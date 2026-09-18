@@ -13544,9 +13544,34 @@ async def _order_sync_payload(date_from: Optional[str], date_to: Optional[str],
     if not bo_ok:
         raise HTTPException(status_code=502, detail=f"BackOffice query failed: {bo_err}")
 
+    # Second fetch, only when in-range invoices are left without a partner:
+    # orders keyed into Shopify shortly before the range or up to a month
+    # after it (clipped at today). See order_sync_helper.ORDER_PAD_*.
+    padded_orders: List[Dict[str, Any]] = []
+    leftovers = [inv for inv in osync.match_orders(orders, invoices)["unmatched_invoices"] if inv.get("in_range", True)]
+    if leftovers:
+        try:
+            today = datetime.now(_BovZoneInfo(tz)).strftime("%Y-%m-%d") if tz else datetime.utcnow().strftime("%Y-%m-%d")
+        except Exception:
+            today = datetime.utcnow().strftime("%Y-%m-%d")
+        windows = osync.order_pad_windows(date_from, date_to, today)
+        if windows:
+            await note(f"{len(leftovers)} invoice{'s' if len(leftovers) != 1 else ''} still unmatched — looking for Shopify orders entered outside the period…")
+            t_pad = time.monotonic()
+            results = await asyncio.gather(*(
+                fetch_orders_for_sync(shop_domain, admin_api_key, lo, hi, api_version=api_version, tz=tz)
+                for lo, hi in windows))
+            in_pool = {o["id"] for o in orders}
+            for ok_p, err_p, extra in results:
+                if not ok_p:
+                    warnings.append(f"Shopify fetch outside the period failed: {err_p}")
+                    continue
+                padded_orders.extend(o for o in extra if o["id"] not in in_pool)
+            timings["fetch_pad"] = round(time.monotonic() - t_pad, 2)
+
     await note(f"Matching {len(orders)} Shopify orders against {len(invoices)} invoices…")
     t_match = time.monotonic()
-    report = osync.build_report(orders, invoices, date_from, date_to)
+    report = osync.build_report(orders, invoices, date_from, date_to, padded_orders)
     timings["match"] = round(time.monotonic() - t_match, 2)
 
     return {
