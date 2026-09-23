@@ -2425,12 +2425,15 @@ class OrderSyncMissingProductsResponse(BaseModel):
 
 class OrderSyncFixRequest(BaseModel):
     targets: List[OrderSyncFixTarget] = Field(..., min_length=1, max_length=200)
+    # Opt-in: create the Shopify product for a UPC that has no variant, so
+    # the line can be added instead of being reported unsupported.
+    create_products: bool = False
 
 
 class OrderSyncFixAction(BaseModel):
-    kind: str                                  # refund | add | tracking | mark_paid | variant_price | shipping_line
-    reason: str                                # remove | reduce | replace | add | increase | tracking | mark_paid | price | shipping | shipping_remove
-    title: Optional[str] = None                # shipping_line: Shopify shipping line title
+    kind: str                                  # refund | add | tracking | mark_paid | variant_price | shipping_line | create_product
+    reason: str                                # remove | reduce | replace | add | increase | tracking | mark_paid | price | shipping | shipping_remove | create
+    title: Optional[str] = None                # shipping_line: Shopify shipping line title; create_product: new product title
     remove_ids: List[str] = []                 # shipping_line: existing shipping line ids to drop
     sh_amount: Optional[float] = None          # shipping_line: current Shopify shipping amount
     key: Optional[str] = None
@@ -2449,6 +2452,10 @@ class OrderSyncFixAction(BaseModel):
     numbers: List[str] = []                    # tracking
     fulfillment_ids: List[str] = []
     amount: Optional[float] = None             # mark_paid
+    create_variant: bool = False               # add: its variant does not exist yet
+    sku: Optional[str] = None                  # create_product
+    unit_cost: Optional[float] = None          # create_product: Items_tbl.UnitCost
+    price_source: Optional[str] = None         # create_product: items_tbl | invoice
 
 
 class OrderSyncFixUnsupported(BaseModel):
@@ -2465,7 +2472,8 @@ class OrderSyncFixUnsupported(BaseModel):
 
 
 class OrderSyncFixNote(BaseModel):
-    """A repriced line whose storefront price is NOT being updated, and why."""
+    """A repriced line whose storefront price is NOT being updated, or a
+    product being created from the invoice line rather than Items_tbl."""
     key: Optional[str] = None
     barcode: Optional[str] = None
     description: Optional[str] = None
@@ -2495,7 +2503,7 @@ class OrderSyncFixPlanResponse(BaseModel):
 
 
 class OrderSyncFixStep(BaseModel):
-    step: str                                  # refund | edit | fulfill | mark_paid | tracking | variant_price
+    step: str                                  # create_product | refund | edit | fulfill | mark_paid | tracking | variant_price
     ok: bool
     message: Optional[str] = None
     ids: List[str] = []
@@ -2516,4 +2524,35 @@ class OrderSyncFixResult(BaseModel):
 class OrderSyncFixResponse(BaseModel):
     batch_id: str
     results: List[OrderSyncFixResult] = []
+    warnings: List[str] = []
+
+
+class OrderSyncCreatedProductRow(BaseModel):
+    """One product "Fix in Shopify" added to a Shopify catalog."""
+    id: int
+    created_at: Optional[str] = None
+    store_name: Optional[str] = None
+    barcode: str
+    title: Optional[str] = None
+    sku: Optional[str] = None
+    price: Optional[float] = None
+    unit_cost: Optional[float] = None
+    price_source: Optional[str] = None         # items_tbl | invoice
+    product_gid: str
+    variant_gid: Optional[str] = None
+    admin_url: Optional[str] = None            # link into Shopify admin
+    sh_order_name: Optional[str] = None
+    bo_invoice_number: Optional[str] = None
+    # Live re-check, absent when the Shopify lookup was skipped or failed.
+    live_status: Optional[str] = None          # ACTIVE | DRAFT | ARCHIVED
+    live_published: Optional[bool] = None      # on the storefront?
+    live_price: Optional[float] = None
+    live_barcode: Optional[str] = None
+    live_missing: bool = False                 # deleted in Shopify since
+
+
+class OrderSyncCreatedProductsResponse(BaseModel):
+    products: List[OrderSyncCreatedProductRow] = []
+    total: int = 0
+    checked_live: bool = False
     warnings: List[str] = []

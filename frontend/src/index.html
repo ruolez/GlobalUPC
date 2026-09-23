@@ -4913,6 +4913,7 @@
               <span id="osync-count" class="osync-count"></span>
               <button type="button" class="btn btn-secondary" id="osync-export" style="font-size: 0.75rem; padding: 0.3rem 0.7rem;">Export</button>
               <button type="button" class="btn btn-secondary" id="osync-missing" style="font-size: 0.75rem; padding: 0.3rem 0.7rem;" title="Products on BackOffice-only orders that the Shopify store does not carry">Missing in Shopify…</button>
+              <button type="button" class="btn btn-secondary" id="osync-created" style="font-size: 0.75rem; padding: 0.3rem 0.7rem;" title="Every product this app has created in Shopify">Created products…</button>
               <button type="button" class="btn btn-primary" id="osync-fix" style="font-size: 0.75rem; padding: 0.3rem 0.7rem;">Fix in Shopify…</button>
             </div>
             <!-- Selection strip, shown while picking orders to fix -->
@@ -6041,6 +6042,9 @@
         </div>
         <div class="modal-body osync-fix-body" id="osync-fix-body"></div>
         <div class="modal-footer osync-modal-footer">
+          <label class="osync-fix-opt" id="osync-fix-create-wrap" title="Products that exist in BackOffice but not in this Shopify store are created there (active, on no sales channel, inventory untracked) so the missing line can be added">
+            <input type="checkbox" id="osync-fix-create"> Create missing products
+          </label>
           <span id="osync-fix-policy" class="osync-modal-fix-note"></span>
           <button type="button" class="btn btn-secondary" id="osync-fix-cancel">Cancel</button>
           <button type="button" class="btn btn-primary" id="osync-fix-apply" disabled>Apply</button>
@@ -6065,6 +6069,28 @@
           <span id="osync-missing-note" class="osync-modal-fix-note"></span>
           <button type="button" class="btn btn-secondary" id="osync-missing-export" disabled>Export</button>
           <button type="button" class="btn btn-primary" id="osync-missing-close">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Order Sync: audit list of products this app created in Shopify -->
+    <div id="osync-created-modal" class="modal">
+      <div class="modal-content osync-fix-modal-content osync-created-modal-content">
+        <div class="modal-header osync-modal-header">
+          <div class="osync-modal-titles">
+            <h3>Products created in Shopify</h3>
+            <span id="osync-created-sub" class="osync-modal-pos"></span>
+          </div>
+          <div class="osync-modal-nav">
+            <button type="button" class="modal-close" id="osync-created-x">&times;</button>
+          </div>
+        </div>
+        <div class="modal-body osync-fix-body" id="osync-created-body"></div>
+        <div class="modal-footer osync-modal-footer">
+          <span id="osync-created-note" class="osync-modal-fix-note"></span>
+          <button type="button" class="btn btn-secondary" id="osync-created-refresh">Refresh</button>
+          <button type="button" class="btn btn-secondary" id="osync-created-export" disabled>Export</button>
+          <button type="button" class="btn btn-primary" id="osync-created-close">Close</button>
         </div>
       </div>
     </div>

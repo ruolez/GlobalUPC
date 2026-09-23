@@ -1125,6 +1125,10 @@ def aggregate_missing_products(orders: List[Dict[str, Any]],
 #   variant_price — for every repriced line, set the variant's storefront
 #             price to the BackOffice item price (Items_tbl.UnitPrice by
 #             ProductUPC = barcode) so future orders come in at that price
+#   create_product — only when the caller opts in: the UPC carries no variant
+#             in this Shopify store, so the product is created from the
+#             BackOffice item (barcode = the UPC) and the `add` that follows
+#             uses it. resolve_created_variants fills the ids in afterwards.
 # A key whose fix would be half-possible (e.g. refund OK but the re-add has
 # no variant) is left untouched and reported as unsupported.
 
@@ -1132,6 +1136,15 @@ UNSUPPORTED_MESSAGES = {
     "no_barcode": "Line has no barcode — cannot be located in Shopify",
     "no_variant": "No Shopify variant carries this barcode",
     "not_refundable": "Not enough refundable units on the Shopify line",
+}
+
+# Why a created product is not taking its details from Items_tbl (plan
+# `notes`). None of these block the creation — the invoice line is the
+# fallback source for the title and the price.
+CREATE_PRODUCT_MESSAGES = {
+    "lookup_failed": "BackOffice item lookup failed — the product is created from the invoice line",
+    "not_found": "Not in BackOffice Items_tbl (or discontinued) — the product is created from the invoice line",
+    "no_price": "BackOffice item price is empty or zero — the product is created at the invoice price",
 }
 
 # Why a repriced line's storefront price is NOT being updated (plan `notes`).
@@ -1178,16 +1191,34 @@ def _refund_action(reason: str, diff: Dict[str, Any], lines: List[Dict[str, Any]
 
 
 def _add_action(reason: str, diff: Dict[str, Any], qty: float, target_price: float,
-                variants_by_barcode: Dict[str, Dict[str, Any]]
+                variants_by_barcode: Dict[str, Dict[str, Any]],
+                create_products: bool = False
                 ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     barcode = (diff.get("barcode") or "").strip()
     if not barcode:
         return None, "no_barcode"
     variant = variants_by_barcode.get(barcode)
-    if not variant or not variant.get("variant_id"):
-        return None, "no_variant"
-    variant_price = float(variant.get("price") or 0)
     units = int(round(qty))
+    if not variant or not variant.get("variant_id"):
+        if not create_products:
+            return None, "no_variant"
+        if units <= 0:
+            return None, None
+        # The product does not exist in this store yet. A create_product
+        # action runs before the edit and resolve_created_variants then fills
+        # in the ids and decides the bump against the price it was created at.
+        return {
+            "kind": "add", "reason": reason, "key": diff["key"],
+            "barcode": barcode, "description": diff.get("description"),
+            "qty": units, "unit_price": round(target_price, 2),
+            "variant_id": None, "product_id": None,
+            "variant_price": None, "variant_price_raw": None,
+            "variant_title": None,
+            "discount_total": 0.0,
+            "bump_price": False,
+            "create_variant": True,
+        }, None
+    variant_price = float(variant.get("price") or 0)
     if units <= 0:
         return None, None
     # Below the variant price → a line discount; above it → the variant price
@@ -1205,6 +1236,82 @@ def _add_action(reason: str, diff: Dict[str, Any], qty: float, target_price: flo
         "discount_total": discount_total if discount_total > PRICE_TOL else 0.0,
         "bump_price": bump,
     }, None
+
+
+def _create_product_action(diff: Dict[str, Any], add: Dict[str, Any],
+                           item_prices: Optional[Dict[str, Dict[str, Any]]],
+                           lookup_error: Optional[str]
+                           ) -> Tuple[Dict[str, Any], Optional[str]]:
+    """The Shopify product to create for a line whose UPC carries no variant:
+    (action, note reason or None). An action is ALWAYS returned — a UPC that
+    is not in Items_tbl is still created from the invoice line, and the note
+    says where the details came from. `unit_price` is the storefront price
+    (Items_tbl.UnitPrice); the order line is still added at the invoice
+    price."""
+    barcode = add["barcode"]
+    item = (item_prices or {}).get(barcode)
+    why: Optional[str] = None
+    if item_prices is None:
+        why = "lookup_failed" if lookup_error else None
+    elif not item:
+        why = "not_found"
+
+    try:
+        price = float(item["unit_price"]) if item and item.get("unit_price") is not None else None
+    except (TypeError, ValueError):
+        price = None
+    if price is None or price <= 0:
+        if item and why is None:
+            why = "no_price"
+        price, source = float(add["unit_price"]), "invoice"
+    else:
+        source = "items_tbl"
+
+    try:
+        cost = float(item["unit_cost"]) if item and item.get("unit_cost") is not None else None
+    except (TypeError, ValueError):
+        cost = None
+
+    title = ((item or {}).get("description") or diff.get("description") or "").strip() or barcode
+    sku = (diff.get("sku") or "").strip() or barcode
+    return {
+        "kind": "create_product", "reason": "create", "key": diff["key"],
+        "barcode": barcode, "description": title,
+        "title": title, "sku": sku,
+        "unit_price": round(price, 2),
+        "unit_cost": round(cost, 2) if cost and cost > 0 else None,
+        "price_source": source,
+    }, why
+
+
+def resolve_created_variants(actions: List[Dict[str, Any]],
+                             created_by_barcode: Dict[str, Dict[str, Any]]) -> List[str]:
+    """Fill freshly created products into their `add` actions and decide the
+    bump now that a variant price exists (a discount can only lower a price —
+    the same rule _add_action applies to an existing variant). Mutates the
+    actions in place; returns the barcodes that could not be resolved."""
+    unresolved: List[str] = []
+    for a in actions:
+        if a.get("kind") != "add" or not a.get("create_variant"):
+            continue
+        variant = created_by_barcode.get(a["barcode"]) or {}
+        if not variant.get("variant_id"):
+            unresolved.append(a["barcode"])
+            continue
+        variant_price = float(variant.get("price") or 0)
+        target = float(a["unit_price"])
+        units = int(a["qty"])
+        bump = variant_price + PRICE_TOL < target
+        a.update({
+            "variant_id": variant["variant_id"],
+            "product_id": variant.get("product_id"),
+            "variant_price": round(variant_price, 2),
+            "variant_price_raw": variant.get("price_raw"),
+            "variant_title": variant.get("product_title"),
+            "bump_price": bump,
+            "discount_total": 0.0 if bump else round(max(variant_price - target, 0.0) * units, 2),
+        })
+    return unresolved
 
 
 def _shipping_line_action(diff: Dict[str, Any], sh_shipping: Dict[str, Any]) -> Dict[str, Any]:
@@ -1259,12 +1366,15 @@ def plan_order_fix(order: Dict[str, Any], invoice: Dict[str, Any],
                    variants_by_barcode: Dict[str, Dict[str, Any]],
                    push_tracking: bool = True,
                    item_prices: Optional[Dict[str, Dict[str, Any]]] = None,
-                   item_price_error: Optional[str] = None) -> Dict[str, Any]:
+                   item_price_error: Optional[str] = None,
+                   create_products: bool = False) -> Dict[str, Any]:
     """Actions that bring the Shopify order's lines to the invoice's lines.
     Pure: `order` is a fetch_order_for_sync dict (line ids present),
     `variants_by_barcode` comes from find_variants_by_barcode, `item_prices`
     from get_item_prices_batch_async on the BackOffice store (None when that
-    lookup failed — `item_price_error` says why)."""
+    lookup failed — `item_price_error` says why). With `create_products`, a
+    UPC that carries no variant gets one created instead of being reported
+    unsupported."""
     _kinds, diffs = compare_lines(order, invoice)
     raw_by_key = _raw_lines_by_key(order)
     sh_shipping = _shopify_lines_by_key(order).get(SHIPPING_KEY) or {}
@@ -1290,15 +1400,16 @@ def plan_order_fix(order: Dict[str, Any], invoice: Dict[str, Any],
         if "missing_in_backoffice" in issues:
             planned.append(_refund_action("remove", d, lines, sh_qty))
         elif "missing_in_shopify" in issues:
-            planned.append(_add_action("add", d, bo_qty, bo_price, variants_by_barcode))
+            planned.append(_add_action("add", d, bo_qty, bo_price, variants_by_barcode, create_products))
         elif "price" in issues:
             planned.append(_refund_action("replace", d, lines, sh_qty))
-            planned.append(_add_action("replace", d, bo_qty, bo_price, variants_by_barcode))
+            planned.append(_add_action("replace", d, bo_qty, bo_price, variants_by_barcode, create_products))
         elif "qty" in issues:
             if sh_qty > bo_qty:
                 planned.append(_refund_action("reduce", d, lines, sh_qty - bo_qty))
             else:
-                planned.append(_add_action("increase", d, bo_qty - sh_qty, bo_price, variants_by_barcode))
+                planned.append(_add_action("increase", d, bo_qty - sh_qty, bo_price, variants_by_barcode,
+                                           create_products))
 
         reasons = [r for _a, r in planned if r]
         if reasons:
@@ -1310,10 +1421,24 @@ def plan_order_fix(order: Dict[str, Any], invoice: Dict[str, Any],
                 "sh_unit_price": d.get("sh_unit_price"), "bo_unit_price": d.get("bo_unit_price"),
             })
             continue
-        actions.extend(a for a, _r in planned if a)
+        for a in (a for a, _r in planned if a):
+            if a["kind"] == "add" and a.get("create_variant"):
+                create, why = _create_product_action(d, a, item_prices, item_price_error)
+                actions.append(create)
+                if why:
+                    message = CREATE_PRODUCT_MESSAGES[why]
+                    if why == "lookup_failed" and item_price_error:
+                        message += f": {item_price_error}"
+                    notes.append({"key": d["key"], "barcode": d.get("barcode"),
+                                  "description": d.get("description"),
+                                  "reason": why, "message": message})
+            actions.append(a)
 
         if "price" in issues and d["key"] != SHIPPING_KEY:
-            add = next((a for a, _r in planned if a and a["kind"] == "add"), None)
+            # A created product already carries Items_tbl.UnitPrice, so it
+            # never needs the storefront-price step.
+            add = next((a for a, _r in planned
+                        if a and a["kind"] == "add" and not a.get("create_variant")), None)
             if add:
                 vp, why = _variant_price_action(d, add, item_prices, item_price_error)
                 if vp:
@@ -1355,6 +1480,7 @@ def plan_order_fix(order: Dict[str, Any], invoice: Dict[str, Any],
             "mark_paid": outstanding if outstanding > 0.004 else 0.0,
             "unsupported": len(unsupported),
             "variant_prices": sum(1 for a in actions if a["kind"] == "variant_price"),
+            "create_products": sum(1 for a in actions if a["kind"] == "create_product"),
         },
         "noop": not actions,
     }

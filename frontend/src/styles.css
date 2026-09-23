@@ -9169,6 +9169,19 @@ tr.bov-row-click:focus-visible { outline: 2px solid var(--accent-primary); outli
   color: var(--text-tertiary);
   line-height: 1.4;
 }
+.osync-fix-opt {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+.osync-fix-opt input { cursor: pointer; accent-color: var(--accent-primary); }
+.osync-fix-opt.is-disabled { opacity: 0.5; cursor: default; }
+.osync-fix-opt.is-disabled input { cursor: default; }
 
 /* Plan / apply modal */
 .osync-fix-modal-content { max-width: 860px; width: 94%; }
@@ -9300,6 +9313,31 @@ tr.bov-row-click:focus-visible { outline: 2px solid var(--accent-primary); outli
 .osync-fix-kind.is-paid,
 .osync-fix-kind.is-tracking { color: var(--accent-primary); background: color-mix(in srgb, var(--accent-primary) 12%, var(--bg-secondary)); border-color: transparent; }
 .osync-fix-kind.is-unsupported { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 45%, var(--border-color)); }
+.osync-fix-kind.is-create { color: var(--success); background: color-mix(in srgb, var(--success) 12%, var(--bg-secondary)); border-color: transparent; }
+
+/* Created-products log. Its own status chip: unlike "Missing in Shopify",
+   where every row is a problem, here the common state (active but on no
+   sales channel) is the CORRECT one and must not read as an alarm. */
+.osync-created-link { color: var(--accent-primary); text-decoration: none; }
+.osync-created-link:hover { text-decoration: underline; }
+.osync-created-modal-content { max-width: 1080px; }
+.osync-created-modal-content .osync-fix-body { overflow-x: auto; }
+.osync-created-table td { white-space: nowrap; }
+.osync-created-table td.osync-created-title { white-space: normal; min-width: 14rem; color: var(--text-primary); }
+.osync-created-table td:last-child { color: var(--text-tertiary); }
+.osync-created-status {
+  display: inline-block;
+  white-space: nowrap;
+  padding: 0.1rem 0.45rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+}
+.osync-created-status.is-ok { color: var(--success); background: color-mix(in srgb, var(--success) 12%, var(--bg-secondary)); }
+.osync-created-status.is-warn { color: var(--warning); background: color-mix(in srgb, var(--warning) 14%, var(--bg-secondary)); }
+.osync-created-status.is-bad { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, var(--bg-secondary)); }
 .osync-fix-actions.is-unsupported { color: var(--text-secondary); }
 
 .osync-fix-steps {

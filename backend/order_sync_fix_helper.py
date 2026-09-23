@@ -5,6 +5,12 @@ order_sync_helper.plan_order_fix to a live Shopify order.
 Every order the report lists is FULFILLED, and Shopify's order-edit API only
 touches unfulfilled line items, so the executor combines three APIs:
 
+  create_product
+           productSet: the UPC carries no variant in this store, so the
+           product is created from the BackOffice item (barcode = the UPC,
+           active, on no sales channel, inventory untracked) and the `add`
+           below uses it. Opt-in per run; runs FIRST so the edit has a
+           variant to add.
   refund   refundCreate with transactions: [] — a $0, records-only refund of
            N units (restockType NO_RESTOCK); currentQuantity drops.
   add      orderEditBegin → orderEditAddVariant (allowDuplicates) → bring the
@@ -23,8 +29,8 @@ touches unfulfilled line items, so the executor combines three APIs:
            in at that price. Runs LAST — the edit step restores the temporary
            price bump in a finally block and would undo an earlier write.
 
-The customer is never notified. Steps run refund → edit → fulfill → mark paid
-→ tracking → store price; the first failure stops the chain, and the caller
+The customer is never notified. Steps run create product → refund → edit →
+fulfill → mark paid → tracking → store price; the first failure stops the chain, and the caller
 re-fetches the order so the reported row (and any later re-run) reflects what
 actually happened — a re-run plans only what is still different (so a failed
 store-price step is not retried: the order no longer shows a price difference).
@@ -479,6 +485,135 @@ async def push_tracking(ctx: ShopifyCtx, fulfillment_ids: List[str], numbers: Li
     return done
 
 
+# A backfilled product is store-wide state and two orders in the same batch
+# can need the same UPC, so creation is serialized and the catalog is
+# re-checked inside the lock — a barcode is never created twice.
+_create_lock = asyncio.Lock()
+
+PRODUCT_BACKFILL_TAG = "order-sync-backfill"
+
+_PRODUCT_SET = """
+mutation orderFixCreateProduct($input: ProductSetInput!) {
+  productSet(synchronous: true, input: $input) {
+    product {
+      id
+      status
+      variants(first: 1) { nodes { id price barcode sku } }
+    }
+    userErrors { field message }
+  }
+}
+"""
+
+
+async def _create_product(ctx: ShopifyCtx, action: Dict[str, Any]) -> Dict[str, Any]:
+    """Create one product carrying the UPC as its barcode. Returns the same
+    shape find_variants_by_barcode yields, so the planner cannot tell the
+    difference between a created variant and one that was already there."""
+    variant: Dict[str, Any] = {
+        "optionValues": [{"optionName": "Title", "name": "Default Title"}],
+        "barcode": action["barcode"],
+        "price": f"{float(action['unit_price']):.2f}",
+        "inventoryPolicy": "CONTINUE",
+        "inventoryItem": {"tracked": False},
+    }
+    if action.get("sku"):
+        variant["sku"] = action["sku"]
+    cost = action.get("unit_cost")
+    if cost is not None and float(cost) > 0:
+        variant["inventoryItem"]["cost"] = f"{float(cost):.2f}"
+
+    data = await _gql(ctx, _PRODUCT_SET, {"input": {
+        "title": action["title"],
+        "status": "ACTIVE",
+        "tags": [PRODUCT_BACKFILL_TAG],
+        "productOptions": [{"name": "Title", "values": [{"name": "Default Title"}]}],
+        "variants": [variant],
+    }})
+    product = _payload(data, "productSet", "create_product").get("product") or {}
+    nodes = ((product.get("variants") or {}).get("nodes") or [])
+    node = nodes[0] if nodes else {}
+    if not product.get("id") or not node.get("id"):
+        raise FixStepError("create_product", f"{action['barcode']}: productSet returned no variant")
+    if (node.get("barcode") or "").strip() != action["barcode"]:
+        raise FixStepError(
+            "create_product",
+            f"{action['barcode']}: created variant carries barcode {node.get('barcode')!r}")
+    try:
+        price = float(node.get("price") or 0)
+    except (TypeError, ValueError):
+        price = 0.0
+    return {
+        "variant_id": node["id"], "product_id": product["id"],
+        "price": price, "price_raw": node.get("price"),
+        "sku": (node.get("sku") or "").strip(),
+        "product_title": action["title"], "variant_title": "",
+        "product_status": product.get("status"),
+    }
+
+
+async def create_missing_products(ctx: ShopifyCtx, actions: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """barcode -> variant for every planned create. A barcode that turned up
+    in the catalog since the plan was built (another order in the same batch,
+    or a product published meanwhile) is reused, flagged `reused`."""
+    created: Dict[str, Dict[str, Any]] = {}
+    for action in actions:
+        barcode = (action.get("barcode") or "").strip()
+        if not barcode or barcode in created:
+            continue
+        async with _create_lock:
+            existing = await find_variants_by_barcode(
+                ctx.session, ctx.shop_domain, ctx.admin_api_key, ctx.api_version, [barcode])
+            found = existing.get(barcode)
+            if found and found.get("variant_id"):
+                created[barcode] = {**found, "reused": True}
+                continue
+            created[barcode] = await _create_product(ctx, action)
+    return created
+
+
+_PRODUCT_STATUS = """
+query orderSyncCreatedProducts($ids: [ID!]!) {
+  nodes(ids: $ids) {
+    ... on Product {
+      id
+      title
+      status
+      publishedAt
+      onlineStoreUrl
+      variants(first: 1) { nodes { id barcode sku price } }
+    }
+  }
+}
+"""
+
+
+async def fetch_product_status(ctx: ShopifyCtx, product_gids: List[str]) -> Dict[str, Dict[str, Any]]:
+    """product gid -> what the product looks like in Shopify NOW, for the
+    created-products log. A gid that comes back null was deleted in Shopify
+    and is absent from the result. Only read_products is needed: `publishedAt`
+    / `onlineStoreUrl` answer "is it on the storefront?" without the
+    read_publications scope."""
+    out: Dict[str, Dict[str, Any]] = {}
+    ids = [g for g in dict.fromkeys(product_gids) if g]
+    for i in range(0, len(ids), 50):
+        data = await _gql(ctx, _PRODUCT_STATUS, {"ids": ids[i:i + 50]})
+        for node in (data or {}).get("nodes") or []:
+            if not node or not node.get("id"):
+                continue
+            variants = ((node.get("variants") or {}).get("nodes") or [])
+            v = variants[0] if variants else {}
+            out[node["id"]] = {
+                "title": node.get("title"),
+                "status": node.get("status"),
+                "published": bool(node.get("publishedAt")) or bool(node.get("onlineStoreUrl")),
+                "barcode": (v.get("barcode") or "").strip(),
+                "sku": (v.get("sku") or "").strip(),
+                "price": v.get("price"),
+            }
+    return out
+
+
 async def set_store_prices(ctx: ShopifyCtx, actions: List[Dict[str, Any]]) -> Tuple[List[str], List[str]]:
     """Set each variant's storefront price to the BackOffice item price.
     Products are independent, so one failure does not stop the others;
@@ -531,7 +666,8 @@ def _fix_barcodes(order: Dict[str, Any], invoice: Dict[str, Any]) -> Tuple[List[
 
 
 async def prepare_target(ctx: ShopifyCtx, tz: Optional[str], target: Dict[str, Any],
-                         invoice_conn: Dict[str, Any], push_tracking_numbers: bool = True) -> Dict[str, Any]:
+                         invoice_conn: Dict[str, Any], push_tracking_numbers: bool = True,
+                         create_products: bool = False) -> Dict[str, Any]:
     """Fresh order + invoice + plan for one target. `status` is one of
     ready | noop | skipped | error; `order`/`invoice` are present when fetched."""
     order_gid, invoice_id = target["sh_order_id"], int(target["bo_invoice_id"])
@@ -560,17 +696,25 @@ async def prepare_target(ctx: ShopifyCtx, tz: Optional[str], target: Dict[str, A
         except ShopifyFetchError as e:
             return {**base, "status": "error", "message": f"Variant lookup failed: {e}", "order": order, "invoice": invoice}
 
-    # Storefront price source for repriced lines. A failed lookup must not
-    # block the order-line fix — the planner turns it into a note.
+    # One Items_tbl read serving two purposes: the storefront price of a
+    # repriced line, and the title/price/cost of a product about to be
+    # created. A failed lookup must not block the order-line fix — the
+    # planner turns it into a note.
+    wanted = list(repriced)
+    if create_products:
+        wanted += [b for b in barcodes if b not in variants]
+    wanted = list(dict.fromkeys(wanted))
+
     item_prices: Optional[Dict[str, Dict[str, Any]]] = None
     item_price_error: Optional[str] = None
-    if repriced:
-        ok_p, err_p, item_prices = await get_item_prices_batch_async(**invoice_conn, upcs=repriced)
+    if wanted:
+        ok_p, err_p, item_prices = await get_item_prices_batch_async(**invoice_conn, upcs=wanted)
         if not ok_p:
             item_prices, item_price_error = None, err_p or "unknown error"
 
     plan = osync.plan_order_fix(order, invoice, variants, push_tracking=push_tracking_numbers,
-                                item_prices=item_prices, item_price_error=item_price_error)
+                                item_prices=item_prices, item_price_error=item_price_error,
+                                create_products=create_products)
     return {
         **base,
         "status": "noop" if plan["noop"] else "ready",
@@ -586,16 +730,18 @@ def _rebuild_row(order: Dict[str, Any], invoice: Dict[str, Any], target: Dict[st
 
 
 async def apply_order_fix(ctx: ShopifyCtx, tz: Optional[str], target: Dict[str, Any],
-                          invoice_conn: Dict[str, Any], note: str) -> Dict[str, Any]:
+                          invoice_conn: Dict[str, Any], note: str,
+                          create_products: bool = False) -> Dict[str, Any]:
     """Plan from fresh data, execute, re-fetch, rebuild the row. Never raises
     for a per-order failure — the outcome is in `status`/`steps`."""
-    prep = await prepare_target(ctx, tz, target, invoice_conn)
+    prep = await prepare_target(ctx, tz, target, invoice_conn, create_products=create_products)
     result: Dict[str, Any] = {
         "sh_order_id": prep["sh_order_id"], "sh_name": prep.get("sh_name"),
         "bo_invoice_id": prep["bo_invoice_id"], "bo_invoice_number": prep.get("bo_invoice_number"),
         "status": prep["status"], "message": prep.get("message"),
         "steps": [], "unsupported": (prep.get("plan") or {}).get("unsupported", []),
         "actions": (prep.get("plan") or {}).get("actions", []),
+        "created_products": [],   # products this run ADDED to the catalog
         "status_before": None, "row": None,
     }
     order, invoice = prep.get("order"), prep.get("invoice")
@@ -608,6 +754,7 @@ async def apply_order_fix(ctx: ShopifyCtx, tz: Optional[str], target: Dict[str, 
 
     plan = prep["plan"]
     actions = plan["actions"]
+    creates = [a for a in actions if a["kind"] == "create_product"]
     refunds = [a for a in actions if a["kind"] == "refund"]
     adds = [a for a in actions if a["kind"] == "add"]
     tracking = next((a for a in actions if a["kind"] == "tracking"), None)
@@ -623,6 +770,32 @@ async def apply_order_fix(ctx: ShopifyCtx, tz: Optional[str], target: Dict[str, 
 
     failed: Optional[str] = None
     try:
+        if creates:
+            # First: the edit below needs a variant to add. A product created
+            # here outlives a later failure on purpose — the re-run finds it
+            # by barcode and reuses it.
+            made = await _with_retry(lambda: create_missing_products(ctx, creates))
+            unresolved = osync.resolve_created_variants(actions, made)
+            if unresolved:
+                raise FixStepError("create_product",
+                                   "no usable variant after creating " + ", ".join(unresolved))
+            fresh = [b for b, v in made.items() if not v.get("reused")]
+            reused = [b for b, v in made.items() if v.get("reused")]
+            by_barcode = {a["barcode"]: a for a in creates}
+            result["created_products"] = [
+                {"barcode": b, "title": by_barcode[b].get("title"), "sku": by_barcode[b].get("sku"),
+                 "price": by_barcode[b].get("unit_price"), "unit_cost": by_barcode[b].get("unit_cost"),
+                 "price_source": by_barcode[b].get("price_source"),
+                 "product_gid": made[b].get("product_id"), "variant_gid": made[b].get("variant_id")}
+                for b in fresh if b in by_barcode
+            ]
+            parts = []
+            if fresh:
+                parts.append(f"Created {len(fresh)} product(s): " + ", ".join(fresh))
+            if reused:
+                parts.append(f"reused {len(reused)} existing: " + ", ".join(reused))
+            step("create_product", True, "; ".join(parts), [v.get("product_id") for v in made.values()])
+
         if refunds:
             units = sum(a["qty"] for a in refunds)
             refund_id, amount = await _with_retry(lambda: refund_units(ctx, order["id"], refunds, note))
@@ -694,7 +867,9 @@ async def apply_order_fix(ctx: ShopifyCtx, tz: Optional[str], target: Dict[str, 
         done = [s for s in steps if s["ok"]]
         result["status"] = "partial" if done else "failed"
         result["message"] = steps[-1]["message"]
-        if failed == "fulfill":
+        if failed == "create_product":
+            result["message"] = (result["message"] or "") + " — nothing was changed on the order; any product that was created is reused when you run the fix again"
+        elif failed == "fulfill":
             result["message"] = (result["message"] or "") + " — added items are UNFULFILLED in Shopify; fulfill them there or the order drops out of Month End"
         elif failed == "mark_paid":
             result["message"] = (result["message"] or "") + " — lines are corrected; run the fix again to mark the balance paid"

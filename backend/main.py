@@ -13646,10 +13646,11 @@ async def stream_order_sync_report(date_from: Optional[str] = None, date_to: Opt
 
 import aiohttp
 import order_sync_fix_helper as ofix
-from models import OrderSyncFixHistory
+from models import OrderSyncFixHistory, OrderSyncCreatedProduct
 from schemas import (
     OrderSyncFixRequest, OrderSyncFixPlanResponse, OrderSyncFixResponse,
     OrderSyncFixPlan, OrderSyncFixResult,
+    OrderSyncCreatedProductRow, OrderSyncCreatedProductsResponse,
 )
 
 _ORDER_SYNC_FIX_CONCURRENCY = 2
@@ -13709,7 +13710,8 @@ async def plan_order_sync_fix(req: OrderSyncFixRequest):
 
         async def one(target: Dict[str, Any]) -> Dict[str, Any]:
             async with sem:
-                prep = await ofix.prepare_target(sctx, ctx["tz"], target, ctx["invoice_conn"])
+                prep = await ofix.prepare_target(sctx, ctx["tz"], target, ctx["invoice_conn"],
+                                                 create_products=req.create_products)
             plan = prep.get("plan") or {}
             return {
                 "sh_order_id": prep["sh_order_id"], "sh_name": prep.get("sh_name"),
@@ -13750,6 +13752,26 @@ def _order_sync_fix_record(batch_id: str, ctx: Dict[str, Any], target: Dict[str,
                 steps=result.get("steps") or [],
                 error_message=result.get("message") if result["status"] in ("partial", "failed", "error") else None,
             ))
+            # A catalog change must never be invisible: log every product this
+            # run added, even when a later step failed.
+            for cp in result.get("created_products") or []:
+                db.add(OrderSyncCreatedProduct(
+                    batch_id=batch_id,
+                    shopify_store_id=ctx["shopify_store_id"],
+                    store_name=ctx["shopify_store_name"],
+                    barcode=cp["barcode"],
+                    title=cp.get("title"),
+                    sku=cp.get("sku"),
+                    price=cp.get("price"),
+                    unit_cost=cp.get("unit_cost"),
+                    price_source=cp.get("price_source"),
+                    product_gid=cp["product_gid"],
+                    variant_gid=cp.get("variant_gid"),
+                    sh_order_id=result["sh_order_id"],
+                    sh_order_name=result.get("sh_name"),
+                    bo_invoice_id=result.get("bo_invoice_id"),
+                    bo_invoice_number=result.get("bo_invoice_number"),
+                ))
             db.commit()
     except Exception as e:
         print(f"order_sync_fix_history write failed for {result.get('sh_order_id')}: {e}")
@@ -13783,7 +13805,8 @@ async def _order_sync_fix_run(req: OrderSyncFixRequest, progress=None) -> Dict[s
                 await emit({"sh_order_id": target["sh_order_id"], "status": "running",
                             "done": done, "total": len(targets)})
                 note = f"Order Sync: matched to BackOffice invoice {target.get('bo_invoice_number') or target['bo_invoice_id']}"
-                result = await ofix.apply_order_fix(sctx, ctx["tz"], target, ctx["invoice_conn"], note)
+                result = await ofix.apply_order_fix(sctx, ctx["tz"], target, ctx["invoice_conn"], note,
+                                                    create_products=req.create_products)
                 done += 1
                 _order_sync_fix_record(batch_id, ctx, target, result)
                 await emit({"sh_order_id": result["sh_order_id"], "sh_name": result.get("sh_name"),
@@ -13795,7 +13818,8 @@ async def _order_sync_fix_run(req: OrderSyncFixRequest, progress=None) -> Dict[s
 
     return {
         "batch_id": batch_id,
-        "results": [{k: v for k, v in r.items() if k not in ("actions", "status_before", "status_after")}
+        "results": [{k: v for k, v in r.items()
+                     if k not in ("actions", "created_products", "status_before", "status_after")}
                     for r in results],
         "warnings": warnings,
     }
@@ -13847,6 +13871,97 @@ async def stream_order_sync_fix(req: OrderSyncFixRequest):
     return BoundedStreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "Connection": "keep-alive",
                                       "X-Accel-Buffering": "no"})
+
+
+# ===== Order Sync: products this app created in Shopify =====
+#
+# "Fix in Shopify" can add a product to the catalog when a BackOffice UPC has
+# none. Every such creation is logged so the change is auditable, and the list
+# is re-checked against Shopify on open — a product deleted or published since
+# shows up as such.
+
+
+def _order_sync_admin_url(shop_domain: Optional[str], product_gid: str) -> Optional[str]:
+    """Shopify admin link for a product GID (the admin uses the legacy id)."""
+    if not shop_domain or not product_gid:
+        return None
+    legacy = product_gid.rsplit("/", 1)[-1]
+    return f"https://{shop_domain}/admin/products/{legacy}" if legacy.isdigit() else None
+
+
+@app.get("/api/order-sync/created-products", response_model=OrderSyncCreatedProductsResponse)
+async def order_sync_created_products(limit: int = 200, check_live: bool = True):
+    """The products Fix in Shopify created, newest first."""
+    limit = max(1, min(limit, 1000))
+    with db_session() as db:
+        total = db.query(OrderSyncCreatedProduct).count()
+        rows = (db.query(OrderSyncCreatedProduct)
+                .order_by(OrderSyncCreatedProduct.created_at.desc(), OrderSyncCreatedProduct.id.desc())
+                .limit(limit).all())
+        # Connections for the admin links and the live re-check, by store.
+        store_ids = {r.shopify_store_id for r in rows if r.shopify_store_id}
+        conns: Dict[int, Any] = {}
+        for store in db.query(Store).filter(Store.id.in_(store_ids)).all() if store_ids else []:
+            sc = store.shopify_connection
+            if sc:
+                conns[store.id] = {"shop_domain": sc.shop_domain, "admin_api_key": sc.admin_api_key,
+                                   "api_version": sc.api_version or "2025-01"}
+        out = [{
+            "id": r.id,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "store_name": r.store_name,
+            "barcode": r.barcode,
+            "title": r.title,
+            "sku": r.sku,
+            "price": float(r.price) if r.price is not None else None,
+            "unit_cost": float(r.unit_cost) if r.unit_cost is not None else None,
+            "price_source": r.price_source,
+            "product_gid": r.product_gid,
+            "variant_gid": r.variant_gid,
+            "admin_url": _order_sync_admin_url((conns.get(r.shopify_store_id) or {}).get("shop_domain"), r.product_gid),
+            "sh_order_name": r.sh_order_name,
+            "bo_invoice_number": r.bo_invoice_number,
+            "_store_id": r.shopify_store_id,
+        } for r in rows]
+
+    warnings: List[str] = []
+    checked_live = False
+    if check_live and out:
+        by_store: Dict[int, List[str]] = {}
+        for row in out:
+            if row["_store_id"] in conns:
+                by_store.setdefault(row["_store_id"], []).append(row["product_gid"])
+        async with aiohttp.ClientSession() as session:
+            for store_id, gids in by_store.items():
+                c = conns[store_id]
+                sctx = ofix.ShopifyCtx(session, c["shop_domain"], c["admin_api_key"], c["api_version"])
+                try:
+                    live = await ofix.fetch_product_status(sctx, gids)
+                except Exception as e:   # never hide the log behind Shopify
+                    warnings.append(f"Could not re-check products in Shopify: {e}")
+                    continue
+                checked_live = True
+                for row in out:
+                    if row["_store_id"] != store_id:
+                        continue
+                    p = live.get(row["product_gid"])
+                    if not p:
+                        row["live_missing"] = True
+                        continue
+                    row["live_status"] = p.get("status")
+                    row["live_published"] = p.get("published")
+                    row["live_barcode"] = p.get("barcode")
+                    try:
+                        row["live_price"] = float(p["price"]) if p.get("price") is not None else None
+                    except (TypeError, ValueError):
+                        row["live_price"] = None
+
+    for row in out:
+        row.pop("_store_id", None)
+    return OrderSyncCreatedProductsResponse(
+        products=[OrderSyncCreatedProductRow(**r) for r in out],
+        total=total, checked_live=checked_live, warnings=warnings,
+    )
 
 
 # ===== Order Sync: products on BackOffice-only invoices missing from Shopify =====

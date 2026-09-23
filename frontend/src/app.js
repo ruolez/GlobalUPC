@@ -27148,6 +27148,19 @@ function initOrderSyncPage() {
   document.getElementById("osync-fix-cancel")?.addEventListener("click", osyncFixClose);
   document.getElementById("osync-fix-done")?.addEventListener("click", osyncFixClose);
   document.getElementById("osync-fix-apply")?.addEventListener("click", osyncFixApply);
+  document.getElementById("osync-fix-create")?.addEventListener("change", (e) => {
+    osyncFix.createProducts = e.target.checked;
+    // Re-plan: Apply always rebuilds the plan server-side, so what is on
+    // screen has to be what will run.
+    if (osyncFix.targets.length && !osyncFix.applying) osyncFixPreview(osyncFix.targets, { fromModal: osyncFix.fromModal });
+  });
+
+  // Products this app created in Shopify (audit log)
+  document.getElementById("osync-created")?.addEventListener("click", () => osyncCreatedOpen());
+  document.getElementById("osync-created-x")?.addEventListener("click", () => closeModal("osync-created-modal"));
+  document.getElementById("osync-created-close")?.addEventListener("click", () => closeModal("osync-created-modal"));
+  document.getElementById("osync-created-refresh")?.addEventListener("click", () => osyncCreatedOpen({ refresh: true }));
+  document.getElementById("osync-created-export")?.addEventListener("click", osyncCreatedExport);
 
   // Missing in Shopify: products on BackOffice-only orders the store lacks
   document.getElementById("osync-missing")?.addEventListener("click", osyncMissingOpen);
@@ -27993,11 +28006,15 @@ const osyncFix = {
   targets: [],            // rows the current preview was built from
   plan: null,             // last /fix/plan response
   results: null,
+  createProducts: false,  // opt-in: create the Shopify product for a UPC that has none
 };
 
 const OSYNC_FIX_POLICY =
   "Records only: refunds return $0 and don't restock · added items are fulfilled at once and the balance marked paid · " +
   "variant prices raised for a repricing are restored right after · the customer is never notified.";
+
+const OSYNC_FIX_POLICY_CREATE =
+  " Missing products are created in Shopify from BackOffice — active, on no sales channel, inventory untracked, tagged order-sync-backfill.";
 
 function osyncFixable(r) {
   if (!r || !r.sh_order_id || !r.bo_invoice_id) return { ok: false, reason: "Needs a matched Shopify order and invoice" };
@@ -28099,7 +28116,18 @@ function osyncFixSetPhase(phase, { applyLabel = "Apply", applyEnabled = false } 
   }
   if (done) done.style.display = phase === "done" ? "" : "none";
   if (x) x.style.display = phase === "applying" ? "none" : "";
-  if (policy) policy.textContent = phase === "plan" ? OSYNC_FIX_POLICY : "";
+  if (policy) policy.textContent = phase !== "plan" ? "" : OSYNC_FIX_POLICY + (osyncFix.createProducts ? OSYNC_FIX_POLICY_CREATE : "");
+  const createWrap = document.getElementById("osync-fix-create-wrap");
+  const create = document.getElementById("osync-fix-create");
+  const live = phase === "plan" || phase === "loading";
+  if (createWrap) {
+    createWrap.style.display = phase === "done" || phase === "applying" ? "none" : "";
+    createWrap.classList.toggle("is-disabled", !live);
+  }
+  if (create) {
+    create.checked = osyncFix.createProducts;
+    create.disabled = !live;
+  }
 }
 
 async function osyncFixPreview(rows, { fromModal }) {
@@ -28122,7 +28150,9 @@ async function osyncFixPreview(rows, { fromModal }) {
   openModal("osync-fix-modal");
 
   try {
-    const plan = await osyncPost("/order-sync/fix/plan", { targets: targets.map(osyncFixTarget) });
+    const plan = await osyncPost("/order-sync/fix/plan", {
+      targets: targets.map(osyncFixTarget), create_products: osyncFix.createProducts,
+    });
     osyncFix.plan = plan;
     osyncFixRenderPlan(plan);
   } catch (e) {
@@ -28157,6 +28187,13 @@ function osyncFixActionLines(actions) {
       const e = byKey.get(a.key) || {};
       e.price = a;
       byKey.set(a.key, e);
+      return;
+    }
+    if (a.kind === "create_product") {
+      const source = a.price_source === "invoice"
+        ? "from the invoice line"
+        : "from BackOffice Items_tbl";
+      out.push(["create", `<span class="osync-mono">${escapeHtml(a.barcode || "")}</span> ${escapeHtml(a.title || "")} at ${osyncMoney(a.unit_price)} <span class="osync-muted">(${source}; active, no sales channel, inventory untracked)</span>`]);
       return;
     }
     if (a.reason === "replace") {
@@ -28201,7 +28238,7 @@ function osyncFixPriceNote(a) {
   return "";
 }
 
-const OSYNC_FIX_KIND_LABELS = { add: "Add", remove: "Remove", reduce: "Reduce", reprice: "Reprice", price: "Store price", tracking: "Tracking", paid: "Paid" };
+const OSYNC_FIX_KIND_LABELS = { add: "Add", remove: "Remove", reduce: "Reduce", reprice: "Reprice", price: "Store price", tracking: "Tracking", paid: "Paid", create: "New product" };
 const OSYNC_FIX_STATUS = {
   ready: ["Ready", "is-ok"], noop: ["Nothing to do", "is-muted"], skipped: ["Skipped", "is-warn"], error: ["Error", "is-bad"],
   applied: ["Applied", "is-ok"], partial: ["Partially applied", "is-warn"], failed: ["Failed", "is-bad"],
@@ -28250,7 +28287,7 @@ function osyncFixOrderCard(p, { status, message, steps, after = null, extraCls =
   );
 }
 
-const OSYNC_FIX_STEP_LABELS = { refund: "Refund", edit: "Order edit", fulfill: "Fulfillment", mark_paid: "Mark paid", tracking: "Tracking", variant_price: "Store price", shopify: "Shopify", unexpected: "Error" };
+const OSYNC_FIX_STEP_LABELS = { create_product: "New product", refund: "Refund", edit: "Order edit", fulfill: "Fulfillment", mark_paid: "Mark paid", tracking: "Tracking", variant_price: "Store price", shopify: "Shopify", unexpected: "Error" };
 
 function osyncFixRenderPlan(plan) {
   const body = document.getElementById("osync-fix-body");
@@ -28266,24 +28303,32 @@ function osyncFixRenderPlan(plan) {
     acc.prices += s.variant_prices || 0;
     acc.shipping += s.shipping_lines || 0;
     acc.unsupported += s.unsupported || 0;
+    acc.created += s.create_products || 0;
     return acc;
-  }, { refund: 0, add: 0, amount: 0, tracking: 0, prices: 0, shipping: 0, unsupported: 0 });
+  }, { refund: 0, add: 0, amount: 0, tracking: 0, prices: 0, shipping: 0, unsupported: 0, created: 0 });
+  // With the toggle off these lines are the ones it would make fixable.
+  const creatable = plans.reduce((n, p) => n + (p.unsupported || []).filter((u) => u.reason === "no_variant").length, 0);
   const unsupportedTotal = plans.reduce((n, p) => n + (p.unsupported || []).length, 0);
   const blocked = (plan.scopes_missing || []).length > 0;
 
   const bits = [];
+  if (tot.created) bits.push(`<strong>${tot.created}</strong> product${tot.created === 1 ? "" : "s"} created in Shopify`);
   if (tot.refund) bits.push(`<strong>${tot.refund}</strong> unit${tot.refund === 1 ? "" : "s"} refunded ($0)`);
   if (tot.add) bits.push(`<strong>${tot.add}</strong> unit${tot.add === 1 ? "" : "s"} added (${osyncMoney(tot.amount)})`);
   if (tot.tracking) bits.push(`tracking on <strong>${tot.tracking}</strong> order${tot.tracking === 1 ? "" : "s"}`);
   if (tot.prices) bits.push(`store price on <strong>${tot.prices}</strong> product${tot.prices === 1 ? "" : "s"}`);
   if (tot.shipping) bits.push(`shipping line on <strong>${tot.shipping}</strong> order${tot.shipping === 1 ? "" : "s"}`);
   if (unsupportedTotal) bits.push(`<span class="osync-fix-warn-text"><strong>${unsupportedTotal}</strong> line${unsupportedTotal === 1 ? "" : "s"} can't be fixed</span>`);
+  const creatableHint = creatable && !osyncFix.createProducts
+    ? `<div class="osync-fix-warn">${creatable} line${creatable === 1 ? " has" : "s have"} no product in this Shopify store. Tick <strong>Create missing products</strong> below to create ${creatable === 1 ? "it" : "them"} from BackOffice and add the line${creatable === 1 ? "" : "s"}.</div>`
+    : "";
 
   body.innerHTML =
     (blocked
       ? `<div class="osync-fix-error">The Shopify token is missing the scopes needed to edit orders: <span class="osync-mono">${escapeHtml(plan.scopes_missing.join(", "))}</span>. Add them to the app in Shopify admin, then try again.</div>`
       : "") +
     (plan.warnings || []).map((w) => `<div class="osync-fix-warn">${escapeHtml(w)}</div>`).join("") +
+    creatableHint +
     `<div class="osync-fix-summary">` +
     `<span><strong>${ready.length}</strong> of ${plans.length} order${plans.length === 1 ? "" : "s"} ready</span>` +
     (bits.length ? `<span class="osync-muted">·</span>${bits.map((b) => `<span>${b}</span>`).join('<span class="osync-muted">·</span>')}` : "") +
@@ -28336,7 +28381,7 @@ async function osyncFixApply() {
 
   let payload = null;
   let sawProgress = false;
-  const reqBody = JSON.stringify({ targets });
+  const reqBody = JSON.stringify({ targets, create_products: osyncFix.createProducts });
   try {
     const resp = await fetch(`${API_BASE}/order-sync/fix/stream`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: reqBody,
@@ -28379,7 +28424,7 @@ async function osyncFixApply() {
     if (!sawProgress) {
       // Nothing had started — safe to retry through the plain endpoint.
       try {
-        payload = await osyncPost("/order-sync/fix", { targets });
+        payload = await osyncPost("/order-sync/fix", { targets, create_products: osyncFix.createProducts });
       } catch (e2) {
         osyncFixFinish(null, e2.message || String(e2));
         return;
@@ -28474,6 +28519,8 @@ function osyncFixRefreshAfterApply() {
 
 function osyncFixClose() {
   if (osyncFix.applying) return;
+  // Creating products is a deliberate choice per run, never a sticky default.
+  osyncFix.createProducts = false;
   closeModal("osync-fix-modal");
 }
 
@@ -28612,6 +28659,148 @@ function osyncMissingExport() {
     ]),
     widths: [16, 18, 48, 14, 36, 8, 8, 30, 12],
     fname: `missing-in-shopify_${data.date_from || ""}_${data.date_to || ""}`,
+  });
+}
+
+// ---- Products created in Shopify -------------------------------------------
+// Audit list of every product "Fix in Shopify" added to the catalog, with a
+// live re-check so a product since deleted or published is visible as such.
+
+const osyncCreated = { loading: false, data: null };
+
+const OSYNC_CREATED_SOURCE_LABELS = { items_tbl: "Items_tbl", invoice: "Invoice line" };
+
+async function osyncCreatedOpen({ refresh = false } = {}) {
+  openModal("osync-created-modal");
+  if (osyncCreated.data && !refresh) {
+    osyncCreatedRender();
+    return;
+  }
+  osyncCreated.loading = true;
+  osyncCreated.data = null;
+  osyncCreatedRender();
+  try {
+    const resp = await fetch(`${API_BASE}/order-sync/created-products?limit=500`);
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${resp.status}`);
+    }
+    osyncCreated.data = await resp.json();
+  } catch (e) {
+    osyncCreated.data = { error: e.message || String(e) };
+  } finally {
+    osyncCreated.loading = false;
+    osyncCreatedRender();
+  }
+}
+
+function osyncCreatedLiveCell(p) {
+  // The expected state — active but on no sales channel — is the good one.
+  if (p.live_missing) return `<span class="osync-created-status is-bad" title="This product no longer exists in Shopify">Deleted</span>`;
+  if (!p.live_status) return `<span class="osync-muted">—</span>`;
+  if (p.live_published) {
+    return `<span class="osync-created-status is-warn" title="Published to a sales channel — it was created hidden, so someone put it on the storefront">On storefront</span>`;
+  }
+  if (p.live_status !== "ACTIVE") {
+    return `<span class="osync-created-status" title="${escapeHtml(p.live_status)} in Shopify">${escapeHtml(p.live_status[0] + p.live_status.slice(1).toLowerCase())}</span>`;
+  }
+  return `<span class="osync-created-status is-ok" title="Active in the catalog, on no sales channel — as created">Hidden</span>`;
+}
+
+function osyncCreatedRender() {
+  const body = document.getElementById("osync-created-body");
+  const sub = document.getElementById("osync-created-sub");
+  const note = document.getElementById("osync-created-note");
+  const exportBtn = document.getElementById("osync-created-export");
+  const refreshBtn = document.getElementById("osync-created-refresh");
+  if (!body) return;
+  const d = osyncCreated.data;
+  if (refreshBtn) refreshBtn.disabled = osyncCreated.loading;
+  if (exportBtn) exportBtn.disabled = !(d && (d.products || []).length);
+  if (note) note.textContent = "";
+
+  if (osyncCreated.loading || !d) {
+    if (sub) sub.textContent = "";
+    body.innerHTML = `<div class="osync-fix-loading"><span class="progress-spinner"></span>Loading the log and re-checking Shopify…</div>`;
+    return;
+  }
+  if (d.error) {
+    if (sub) sub.textContent = "";
+    body.innerHTML = `<div class="osync-fix-error">${escapeHtml(d.error)}</div>`;
+    return;
+  }
+  const products = d.products || [];
+  if (sub) sub.textContent = `${d.total} product${d.total === 1 ? "" : "s"}`;
+  if (note) {
+    note.textContent = d.checked_live
+      ? "Each product was just re-checked in Shopify."
+      : "Showing the log only — Shopify was not re-checked.";
+  }
+  if (!products.length) {
+    body.innerHTML = `<div class="osync-missing-empty">This app has never created a product in Shopify. It only does so when you tick <strong>Create missing products</strong> while fixing an order.</div>`;
+    return;
+  }
+  const published = products.filter((p) => p.live_published).length;
+  const deleted = products.filter((p) => p.live_missing).length;
+  const summary =
+    `<div class="osync-fix-summary">` +
+    `<span><strong>${d.total}</strong> created${products.length < d.total ? ` (latest ${products.length} shown)` : ""}</span>` +
+    (published ? `<span class="osync-muted">·</span><span class="osync-fix-warn-text"><strong>${published}</strong> now on a storefront</span>` : "") +
+    (deleted ? `<span class="osync-muted">·</span><span><strong>${deleted}</strong> since deleted</span>` : "") +
+    `</div>`;
+  const rows = products.map((p) => {
+    const title = escapeHtml(p.title || "");
+    const titleCell = p.admin_url
+      ? `<a class="osync-created-link" href="${escapeHtml(p.admin_url)}" target="_blank" rel="noopener noreferrer" title="Open in Shopify admin">${title}</a>`
+      : title;
+    // SKU and the price source live in tooltips — the table has to fit.
+    const priceMoved = p.live_price != null && p.price != null && Math.abs(p.live_price - p.price) > 0.005;
+    const source = OSYNC_CREATED_SOURCE_LABELS[p.price_source] || p.price_source || "";
+    const priceHint = (source ? `Created at ${osyncMoney(p.price)} from ${source}` : `Created at ${osyncMoney(p.price)}`) +
+      (priceMoved ? ` · now ${osyncMoney(p.live_price)} in Shopify` : "");
+    const priceCell = priceMoved
+      ? `<span class="osync-muted">${osyncMoney(p.price)} →</span> ${osyncMoney(p.live_price)}`
+      : osyncMoney(p.price);
+    const from = [p.sh_order_name, p.bo_invoice_number ? `Inv ${p.bo_invoice_number}` : ""].filter(Boolean).join(" ⇄ ");
+    return `<tr>` +
+      `<td>${escapeHtml(formatDateTime(p.created_at))}</td>` +
+      `<td class="osync-mono"${p.sku && p.sku !== p.barcode ? ` title="SKU ${escapeHtml(p.sku)}"` : ""}>${escapeHtml(p.barcode)}</td>` +
+      `<td class="osync-created-title">${titleCell}</td>` +
+      `<td class="osync-num" title="${escapeHtml(priceHint)}">${priceCell}</td>` +
+      `<td class="osync-num">${osyncMoney(p.unit_cost)}</td>` +
+      `<td>${osyncCreatedLiveCell(p)}</td>` +
+      `<td>${escapeHtml(from || "—")}</td>` +
+      `<td>${escapeHtml(p.store_name || "")}</td>` +
+      `</tr>`;
+  }).join("");
+  body.innerHTML = summary +
+    (d.warnings || []).map((w) => `<div class="osync-fix-warn">${escapeHtml(w)}</div>`).join("") +
+    `<table class="osync-missing-table osync-created-table"><thead><tr>` +
+    `<th>Created</th><th>Barcode</th><th>Title</th>` +
+    `<th class="osync-num">Price</th><th class="osync-num">Cost</th>` +
+    `<th>In Shopify</th><th>For</th><th>Store</th>` +
+    `</tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function osyncCreatedExport() {
+  const products = ((osyncCreated.data || {}).products) || [];
+  if (!products.length) {
+    showToast("Nothing to export", "info");
+    return;
+  }
+  bovDownloadSheet({
+    sheet: "Created in Shopify",
+    header: ["Created", "Barcode", "Title", "SKU", "Price", "Cost", "Price from", "Status in Shopify",
+             "On storefront", "Order", "Invoice", "Store", "Shopify product"],
+    data: products.map((p) => [
+      formatDateTime(p.created_at), p.barcode, p.title || "", p.sku || "", p.price, p.unit_cost,
+      OSYNC_CREATED_SOURCE_LABELS[p.price_source] || p.price_source || "",
+      p.live_missing ? "Deleted" : (p.live_status || ""),
+      p.live_missing ? "" : (p.live_published ? "Yes" : "No"),
+      p.sh_order_name || "", p.bo_invoice_number || "", p.store_name || "", p.admin_url || "",
+    ]),
+    widths: [18, 16, 44, 18, 10, 10, 12, 14, 12, 12, 12, 20, 52],
+    fname: "shopify-products-created",
   });
 }
 

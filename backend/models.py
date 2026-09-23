@@ -168,6 +168,33 @@ class OrderSyncFixHistory(Base):
 
     shopify_store = relationship("Store", foreign_keys=[shopify_store_id])
 
+
+class OrderSyncCreatedProduct(Base):
+    """One Shopify product created by "Fix in Shopify" for a UPC the store did
+    not carry. Reusing a product that already existed is NOT logged here."""
+    __tablename__ = "order_sync_created_products"
+
+    id = Column(Integer, primary_key=True, index=True)
+    batch_id = Column(String(36), index=True)
+    shopify_store_id = Column(Integer, ForeignKey("stores.id", ondelete="SET NULL"), nullable=True)
+    store_name = Column(String(255))
+    barcode = Column(String(64), nullable=False, index=True)
+    title = Column(String(255))
+    sku = Column(String(64))
+    price = Column(Numeric(14, 2))
+    unit_cost = Column(Numeric(14, 2))
+    price_source = Column(String(16))                    # items_tbl | invoice
+    product_gid = Column(String(64), nullable=False)
+    variant_gid = Column(String(64))
+    sh_order_id = Column(String(64))
+    sh_order_name = Column(String(64))
+    bo_invoice_id = Column(Integer)
+    bo_invoice_number = Column(String(64))
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    shopify_store = relationship("Store", foreign_keys=[shopify_store_id])
+
+
 class SalesExclusion(Base):
     __tablename__ = "sales_exclusions"
 
