@@ -4915,6 +4915,7 @@
               <button type="button" class="btn btn-secondary" id="osync-missing" style="font-size: 0.75rem; padding: 0.3rem 0.7rem;" title="Products on BackOffice-only orders that the Shopify store does not carry">Missing in Shopify…</button>
               <button type="button" class="btn btn-secondary" id="osync-created" style="font-size: 0.75rem; padding: 0.3rem 0.7rem;" title="Every product this app has created in Shopify">Created products…</button>
               <button type="button" class="btn btn-secondary" id="osync-dup" style="font-size: 0.75rem; padding: 0.3rem 0.7rem;" title="Shopify orders with no tracking that duplicate another order from the same customer">Duplicates…</button>
+              <button type="button" class="btn btn-secondary" id="osync-chan" style="font-size: 0.75rem; padding: 0.3rem 0.7rem;" title="Cancel Online Store orders that are not Unfulfilled — their real copy came in through the web hook">Online Store…</button>
               <button type="button" class="btn btn-primary" id="osync-fix" style="font-size: 0.75rem; padding: 0.3rem 0.7rem;">Fix in Shopify…</button>
             </div>
             <!-- Selection strip, shown while picking orders to fix -->
@@ -6118,6 +6119,32 @@
           <button type="button" class="btn btn-secondary" id="osync-dup-cancel">Close</button>
           <button type="button" class="btn btn-danger" id="osync-dup-apply" disabled>Cancel orders</button>
           <button type="button" class="btn btn-primary" id="osync-dup-done" style="display: none;">Done</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Order Sync: cancel Online Store copies (declared after osync-dup-modal so it stacks on top) -->
+    <div id="osync-chan-modal" class="modal">
+      <div class="modal-content osync-fix-modal-content osync-created-modal-content">
+        <div class="modal-header osync-modal-header">
+          <div class="osync-modal-titles">
+            <h3 id="osync-chan-title">Cancel Online Store duplicates</h3>
+            <span id="osync-chan-sub" class="osync-modal-pos"></span>
+          </div>
+          <div class="osync-modal-nav">
+            <button type="button" class="modal-close" id="osync-chan-x">&times;</button>
+          </div>
+        </div>
+        <div class="modal-body osync-fix-body" id="osync-chan-body"></div>
+        <div class="modal-footer osync-modal-footer">
+          <span id="osync-chan-policy" class="osync-modal-fix-note"></span>
+          <label class="osync-fix-opt" id="osync-chan-confirm-wrap" style="display: none;">
+            Type <strong>CANCEL</strong> to enable
+            <input type="text" id="osync-chan-confirm" class="dark-input osync-dup-confirm" autocomplete="off" spellcheck="false" placeholder="CANCEL">
+          </label>
+          <button type="button" class="btn btn-secondary" id="osync-chan-cancel">Close</button>
+          <button type="button" class="btn btn-danger" id="osync-chan-apply" disabled>Cancel orders</button>
+          <button type="button" class="btn btn-primary" id="osync-chan-done" style="display: none;">Done</button>
         </div>
       </div>
     </div>

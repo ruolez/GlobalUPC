@@ -196,7 +196,8 @@ class OrderSyncCreatedProduct(Base):
 
 
 class OrderSyncCancelledOrder(Base):
-    """One duplicate Shopify order this app cancelled (or tried to). Written
+    """One Shopify order this app cancelled (or tried to) — a duplicate, or an
+    Online Store copy (`kind`). Written
     as `pending` BEFORE the mutation: cancellation is irreversible, so an
     attempt that crashes mid-flight must not vanish from the log."""
     __tablename__ = "order_sync_cancelled_orders"
@@ -229,6 +230,10 @@ class OrderSyncCancelledOrder(Base):
     cancel_job_id = Column(String(128))
     verified_cancelled = Column(Boolean, default=False)
     error_message = Column(Text)
+    kind = Column(String(16), default="duplicate")       # duplicate | channel
+    channel = Column(String(64))
+    fulfillment_status = Column(String(30))
+    fulfillments_cancelled = Column(Integer, default=0)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
 
     shopify_store = relationship("Store", foreign_keys=[shopify_store_id])

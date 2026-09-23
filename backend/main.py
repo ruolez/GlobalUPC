@@ -14013,6 +14013,8 @@ from schemas import (
     OrderSyncDupPlanRequest, OrderSyncDupPlanResponse, OrderSyncDupRow,
     OrderSyncDupCancelRequest, OrderSyncDupCancelResponse, OrderSyncDupResult,
     OrderSyncCancelledOrderRow, OrderSyncCancelledOrdersResponse,
+    OrderSyncChannelPlanRequest, OrderSyncChannelPlanResponse, OrderSyncChannelRow,
+    OrderSyncChannelCancelRequest, OrderSyncChannelCancelResponse,
 )
 from shopify_helper import fetch_orders_for_duplicates
 
@@ -14130,10 +14132,16 @@ async def plan_order_sync_duplicates(req: OrderSyncDupPlanRequest):
     )
 
 
-def _order_sync_dup_open_record(batch_id: str, ctx: Dict[str, Any], row: Dict[str, Any]) -> Optional[int]:
+def _order_sync_dup_open_record(batch_id: str, ctx: Dict[str, Any], row: Dict[str, Any],
+                                kind: str = "duplicate") -> Optional[int]:
     """Log the attempt BEFORE the mutation, so an irreversible cancel that
-    dies mid-flight is still visible. Returns the row id to update after."""
-    twin = row.get("twin") or {}
+    dies mid-flight is still visible. Returns the row id to update after.
+    `kind="channel"` rows carry the web-hook copy (if any) as the twin."""
+    twin = (row.get("copy") if kind == "channel" else row.get("twin")) or {}
+    if kind == "channel":
+        staff_note = ofix.channel_staff_note(twin)
+    else:
+        staff_note = ofix.dup_staff_note(twin) if twin else None
     try:
         with db_session() as db:
             rec = OrderSyncCancelledOrder(
@@ -14157,9 +14165,12 @@ def _order_sync_dup_open_record(batch_id: str, ctx: Dict[str, Any], row: Dict[st
                 ambiguous=row.get("status") == "ambiguous",
                 flags=row.get("flags") or [],
                 alternatives=row.get("alternatives") or [],
-                staff_note=ofix.dup_staff_note(twin) if twin else None,
+                staff_note=staff_note,
                 financial_status=row.get("financial_status"),
                 net_payment=row.get("net_payment"),
+                kind=kind,
+                channel=row.get("channel"),
+                fulfillment_status=row.get("fulfillment_status"),
                 status="pending",
             )
             db.add(rec)
@@ -14181,6 +14192,7 @@ def _order_sync_dup_close_record(record_id: Optional[int], result: Dict[str, Any
             rec.status = result["status"]
             rec.cancel_job_id = result.get("job_id")
             rec.verified_cancelled = bool(result.get("verified_cancelled"))
+            rec.fulfillments_cancelled = int(result.get("fulfillments_cancelled") or 0)
             rec.error_message = result.get("message") if result["status"] in ("skipped", "failed") else None
             db.commit()
     except Exception as e:
@@ -14253,10 +14265,10 @@ async def cancel_order_sync_duplicates(req: OrderSyncDupCancelRequest):
     return OrderSyncDupCancelResponse(**payload)
 
 
-@app.post("/api/order-sync/duplicates/cancel/stream")
-async def stream_order_sync_duplicates(req: OrderSyncDupCancelRequest):
-    """SSE: one `progress` event as each order starts and finishes, then one
-    `result` event with every outcome."""
+def _order_sync_cancel_stream(run) -> "BoundedStreamingResponse":
+    """SSE for a cancel run: one `progress` event as each order starts and
+    finishes, then one `result` event with every outcome. `run(progress)`
+    returns the result payload."""
     queue: asyncio.Queue = asyncio.Queue()
 
     async def progress(item: Dict[str, Any]):
@@ -14264,7 +14276,7 @@ async def stream_order_sync_duplicates(req: OrderSyncDupCancelRequest):
 
     async def runner():
         try:
-            payload = await _order_sync_dup_run(req, progress=progress)
+            payload = await run(progress)
             await queue.put(("result", payload))
         except HTTPException as e:
             await queue.put(("error", {"message": str(e.detail)}))
@@ -14291,6 +14303,132 @@ async def stream_order_sync_duplicates(req: OrderSyncDupCancelRequest):
     return BoundedStreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "Connection": "keep-alive",
                                       "X-Accel-Buffering": "no"})
+
+
+@app.post("/api/order-sync/duplicates/cancel/stream")
+async def stream_order_sync_duplicates(req: OrderSyncDupCancelRequest):
+    """SSE twin of /duplicates/cancel (see _order_sync_cancel_stream)."""
+    return _order_sync_cancel_stream(lambda progress: _order_sync_dup_run(req, progress=progress))
+
+
+# ---------------------------------------------------------------------------
+# Order Sync — cancel "Online Store" copies
+#
+# The real, updated copy of these orders arrived through the web-hook channel,
+# so every Online Store order that is not UNFULFILLED is cancelled (no refund,
+# no restock, customer never notified). On demand only, like Duplicates.
+# ---------------------------------------------------------------------------
+
+async def _order_sync_channel_plan(date_from: str, date_to: str) -> Dict[str, Any]:
+    date_from, date_to = _order_sync_validate_range(date_from, date_to)
+    ctx = await _order_sync_fix_context()
+    pool = await _order_sync_dup_pool(ctx, date_from, date_to)
+    busy = _order_sync_dup_busy([o["id"] for o in pool if osync.is_online_store(o.get("channel"))])
+    plan = osync.plan_channel_cancels(pool, date_from, date_to, busy)
+    shop = ctx["shop_domain"]
+    for r in plan["rows"]:
+        r["admin_url"] = _order_sync_dup_admin_url(shop, r["sh_order_id"])
+        if r.get("copy"):
+            r["copy"]["admin_url"] = _order_sync_dup_admin_url(shop, r["copy"]["sh_order_id"])
+    return {
+        "configured": True,
+        "shopify_store_name": ctx["shopify_store_name"],
+        "date_from": date_from, "date_to": date_to,
+        "pool_size": len(pool),
+        "rows": plan["rows"], "summary": plan["summary"],
+        "_ctx": ctx,
+    }
+
+
+async def _order_sync_channel_scopes(sctx) -> Tuple[List[str], List[str]]:
+    """write_orders is required; the fulfillment scope only matters when
+    Shopify refuses to cancel a fulfilled order, so it only warns."""
+    warnings: List[str] = []
+    all_missing, warning = await ofix.check_write_scopes(
+        sctx, required=ofix.CANCEL_SCOPES + ofix.CHANNEL_FALLBACK_SCOPES)
+    if warning:
+        warnings.append(warning)
+    missing = [m for m in all_missing if m in ofix.CANCEL_SCOPES]
+    fb_missing = [m for m in all_missing if m not in ofix.CANCEL_SCOPES]
+    if fb_missing:
+        warnings.append(f"The Shopify token lacks {', '.join(fb_missing)} — if Shopify refuses to cancel "
+                        "a fulfilled order, its fulfillment cannot be cancelled first and that order will fail.")
+    return missing, warnings
+
+
+@app.post("/api/order-sync/channel-cancel/plan", response_model=OrderSyncChannelPlanResponse)
+async def plan_order_sync_channel_cancel(req: OrderSyncChannelPlanRequest):
+    """Dry run: the Online Store orders a cancel run would cancel. No mutations."""
+    payload = await _order_sync_channel_plan(req.date_from, req.date_to)
+    ctx = payload.pop("_ctx")
+    async with aiohttp.ClientSession() as session:
+        sctx = ofix.ShopifyCtx(session, ctx["shop_domain"], ctx["admin_api_key"], ctx["api_version"])
+        scopes_missing, warnings = await _order_sync_channel_scopes(sctx)
+    rows = payload.pop("rows")
+    return OrderSyncChannelPlanResponse(
+        **payload,
+        rows=[OrderSyncChannelRow(**r) for r in rows],
+        scopes_missing=scopes_missing,
+        warnings=warnings,
+    )
+
+
+async def _order_sync_channel_run(req: OrderSyncChannelCancelRequest, progress=None) -> Dict[str, Any]:
+    """Re-plan from fresh data and cancel only the confirmed orders the plan
+    still proposes, one at a time."""
+    payload = await _order_sync_channel_plan(req.date_from, req.date_to)
+    ctx = payload["_ctx"]
+    by_id = {r["sh_order_id"]: r for r in payload["rows"]}
+    batch_id = str(uuid.uuid4())
+    results: List[Dict[str, Any]] = []
+
+    async def emit(item: Dict[str, Any]):
+        if progress:
+            await progress(item)
+
+    async with aiohttp.ClientSession() as session:
+        sctx = ofix.ShopifyCtx(session, ctx["shop_domain"], ctx["admin_api_key"], ctx["api_version"])
+        scopes_missing, warnings = await _order_sync_channel_scopes(sctx)
+        if scopes_missing:
+            raise HTTPException(status_code=400,
+                                detail=f"Shopify token is missing scopes: {', '.join(scopes_missing)}")
+
+        targets = list(dict.fromkeys(req.targets))
+        total = len(targets)
+        for done, order_id in enumerate(targets):
+            await emit({"sh_order_id": order_id, "status": "running", "done": done, "total": total})
+            row = by_id.get(order_id)
+            if not row or row["status"] != "proposed":
+                result = {"sh_order_id": order_id, "sh_name": (row or {}).get("sh_name"),
+                          "status": "skipped", "verified_cancelled": False, "fulfillments_cancelled": 0,
+                          "message": (row or {}).get("reason")
+                          or "No longer an Online Store order that needs cancelling — nothing was cancelled"}
+            else:
+                record_id = _order_sync_dup_open_record(batch_id, ctx, row, kind="channel")
+                result = await ofix.apply_channel_cancel(sctx, row)
+                _order_sync_dup_close_record(record_id, result)
+            results.append(result)
+            await emit({**{k: result.get(k) for k in
+                           ("sh_order_id", "sh_name", "status", "message", "fulfillments_cancelled")},
+                        "done": done + 1, "total": total})
+
+    return {"batch_id": batch_id,
+            "results": [{k: r.get(k) for k in
+                         ("sh_order_id", "sh_name", "twin_order_id", "twin_order_name", "status",
+                          "message", "verified_cancelled", "fulfillments_cancelled")} for r in results],
+            "warnings": warnings}
+
+
+@app.post("/api/order-sync/channel-cancel", response_model=OrderSyncChannelCancelResponse)
+async def cancel_order_sync_channel(req: OrderSyncChannelCancelRequest):
+    """Cancel the confirmed Online Store orders (plain JSON twin of /stream)."""
+    return OrderSyncChannelCancelResponse(**await _order_sync_channel_run(req))
+
+
+@app.post("/api/order-sync/channel-cancel/stream")
+async def stream_order_sync_channel_cancel(req: OrderSyncChannelCancelRequest):
+    """SSE twin of /channel-cancel (see _order_sync_cancel_stream)."""
+    return _order_sync_cancel_stream(lambda progress: _order_sync_channel_run(req, progress=progress))
 
 
 @app.get("/api/order-sync/cancelled-duplicates", response_model=OrderSyncCancelledOrdersResponse)
@@ -14324,6 +14462,10 @@ async def order_sync_cancelled_duplicates(limit: int = 200):
             date_delta_days=r.date_delta_days,
             ambiguous=bool(r.ambiguous),
             flags=r.flags or [],
+            kind=r.kind or "duplicate",
+            channel=r.channel,
+            fulfillment_status=r.fulfillment_status,
+            fulfillments_cancelled=r.fulfillments_cancelled or 0,
             status=r.status,
             verified_cancelled=bool(r.verified_cancelled),
             error_message=r.error_message,

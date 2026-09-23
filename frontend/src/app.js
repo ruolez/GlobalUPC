@@ -27130,12 +27130,44 @@ function initOrderSyncPage() {
     if (osyncDup.applying && e.target.id === "osync-dup-modal") e.stopImmediatePropagation();
   }, true);
 
+  // Online Store copies: plan, per-order picking, typed confirmation, apply
+  document.getElementById("osync-chan")?.addEventListener("click", osyncChanOpen);
+  document.getElementById("osync-chan-x")?.addEventListener("click", osyncChanClose);
+  document.getElementById("osync-chan-cancel")?.addEventListener("click", osyncChanClose);
+  document.getElementById("osync-chan-done")?.addEventListener("click", () => closeModal("osync-chan-modal"));
+  document.getElementById("osync-chan-apply")?.addEventListener("click", osyncChanApply);
+  document.getElementById("osync-chan-confirm")?.addEventListener("input", osyncChanRefreshApply);
+  document.getElementById("osync-chan-body")?.addEventListener("change", (e) => {
+    if (e.target.id === "osync-chan-all") {
+      ((osyncChan.data && osyncChan.data.rows) || []).filter((r) => r.status === "proposed").forEach((r) =>
+        (e.target.checked ? osyncChan.keys.add(r.sh_order_id) : osyncChan.keys.delete(r.sh_order_id)));
+      document.querySelectorAll("[data-osync-chan-pick]").forEach((b) => {
+        b.checked = osyncChan.keys.has(b.getAttribute("data-osync-chan-pick"));
+      });
+      osyncChanRefreshApply();
+      return;
+    }
+    const box = e.target.closest("[data-osync-chan-pick]");
+    if (!box) return;
+    const id = box.getAttribute("data-osync-chan-pick");
+    if (box.checked) osyncChan.keys.add(id); else osyncChan.keys.delete(id);
+    osyncChanRefreshApply();
+  });
+  document.getElementById("osync-chan-modal")?.addEventListener("click", (e) => {
+    if (osyncChan.applying && e.target.id === "osync-chan-modal") e.stopImmediatePropagation();
+  }, true);
+
   document.getElementById("osync-modal-close")?.addEventListener("click", () => closeModal("osync-modal"));
   document.getElementById("osync-modal-prev")?.addEventListener("click", () => osyncStepDetail(-1));
   document.getElementById("osync-modal-next")?.addEventListener("click", () => osyncStepDetail(1));
   document.addEventListener("keydown", (e) => {
     // The duplicates / fix / missing modals stack above the drill-in:
     // Escape closes the top one only, and never mid-cancel.
+    const chanModal = document.getElementById("osync-chan-modal");
+    if (chanModal && chanModal.classList.contains("active")) {
+      if (e.key === "Escape") osyncChanClose();
+      return;
+    }
     const dupModal = document.getElementById("osync-dup-modal");
     if (dupModal && dupModal.classList.contains("active")) {
       if (e.key === "Escape") osyncDupClose();
@@ -27602,7 +27634,7 @@ function osyncVisibleRows() {
   if (search) {
     rows = rows.filter((r) =>
       [
-        r.sh_name, r.bo_invoice_number, r.sh_customer, r.bo_customer, r.bo_tracking,
+        r.sh_name, r.bo_invoice_number, r.sh_customer, r.bo_customer, r.bo_tracking, r.sh_channel,
         ...(r.sh_tracking || []),
       ].some((v) => v && String(v).toLowerCase().includes(search)),
     );
@@ -27704,6 +27736,7 @@ function renderOrderSync() {
 const OSYNC_COLUMNS = [
   { key: "date", label: "Date", width: 68 },
   { key: "sh_name", label: "Shopify order", width: 182 },
+  { key: "sh_channel", label: "Channel", width: 116 },
   { key: "bo_invoice_number", label: "Invoice", width: 158 },
   { key: "customer", label: "Customer" },
   { key: "match_method", label: "Matched by", width: 104 },
@@ -27713,6 +27746,16 @@ const OSYNC_COLUMNS = [
   { key: "total_delta", label: "Δ", num: true, width: 86 },
   { key: "status", label: "Status", width: 108 },
 ];
+
+function osyncChannelPill(channel) {
+  if (!channel) return osyncDash();
+  const cls = osyncIsOnlineStore(channel) ? " is-online-store" : "";
+  return `<span class="osync-channel${cls}" title="${escapeHtml(channel)}">${escapeHtml(channel)}</span>`;
+}
+
+function osyncIsOnlineStore(channel) {
+  return String(channel || "").trim().toLowerCase() === "online store";
+}
 
 function osyncColgroup(cols) {
   return "<colgroup>" + cols.map((c) => `<col${c.width ? ` style="width:${c.width}px"` : ""}>`).join("") + "</colgroup>";
@@ -27724,6 +27767,7 @@ function osyncRenderTable() {
   if (!thead || !tbody) return;
   osyncMissingRenderButton();
   osyncDupRenderButton();
+  osyncChanRenderButton();
   const { key: sortKey, dir } = orderSyncState.sort;
   const selecting = osyncFix.selecting;
   const cols = selecting ? [{ key: "_sel", width: 34 }, ...OSYNC_COLUMNS] : OSYNC_COLUMNS;
@@ -27774,6 +27818,9 @@ function osyncRenderTable() {
       const unpaidBadge = (r.sh_outstanding || 0) > 0.004
         ? ` <span class="osync-flag" title="Shopify shows an unpaid balance — a fix run marks it paid">unpaid ${escapeHtml(osyncMoney(r.sh_outstanding))}</span>`
         : "";
+      const cancelledBadge = r.sh_cancelled
+        ? ' <span class="osync-flag" title="Cancelled in Shopify after this comparison ran — run it again to re-pair the invoice">cancelled</span>'
+        : "";
       const issues = (r.issue_kinds || []).map((k) => osyncIssueChip(k)).join(" ");
       const delta = r.total_delta;
       const deltaCls = delta != null && Math.abs(delta) > 0.011 ? " osync-delta-bad" : "";
@@ -27782,7 +27829,8 @@ function osyncRenderTable() {
         `<tr data-osync-pos="${pos}" class="osync-row ${tone}${selCls}">` +
         selCell +
         `<td class="osync-nowrap">${escapeHtml(osyncFmtDate(osyncRowDate(r)))}</td>` +
-        `<td class="osync-nowrap">${nameCell(r.sh_name, r.sh_no_tracking, (r.sh_orders || []).length, sharedBadge + unpaidBadge)}</td>` +
+        `<td class="osync-nowrap">${nameCell(r.sh_name, r.sh_no_tracking, (r.sh_orders || []).length, sharedBadge + unpaidBadge + cancelledBadge)}</td>` +
+        `<td class="osync-nowrap">${osyncChannelPill(r.sh_channel)}</td>` +
         `<td class="osync-nowrap">${nameCell(r.bo_invoice_number, r.bo_no_tracking, (r.bo_invoices || []).length)}</td>` +
         `<td class="osync-customer" title="${escapeHtml(r.sh_customer || r.bo_customer || "")}">${escapeHtml(r.sh_customer || r.bo_customer || "")}</td>` +
         `<td class="osync-nowrap">${osyncMethodPill(r)}</td>` +
@@ -27883,6 +27931,7 @@ function osyncRenderDetail() {
     ? [
         ["Order", r.sh_orders.map((o) => `<strong>${escapeHtml(o.name || "")}</strong>${r.sh_orders.length > 1 ? ` <span class="osync-muted">${osyncMoney(o.total)}</span>` : ""}`).join("<br>")],
         ["Placed", escapeHtml(r.sh_orders.map((o) => o.date).filter(Boolean).join(", "))],
+        ["Channel", osyncChannelPill(r.sh_channel)],
         ["Customer", escapeHtml(r.sh_customer || "—")],
         ["Tracking", r.sh_tracking && r.sh_tracking.length ? r.sh_tracking.map((t) => `<span class="osync-mono">${escapeHtml(t)}</span>`).join("<br>") : r.sh_no_tracking ? '<span class="osync-flag">MISSING</span>' : '<span class="osync-muted">—</span>'],
         ["Total", `<strong>${osyncMoney(r.sh_total)}</strong>` + ((r.sh_outstanding || 0) > 0.004 ? ` <span class="osync-flag">unpaid ${escapeHtml(osyncMoney(r.sh_outstanding))}</span>` : "")],
@@ -27982,11 +28031,11 @@ function osyncExport() {
   }
   const data = orderSyncState.data || {};
   const fname = `order-sync_${data.date_from || ""}_${data.date_to || ""}`;
-  const orderHeader = ["Date", "Status", "Matched by", "Ambiguous", "Shopify order", "Invoice", "Customer",
+  const orderHeader = ["Date", "Status", "Matched by", "Ambiguous", "Shopify order", "Channel", "Invoice", "Customer",
     "Tracking", "Shopify total", "BackOffice total", "Delta", "Issues"];
   const orderRows = rows.map((r) => [
     osyncRowDate(r), OSYNC_STATUS_LABELS[r.status] || r.status, OSYNC_METHOD_LABELS[r.match_method] || "",
-    r.ambiguous ? "yes" : "", r.sh_name || "", r.bo_invoice_number || "", r.sh_customer || r.bo_customer || "",
+    r.ambiguous ? "yes" : "", r.sh_name || "", r.sh_channel || "", r.bo_invoice_number || "", r.sh_customer || r.bo_customer || "",
     (r.sh_tracking || []).join(", ") || r.bo_tracking || "",
     r.sh_total, r.bo_total, r.total_delta, (r.issue_kinds || []).map((k) => OSYNC_ISSUE_LABELS[k] || k).join(", "),
   ]);
@@ -28004,7 +28053,7 @@ function osyncExport() {
   if (typeof XLSX !== "undefined" && XLSX.utils) {
     const wb = XLSX.utils.book_new();
     const ws1 = XLSX.utils.aoa_to_sheet([orderHeader, ...orderRows]);
-    ws1["!cols"] = [10, 14, 11, 9, 14, 12, 26, 22, 13, 13, 10, 28].map((w) => ({ wch: w }));
+    ws1["!cols"] = [10, 14, 11, 9, 14, 14, 12, 26, 22, 13, 13, 10, 28].map((w) => ({ wch: w }));
     XLSX.utils.book_append_sheet(wb, ws1, "Orders");
     const ws2 = XLSX.utils.aoa_to_sheet([lineHeader, ...lineRows]);
     ws2["!cols"] = [10, 14, 12, 16, 12, 34, 10, 12, 12, 14, 12, 14, 18].map((w) => ({ wch: w }));
@@ -28903,13 +28952,18 @@ function osyncDupDefaultChecked(row) {
   return row.status === "proposed";
 }
 
-function osyncDupSetPhase(phase, { applyLabel = "Cancel orders", applyEnabled = false } = {}) {
-  const close = document.getElementById("osync-dup-cancel");
-  const apply = document.getElementById("osync-dup-apply");
-  const done = document.getElementById("osync-dup-done");
-  const x = document.getElementById("osync-dup-x");
-  const policy = document.getElementById("osync-dup-policy");
-  const confirmWrap = document.getElementById("osync-dup-confirm-wrap");
+function osyncDupSetPhase(phase, opts = {}) {
+  osyncCancelModalPhase("osync-dup", OSYNC_DUP_POLICY, phase, opts);
+}
+
+// Footer state shared by the two cancel modals (ids `${prefix}-cancel`, …).
+function osyncCancelModalPhase(prefix, policyText, phase, { applyLabel = "Cancel orders", applyEnabled = false } = {}) {
+  const close = document.getElementById(`${prefix}-cancel`);
+  const apply = document.getElementById(`${prefix}-apply`);
+  const done = document.getElementById(`${prefix}-done`);
+  const x = document.getElementById(`${prefix}-x`);
+  const policy = document.getElementById(`${prefix}-policy`);
+  const confirmWrap = document.getElementById(`${prefix}-confirm-wrap`);
   if (close) close.style.display = phase === "done" || phase === "applying" ? "none" : "";
   if (apply) {
     apply.style.display = phase === "plan" || phase === "loading" ? "" : "none";
@@ -28918,12 +28972,12 @@ function osyncDupSetPhase(phase, { applyLabel = "Cancel orders", applyEnabled = 
   }
   if (done) done.style.display = phase === "done" ? "" : "none";
   if (x) x.style.display = phase === "applying" ? "none" : "";
-  if (policy) policy.textContent = phase === "plan" ? OSYNC_DUP_POLICY : "";
+  if (policy) policy.textContent = phase === "plan" ? policyText : "";
   if (confirmWrap) confirmWrap.style.display = phase === "plan" ? "" : "none";
 }
 
-function osyncDupConfirmed() {
-  const el = document.getElementById("osync-dup-confirm");
+function osyncDupConfirmed(id = "osync-dup-confirm") {
+  const el = document.getElementById(id);
   return ((el && el.value) || "").trim().toUpperCase() === "CANCEL";
 }
 
@@ -29119,10 +29173,28 @@ async function osyncDupApply() {
   }
   if (sub) sub.textContent = `Cancelling… 0 of ${rows.length} done`;
 
+  let payload;
+  try {
+    payload = await osyncCancelStream("/order-sync/duplicates/cancel", reqBody, (p) => {
+      osyncDupSetOrderStatus(p.sh_order_id, p.status, p.status === "running" ? null : p.message);
+      if (sub) sub.textContent = `Cancelling… ${p.done} of ${p.total} done`;
+    });
+  } catch (e) {
+    osyncDupFinish(null, e.message || String(e));
+    return;
+  }
+  osyncDupFinish(payload, null);
+}
+
+// POST `${path}/stream` and relay each `progress` frame; resolves with the
+// `result` payload. When the stream fails before any order started, the
+// plain `path` endpoint is tried instead — safe, nothing was cancelled yet.
+// A failure after that point is thrown as-is: orders may already be gone.
+async function osyncCancelStream(path, reqBody, onProgress) {
   let payload = null;
   let sawProgress = false;
   try {
-    const resp = await fetch(`${API_BASE}/order-sync/duplicates/cancel/stream`, {
+    const resp = await fetch(`${API_BASE}${path}/stream`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: reqBody,
     });
     if (!resp.ok || !resp.body) {
@@ -29144,11 +29216,9 @@ async function osyncDupApply() {
         const [, ev, dataStr] = m;
         if (ev === "progress") {
           sawProgress = true;
-          try {
-            const p = JSON.parse(dataStr);
-            osyncDupSetOrderStatus(p.sh_order_id, p.status, p.status === "running" ? null : p.message);
-            if (sub) sub.textContent = `Cancelling… ${p.done} of ${p.total} done`;
-          } catch (e) { /* malformed frame */ }
+          let p = null;
+          try { p = JSON.parse(dataStr); } catch (e) { /* malformed frame */ }
+          if (p) onProgress(p);
         } else if (ev === "result") {
           payload = JSON.parse(dataStr);
         } else if (ev === "error") {
@@ -29159,21 +29229,13 @@ async function osyncDupApply() {
       }
     }
     if (!payload) throw new Error("stream ended without a result");
+    return payload;
   } catch (e) {
-    if (!sawProgress) {
-      // Nothing had started — safe to retry through the plain endpoint.
-      try {
-        payload = await osyncPost("/order-sync/duplicates/cancel", JSON.parse(reqBody));
-      } catch (e2) {
-        osyncDupFinish(null, e2.message || String(e2));
-        return;
-      }
-    } else {
-      osyncDupFinish(null, `${e.message || e} — some orders may already be cancelled; run the comparison again to see the current state.`);
-      return;
+    if (sawProgress) {
+      throw new Error(`${e.message || e} — some orders may already be cancelled; run the comparison again to see the current state.`);
     }
+    return osyncPost(path, JSON.parse(reqBody));
   }
-  osyncDupFinish(payload, null);
 }
 
 function osyncDupFinish(payload, errorMessage) {
@@ -29233,6 +29295,305 @@ function osyncDupRemoveRow(shOrderId) {
 function osyncDupClose() {
   if (osyncDup.applying) return;
   closeModal("osync-dup-modal");
+}
+
+// ---- Cancel Online Store copies ----------------------------------------------
+//
+// The real, updated copy of these orders came in through the web-hook
+// channel, so every Online Store order that is not Unfulfilled is cancelled:
+// no refund, no restock, the customer is never notified. The web-hook copy is
+// looked up only so each row can be verified before ticking it.
+
+const osyncChan = {
+  data: null,            // last /channel-cancel/plan response
+  keys: new Set(),       // sh_order_id of the orders the user ticked
+  applying: false,
+};
+
+const OSYNC_CHAN_POLICY =
+  "Cancels in Shopify with no refund and no restock — the customer is never notified. " +
+  "If Shopify refuses because the order is fulfilled, its fulfillment is cancelled first (no email). This cannot be undone.";
+
+const OSYNC_CHAN_STATUS = {
+  proposed: ["Will cancel", "is-warn"],
+  blocked: ["Already handled", "is-muted"],
+  running: ["Cancelling…", "is-muted"],
+  cancelled: ["Cancelled", "is-ok"],
+  noop: ["Already cancelled", "is-muted"],
+  skipped: ["Skipped", "is-warn"],
+  failed: ["Failed", "is-bad"],
+};
+
+const OSYNC_CHAN_FLAG_HINTS = {
+  paid: "Shopify holds a payment for this order — it is NOT refunded; the money stays as it is",
+  refunded: "This order already carries a refund",
+  has_tracking: "This order carries a tracking number",
+};
+
+function osyncChanPill(status) {
+  const [label, tone] = OSYNC_CHAN_STATUS[status] || [status, "is-muted"];
+  return `<span class="osync-fix-pill ${tone}">${escapeHtml(label)}</span>`;
+}
+
+function osyncShopifyStatusLabel(v) {
+  return String(v || "").toLowerCase().replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase());
+}
+
+function osyncChanRenderButton() {
+  const btn = document.getElementById("osync-chan");
+  if (!btn) return;
+  btn.disabled = !orderSyncState.data || osyncFix.selecting;
+}
+
+function osyncChanSetPhase(phase, opts = {}) {
+  osyncCancelModalPhase("osync-chan", OSYNC_CHAN_POLICY, phase, opts);
+}
+
+function osyncChanRefreshApply() {
+  if (osyncChan.applying) return;
+  const n = osyncChan.keys.size;
+  osyncChanSetPhase("plan", {
+    applyLabel: n ? `Cancel ${n} order${n === 1 ? "" : "s"}` : "Cancel orders",
+    applyEnabled: n > 0 && osyncDupConfirmed("osync-chan-confirm"),
+  });
+  const all = document.getElementById("osync-chan-all");
+  const selectable = ((osyncChan.data && osyncChan.data.rows) || []).filter((r) => r.status === "proposed");
+  if (all) {
+    all.checked = selectable.length > 0 && selectable.every((r) => osyncChan.keys.has(r.sh_order_id));
+    all.indeterminate = !all.checked && osyncChan.keys.size > 0;
+  }
+}
+
+function osyncChanOrderLink(name, url) {
+  const label = `<strong>${escapeHtml(name || "")}</strong>`;
+  return url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener" title="Open in Shopify admin">${label}</a>` : label;
+}
+
+function osyncChanRowCard(row, { status, message, checkable }) {
+  const checked = osyncChan.keys.has(row.sh_order_id);
+  // "fulfilled" only repeats the status text; the policy line covers it.
+  const flags = (row.flags || []).filter((f) => f !== "fulfilled").map((f) =>
+    `<span class="osync-flag" title="${escapeHtml(OSYNC_CHAN_FLAG_HINTS[f] || f)}">${escapeHtml(f.replace("_", " "))}</span>`).join(" ");
+  const copy = row.copy;
+  const copyHtml = copy
+    ? `<div class="osync-dup-side"><span class="osync-muted">Real copy:</span> ` +
+      `${osyncChanOrderLink(copy.sh_name || copy.sh_order_id, copy.admin_url)} ` +
+      `${osyncChannelPill(copy.channel)} ` +
+      `<span class="osync-muted">${escapeHtml(copy.sh_date || "")}</span> ` +
+      `<span class="osync-num">${osyncMoney(copy.sh_total)}</span> ` +
+      `<span class="osync-muted">· ${escapeHtml(osyncShopifyStatusLabel(copy.fulfillment_status))}` +
+      (row.total_delta != null ? ` · ${osyncMoney(Math.abs(row.total_delta))} apart` : "") +
+      (row.date_delta_days != null ? `, ${row.date_delta_days} day${row.date_delta_days === 1 ? "" : "s"} apart` : "") +
+      `</span></div>`
+    : `<div class="osync-dup-side osync-muted">No other-channel order from this customer with a similar total was found.</div>`;
+  return (
+    `<div class="osync-fix-order osync-dup-order" data-osync-chan-order="${escapeHtml(row.sh_order_id)}">` +
+    `<div class="osync-fix-order-head">` +
+    `<span class="osync-fix-order-title">` +
+    (checkable && row.status === "proposed"
+      ? `<label class="osync-dup-pick"><input type="checkbox" data-osync-chan-pick="${escapeHtml(row.sh_order_id)}"${checked ? " checked" : ""}></label> `
+      : "") +
+    `${osyncChanOrderLink(row.sh_name, row.admin_url)} ` +
+    `${osyncChannelPill(row.channel)} ` +
+    `<span class="osync-muted">${escapeHtml(row.sh_date || "")}</span> ` +
+    `<span class="osync-num">${osyncMoney(row.sh_total)}</span> ` +
+    `<span class="osync-muted">· ${escapeHtml(osyncShopifyStatusLabel(row.fulfillment_status))} · ${escapeHtml(osyncShopifyStatusLabel(row.financial_status))}</span> ` +
+    (row.invoice
+      ? `<span class="osync-flag is-invoice" title="The comparison matched this Online Store order to BackOffice invoice ${escapeHtml(row.invoice)} — cancelling it leaves that invoice without a Shopify order unless the web-hook copy re-pairs. Left unticked.">invoice ${escapeHtml(row.invoice)}</span> `
+      : "") +
+    flags +
+    `</span>` +
+    `<span class="osync-fix-order-status">${osyncChanPill(status)}</span>` +
+    `</div>` +
+    (message
+      ? `<div class="osync-fix-order-msg ${status === "failed" ? "is-bad" : ""}">${escapeHtml(message)}</div>`
+      : "") +
+    `<div class="osync-dup-pair">` + copyHtml +
+    ((row.tracking || []).length
+      ? `<div class="osync-dup-side"><span class="osync-muted">Tracking:</span> ${row.tracking.map((t) => `<span class="osync-mono">${escapeHtml(t)}</span>`).join(", ")}</div>`
+      : "") +
+    `</div>` +
+    `</div>`
+  );
+}
+
+function osyncChanRenderPlan() {
+  const body = document.getElementById("osync-chan-body");
+  const sub = document.getElementById("osync-chan-sub");
+  if (!body) return;
+  const data = osyncChan.data || {};
+  const rows = data.rows || [];
+  const sum = data.summary || {};
+  if (sub) {
+    sub.textContent = `${osyncFmtDate(data.date_from)}${data.date_from !== data.date_to ? ` – ${osyncFmtDate(data.date_to)}` : ""}` +
+      ` · ${data.pool_size || 0} Shopify orders checked · ${data.shopify_store_name || ""}`;
+  }
+  if (!rows.length) {
+    body.innerHTML =
+      `<div class="osync-missing-empty"><p>No Online Store orders to cancel.</p>` +
+      `<p class="osync-muted">Every Online Store order placed in this range is either Unfulfilled or already cancelled.</p></div>`;
+    osyncChanSetPhase("plan", { applyEnabled: false });
+    const wrap = document.getElementById("osync-chan-confirm-wrap");
+    if (wrap) wrap.style.display = "none";
+    return;
+  }
+  const warnings = (data.warnings || []).length
+    ? `<div class="osync-fix-warn">${data.warnings.map((w) => escapeHtml(w)).join("<br>")}</div>` : "";
+  const scopes = (data.scopes_missing || []).length
+    ? `<div class="osync-fix-error">This Shopify token is missing ${data.scopes_missing.map((x) => escapeHtml(x)).join(", ")} — cancelling will fail.</div>` : "";
+  body.innerHTML =
+    scopes + warnings +
+    `<div class="osync-fix-summary">` +
+    `<label class="osync-dup-pick"><input type="checkbox" id="osync-chan-all" title="Tick or untick every order"></label>` +
+    `<span><strong>${sum.proposed || 0}</strong> Online Store order${sum.proposed === 1 ? "" : "s"} to cancel</span>` +
+    `<span><strong>${sum.with_copy || 0}</strong> with a web-hook copy found</span>` +
+    (rows.some((r) => r.invoice)
+      ? `<span><strong>${rows.filter((r) => r.invoice).length}</strong> matched to an invoice (unticked)</span>` : "") +
+    ((sum.blocked || 0) ? `<span><strong>${sum.blocked}</strong> already handled</span>` : "") +
+    `</div>` +
+    rows.map((r) => osyncChanRowCard(r, { status: r.status, message: r.reason, checkable: true })).join("");
+  osyncChanRefreshApply();
+}
+
+function osyncChanSetOrderStatus(shOrderId, status, message) {
+  const card = document.querySelector(`[data-osync-chan-order="${CSS.escape(shOrderId)}"]`);
+  if (!card) return;
+  const pill = card.querySelector(".osync-fix-order-status");
+  if (pill) pill.innerHTML = osyncChanPill(status);
+  if (message) {
+    let msg = card.querySelector(".osync-fix-order-msg");
+    if (!msg) {
+      msg = document.createElement("div");
+      msg.className = "osync-fix-order-msg";
+      card.querySelector(".osync-fix-order-head").after(msg);
+    }
+    msg.classList.toggle("is-bad", status === "failed");
+    msg.textContent = message;
+  }
+}
+
+async function osyncChanOpen() {
+  const report = orderSyncState.data;
+  if (!report) return;
+  osyncChan.keys.clear();
+  const body = document.getElementById("osync-chan-body");
+  const sub = document.getElementById("osync-chan-sub");
+  const confirm = document.getElementById("osync-chan-confirm");
+  if (confirm) confirm.value = "";
+  if (sub) sub.textContent = "";
+  if (body) {
+    body.innerHTML = `<div class="osync-fix-loading"><span class="progress-spinner"></span> Looking for Online Store orders in this range…</div>`;
+  }
+  osyncChanSetPhase("loading");
+  openModal("osync-chan-modal");
+  try {
+    osyncChan.data = await osyncPost("/order-sync/channel-cancel/plan", {
+      date_from: report.date_from, date_to: report.date_to,
+    });
+    // An Online Store order the report paired with an invoice may be the only
+    // Shopify record of that sale — flagged and left unticked.
+    const invoiceOf = {};
+    (report.rows || []).forEach((r) => {
+      if (r.status !== "matched_ok" && r.status !== "matched_diffs") return;
+      (r.sh_orders || []).forEach((o) => { invoiceOf[o.id] = r.bo_invoice_number; });
+    });
+    (osyncChan.data.rows || []).forEach((r) => {
+      r.invoice = invoiceOf[r.sh_order_id] || null;
+      if (r.status === "proposed" && !r.invoice) osyncChan.keys.add(r.sh_order_id);
+    });
+    osyncChanRenderPlan();
+  } catch (e) {
+    if (body) body.innerHTML = `<div class="osync-fix-error">${escapeHtml(e.message || String(e))}</div>`;
+    osyncChanSetPhase("plan", { applyEnabled: false });
+    const wrap = document.getElementById("osync-chan-confirm-wrap");
+    if (wrap) wrap.style.display = "none";
+  }
+}
+
+async function osyncChanApply() {
+  if (osyncChan.applying || !osyncChan.keys.size || !osyncDupConfirmed("osync-chan-confirm")) return;
+  const rows = (osyncChan.data.rows || []).filter((r) => osyncChan.keys.has(r.sh_order_id) && r.status === "proposed");
+  if (!rows.length) return;
+  const reqBody = JSON.stringify({
+    date_from: osyncChan.data.date_from, date_to: osyncChan.data.date_to,
+    targets: rows.map((r) => r.sh_order_id),
+  });
+
+  osyncChan.applying = true;
+  osyncChanSetPhase("applying");
+  const sub = document.getElementById("osync-chan-sub");
+  const body = document.getElementById("osync-chan-body");
+  if (body) {
+    body.innerHTML = rows.map((r) => osyncChanRowCard(r, { status: "running", message: null, checkable: false })).join("");
+  }
+  if (sub) sub.textContent = `Cancelling… 0 of ${rows.length} done`;
+
+  let payload;
+  try {
+    payload = await osyncCancelStream("/order-sync/channel-cancel", reqBody, (p) => {
+      osyncChanSetOrderStatus(p.sh_order_id, p.status, p.status === "running" ? null : p.message);
+      if (sub) sub.textContent = `Cancelling… ${p.done} of ${p.total} done`;
+    });
+  } catch (e) {
+    osyncChanFinish(null, e.message || String(e));
+    return;
+  }
+  osyncChanFinish(payload, null);
+}
+
+function osyncChanFinish(payload, errorMessage) {
+  osyncChan.applying = false;
+  const body = document.getElementById("osync-chan-body");
+  const sub = document.getElementById("osync-chan-sub");
+  if (errorMessage) {
+    if (body) body.insertAdjacentHTML("afterbegin", `<div class="osync-fix-error">${escapeHtml(errorMessage)}</div>`);
+    osyncChanSetPhase("done");
+    return;
+  }
+
+  const results = (payload && payload.results) || [];
+  const byId = Object.fromEntries(results.map((r) => [r.sh_order_id, r]));
+  const rows = (osyncChan.data.rows || []).filter((r) => byId[r.sh_order_id]);
+  const counts = results.reduce((acc, r) => { acc[r.status] = (acc[r.status] || 0) + 1; return acc; }, {});
+  if (body) {
+    body.innerHTML =
+      `<div class="osync-fix-summary">` +
+      Object.entries(counts).map(([st, n]) =>
+        `<span><strong>${n}</strong> ${escapeHtml((OSYNC_CHAN_STATUS[st] || [st])[0].toLowerCase())}</span>`).join("") +
+      `</div>` +
+      rows.map((r) => osyncChanRowCard(r, {
+        status: byId[r.sh_order_id].status, message: byId[r.sh_order_id].message, checkable: false,
+      })).join("");
+  }
+  if (sub) sub.textContent = `${results.length} order${results.length === 1 ? "" : "s"} processed`;
+  osyncChanSetPhase("done");
+
+  // A cancelled Shopify-only order leaves the reconciliation entirely; one
+  // that was paired with an invoice is only badged, since its invoice now
+  // belongs to the web-hook copy and needs a fresh comparison to re-pair.
+  const cancelled = results.filter((r) => r.status === "cancelled" || r.status === "noop");
+  let repair = 0;
+  cancelled.forEach((res) => {
+    const row = ((orderSyncState.data && orderSyncState.data.rows) || [])
+      .find((r) => r.sh_order_id === res.sh_order_id || (r.sh_orders || []).some((o) => o.id === res.sh_order_id));
+    if (!row) return;
+    if (row.status === "shopify_unmatched") {
+      osyncDupRemoveRow(row.sh_order_id);
+    } else {
+      row.sh_cancelled = true;
+      repair += 1;
+    }
+  });
+  if (cancelled.length) {
+    renderOrderSync();
+    showToast(`${cancelled.length} Online Store order${cancelled.length === 1 ? "" : "s"} cancelled in Shopify` +
+      (repair ? ` — run Compare again to re-pair ${repair} invoice${repair === 1 ? "" : "s"}` : ""), "success");
+  }
+}
+
+function osyncChanClose() {
+  if (osyncChan.applying) return;
+  closeModal("osync-chan-modal");
 }
 
 // ===== End Order Sync =====

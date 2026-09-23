@@ -897,6 +897,7 @@ def _order_side(orders: List[Dict[str, Any]]) -> Dict[str, Any]:
         "sh_tracking": tracking,
         "sh_no_tracking": any(not o.get("tracking_numbers") for o in orders),
         "sh_outstanding": round(sum(o.get("outstanding") or 0 for o in orders), 2),
+        "sh_channel": ", ".join(_dedupe([o.get("channel") for o in orders if o.get("channel")])) or None,
     }
 
 
@@ -1701,6 +1702,116 @@ def plan_duplicate_cancels(targets: List[str], pool: List[Dict[str, Any]],
         summary[row["status"]] += 1
         rows.append(row)
 
+    return {"rows": rows, "summary": summary}
+
+
+# ---------------------------------------------------------------------------
+# Sales channel + "Online Store" duplicate cancels (pure)
+#
+# The real, updated copy of an order arrives through an API app (the "web
+# hook" channel); the Online Store copy of the same sale is stale. Every
+# Online Store order that is not UNFULFILLED is cancelled — no twin is
+# required, the web-hook copy is only looked up so the user can see it.
+# ---------------------------------------------------------------------------
+
+ONLINE_STORE = "Online Store"
+
+# `sourceName` values Shopify uses for its own channels, when `app` is absent.
+_SOURCE_NAME_CHANNELS = {"web": ONLINE_STORE, "pos": "Point of Sale",
+                         "shopify_draft_order": "Draft Orders"}
+
+
+def order_channel(app_name: Any, source_name: Any) -> Optional[str]:
+    """The channel Shopify admin shows: the app that created the order, else
+    its sourceName (mapped for Shopify's own channels, raw otherwise)."""
+    app = (app_name or "").strip()
+    if app:
+        return app
+    src = (source_name or "").strip()
+    if not src:
+        return None
+    return _SOURCE_NAME_CHANNELS.get(src.lower(), src)
+
+
+def is_online_store(channel: Any) -> bool:
+    return (channel or "").strip().lower() == ONLINE_STORE.lower()
+
+
+def _channel_flags(order: Dict[str, Any]) -> List[str]:
+    flags: List[str] = []
+    if float(order.get("net_payment") or 0) > 0.004:
+        flags.append("paid")
+    if float(order.get("refunded") or 0) > 0.004:
+        flags.append("refunded")
+    if dup_has_tracking(order):
+        flags.append("has_tracking")
+    if order.get("fulfillment_status") in ("FULFILLED", "PARTIALLY_FULFILLED"):
+        flags.append("fulfilled")
+    return flags
+
+
+def _channel_copy_key(candidate: Dict[str, Any], order: Dict[str, Any]) -> Tuple[float, int, int]:
+    return (abs(float(candidate.get("total") or 0) - float(order.get("total") or 0)),
+            _dup_days_apart(candidate.get("local_date"), order.get("local_date")) or 0,
+            _dup_legacy_id(candidate))
+
+
+def plan_channel_cancels(pool: List[Dict[str, Any]], date_from: str, date_to: str,
+                         busy_ids: Optional[set] = None) -> Dict[str, Any]:
+    """
+    Every Online Store order in `pool` placed in [date_from, date_to] that is
+    neither cancelled nor UNFULFILLED, oldest first:
+      proposed — cancel it
+      blocked  — already cancelled or in flight by an earlier run (`busy_ids`)
+
+    `copy` is the closest non-Online-Store order from the same customer
+    within the duplicate tolerances (information only, never required).
+    """
+    busy_ids = busy_ids or set()
+    live = [o for o in pool if o.get("id") and not o.get("cancelled")]
+    by_customer: Dict[str, List[Dict[str, Any]]] = {}
+    for o in live:
+        if o.get("customer_gid") and not is_online_store(o.get("channel")):
+            by_customer.setdefault(o["customer_gid"], []).append(o)
+
+    targets = sorted(
+        (o for o in live
+         if is_online_store(o.get("channel"))
+         and (o.get("fulfillment_status") or "") != "UNFULFILLED"
+         and date_from <= (o.get("local_date") or "") <= date_to),
+        key=lambda o: (o.get("created_at") or "", _dup_legacy_id(o)))
+
+    rows: List[Dict[str, Any]] = []
+    summary = {"targets": len(targets), "proposed": 0, "blocked": 0, "with_copy": 0}
+    for order in targets:
+        copies = [c for c in by_customer.get(order.get("customer_gid") or "", [])
+                  if _dup_same_sale(order, c)]
+        copy = min(copies, key=lambda c: _channel_copy_key(c, order)) if copies else None
+        row: Dict[str, Any] = {
+            "sh_order_id": order["id"], "sh_name": order.get("name"),
+            "sh_date": order.get("local_date"),
+            "sh_total": round(float(order.get("total") or 0), 2),
+            "channel": order.get("channel"),
+            "customer_gid": order.get("customer_gid"),
+            "fulfillment_status": order.get("fulfillment_status"),
+            "financial_status": order.get("financial_status"),
+            "net_payment": round(float(order.get("net_payment") or 0), 2),
+            "tracking": split_routes(order.get("tracking_numbers") or [])[0],
+            "flags": _channel_flags(order),
+            "copy": None, "total_delta": None, "date_delta_days": None,
+            "status": "proposed", "reason": None,
+        }
+        if copy:
+            row["copy"] = {**_dup_side(copy, 1 if dup_has_tracking(copy) else 2),
+                           "channel": copy.get("channel"),
+                           "fulfillment_status": copy.get("fulfillment_status")}
+            row["total_delta"] = round(float(order.get("total") or 0) - float(copy.get("total") or 0), 2)
+            row["date_delta_days"] = _dup_days_apart(order.get("local_date"), copy.get("local_date"))
+            summary["with_copy"] += 1
+        if order["id"] in busy_ids:
+            row.update(status="blocked", reason="Already cancelled, or being cancelled, by an earlier run")
+        summary[row["status"]] += 1
+        rows.append(row)
     return {"rows": rows, "summary": summary}
 
 

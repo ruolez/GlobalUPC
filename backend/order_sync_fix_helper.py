@@ -672,11 +672,14 @@ query orderSyncCancelState($id: ID!) {
     id
     name
     cancelledAt
+    sourceName
+    app { name }
     displayFinancialStatus
+    displayFulfillmentStatus
     netPaymentSet { shopMoney { amount } }
     totalPriceSet { shopMoney { amount } }
     currentTotalPriceSet { shopMoney { amount } }
-    fulfillments(first: 10) { trackingInfo { number } }
+    fulfillments(first: 20) { id status trackingInfo { number } }
   }
 }
 """
@@ -700,6 +703,10 @@ async def fetch_cancel_state(ctx: ShopifyCtx, order_gid: str) -> Optional[Dict[s
         "cancelled": node.get("cancelledAt") is not None,
         "cancelled_at": node.get("cancelledAt"),
         "financial_status": node.get("displayFinancialStatus"),
+        "fulfillment_status": node.get("displayFulfillmentStatus"),
+        "channel": osync.order_channel((node.get("app") or {}).get("name"), node.get("sourceName")),
+        "fulfillments": [{"id": f.get("id"), "status": f.get("status")}
+                         for f in (node.get("fulfillments") or []) if f.get("id")],
         "net_payment": _money(node.get("netPaymentSet")),
         "total": _money(node.get("currentTotalPriceSet")) if node.get("currentTotalPriceSet") else _money(node.get("totalPriceSet")),
         "tracking_numbers": [
@@ -789,6 +796,112 @@ async def apply_duplicate_cancel(ctx: ShopifyCtx, row: Dict[str, Any]) -> Dict[s
                 "message": "Shopify accepted the cancellation but the order is still open"}
     except FixStepError as e:
         return {**base, "status": "failed", "message": e.message}
+    except ShopifyFetchError as e:
+        return {**base, "status": "failed", "message": str(e)}
+    except Exception as e:
+        return {**base, "status": "failed", "message": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# Cancel a stale "Online Store" copy of an order
+#
+# Same orderCancel as the duplicates pass (no refund, no restock, customer
+# never notified). A fulfilled order Shopify refuses to cancel has its
+# fulfillments cancelled first — fulfillmentCancel sends no customer email —
+# and the cancel is retried once.
+# ---------------------------------------------------------------------------
+
+CHANNEL_FALLBACK_SCOPES = ["write_merchant_managed_fulfillment_orders"]
+
+_FULFILLMENT_CANCEL = """
+mutation orderSyncCancelFulfillment($id: ID!) {
+  fulfillmentCancel(id: $id) {
+    fulfillment { id status }
+    userErrors { field message }
+  }
+}
+"""
+
+
+def is_fulfillment_refusal(message: str) -> bool:
+    """orderCancel rejected because of the order's fulfillments."""
+    return "fulfil" in (message or "").lower()
+
+
+def channel_staff_note(copy: Optional[Dict[str, Any]]) -> str:
+    tail = "cancelled by Order Sync (no refund, customer not notified)"
+    if copy and (copy.get("sh_name") or copy.get("sh_order_id")):
+        via = f" ({copy['channel']})" if copy.get("channel") else ""
+        return f"Online Store duplicate of order {copy.get('sh_name') or copy.get('sh_order_id')}{via} — {tail}"
+    return f"Online Store duplicate — {tail}"
+
+
+async def cancel_fulfillment(ctx: ShopifyCtx, fulfillment_gid: str) -> None:
+    async def run():
+        data = await _gql(ctx, _FULFILLMENT_CANCEL, {"id": fulfillment_gid})
+        _payload(data, "fulfillmentCancel", "fulfillment_cancel")
+    await _with_retry(run)
+
+
+async def apply_channel_cancel(ctx: ShopifyCtx, row: Dict[str, Any]) -> Dict[str, Any]:
+    """Cancel one Online Store order after re-checking it live. Never raises."""
+    order_gid = row["sh_order_id"]
+    copy = row.get("copy") or {}
+    base = {"sh_order_id": order_gid, "sh_name": row.get("sh_name"),
+            "twin_order_id": copy.get("sh_order_id"), "twin_order_name": copy.get("sh_name"),
+            "job_id": None, "verified_cancelled": False, "fulfillments_cancelled": 0}
+    try:
+        state = await fetch_cancel_state(ctx, order_gid)
+        if not state:
+            return {**base, "status": "skipped", "message": "Order is no longer in Shopify"}
+        base["sh_name"] = state["name"] or base["sh_name"]
+        if state["cancelled"]:
+            return {**base, "status": "noop", "message": "Already cancelled in Shopify",
+                    "verified_cancelled": True}
+        if not osync.is_online_store(state["channel"]):
+            return {**base, "status": "skipped",
+                    "message": f"Order channel is now {state['channel'] or 'unknown'}, not Online Store"}
+        if state["fulfillment_status"] == "UNFULFILLED":
+            return {**base, "status": "skipped", "message": "Order is Unfulfilled now — left alone"}
+
+        note = channel_staff_note(copy)
+
+        async def cancel_fulfillments(fulfillments: List[Dict[str, Any]]) -> int:
+            n = 0
+            for f in fulfillments:
+                if (f.get("status") or "").upper() == "SUCCESS":
+                    await cancel_fulfillment(ctx, f["id"])
+                    base["fulfillments_cancelled"] += 1
+                    n += 1
+            return n
+
+        try:
+            job_gid = await cancel_order(ctx, order_gid, note)
+        except FixStepError as e:
+            if not is_fulfillment_refusal(e.message) or not await cancel_fulfillments(state["fulfillments"]):
+                raise
+            job_gid = await cancel_order(ctx, order_gid, note)
+        base["job_id"] = job_gid or None
+        settled = await wait_for_cancel(ctx, order_gid, job_gid)
+        # The refusal can also surface only when the async job runs: the job
+        # finishes and the order is still open and still fulfilled.
+        if (not settled["cancelled"] and not base["fulfillments_cancelled"]
+                and settled["state"] and await cancel_fulfillments(settled["state"]["fulfillments"])):
+            job_gid = await cancel_order(ctx, order_gid, note)
+            base["job_id"] = job_gid or None
+            settled = await wait_for_cancel(ctx, order_gid, job_gid)
+        n = base["fulfillments_cancelled"]
+        after = f" (after cancelling {n} fulfillment{'s' if n != 1 else ''})" if n else ""
+        if settled["cancelled"]:
+            return {**base, "status": "cancelled", "verified_cancelled": True,
+                    "cancelled_at": settled["cancelled_at"],
+                    "message": f"Cancelled{after} — no refund, customer not notified"}
+        return {**base, "status": "failed",
+                "message": f"Shopify accepted the cancellation{after} but the order is still open"}
+    except FixStepError as e:
+        n = base["fulfillments_cancelled"]
+        prefix = f"{n} fulfillment{'s' if n != 1 else ''} cancelled, then: " if n else ""
+        return {**base, "status": "failed", "message": prefix + e.message}
     except ShopifyFetchError as e:
         return {**base, "status": "failed", "message": str(e)}
     except Exception as e:

@@ -2324,6 +2324,7 @@ class OrderSyncRow(BaseModel):
     sh_route: List[str] = []                   # delivery route numbers found in the tracking field
     sh_no_tracking: bool = False               # FULFILLED but nothing at all in tracking
     sh_outstanding: float = 0.0                # unpaid balance (an earlier fix added lines but could not mark paid)
+    sh_channel: Optional[str] = None           # sales channel: app name ("Online Store", "web hook"…) or sourceName
     # BackOffice side (None on shopify_unmatched rows)
     bo_invoice_id: Optional[int] = None
     bo_invoice_number: Optional[str] = None
@@ -2658,6 +2659,78 @@ class OrderSyncDupCancelResponse(BaseModel):
     warnings: List[str] = []
 
 
+# --- Order Sync: cancel Online Store copies --------------------------------
+
+class OrderSyncChannelCopy(OrderSyncDupSide):
+    """The web-hook order that looks like the real copy (information only)."""
+    channel: Optional[str] = None
+    fulfillment_status: Optional[str] = None
+    admin_url: Optional[str] = None
+
+
+class OrderSyncChannelRow(BaseModel):
+    sh_order_id: str
+    sh_name: Optional[str] = None
+    sh_date: Optional[str] = None
+    sh_total: Optional[float] = None
+    channel: Optional[str] = None
+    customer_gid: Optional[str] = None
+    fulfillment_status: Optional[str] = None
+    financial_status: Optional[str] = None
+    net_payment: Optional[float] = None
+    tracking: List[str] = []
+    flags: List[str] = []                      # paid | refunded | has_tracking | fulfilled
+    copy_order: Optional[OrderSyncChannelCopy] = Field(None, alias="copy")
+    total_delta: Optional[float] = None
+    date_delta_days: Optional[int] = None
+    status: str                                # proposed | blocked
+    reason: Optional[str] = None
+    admin_url: Optional[str] = None
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class OrderSyncChannelPlanRequest(BaseModel):
+    date_from: str
+    date_to: str
+
+
+class OrderSyncChannelPlanResponse(BaseModel):
+    configured: bool = True
+    shopify_store_name: Optional[str] = None
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
+    pool_size: int = 0
+    rows: List[OrderSyncChannelRow] = []
+    summary: Dict[str, int] = {}
+    scopes_missing: List[str] = []
+    warnings: List[str] = []
+
+
+class OrderSyncChannelCancelRequest(BaseModel):
+    date_from: str
+    date_to: str
+    targets: List[str] = Field(..., min_length=1, max_length=50)
+
+    @field_validator("targets")
+    @classmethod
+    def _order_gids(cls, v: List[str]) -> List[str]:
+        for gid in v:
+            if not re.match(_ORDER_GID_RE, gid or ""):
+                raise ValueError("targets must be Shopify Order GIDs")
+        return v
+
+
+class OrderSyncChannelResult(OrderSyncDupResult):
+    fulfillments_cancelled: int = 0
+
+
+class OrderSyncChannelCancelResponse(BaseModel):
+    batch_id: str
+    results: List[OrderSyncChannelResult] = []
+    warnings: List[str] = []
+
+
 class OrderSyncCancelledOrderRow(BaseModel):
     id: int
     created_at: Optional[str] = None
@@ -2675,6 +2748,10 @@ class OrderSyncCancelledOrderRow(BaseModel):
     date_delta_days: Optional[int] = None
     ambiguous: bool = False
     flags: List[str] = []
+    kind: str = "duplicate"                    # duplicate | channel
+    channel: Optional[str] = None
+    fulfillment_status: Optional[str] = None
+    fulfillments_cancelled: int = 0
     status: str
     verified_cancelled: bool = False
     error_message: Optional[str] = None

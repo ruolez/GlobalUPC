@@ -9466,6 +9466,15 @@ tr.bov-row-click:focus-visible { outline: 2px solid var(--accent-primary); outli
 
 /* Order Sync: duplicate orders to cancel */
 .osync-dup-order { margin-bottom: 0.5rem; }
+.osync-channel {
+  display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; vertical-align: middle;
+  font-size: 0.6875rem; padding: 0.05rem 0.4rem; border-radius: var(--radius-sm);
+  color: var(--text-secondary); background: var(--bg-tertiary); white-space: nowrap;
+}
+.osync-flag.is-invoice { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, var(--border-color)); }
+.osync-channel.is-online-store {
+  color: var(--warning); background: color-mix(in srgb, var(--warning) 12%, var(--bg-secondary));
+}
 .osync-dup-pick { display: inline-flex; align-items: center; margin-right: 0.35rem; }
 .osync-dup-pick input { cursor: pointer; accent-color: var(--accent-primary); }
 .osync-dup-pair {

@@ -1296,6 +1296,10 @@ _ORDER_SYNC_ORDER_FIELDS = f"""
                 id
                 name
                 createdAt
+                sourceName
+                app {{
+                  name
+                }}
                 cancelledAt
                 displayFinancialStatus
                 displayFulfillmentStatus
@@ -1411,7 +1415,7 @@ def _sync_order_passes(node: Dict[str, Any]) -> bool:
             and node.get("displayFulfillmentStatus") == "FULFILLED")
 
 
-from order_sync_helper import collectible_balance  # noqa: E402
+from order_sync_helper import collectible_balance, order_channel  # noqa: E402
 
 
 async def _shape_sync_order(node: Dict[str, Any], placed_on: Optional[str], post_gql) -> Dict[str, Any]:
@@ -1453,6 +1457,7 @@ async def _shape_sync_order(node: Dict[str, Any], placed_on: Optional[str], post
         "financial_status": node.get("displayFinancialStatus"),
         "fulfillment_status": node.get("displayFulfillmentStatus"),
         "cancelled": node.get("cancelledAt") is not None,
+        "channel": order_channel((node.get("app") or {}).get("name"), node.get("sourceName")),
         # "current" = after returns: a $0 line refund (the Order Sync fix)
         # removes the line's value from currentTotal but not from totalPrice,
         # and the invoice total is what actually shipped.
@@ -1785,6 +1790,10 @@ _DUPE_ORDER_FIELDS = """
                 id
                 name
                 createdAt
+                sourceName
+                app {
+                  name
+                }
                 cancelledAt
                 displayFinancialStatus
                 displayFulfillmentStatus
@@ -1811,6 +1820,7 @@ def _shape_dupe_order(node: Dict[str, Any], placed_on: Optional[str]) -> Dict[st
         "created_at": node.get("createdAt"),
         "local_date": placed_on,
         "customer_gid": cust.get("id"),
+        "channel": order_channel((node.get("app") or {}).get("name"), node.get("sourceName")),
         # Same "current after returns" rule as _shape_sync_order; the gross
         # figure is kept because the duplicate test needs both.
         "total": _money(node.get("currentTotalPriceSet")) if node.get("currentTotalPriceSet") else _money(node.get("totalPriceSet")),
