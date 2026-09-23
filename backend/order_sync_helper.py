@@ -1501,7 +1501,7 @@ def plan_order_fix(order: Dict[str, Any], invoice: Dict[str, Any],
 # ---------------------------------------------------------------------------
 
 DUP_TOTAL_TOL_PCT = 0.20      # totals this far apart are still the same sale
-DUP_MAX_DAYS_APART = 10       # a sale keyed twice is keyed within days
+DUP_MAX_DAYS_APART = 18       # a sale keyed twice is keyed within a couple of weeks
 DUP_LOW_TOTAL = 25.00         # below this, 20% is noise — flagged, not blocked
 
 
@@ -1582,9 +1582,22 @@ def _dup_side(order: Dict[str, Any], tier: int) -> Dict[str, Any]:
 
 def _dup_rank_key(order: Dict[str, Any], invoiced_ids: set) -> Tuple[int, str, int]:
     """Total order over one customer's orders: reconciled beats shipped beats
-    neither, then oldest. Cancelling only ever moves DOWN this order, which is
-    what makes "A cancels B and B cancels A" impossible."""
+    neither, then oldest. An order may only be cancelled toward one that ranks
+    strictly better, which is what makes "A cancels B and B cancels A"
+    impossible — the relation inherits this order's antisymmetry."""
     return (_dup_tier(order, invoiced_ids), order.get("created_at") or "", _dup_legacy_id(order))
+
+
+def _dup_closeness_key(candidate: Dict[str, Any], order: Dict[str, Any],
+                       invoiced_ids: set) -> Tuple[int, float, int, int]:
+    """Which of the eligible survivors is most plausibly the SAME sale. Rank
+    decides who may survive; this decides which one is meant. Picking by rank
+    alone would reach past a next-day twin to an older order that merely
+    happens to be reconciled."""
+    return (_dup_tier(candidate, invoiced_ids),
+            abs(float(candidate.get("total") or 0) - float(order.get("total") or 0)),
+            _dup_days_apart(candidate.get("local_date"), order.get("local_date")) or 0,
+            _dup_legacy_id(candidate))
 
 
 def plan_duplicate_cancels(targets: List[str], pool: List[Dict[str, Any]],
@@ -1651,10 +1664,12 @@ def plan_duplicate_cancels(targets: List[str], pool: List[Dict[str, Any]],
             direct = [c for c in by_customer.get(order["customer_gid"], [])
                       if c["id"] != order_id and _dup_same_sale(order, c)]
             own_key = _dup_rank_key(order, invoiced_ids)
-            survivor = min(direct, key=lambda c: _dup_rank_key(c, invoiced_ids)) if direct else None
+            eligible = [c for c in direct if _dup_rank_key(c, invoiced_ids) < own_key]
+            survivor = (min(eligible, key=lambda c: _dup_closeness_key(c, order, invoiced_ids))
+                        if eligible else None)
             if not direct:
                 row.update(status="no_twin", reason="No other order from this customer matches")
-            elif _dup_rank_key(survivor, invoiced_ids) > own_key:
+            elif not eligible:
                 # Every match is newer/weaker than this one — this is the original.
                 row.update(status="no_twin", reason="This is the earliest of the matching orders")
             else:
@@ -1662,22 +1677,19 @@ def plan_duplicate_cancels(targets: List[str], pool: List[Dict[str, Any]],
                 delta = round(float(order.get("total") or 0) - float(survivor.get("total") or 0), 2)
                 base = max(abs(float(order.get("total") or 0)), abs(float(survivor.get("total") or 0)))
                 alternatives = sorted(
-                    (c for c in direct if c["id"] != survivor["id"]),
-                    key=lambda c: (_dup_tier(c, invoiced_ids),
-                                   abs(float(c.get("total") or 0) - float(order.get("total") or 0)),
-                                   _dup_days_apart(c.get("local_date"), order.get("local_date")) or 0,
-                                   _dup_legacy_id(c)))
+                    (c for c in eligible if c["id"] != survivor["id"]),
+                    key=lambda c: _dup_closeness_key(c, order, invoiced_ids))
                 row.update(
                     twin=_dup_side(survivor, twin_tier),
                     alternatives=[_dup_side(c, _dup_tier(c, invoiced_ids)) for c in alternatives],
-                    cluster_size=len(direct) + 1,
+                    cluster_size=len(eligible) + 1,
                     total_delta=delta,
                     total_delta_pct=round(abs(delta) / base * 100, 1) if base else 0.0,
                     date_delta_days=_dup_days_apart(order.get("local_date"), survivor.get("local_date")),
                 )
                 reasons: List[str] = []
-                if len(direct) > 1:
-                    reasons.append(f"{len(direct)} orders from this customer qualify")
+                if len(eligible) > 1:
+                    reasons.append(f"{len(eligible)} orders from this customer qualify")
                 if twin_tier == 2:
                     reasons.append("neither order has an invoice or tracking to mark it the original")
                 if survivor["id"] in target_set:

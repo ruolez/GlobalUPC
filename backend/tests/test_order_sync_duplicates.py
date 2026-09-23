@@ -83,14 +83,14 @@ class DupWindowTests(unittest.TestCase):
         row = _by_id(_plan([b], [a, b]))[b["id"]]
         self.assertEqual((row["status"], row["twin"]["sh_order_id"]), ("proposed", a["id"]))
 
-    def test_ten_days_apart_is_proposed(self):
+    def test_eighteen_days_apart_is_proposed(self):
         a = _order(1, date="2026-09-01", tracking=["1Z999"])
-        b = _order(2, date="2026-09-11")
+        b = _order(2, date="2026-09-19")
         self.assertEqual(_by_id(_plan([b], [a, b]))[b["id"]]["status"], "proposed")
 
-    def test_eleven_days_apart_is_not_a_duplicate(self):
+    def test_nineteen_days_apart_is_not_a_duplicate(self):
         a = _order(1, date="2026-09-01", tracking=["1Z999"])
-        b = _order(2, date="2026-09-12")
+        b = _order(2, date="2026-09-20")
         row = _by_id(_plan([b], [a, b]))[b["id"]]
         self.assertEqual((row["status"], row["twin"]), ("no_twin", None))
 
@@ -172,24 +172,46 @@ class DupClusterTests(unittest.TestCase):
         # B, never with A — a repeat customer would otherwise chain a whole
         # quarter of orders into one group.
         a = _order(1, date="2026-09-01")
-        b = _order(2, date="2026-09-09")
-        c = _order(3, date="2026-09-17")
+        b = _order(2, date="2026-09-18")
+        c = _order(3, date="2026-09-30")
         rows = _by_id(_plan([a, b, c], [a, b, c]))
         self.assertEqual(rows[c["id"]]["twin"]["sh_order_id"], b["id"])
         self.assertEqual(rows[a["id"]]["status"], "no_twin")
 
     def test_a_twin_that_is_itself_being_cancelled_is_flagged(self):
         a = _order(1, date="2026-09-01")
-        b = _order(2, date="2026-09-09")
-        c = _order(3, date="2026-09-17")
+        b = _order(2, date="2026-09-18")
+        c = _order(3, date="2026-09-30")
         row = _by_id(_plan([a, b, c], [a, b, c]))[c["id"]]
         self.assertIn("the order it duplicates is also in this list", row["reason"])
 
-    def test_group_of_three_is_ambiguous(self):
+    def test_a_lower_ranked_third_order_does_not_cloud_the_pairing(self):
+        # `c` ranks below the target, so it is a fellow duplicate rather than
+        # a candidate to survive — only `keeper` could be the original.
         keeper = _order(1, tracking=["1Z999"])
         b = _order(2)
         c = _order(3)
-        self.assertEqual(_by_id(_plan([b], [keeper, b, c]))[b["id"]]["status"], "ambiguous")
+        row = _by_id(_plan([b], [keeper, b, c]))[b["id"]]
+        self.assertEqual((row["status"], row["cluster_size"]), ("proposed", 2))
+
+    def test_two_possible_originals_are_ambiguous(self):
+        keeper = _order(1, tracking=["1Z999"])
+        other = _order(2, total=950.0, gross=950.0)
+        target = _order(3)
+        row = _by_id(_plan([target], [keeper, other, target]))[target["id"]]
+        self.assertEqual(row["status"], "ambiguous")
+        self.assertIn("2 orders from this customer qualify", row["reason"])
+
+    def test_the_closest_eligible_order_wins_not_the_oldest(self):
+        # Both are reconciled to an invoice, so rank cannot separate them;
+        # reaching past the next-day twin to an older order is the bug this
+        # guards against.
+        old_invoiced = _order(1, total=1150.0, gross=1150.0, date="2026-08-26")
+        next_day = _order(2, total=1020.0, gross=1020.0, date="2026-09-11")
+        target = _order(3, total=1000.0, gross=1000.0, date="2026-09-10")
+        row = _by_id(_plan([target], [old_invoiced, next_day, target],
+                           invoiced=[old_invoiced["id"], next_day["id"]]))[target["id"]]
+        self.assertEqual(row["twin"]["sh_order_id"], next_day["id"])
 
     def test_untracked_uninvoiced_pair_is_ambiguous_not_proposed(self):
         a = _order(1, created_at="2026-09-10T09:00:00Z")

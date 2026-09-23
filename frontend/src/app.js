@@ -29018,7 +29018,7 @@ function osyncDupRenderPlan() {
   if (!actionable.length) {
     body.innerHTML =
       `<div class="osync-missing-empty"><p>No duplicates found.</p>` +
-      `<p class="osync-muted">None of these orders has another order from the same customer within 20% of its total and 10 days of its date.</p></div>`;
+      `<p class="osync-muted">None of these orders has another order from the same customer within 20% of its total and 18 days of its date.</p></div>`;
     osyncDupSetPhase("plan", { applyEnabled: false });
     const wrap = document.getElementById("osync-dup-confirm-wrap");
     if (wrap) wrap.style.display = "none";
