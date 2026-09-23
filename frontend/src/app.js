@@ -27110,11 +27110,37 @@ function initOrderSyncPage() {
   document.getElementById("osync-config-cancel-btn")?.addEventListener("click", () => osyncApplyConfig());
   document.getElementById("osync-export")?.addEventListener("click", osyncExport);
 
+  // Duplicates: scan, per-pair picking, typed confirmation, apply
+  document.getElementById("osync-dup")?.addEventListener("click", osyncDupOpen);
+  document.getElementById("osync-dup-x")?.addEventListener("click", osyncDupClose);
+  document.getElementById("osync-dup-cancel")?.addEventListener("click", osyncDupClose);
+  document.getElementById("osync-dup-done")?.addEventListener("click", () => closeModal("osync-dup-modal"));
+  document.getElementById("osync-dup-apply")?.addEventListener("click", osyncDupApply);
+  document.getElementById("osync-dup-confirm")?.addEventListener("input", osyncDupRefreshApply);
+  document.getElementById("osync-dup-body")?.addEventListener("change", (e) => {
+    const box = e.target.closest("[data-osync-dup-pick]");
+    if (!box) return;
+    const id = box.getAttribute("data-osync-dup-pick");
+    if (box.checked) osyncDup.keys.add(id); else osyncDup.keys.delete(id);
+    osyncDupRefreshApply();
+  });
+  // Mid-cancel the modal must not close on a backdrop click (capture phase
+  // beats the global handler), exactly as the fix modal does.
+  document.getElementById("osync-dup-modal")?.addEventListener("click", (e) => {
+    if (osyncDup.applying && e.target.id === "osync-dup-modal") e.stopImmediatePropagation();
+  }, true);
+
   document.getElementById("osync-modal-close")?.addEventListener("click", () => closeModal("osync-modal"));
   document.getElementById("osync-modal-prev")?.addEventListener("click", () => osyncStepDetail(-1));
   document.getElementById("osync-modal-next")?.addEventListener("click", () => osyncStepDetail(1));
   document.addEventListener("keydown", (e) => {
-    // The fix / missing modals stack above the drill-in: Escape closes the top one only.
+    // The duplicates / fix / missing modals stack above the drill-in:
+    // Escape closes the top one only, and never mid-cancel.
+    const dupModal = document.getElementById("osync-dup-modal");
+    if (dupModal && dupModal.classList.contains("active")) {
+      if (e.key === "Escape") osyncDupClose();
+      return;
+    }
     const missingModal = document.getElementById("osync-missing-modal");
     if (missingModal && missingModal.classList.contains("active")) {
       if (e.key === "Escape") closeModal("osync-missing-modal");
@@ -27697,6 +27723,7 @@ function osyncRenderTable() {
   const tbody = document.getElementById("osync-tbody");
   if (!thead || !tbody) return;
   osyncMissingRenderButton();
+  osyncDupRenderButton();
   const { key: sortKey, dir } = orderSyncState.sort;
   const selecting = osyncFix.selecting;
   const cols = selecting ? [{ key: "_sel", width: 34 }, ...OSYNC_COLUMNS] : OSYNC_COLUMNS;
@@ -28802,6 +28829,410 @@ function osyncCreatedExport() {
     widths: [18, 16, 44, 18, 10, 10, 12, 14, 12, 12, 12, 20, 52],
     fname: "shopify-products-created",
   });
+}
+
+// ===== Order Sync: duplicate Shopify orders =====
+//
+// Most "missing tracking" rows are the same sale keyed into Shopify twice.
+// This finds the twin and cancels the untracked copy. Cancelling is
+// irreversible, so: nothing is pre-selected that the server flagged, the
+// Apply button needs the word CANCEL typed, and the plan is always rebuilt
+// server-side from fresh data before anything is sent.
+
+const osyncDup = {
+  loading: false,
+  data: null,            // last /duplicates/plan response
+  keys: new Set(),       // sh_order_id of the pairs the user ticked
+  applying: false,
+  results: null,
+};
+
+const OSYNC_DUP_POLICY =
+  "Cancels the Shopify order — no refund, no restock, the customer is not notified. " +
+  "This cannot be undone. Business Overview and Month End stop counting it after the next Shopify data sync.";
+
+const OSYNC_DUP_STATUS = {
+  proposed: ["Duplicate", "is-ok"],
+  ambiguous: ["Needs a look", "is-warn"],
+  no_twin: ["No duplicate", "is-muted"],
+  blocked: ["Can't cancel", "is-muted"],
+  cancelled: ["Cancelled", "is-ok"],
+  noop: ["Already cancelled", "is-muted"],
+  skipped: ["Skipped", "is-warn"],
+  failed: ["Failed", "is-bad"],
+  running: ["Cancelling…", "is-muted"],
+};
+
+const OSYNC_DUP_FLAG_HINTS = {
+  low_total: "Small order total — 20% of it is a very wide window",
+  paid: "Shopify has received money for this order; cancelling does not refund it",
+  refunded: "This order already carries a refund",
+};
+
+function osyncDupStatusPill(status) {
+  const [label, tone] = OSYNC_DUP_STATUS[status] || [status, "is-muted"];
+  return `<span class="osync-fix-pill ${tone}">${escapeHtml(label)}</span>`;
+}
+
+// The bucket this pass exists for: fulfilled Shopify orders with nothing in
+// the tracking field that never found an invoice. Read from all report rows,
+// not the filtered view, like osyncMissingOrders.
+function osyncDupTargets() {
+  const rows = (orderSyncState.data && orderSyncState.data.rows) || [];
+  return rows.filter((r) => r.status === "shopify_unmatched" && r.sh_no_tracking && r.sh_order_id);
+}
+
+function osyncDupRenderButton() {
+  const btn = document.getElementById("osync-dup");
+  if (!btn) return;
+  const n = osyncDupTargets().length;
+  btn.disabled = !n || osyncFix.selecting;
+  btn.title = n
+    ? `Check ${n} Shopify order${n === 1 ? "" : "s"} with no tracking for a duplicate`
+    : "No Shopify-only orders without tracking in this report";
+}
+
+function osyncDupSelectable(row) {
+  return row.status === "proposed" || row.status === "ambiguous";
+}
+
+// Pre-ticked only when the server is confident. Anything it flagged —
+// several candidates, a group of three, no original to point at, a tiny
+// total — starts unticked so it takes a deliberate click.
+function osyncDupDefaultChecked(row) {
+  return row.status === "proposed";
+}
+
+function osyncDupSetPhase(phase, { applyLabel = "Cancel orders", applyEnabled = false } = {}) {
+  const close = document.getElementById("osync-dup-cancel");
+  const apply = document.getElementById("osync-dup-apply");
+  const done = document.getElementById("osync-dup-done");
+  const x = document.getElementById("osync-dup-x");
+  const policy = document.getElementById("osync-dup-policy");
+  const confirmWrap = document.getElementById("osync-dup-confirm-wrap");
+  if (close) close.style.display = phase === "done" || phase === "applying" ? "none" : "";
+  if (apply) {
+    apply.style.display = phase === "plan" || phase === "loading" ? "" : "none";
+    apply.disabled = !applyEnabled;
+    apply.textContent = applyLabel;
+  }
+  if (done) done.style.display = phase === "done" ? "" : "none";
+  if (x) x.style.display = phase === "applying" ? "none" : "";
+  if (policy) policy.textContent = phase === "plan" ? OSYNC_DUP_POLICY : "";
+  if (confirmWrap) confirmWrap.style.display = phase === "plan" ? "" : "none";
+}
+
+function osyncDupConfirmed() {
+  const el = document.getElementById("osync-dup-confirm");
+  return ((el && el.value) || "").trim().toUpperCase() === "CANCEL";
+}
+
+function osyncDupRefreshApply() {
+  if (osyncDup.applying) return;
+  const n = osyncDup.keys.size;
+  osyncDupSetPhase("plan", {
+    applyLabel: n ? `Cancel ${n} order${n === 1 ? "" : "s"}` : "Cancel orders",
+    applyEnabled: n > 0 && osyncDupConfirmed(),
+  });
+}
+
+function osyncDupSideHtml(side, label) {
+  if (!side) return "";
+  const why = side.has_invoice
+    ? "matched to a BackOffice invoice"
+    : side.has_tracking
+    ? "has a tracking number"
+    : "no invoice, no tracking";
+  return (
+    `<div class="osync-dup-side">` +
+    `<span class="osync-muted">${escapeHtml(label)}</span> ` +
+    `<strong>${escapeHtml(side.sh_name || side.sh_order_id || "")}</strong> ` +
+    `<span class="osync-muted">${escapeHtml(side.sh_date || "")}</span> ` +
+    `<span class="osync-num">${osyncMoney(side.sh_total)}</span> ` +
+    `<span class="osync-muted">— ${escapeHtml(why)}</span>` +
+    `</div>`
+  );
+}
+
+function osyncDupRowCard(row, { status, message, checkable }) {
+  const checked = osyncDup.keys.has(row.sh_order_id);
+  const flags = (row.flags || []).map((f) =>
+    `<span class="osync-flag" title="${escapeHtml(OSYNC_DUP_FLAG_HINTS[f] || f)}">${escapeHtml(f.replace("_", " "))}</span>`).join(" ");
+  const twin = row.twin;
+  const delta = row.total_delta === null || row.total_delta === undefined
+    ? ""
+    : `<span class="osync-muted">${osyncMoney(Math.abs(row.total_delta))} apart (${(row.total_delta_pct || 0).toFixed(1)}%)` +
+      (row.date_delta_days === null || row.date_delta_days === undefined
+        ? "" : `, ${row.date_delta_days} day${row.date_delta_days === 1 ? "" : "s"} apart`) +
+      `</span>`;
+  const others = (row.alternatives || []).length
+    ? `<div class="osync-dup-alts"><span class="osync-muted">Other orders that also qualified: ` +
+      row.alternatives.map((a) =>
+        `${escapeHtml(a.sh_name || "")} (${escapeHtml(a.sh_date || "")}, ${osyncMoney(a.sh_total)})`).join(", ") +
+      `</span></div>`
+    : "";
+  return (
+    `<div class="osync-fix-order osync-dup-order" data-osync-dup-order="${escapeHtml(row.sh_order_id)}">` +
+    `<div class="osync-fix-order-head">` +
+    `<span class="osync-fix-order-title">` +
+    (checkable
+      ? `<label class="osync-dup-pick"><input type="checkbox" data-osync-dup-pick="${escapeHtml(row.sh_order_id)}"${checked ? " checked" : ""}></label> `
+      : "") +
+    `<strong>${escapeHtml(row.sh_name || "")}</strong> ` +
+    `<span class="osync-muted">${escapeHtml(row.sh_date || "")}</span> ` +
+    `<span class="osync-num">${osyncMoney(row.sh_total)}</span> ${flags}` +
+    `</span>` +
+    `<span class="osync-fix-order-status">${osyncDupStatusPill(status)}</span>` +
+    `</div>` +
+    (message
+      ? `<div class="osync-fix-order-msg ${status === "failed" ? "is-bad" : ""}">${escapeHtml(message)}</div>`
+      : "") +
+    (twin
+      ? `<div class="osync-dup-pair">` +
+        osyncDupSideHtml(twin, "Keeps:") +
+        `<div class="osync-dup-side is-cancel"><span class="osync-muted">Cancels:</span> ` +
+        `<strong>${escapeHtml(row.sh_name || "")}</strong> ` +
+        `<span class="osync-muted">${escapeHtml(row.sh_date || "")}</span> ` +
+        `<span class="osync-num">${osyncMoney(row.sh_total)}</span> ${delta}</div>` +
+        `</div>`
+      : "") +
+    others +
+    `</div>`
+  );
+}
+
+function osyncDupRenderPlan() {
+  const body = document.getElementById("osync-dup-body");
+  const sub = document.getElementById("osync-dup-sub");
+  if (!body) return;
+  const data = osyncDup.data || {};
+  const rows = data.rows || [];
+  const sum = data.summary || {};
+  const actionable = rows.filter(osyncDupSelectable);
+
+  if (sub) {
+    sub.textContent = `${sum.targets || 0} order${sum.targets === 1 ? "" : "s"} checked against ` +
+      `${data.pool_size || 0} Shopify order${data.pool_size === 1 ? "" : "s"} · ${data.shopify_store_name || ""}`;
+  }
+
+  if (!actionable.length) {
+    body.innerHTML =
+      `<div class="osync-missing-empty"><p>No duplicates found.</p>` +
+      `<p class="osync-muted">None of these orders has another order from the same customer within 20% of its total and 10 days of its date.</p></div>`;
+    osyncDupSetPhase("plan", { applyEnabled: false });
+    const wrap = document.getElementById("osync-dup-confirm-wrap");
+    if (wrap) wrap.style.display = "none";
+    return;
+  }
+
+  const warnings = (data.warnings || []).length
+    ? `<div class="osync-fix-warn">${data.warnings.map((w) => escapeHtml(w)).join("<br>")}</div>` : "";
+  const scopes = (data.scopes_missing || []).length
+    ? `<div class="osync-fix-error">This Shopify token is missing ${data.scopes_missing.map((x) => escapeHtml(x)).join(", ")} — cancelling will fail.</div>` : "";
+
+  body.innerHTML =
+    scopes + warnings +
+    `<div class="osync-fix-summary">` +
+    `<span><strong>${sum.proposed || 0}</strong> clear duplicate${sum.proposed === 1 ? "" : "s"}</span>` +
+    `<span><strong>${sum.ambiguous || 0}</strong> need a look</span>` +
+    `<span><strong>${sum.no_twin || 0}</strong> with no duplicate</span>` +
+    ((sum.blocked || 0) ? `<span><strong>${sum.blocked}</strong> can't be cancelled</span>` : "") +
+    `</div>` +
+    actionable.map((r) => osyncDupRowCard(r, {
+      status: r.status, message: r.reason, checkable: true,
+    })).join("");
+
+  osyncDupRefreshApply();
+}
+
+function osyncDupSetOrderStatus(shOrderId, status, message) {
+  const card = document.querySelector(`[data-osync-dup-order="${CSS.escape(shOrderId)}"]`);
+  if (!card) return;
+  const pill = card.querySelector(".osync-fix-order-status");
+  if (pill) pill.innerHTML = osyncDupStatusPill(status);
+  if (message) {
+    let msg = card.querySelector(".osync-fix-order-msg");
+    if (!msg) {
+      msg = document.createElement("div");
+      msg.className = "osync-fix-order-msg";
+      card.querySelector(".osync-fix-order-head").after(msg);
+    }
+    msg.classList.toggle("is-bad", status === "failed");
+    msg.textContent = message;
+  }
+}
+
+async function osyncDupOpen() {
+  const targets = osyncDupTargets();
+  if (!targets.length) return;
+  osyncDup.keys.clear();
+  osyncDup.results = null;
+  const body = document.getElementById("osync-dup-body");
+  const sub = document.getElementById("osync-dup-sub");
+  const confirm = document.getElementById("osync-dup-confirm");
+  if (confirm) confirm.value = "";
+  if (sub) sub.textContent = "";
+  if (body) {
+    body.innerHTML = `<div class="osync-fix-loading"><span class="progress-spinner"></span> Looking for duplicates of ${targets.length} order${targets.length === 1 ? "" : "s"}…</div>`;
+  }
+  osyncDupSetPhase("loading");
+  openModal("osync-dup-modal");
+
+  osyncDup.loading = true;
+  try {
+    osyncDup.data = await osyncPost("/order-sync/duplicates/plan", {
+      date_from: orderSyncState.data.date_from,
+      date_to: orderSyncState.data.date_to,
+      targets: targets.map((r) => r.sh_order_id),
+    });
+    (osyncDup.data.rows || []).forEach((r) => {
+      if (osyncDupSelectable(r) && osyncDupDefaultChecked(r)) osyncDup.keys.add(r.sh_order_id);
+    });
+    osyncDupRenderPlan();
+  } catch (e) {
+    if (body) body.innerHTML = `<div class="osync-fix-error">${escapeHtml(e.message || String(e))}</div>`;
+    osyncDupSetPhase("plan", { applyEnabled: false });
+    const wrap = document.getElementById("osync-dup-confirm-wrap");
+    if (wrap) wrap.style.display = "none";
+  } finally {
+    osyncDup.loading = false;
+  }
+}
+
+async function osyncDupApply() {
+  if (osyncDup.applying || !osyncDup.keys.size || !osyncDupConfirmed()) return;
+  const rows = (osyncDup.data.rows || []).filter((r) => osyncDup.keys.has(r.sh_order_id) && r.twin);
+  if (!rows.length) return;
+  const targets = rows.map((r) => ({ sh_order_id: r.sh_order_id, twin_order_id: r.twin.sh_order_id }));
+  const reqBody = JSON.stringify({
+    date_from: osyncDup.data.date_from, date_to: osyncDup.data.date_to, targets,
+  });
+
+  osyncDup.applying = true;
+  osyncDupSetPhase("applying");
+  const sub = document.getElementById("osync-dup-sub");
+  const body = document.getElementById("osync-dup-body");
+  if (body) {
+    body.innerHTML = rows.map((r) => osyncDupRowCard(r, {
+      status: "running", message: null, checkable: false,
+    })).join("");
+  }
+  if (sub) sub.textContent = `Cancelling… 0 of ${rows.length} done`;
+
+  let payload = null;
+  let sawProgress = false;
+  try {
+    const resp = await fetch(`${API_BASE}/order-sync/duplicates/cancel/stream`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: reqBody,
+    });
+    if (!resp.ok || !resp.body) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${resp.status}`);
+    }
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const chunks = buffer.split("\n\n");
+      buffer = chunks.pop();
+      for (const chunk of chunks) {
+        const m = chunk.match(/event: (\w+)\ndata: (.+)/s);
+        if (!m) continue;
+        const [, ev, dataStr] = m;
+        if (ev === "progress") {
+          sawProgress = true;
+          try {
+            const p = JSON.parse(dataStr);
+            osyncDupSetOrderStatus(p.sh_order_id, p.status, p.status === "running" ? null : p.message);
+            if (sub) sub.textContent = `Cancelling… ${p.done} of ${p.total} done`;
+          } catch (e) { /* malformed frame */ }
+        } else if (ev === "result") {
+          payload = JSON.parse(dataStr);
+        } else if (ev === "error") {
+          let msg = "server error";
+          try { msg = JSON.parse(dataStr).message || msg; } catch (e) { /* keep default */ }
+          throw new Error(msg);
+        }
+      }
+    }
+    if (!payload) throw new Error("stream ended without a result");
+  } catch (e) {
+    if (!sawProgress) {
+      // Nothing had started — safe to retry through the plain endpoint.
+      try {
+        payload = await osyncPost("/order-sync/duplicates/cancel", JSON.parse(reqBody));
+      } catch (e2) {
+        osyncDupFinish(null, e2.message || String(e2));
+        return;
+      }
+    } else {
+      osyncDupFinish(null, `${e.message || e} — some orders may already be cancelled; run the comparison again to see the current state.`);
+      return;
+    }
+  }
+  osyncDupFinish(payload, null);
+}
+
+function osyncDupFinish(payload, errorMessage) {
+  osyncDup.applying = false;
+  osyncDup.results = payload;
+  const body = document.getElementById("osync-dup-body");
+  const sub = document.getElementById("osync-dup-sub");
+
+  if (errorMessage) {
+    if (body) body.insertAdjacentHTML("afterbegin", `<div class="osync-fix-error">${escapeHtml(errorMessage)}</div>`);
+    osyncDupSetPhase("done");
+    return;
+  }
+
+  const results = (payload && payload.results) || [];
+  const byId = Object.fromEntries(results.map((r) => [r.sh_order_id, r]));
+  const rows = (osyncDup.data.rows || []).filter((r) => byId[r.sh_order_id]);
+  const counts = results.reduce((acc, r) => { acc[r.status] = (acc[r.status] || 0) + 1; return acc; }, {});
+
+  if (body) {
+    body.innerHTML =
+      `<div class="osync-fix-summary">` +
+      Object.entries(counts).map(([st, n]) =>
+        `<span><strong>${n}</strong> ${escapeHtml((OSYNC_DUP_STATUS[st] || [st])[0].toLowerCase())}</span>`).join("") +
+      `</div>` +
+      rows.map((r) => osyncDupRowCard(r, {
+        status: byId[r.sh_order_id].status, message: byId[r.sh_order_id].message, checkable: false,
+      })).join("");
+  }
+  if (sub) sub.textContent = `${results.length} order${results.length === 1 ? "" : "s"} processed`;
+  osyncDupSetPhase("done");
+
+  const cancelled = results.filter((r) => r.status === "cancelled" || r.status === "noop");
+  cancelled.forEach((r) => osyncDupRemoveRow(r.sh_order_id));
+  if (cancelled.length) {
+    renderOrderSync();
+    showToast(`${cancelled.length} duplicate order${cancelled.length === 1 ? "" : "s"} cancelled in Shopify`, "success");
+  }
+}
+
+// A cancelled order is no longer part of the reconciliation at all — leaving
+// it listed would keep overstating the Shopify side and the match rate.
+function osyncDupRemoveRow(shOrderId) {
+  const data = orderSyncState.data;
+  if (!data) return;
+  const idx = (data.rows || []).findIndex((r) => r.sh_order_id === shOrderId);
+  if (idx < 0) return;
+  const row = data.rows[idx];
+  data.rows.splice(idx, 1);
+  const s = data.summary || {};
+  const bump = (k, d) => { if (typeof s[k] === "number") s[k] = Math.max(0, s[k] + d); };
+  if (row.status === "shopify_unmatched") bump("shopify_unmatched", -1);
+  if (row.sh_no_tracking) bump("shopify_no_tracking", -1);
+  bump("shopify_total", -1);
+}
+
+function osyncDupClose() {
+  if (osyncDup.applying) return;
+  closeModal("osync-dup-modal");
 }
 
 // ===== End Order Sync =====

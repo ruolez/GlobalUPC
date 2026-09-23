@@ -9463,3 +9463,28 @@ tr.bov-row-click:focus-visible { outline: 2px solid var(--accent-primary); outli
   background: color-mix(in srgb, var(--warning) 12%, var(--bg-secondary));
 }
 .osync-missing-empty { padding: 1.5rem 0; color: var(--text-secondary); font-size: 0.875rem; text-align: center; }
+
+/* Order Sync: duplicate orders to cancel */
+.osync-dup-order { margin-bottom: 0.5rem; }
+.osync-dup-pick { display: inline-flex; align-items: center; margin-right: 0.35rem; }
+.osync-dup-pick input { cursor: pointer; accent-color: var(--accent-primary); }
+.osync-dup-pair {
+  margin-top: 0.45rem;
+  display: grid;
+  gap: 0.2rem;
+  padding-left: 0.6rem;
+  border-left: 2px solid var(--border-color);
+}
+.osync-dup-side { font-size: 0.75rem; color: var(--text-secondary); line-height: 1.5; }
+.osync-dup-side strong { color: var(--text-primary); }
+.osync-dup-side.is-cancel { color: var(--danger); }
+.osync-dup-side.is-cancel strong { color: var(--danger); }
+.osync-dup-alts { margin-top: 0.3rem; font-size: 0.7rem; line-height: 1.4; }
+.osync-dup-confirm {
+  width: 7rem;
+  margin-left: 0.4rem;
+  padding: 0.2rem 0.4rem;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}

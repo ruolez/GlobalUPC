@@ -195,6 +195,45 @@ class OrderSyncCreatedProduct(Base):
     shopify_store = relationship("Store", foreign_keys=[shopify_store_id])
 
 
+class OrderSyncCancelledOrder(Base):
+    """One duplicate Shopify order this app cancelled (or tried to). Written
+    as `pending` BEFORE the mutation: cancellation is irreversible, so an
+    attempt that crashes mid-flight must not vanish from the log."""
+    __tablename__ = "order_sync_cancelled_orders"
+
+    id = Column(Integer, primary_key=True, index=True)
+    batch_id = Column(String(36), index=True)
+    shopify_store_id = Column(Integer, ForeignKey("stores.id", ondelete="SET NULL"), nullable=True)
+    store_name = Column(String(255))
+    sh_order_id = Column(String(64), nullable=False, index=True)
+    sh_order_name = Column(String(64))
+    sh_order_total = Column(Numeric(14, 2))
+    sh_order_date = Column(String(10))
+    customer_gid = Column(String(64))
+    twin_order_id = Column(String(64), index=True)
+    twin_order_name = Column(String(64))
+    twin_order_total = Column(Numeric(14, 2))
+    twin_order_date = Column(String(10))
+    twin_tier = Column(Integer)                          # 0 invoice | 1 tracking | 2 neither
+    total_delta = Column(Numeric(14, 2))
+    total_delta_pct = Column(Numeric(6, 2))
+    date_delta_days = Column(Integer)
+    cluster_size = Column(Integer)
+    ambiguous = Column(Boolean, default=False)
+    flags = Column(JSONB)
+    alternatives = Column(JSONB)
+    staff_note = Column(Text)
+    financial_status = Column(String(30))
+    net_payment = Column(Numeric(14, 2))
+    status = Column(String(16), nullable=False)          # pending | cancelled | noop | skipped | failed
+    cancel_job_id = Column(String(128))
+    verified_cancelled = Column(Boolean, default=False)
+    error_message = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    shopify_store = relationship("Store", foreign_keys=[shopify_store_id])
+
+
 class SalesExclusion(Base):
     __tablename__ = "sales_exclusions"
 

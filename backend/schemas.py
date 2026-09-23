@@ -2556,3 +2556,133 @@ class OrderSyncCreatedProductsResponse(BaseModel):
     total: int = 0
     checked_live: bool = False
     warnings: List[str] = []
+
+
+# --- Order Sync: duplicate Shopify orders ---------------------------------
+
+_ORDER_GID_RE = r"^gid://shopify/Order/\d+$"
+
+
+class OrderSyncDupSide(BaseModel):
+    """The surviving order of a duplicate pair, or a runner-up candidate."""
+    sh_order_id: str
+    sh_name: Optional[str] = None
+    sh_date: Optional[str] = None
+    sh_total: Optional[float] = None
+    tier: int = 2                              # 0 invoice | 1 tracking | 2 neither
+    has_invoice: bool = False
+    has_tracking: bool = False
+    financial_status: Optional[str] = None
+    net_payment: Optional[float] = None
+
+
+class OrderSyncDupRow(BaseModel):
+    sh_order_id: str
+    sh_name: Optional[str] = None
+    sh_date: Optional[str] = None
+    sh_total: Optional[float] = None
+    customer_gid: Optional[str] = None
+    financial_status: Optional[str] = None
+    net_payment: Optional[float] = None
+    status: str                                # proposed | ambiguous | no_twin | blocked
+    reason: Optional[str] = None
+    twin: Optional[OrderSyncDupSide] = None
+    alternatives: List[OrderSyncDupSide] = []
+    flags: List[str] = []                      # low_total | paid | refunded
+    cluster_size: int = 0
+    total_delta: Optional[float] = None
+    total_delta_pct: Optional[float] = None
+    date_delta_days: Optional[int] = None
+
+
+class OrderSyncDupPlanRequest(BaseModel):
+    date_from: str
+    date_to: str
+    targets: List[str] = Field(..., min_length=1, max_length=500)
+
+    @field_validator("targets")
+    @classmethod
+    def _order_gids(cls, v: List[str]) -> List[str]:
+        for gid in v:
+            if not re.match(_ORDER_GID_RE, gid or ""):
+                raise ValueError("targets must be Shopify Order GIDs")
+        return v
+
+
+class OrderSyncDupPlanResponse(BaseModel):
+    configured: bool = True
+    shopify_store_name: Optional[str] = None
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
+    pool_size: int = 0
+    rows: List[OrderSyncDupRow] = []
+    summary: Dict[str, int] = {}
+    scopes_missing: List[str] = []
+    warnings: List[str] = []
+
+
+class OrderSyncDupTarget(BaseModel):
+    """One confirmed pair. The twin is echoed back so the server can refuse
+    the cancel if a fresh plan now points somewhere else."""
+    sh_order_id: str
+    twin_order_id: str
+
+    @field_validator("sh_order_id", "twin_order_id")
+    @classmethod
+    def _order_gid(cls, v: str) -> str:
+        if not re.match(_ORDER_GID_RE, v or ""):
+            raise ValueError("must be a Shopify Order GID")
+        return v
+
+
+class OrderSyncDupCancelRequest(BaseModel):
+    date_from: str
+    date_to: str
+    # Irreversible work gets a smaller blast radius than the fix flow's 200.
+    targets: List[OrderSyncDupTarget] = Field(..., min_length=1, max_length=50)
+
+
+class OrderSyncDupResult(BaseModel):
+    sh_order_id: str
+    sh_name: Optional[str] = None
+    twin_order_id: Optional[str] = None
+    twin_order_name: Optional[str] = None
+    status: str                                # cancelled | noop | skipped | failed
+    message: Optional[str] = None
+    verified_cancelled: bool = False
+
+
+class OrderSyncDupCancelResponse(BaseModel):
+    batch_id: str
+    results: List[OrderSyncDupResult] = []
+    warnings: List[str] = []
+
+
+class OrderSyncCancelledOrderRow(BaseModel):
+    id: int
+    created_at: Optional[str] = None
+    store_name: Optional[str] = None
+    sh_order_id: str
+    sh_order_name: Optional[str] = None
+    sh_order_total: Optional[float] = None
+    sh_order_date: Optional[str] = None
+    twin_order_id: Optional[str] = None
+    twin_order_name: Optional[str] = None
+    twin_order_total: Optional[float] = None
+    twin_order_date: Optional[str] = None
+    total_delta: Optional[float] = None
+    total_delta_pct: Optional[float] = None
+    date_delta_days: Optional[int] = None
+    ambiguous: bool = False
+    flags: List[str] = []
+    status: str
+    verified_cancelled: bool = False
+    error_message: Optional[str] = None
+    admin_url: Optional[str] = None
+    twin_admin_url: Optional[str] = None
+
+
+class OrderSyncCancelledOrdersResponse(BaseModel):
+    orders: List[OrderSyncCancelledOrderRow] = []
+    total: int = 0
+    warnings: List[str] = []

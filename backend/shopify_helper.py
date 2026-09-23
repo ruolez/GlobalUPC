@@ -1776,6 +1776,140 @@ async def fetch_orders_for_sync(
         return False, f"Unexpected error: {str(e)}", []
 
 
+# Order Sync duplicate scan: a much cheaper order shape than
+# _ORDER_SYNC_ORDER_FIELDS — identity, money and tracking presence only, no
+# line items and no addresses — so the page size can be double.
+_DUPE_PAGE_SIZE = 100
+
+_DUPE_ORDER_FIELDS = """
+                id
+                name
+                createdAt
+                cancelledAt
+                displayFinancialStatus
+                displayFulfillmentStatus
+                customer {
+                  id
+                }
+                totalPriceSet { shopMoney { amount } }
+                currentTotalPriceSet { shopMoney { amount } }
+                totalRefundedSet { shopMoney { amount } }
+                netPaymentSet { shopMoney { amount } }
+                fulfillments(first: 10) {
+                  trackingInfo {
+                    number
+                  }
+                }
+"""
+
+
+def _shape_dupe_order(node: Dict[str, Any], placed_on: Optional[str]) -> Dict[str, Any]:
+    cust = node.get("customer") or {}
+    return {
+        "id": node.get("id"),
+        "name": node.get("name") or "",
+        "created_at": node.get("createdAt"),
+        "local_date": placed_on,
+        "customer_gid": cust.get("id"),
+        # Same "current after returns" rule as _shape_sync_order; the gross
+        # figure is kept because the duplicate test needs both.
+        "total": _money(node.get("currentTotalPriceSet")) if node.get("currentTotalPriceSet") else _money(node.get("totalPriceSet")),
+        "gross_total": _money(node.get("totalPriceSet")),
+        "refunded": _money(node.get("totalRefundedSet")),
+        "net_payment": _money(node.get("netPaymentSet")),
+        "financial_status": node.get("displayFinancialStatus"),
+        "fulfillment_status": node.get("displayFulfillmentStatus"),
+        "cancelled": node.get("cancelledAt") is not None,
+        "tracking_numbers": [
+            (t.get("number") or "").strip()
+            for f in (node.get("fulfillments") or [])
+            for t in (f.get("trackingInfo") or [])
+            if (t.get("number") or "").strip()
+        ],
+    }
+
+
+async def fetch_orders_for_duplicates(
+    shop_domain: str,
+    admin_api_key: str,
+    start_date: str,
+    end_date: str,
+    api_version: str = "2025-01",
+    tz: Optional[str] = None,
+    on_retry=None,
+) -> tuple[bool, Optional[str], List[Dict[str, Any]]]:
+    """
+    Candidate pool for the Order Sync duplicate scan: every order placed on a
+    shop-local day in [start_date, end_date] that is not cancelled.
+
+    Deliberately wider than fetch_orders_for_sync — no fulfillment filter (the
+    twin of a shipped duplicate is often still unfulfilled) and no refund
+    filter (a refunded order is still a valid original) — and deliberately
+    lighter, since only identity, totals and tracking presence are compared.
+    """
+    try:
+        shop_domain = validate_shop_domain(shop_domain)
+        if tz is None:
+            tz = await fetch_shop_timezone(shop_domain, admin_api_key, api_version)
+
+        query_gql = f"""
+        query fetchOrdersForDuplicates($query: String!, $first: Int!, $after: String) {{
+          orders(first: $first, after: $after, query: $query) {{
+            pageInfo {{
+              hasNextPage
+              endCursor
+            }}
+            edges {{
+              node {{
+                {_DUPE_ORDER_FIELDS}
+              }}
+            }}
+          }}
+        }}
+        """
+
+        # Prefilter only — the exact gate is the shop-local day check below.
+        search_lo = (datetime.fromisoformat(start_date) - timedelta(days=1)).date().isoformat()
+        search_hi = (datetime.fromisoformat(end_date) + timedelta(days=2)).date().isoformat()
+        query_filter = f"-status:cancelled created_at:>={search_lo} created_at:<{search_hi}"
+
+        orders: List[Dict[str, Any]] = []
+        has_next_page = True
+        cursor = None
+
+        async with aiohttp.ClientSession() as session:
+            while has_next_page:
+                variables: Dict[str, Any] = {"query": query_filter, "first": _DUPE_PAGE_SIZE}
+                if cursor:
+                    variables["after"] = cursor
+                data, _warnings = await _shopify_graphql(
+                    session, shop_domain, admin_api_key, api_version,
+                    query_gql, variables, op_name="order_sync_dupes", on_retry=on_retry,
+                )
+                orders_conn = (data or {}).get("orders") or {}
+                page_info = orders_conn.get("pageInfo") or {}
+                has_next_page = page_info.get("hasNextPage", False)
+                cursor = page_info.get("endCursor")
+
+                for edge in orders_conn.get("edges", []):
+                    node = edge.get("node") or {}
+                    if node.get("cancelledAt") is not None:
+                        continue
+                    placed_on = local_date(node.get("createdAt"), tz)
+                    if not placed_on or not (start_date <= placed_on <= end_date):
+                        continue
+                    orders.append(_shape_dupe_order(node, placed_on))
+
+        return True, None, orders
+
+    except ShopifyFetchError as e:
+        return False, str(e), []
+    except aiohttp.ClientError as e:
+        return False, f"Network error: {str(e)}", []
+    except Exception as e:
+        return False, f"Unexpected error: {str(e)}", []
+
+
 async def update_barcodes_across_shopify_stores(
     store_updates: List[Dict[str, Any]]
 ) -> List[Dict[str, Any]]:

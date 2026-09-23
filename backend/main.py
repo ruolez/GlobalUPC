@@ -14000,5 +14000,338 @@ async def order_sync_missing_products(req: OrderSyncMissingProductsRequest):
         warnings=warnings,
     )
 
+
+# ===== Order Sync: duplicate Shopify orders =====
+#
+# Most "missing tracking" rows are the same sale keyed into Shopify twice.
+# This pass finds the twin and cancels the untracked copy. It is on demand,
+# never part of the report run: the candidate fetch is wide and the action is
+# irreversible, so it must not happen as a side effect of pressing Compare.
+
+from models import OrderSyncCancelledOrder
+from schemas import (
+    OrderSyncDupPlanRequest, OrderSyncDupPlanResponse, OrderSyncDupRow,
+    OrderSyncDupCancelRequest, OrderSyncDupCancelResponse, OrderSyncDupResult,
+    OrderSyncCancelledOrderRow, OrderSyncCancelledOrdersResponse,
+)
+from shopify_helper import fetch_orders_for_duplicates
+
+_ORDER_SYNC_DUP_PAD_DAYS = 31
+
+
+def _order_sync_dup_admin_url(shop_domain: Optional[str], order_gid: Optional[str]) -> Optional[str]:
+    if not shop_domain or not order_gid:
+        return None
+    legacy = str(order_gid).rsplit("/", 1)[-1]
+    return f"https://{shop_domain}/admin/orders/{legacy}" if legacy.isdigit() else None
+
+
+async def _order_sync_dup_pool(ctx: Dict[str, Any], date_from: str, date_to: str) -> List[Dict[str, Any]]:
+    """Every non-cancelled Shopify order around the range, deduped by id.
+
+    Unlike the report (which downgrades a failed pad fetch to a warning), any
+    failure here aborts: a missing page hides the better survivor and the plan
+    would confidently point the cancel at the wrong order.
+    """
+    try:
+        today = datetime.now(_BovZoneInfo(ctx["tz"])).strftime("%Y-%m-%d") if ctx.get("tz") else datetime.utcnow().strftime("%Y-%m-%d")
+    except Exception:
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+    windows = [(date_from, date_to)] + osync.order_pad_windows(
+        date_from, date_to, today,
+        before_days=_ORDER_SYNC_DUP_PAD_DAYS, after_days=_ORDER_SYNC_DUP_PAD_DAYS)
+
+    results = await asyncio.gather(*(
+        fetch_orders_for_duplicates(ctx["shop_domain"], ctx["admin_api_key"], lo, hi,
+                                    api_version=ctx["api_version"], tz=ctx["tz"])
+        for lo, hi in windows))
+    pool: Dict[str, Dict[str, Any]] = {}
+    for ok, err, orders in results:
+        if not ok:
+            raise HTTPException(status_code=502, detail=f"Shopify fetch failed: {err}")
+        for o in orders:
+            # The prefilter pads overlap; without this an order becomes its
+            # own twin at a delta of zero and wins every ranking.
+            if o.get("id"):
+                pool.setdefault(o["id"], o)
+    return list(pool.values())
+
+
+def _order_sync_dup_protected(shopify_store_id: Optional[int]) -> set:
+    """Orders kept as the survivor of an earlier cancellation. A survivor is
+    usually itself untracked and uninvoiced, so without this it becomes a
+    target on the next run and can be cancelled against something else."""
+    with db_session() as db:
+        q = (db.query(OrderSyncCancelledOrder.twin_order_id)
+             .filter(OrderSyncCancelledOrder.twin_order_id.isnot(None),
+                     OrderSyncCancelledOrder.status.in_(["pending", "cancelled", "noop"])))
+        if shopify_store_id:
+            q = q.filter(OrderSyncCancelledOrder.shopify_store_id == shopify_store_id)
+        rows = q.all()
+    return {r[0] for r in rows if r[0]}
+
+
+def _order_sync_dup_busy(order_ids: List[str]) -> set:
+    """Targets already cancelled or in flight — defuses a double-click."""
+    if not order_ids:
+        return set()
+    with db_session() as db:
+        rows = (db.query(OrderSyncCancelledOrder.sh_order_id)
+                .filter(OrderSyncCancelledOrder.sh_order_id.in_(order_ids),
+                        OrderSyncCancelledOrder.status.in_(["pending", "cancelled"]))
+                .all())
+    return {r[0] for r in rows if r[0]}
+
+
+async def _order_sync_dup_plan(date_from: str, date_to: str, targets: List[str]) -> Dict[str, Any]:
+    date_from, date_to = _order_sync_validate_range(date_from, date_to)
+    ctx = await _order_sync_fix_context()
+
+    pool = await _order_sync_dup_pool(ctx, date_from, date_to)
+
+    # A candidate that reconciles to a BackOffice invoice is the original and
+    # must survive; reuse the report's own matcher rather than a second rule.
+    ok_i, err_i, invoices = await osync.fetch_invoices_async(
+        **ctx["invoice_conn"], date_from=date_from, date_to=date_to)
+    if not ok_i:
+        raise HTTPException(status_code=502, detail=f"BackOffice query failed: {err_i}")
+    invoiced_ids = {o["id"] for m in osync.match_orders(pool, invoices)["matches"] for o in m["orders"]}
+
+    protected = _order_sync_dup_protected(ctx.get("shopify_store_id"))
+    protected |= _order_sync_dup_busy(targets)
+    plan = osync.plan_duplicate_cancels(targets, pool, invoiced_ids, protected)
+    return {
+        "configured": True,
+        "shopify_store_name": ctx["shopify_store_name"],
+        "date_from": date_from, "date_to": date_to,
+        "pool_size": len(pool),
+        "rows": plan["rows"], "summary": plan["summary"],
+        "_ctx": ctx,
+    }
+
+
+@app.post("/api/order-sync/duplicates/plan", response_model=OrderSyncDupPlanResponse)
+async def plan_order_sync_duplicates(req: OrderSyncDupPlanRequest):
+    """Dry run: which missing-tracking orders duplicate another order. No mutations."""
+    payload = await _order_sync_dup_plan(req.date_from, req.date_to, req.targets)
+    ctx = payload.pop("_ctx")
+    warnings: List[str] = []
+    async with aiohttp.ClientSession() as session:
+        sctx = ofix.ShopifyCtx(session, ctx["shop_domain"], ctx["admin_api_key"], ctx["api_version"])
+        scopes_missing, scope_warning = await ofix.check_write_scopes(sctx, required=ofix.CANCEL_SCOPES)
+    if scope_warning:
+        warnings.append(scope_warning)
+    rows = payload.pop("rows")
+    return OrderSyncDupPlanResponse(
+        **payload,
+        rows=[OrderSyncDupRow(**r) for r in rows],
+        scopes_missing=scopes_missing,
+        warnings=warnings,
+    )
+
+
+def _order_sync_dup_open_record(batch_id: str, ctx: Dict[str, Any], row: Dict[str, Any]) -> Optional[int]:
+    """Log the attempt BEFORE the mutation, so an irreversible cancel that
+    dies mid-flight is still visible. Returns the row id to update after."""
+    twin = row.get("twin") or {}
+    try:
+        with db_session() as db:
+            rec = OrderSyncCancelledOrder(
+                batch_id=batch_id,
+                shopify_store_id=ctx["shopify_store_id"],
+                store_name=ctx["shopify_store_name"],
+                sh_order_id=row["sh_order_id"],
+                sh_order_name=row.get("sh_name"),
+                sh_order_total=row.get("sh_total"),
+                sh_order_date=row.get("sh_date"),
+                customer_gid=row.get("customer_gid"),
+                twin_order_id=twin.get("sh_order_id"),
+                twin_order_name=twin.get("sh_name"),
+                twin_order_total=twin.get("sh_total"),
+                twin_order_date=twin.get("sh_date"),
+                twin_tier=twin.get("tier"),
+                total_delta=row.get("total_delta"),
+                total_delta_pct=row.get("total_delta_pct"),
+                date_delta_days=row.get("date_delta_days"),
+                cluster_size=row.get("cluster_size"),
+                ambiguous=row.get("status") == "ambiguous",
+                flags=row.get("flags") or [],
+                alternatives=row.get("alternatives") or [],
+                staff_note=ofix.dup_staff_note(twin) if twin else None,
+                financial_status=row.get("financial_status"),
+                net_payment=row.get("net_payment"),
+                status="pending",
+            )
+            db.add(rec)
+            db.commit()
+            return rec.id
+    except Exception as e:
+        print(f"order_sync_cancelled_orders write failed for {row.get('sh_order_id')}: {e}")
+        return None
+
+
+def _order_sync_dup_close_record(record_id: Optional[int], result: Dict[str, Any]) -> None:
+    if not record_id:
+        return
+    try:
+        with db_session() as db:
+            rec = db.query(OrderSyncCancelledOrder).filter(OrderSyncCancelledOrder.id == record_id).first()
+            if not rec:
+                return
+            rec.status = result["status"]
+            rec.cancel_job_id = result.get("job_id")
+            rec.verified_cancelled = bool(result.get("verified_cancelled"))
+            rec.error_message = result.get("message") if result["status"] in ("skipped", "failed") else None
+            db.commit()
+    except Exception as e:
+        print(f"order_sync_cancelled_orders update failed for {record_id}: {e}")
+
+
+async def _order_sync_dup_run(req: OrderSyncDupCancelRequest, progress=None) -> Dict[str, Any]:
+    """Re-plan from fresh data, keep only the pairs the user confirmed that
+    the plan still proposes, then cancel them one at a time."""
+    payload = await _order_sync_dup_plan(req.date_from, req.date_to,
+                                         [t.sh_order_id for t in req.targets])
+    ctx = payload["_ctx"]
+    by_id = {r["sh_order_id"]: r for r in payload["rows"]}
+    batch_id = str(uuid.uuid4())
+    results: List[Dict[str, Any]] = []
+    warnings: List[str] = []
+
+    async def emit(item: Dict[str, Any]):
+        if progress:
+            await progress(item)
+
+    async with aiohttp.ClientSession() as session:
+        sctx = ofix.ShopifyCtx(session, ctx["shop_domain"], ctx["admin_api_key"], ctx["api_version"])
+        scopes_missing, scope_warning = await ofix.check_write_scopes(sctx, required=ofix.CANCEL_SCOPES)
+        if scope_warning:
+            warnings.append(scope_warning)
+        if scopes_missing:
+            raise HTTPException(status_code=400,
+                                detail=f"Shopify token is missing scopes: {', '.join(scopes_missing)}")
+
+        total = len(req.targets)
+        # Serialized on purpose: cancels are cheap, and one at a time keeps the
+        # one-survivor-per-group invariant safe from interleaving.
+        for done, t in enumerate(req.targets):
+            await emit({"sh_order_id": t.sh_order_id, "status": "running",
+                        "done": done, "total": total})
+            row = by_id.get(t.sh_order_id)
+            if not row or row["status"] not in ("proposed", "ambiguous"):
+                result = {"sh_order_id": t.sh_order_id, "sh_name": (row or {}).get("sh_name"),
+                          "twin_order_id": None, "twin_order_name": None, "status": "skipped",
+                          "message": (row or {}).get("reason") or "No longer a duplicate — nothing was cancelled",
+                          "verified_cancelled": False}
+            elif (row.get("twin") or {}).get("sh_order_id") != t.twin_order_id:
+                result = {"sh_order_id": t.sh_order_id, "sh_name": row.get("sh_name"),
+                          "twin_order_id": (row.get("twin") or {}).get("sh_order_id"),
+                          "twin_order_name": (row.get("twin") or {}).get("sh_name"),
+                          "status": "skipped",
+                          "message": "The matching order changed since you reviewed it — nothing was cancelled",
+                          "verified_cancelled": False}
+            else:
+                record_id = _order_sync_dup_open_record(batch_id, ctx, row)
+                result = await ofix.apply_duplicate_cancel(sctx, row)
+                _order_sync_dup_close_record(record_id, result)
+            results.append(result)
+            await emit({**{k: result.get(k) for k in
+                           ("sh_order_id", "sh_name", "twin_order_name", "status", "message")},
+                        "done": done + 1, "total": total})
+
+    return {"batch_id": batch_id,
+            "results": [{k: r.get(k) for k in
+                         ("sh_order_id", "sh_name", "twin_order_id", "twin_order_name",
+                          "status", "message", "verified_cancelled")} for r in results],
+            "warnings": warnings}
+
+
+@app.post("/api/order-sync/duplicates/cancel", response_model=OrderSyncDupCancelResponse)
+async def cancel_order_sync_duplicates(req: OrderSyncDupCancelRequest):
+    """Cancel the confirmed duplicates (plain JSON twin of /cancel/stream)."""
+    payload = await _order_sync_dup_run(req)
+    return OrderSyncDupCancelResponse(**payload)
+
+
+@app.post("/api/order-sync/duplicates/cancel/stream")
+async def stream_order_sync_duplicates(req: OrderSyncDupCancelRequest):
+    """SSE: one `progress` event as each order starts and finishes, then one
+    `result` event with every outcome."""
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def progress(item: Dict[str, Any]):
+        await queue.put(("progress", item))
+
+    async def runner():
+        try:
+            payload = await _order_sync_dup_run(req, progress=progress)
+            await queue.put(("result", payload))
+        except HTTPException as e:
+            await queue.put(("error", {"message": str(e.detail)}))
+        except Exception as e:
+            await queue.put(("error", {"message": str(e)}))
+        await queue.put(None)
+
+    async def gen():
+        # Deliberately NOT cancelled on client disconnect: a cancel already
+        # sent to Shopify must be polled to completion so the audit row is
+        # truthful rather than stuck on `pending`.
+        asyncio.create_task(runner())
+        while True:
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=15)
+            except asyncio.TimeoutError:
+                yield "event: heartbeat\ndata: {}\n\n"
+                continue
+            if item is None:
+                break
+            ev, data = item
+            yield f"event: {ev}\ndata: {json.dumps(data)}\n\n"
+
+    return BoundedStreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "Connection": "keep-alive",
+                                      "X-Accel-Buffering": "no"})
+
+
+@app.get("/api/order-sync/cancelled-duplicates", response_model=OrderSyncCancelledOrdersResponse)
+async def order_sync_cancelled_duplicates(limit: int = 200):
+    """Every duplicate this app cancelled, or tried to, newest first."""
+    limit = max(1, min(limit, 1000))
+    with db_session() as db:
+        total = db.query(OrderSyncCancelledOrder).count()
+        rows = (db.query(OrderSyncCancelledOrder)
+                .order_by(OrderSyncCancelledOrder.created_at.desc(), OrderSyncCancelledOrder.id.desc())
+                .limit(limit).all())
+        store_ids = {r.shopify_store_id for r in rows if r.shopify_store_id}
+        domains: Dict[int, str] = {}
+        for store in db.query(Store).filter(Store.id.in_(store_ids)).all() if store_ids else []:
+            if store.shopify_connection:
+                domains[store.id] = store.shopify_connection.shop_domain
+        out = [OrderSyncCancelledOrderRow(
+            id=r.id,
+            created_at=r.created_at.isoformat() if r.created_at else None,
+            store_name=r.store_name,
+            sh_order_id=r.sh_order_id,
+            sh_order_name=r.sh_order_name,
+            sh_order_total=float(r.sh_order_total) if r.sh_order_total is not None else None,
+            sh_order_date=r.sh_order_date,
+            twin_order_id=r.twin_order_id,
+            twin_order_name=r.twin_order_name,
+            twin_order_total=float(r.twin_order_total) if r.twin_order_total is not None else None,
+            twin_order_date=r.twin_order_date,
+            total_delta=float(r.total_delta) if r.total_delta is not None else None,
+            total_delta_pct=float(r.total_delta_pct) if r.total_delta_pct is not None else None,
+            date_delta_days=r.date_delta_days,
+            ambiguous=bool(r.ambiguous),
+            flags=r.flags or [],
+            status=r.status,
+            verified_cancelled=bool(r.verified_cancelled),
+            error_message=r.error_message,
+            admin_url=_order_sync_dup_admin_url(domains.get(r.shopify_store_id), r.sh_order_id),
+            twin_admin_url=_order_sync_dup_admin_url(domains.get(r.shopify_store_id), r.twin_order_id),
+        ) for r in rows]
+    return OrderSyncCancelledOrdersResponse(orders=out, total=total)
+
+
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

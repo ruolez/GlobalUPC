@@ -1486,5 +1486,211 @@ def plan_order_fix(order: Dict[str, Any], invoice: Dict[str, Any],
     }
 
 
+# ---------------------------------------------------------------------------
+# Duplicate Shopify orders (pure)
+#
+# Most "missing tracking" rows — Shopify orders that shipped, carry nothing in
+# the tracking field and found no invoice — are the same sale keyed into
+# Shopify twice. This plans which of them to cancel.
+#
+# The unit of reasoning is a CLUSTER, not a pair: group one customer's orders
+# by "same sale" (totals within tolerance, placed within a few days), elect
+# exactly one survivor, and cancel the rest. Pair-at-a-time reasoning would
+# happily produce A-cancels-B and B-cancels-A and lose the sale entirely;
+# with clusters that is unrepresentable.
+# ---------------------------------------------------------------------------
+
+DUP_TOTAL_TOL_PCT = 0.20      # totals this far apart are still the same sale
+DUP_MAX_DAYS_APART = 10       # a sale keyed twice is keyed within days
+DUP_LOW_TOTAL = 25.00         # below this, 20% is noise — flagged, not blocked
+
+
+def dup_totals_within(a: Any, b: Any, pct: float = DUP_TOTAL_TOL_PCT) -> bool:
+    """Relative to the LARGER total, so the test is symmetric."""
+    x, y = abs(float(a or 0)), abs(float(b or 0))
+    base = max(x, y)
+    if base <= 0:
+        return x == y
+    return abs(x - y) <= pct * base
+
+
+def _dup_days_apart(a: Optional[str], b: Optional[str]) -> Optional[int]:
+    if not a or not b:
+        return None
+    try:
+        return abs((datetime.strptime(a[:10], "%Y-%m-%d") - datetime.strptime(b[:10], "%Y-%m-%d")).days)
+    except ValueError:
+        return None
+
+
+def _dup_same_sale(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
+    """Both money figures must agree: a partial refund moves `total` but not
+    `gross_total`, and either one alone would let the window drift."""
+    if not dup_totals_within(a.get("total"), b.get("total")):
+        return False
+    if not dup_totals_within(a.get("gross_total"), b.get("gross_total")):
+        return False
+    days = _dup_days_apart(a.get("local_date"), b.get("local_date"))
+    return days is not None and days <= DUP_MAX_DAYS_APART
+
+
+def dup_has_tracking(order: Dict[str, Any]) -> bool:
+    """Route codes are not tracking — every local delivery would look shipped."""
+    real, _routes = split_routes(order.get("tracking_numbers") or [])
+    return bool(real)
+
+
+def _dup_legacy_id(order: Dict[str, Any]) -> int:
+    tail = str(order.get("id") or "").rsplit("/", 1)[-1]
+    return int(tail) if tail.isdigit() else 0
+
+
+def _dup_tier(order: Dict[str, Any], invoiced_ids: set) -> int:
+    """0 = reconciled to a BackOffice invoice, 1 = really shipped, 2 = neither.
+    The lowest tier in a cluster is the order that must survive."""
+    if order.get("id") in invoiced_ids:
+        return 0
+    if dup_has_tracking(order):
+        return 1
+    return 2
+
+
+def _dup_flags(order: Dict[str, Any]) -> List[str]:
+    flags: List[str] = []
+    if abs(float(order.get("total") or 0)) < DUP_LOW_TOTAL:
+        flags.append("low_total")
+    if float(order.get("net_payment") or 0) > 0.004:
+        flags.append("paid")
+    if float(order.get("refunded") or 0) > 0.004:
+        flags.append("refunded")
+    return flags
+
+
+def _dup_side(order: Dict[str, Any], tier: int) -> Dict[str, Any]:
+    return {
+        "sh_order_id": order.get("id"),
+        "sh_name": order.get("name"),
+        "sh_date": order.get("local_date"),
+        "sh_total": round(float(order.get("total") or 0), 2),
+        "tier": tier,
+        "has_invoice": tier == 0,
+        "has_tracking": dup_has_tracking(order),
+        "financial_status": order.get("financial_status"),
+        "net_payment": round(float(order.get("net_payment") or 0), 2),
+    }
+
+
+def _dup_rank_key(order: Dict[str, Any], invoiced_ids: set) -> Tuple[int, str, int]:
+    """Total order over one customer's orders: reconciled beats shipped beats
+    neither, then oldest. Cancelling only ever moves DOWN this order, which is
+    what makes "A cancels B and B cancels A" impossible."""
+    return (_dup_tier(order, invoiced_ids), order.get("created_at") or "", _dup_legacy_id(order))
+
+
+def plan_duplicate_cancels(targets: List[str], pool: List[Dict[str, Any]],
+                           invoiced_ids: Optional[set] = None,
+                           protected_ids: Optional[set] = None) -> Dict[str, Any]:
+    """
+    Which of `targets` (Shopify order GIDs) duplicate another order in `pool`.
+
+    One row per target, in the order given:
+      proposed  — cancel it, `twin` survives
+      ambiguous — a twin was found but the pairing needs a human: several
+                  candidates, neither order carries an invoice or tracking to
+                  mark it the original, a small total, or the twin is itself
+                  queued for cancellation
+      no_twin   — nothing qualifies, or this order IS the original
+      blocked   — the order must not be cancelled by this pass
+
+    A candidate must match the target DIRECTLY (same customer, both totals
+    within tolerance, within the day window). Chaining through a third order
+    is deliberately not allowed: with a repeat customer it would link a whole
+    quarter of orders into one group and pair a September order with an
+    August one.
+    """
+    invoiced_ids = invoiced_ids or set()
+    protected_ids = protected_ids or set()
+    by_id = {o["id"]: o for o in pool if o.get("id")}
+    target_ids = list(targets)
+    target_set = set(target_ids)
+
+    by_customer: Dict[str, List[Dict[str, Any]]] = {}
+    for o in by_id.values():
+        cust = o.get("customer_gid")
+        if cust and not o.get("cancelled"):
+            by_customer.setdefault(cust, []).append(o)
+
+    rows: List[Dict[str, Any]] = []
+    summary = {"targets": len(target_ids), "proposed": 0, "ambiguous": 0,
+               "no_twin": 0, "blocked": 0}
+
+    for order_id in target_ids:
+        order = by_id.get(order_id)
+        row: Dict[str, Any] = {
+            "sh_order_id": order_id, "sh_name": (order or {}).get("name"),
+            "sh_date": (order or {}).get("local_date"),
+            "sh_total": round(float((order or {}).get("total") or 0), 2),
+            "customer_gid": (order or {}).get("customer_gid"),
+            "financial_status": (order or {}).get("financial_status"),
+            "net_payment": round(float((order or {}).get("net_payment") or 0), 2),
+            "twin": None, "alternatives": [], "flags": [],
+            "cluster_size": 0, "total_delta": None, "total_delta_pct": None,
+            "date_delta_days": None, "reason": None,
+        }
+        if not order:
+            row.update(status="blocked", reason="Order is no longer in Shopify, or is already cancelled")
+        elif order.get("cancelled"):
+            row.update(status="blocked", reason="Already cancelled in Shopify")
+        elif order_id in protected_ids:
+            row.update(status="blocked",
+                       reason="Kept as the surviving order of an earlier duplicate cancellation")
+        elif not order.get("customer_gid"):
+            row.update(status="no_twin", reason="Order has no Shopify customer")
+        else:
+            row["flags"] = _dup_flags(order)
+            direct = [c for c in by_customer.get(order["customer_gid"], [])
+                      if c["id"] != order_id and _dup_same_sale(order, c)]
+            own_key = _dup_rank_key(order, invoiced_ids)
+            survivor = min(direct, key=lambda c: _dup_rank_key(c, invoiced_ids)) if direct else None
+            if not direct:
+                row.update(status="no_twin", reason="No other order from this customer matches")
+            elif _dup_rank_key(survivor, invoiced_ids) > own_key:
+                # Every match is newer/weaker than this one — this is the original.
+                row.update(status="no_twin", reason="This is the earliest of the matching orders")
+            else:
+                twin_tier = _dup_tier(survivor, invoiced_ids)
+                delta = round(float(order.get("total") or 0) - float(survivor.get("total") or 0), 2)
+                base = max(abs(float(order.get("total") or 0)), abs(float(survivor.get("total") or 0)))
+                alternatives = sorted(
+                    (c for c in direct if c["id"] != survivor["id"]),
+                    key=lambda c: (_dup_tier(c, invoiced_ids),
+                                   abs(float(c.get("total") or 0) - float(order.get("total") or 0)),
+                                   _dup_days_apart(c.get("local_date"), order.get("local_date")) or 0,
+                                   _dup_legacy_id(c)))
+                row.update(
+                    twin=_dup_side(survivor, twin_tier),
+                    alternatives=[_dup_side(c, _dup_tier(c, invoiced_ids)) for c in alternatives],
+                    cluster_size=len(direct) + 1,
+                    total_delta=delta,
+                    total_delta_pct=round(abs(delta) / base * 100, 1) if base else 0.0,
+                    date_delta_days=_dup_days_apart(order.get("local_date"), survivor.get("local_date")),
+                )
+                reasons: List[str] = []
+                if len(direct) > 1:
+                    reasons.append(f"{len(direct)} orders from this customer qualify")
+                if twin_tier == 2:
+                    reasons.append("neither order has an invoice or tracking to mark it the original")
+                if survivor["id"] in target_set:
+                    reasons.append("the order it duplicates is also in this list")
+                if "low_total" in row["flags"]:
+                    reasons.append(f"order total is under ${DUP_LOW_TOTAL:,.0f}")
+                row["status"] = "ambiguous" if reasons else "proposed"
+                row["reason"] = "; ".join(reasons) or None
+        summary[row["status"]] += 1
+        rows.append(row)
+
+    return {"rows": rows, "summary": summary}
+
+
 def shutdown_order_sync_executor():
     _ordsync_executor.shutdown(wait=False)

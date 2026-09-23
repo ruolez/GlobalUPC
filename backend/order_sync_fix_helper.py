@@ -116,12 +116,16 @@ async def _with_retry(coro_factory):
     return await coro_factory()
 
 
-def _payload(data: Dict[str, Any], field: str, step: str) -> Dict[str, Any]:
-    """Unwrap a mutation payload and turn its userErrors into a FixStepError."""
+def _payload(data: Dict[str, Any], field: str, step: str,
+             errors_field: str = "userErrors") -> Dict[str, Any]:
+    """Unwrap a mutation payload and turn its user errors into a FixStepError.
+    A few mutations name that field after themselves (orderCancel returns
+    `orderCancelUserErrors`), and reading the wrong one silently turns a
+    rejection into a success."""
     payload = data.get(field)
     if payload is None:
         raise FixStepError(step, f"{field}: empty response")
-    errors = payload.get("userErrors") or []
+    errors = payload.get(errors_field) or []
     if errors:
         msgs = "; ".join(
             (("/".join(e.get("field") or []) + ": ") if e.get("field") else "") + (e.get("message") or "")
@@ -135,9 +139,13 @@ def _payload(data: Dict[str, Any], field: str, step: str) -> Dict[str, Any]:
 # Preflight
 # ---------------------------------------------------------------------------
 
-async def check_write_scopes(ctx: ShopifyCtx) -> Tuple[List[str], Optional[str]]:
+async def check_write_scopes(ctx: ShopifyCtx,
+                             required: Optional[List[str]] = None) -> Tuple[List[str], Optional[str]]:
     """(missing scopes, warning). Legacy tokens may not expose the
-    installation — then nothing is reported missing, only a warning."""
+    installation — then nothing is reported missing, only a warning.
+    `required` defaults to everything the fix flow needs; a caller that only
+    cancels orders passes the narrower CANCEL_SCOPES."""
+    required = required or REQUIRED_SCOPES
     query = """
     query orderFixScopes {
       currentAppInstallation { accessScopes { handle } }
@@ -154,7 +162,7 @@ async def check_write_scopes(ctx: ShopifyCtx) -> Tuple[List[str], Optional[str]]
     scopes = {s.get("handle") for s in ((data.get("currentAppInstallation") or {}).get("accessScopes") or [])}
     if not scopes:
         return [], "Could not verify API scopes (no app installation visible for this token)"
-    missing = [s for s in REQUIRED_SCOPES if s not in scopes]
+    missing = [s for s in required if s not in scopes]
     # Either fulfillment-order scope family satisfies fulfillmentCreate.
     if "write_merchant_managed_fulfillment_orders" in missing and (
         "write_assigned_fulfillment_orders" in scopes or "write_third_party_fulfillment_orders" in scopes
@@ -631,6 +639,160 @@ async def set_store_prices(ctx: ShopifyCtx, actions: List[Dict[str, Any]]) -> Tu
         except (FixStepError, ShopifyFetchError) as e:
             errors.append(f"{a.get('barcode')}: {getattr(e, 'message', None) or e}")
     return done, errors
+
+
+# ---------------------------------------------------------------------------
+# Cancel a duplicate order
+#
+# Cancelling only needs write_orders — a token without write_order_edits
+# should not be refused a pass that never edits an order.
+# ---------------------------------------------------------------------------
+
+CANCEL_SCOPES = ["write_orders"]
+
+_CANCEL_POLL_ATTEMPTS = 12
+_CANCEL_POLL_DELAY_SECONDS = 1.0
+
+# `refund: false` is deprecated from API 2025-10 in favour of `refundMethod`,
+# which does not exist in 2025-01 — the version the configured store runs.
+# The deprecated argument is still accepted everywhere, so it stays.
+_ORDER_CANCEL = """
+mutation orderSyncCancelDuplicate($orderId: ID!, $staffNote: String) {
+  orderCancel(orderId: $orderId, reason: STAFF, refund: false, restock: false,
+              notifyCustomer: false, staffNote: $staffNote) {
+    job { id done }
+    orderCancelUserErrors { field message code }
+  }
+}
+"""
+
+_ORDER_CANCEL_STATE = """
+query orderSyncCancelState($id: ID!) {
+  order(id: $id) {
+    id
+    name
+    cancelledAt
+    displayFinancialStatus
+    netPaymentSet { shopMoney { amount } }
+    totalPriceSet { shopMoney { amount } }
+    currentTotalPriceSet { shopMoney { amount } }
+    fulfillments(first: 10) { trackingInfo { number } }
+  }
+}
+"""
+
+_CANCEL_JOB = """
+query orderSyncCancelJob($id: ID!) {
+  job(id: $id) { id done }
+}
+"""
+
+
+async def fetch_cancel_state(ctx: ShopifyCtx, order_gid: str) -> Optional[Dict[str, Any]]:
+    """Light live read of the one order, or None when Shopify no longer has it."""
+    data = await _gql(ctx, _ORDER_CANCEL_STATE, {"id": order_gid})
+    node = (data or {}).get("order")
+    if not node:
+        return None
+    return {
+        "id": node.get("id"),
+        "name": node.get("name") or "",
+        "cancelled": node.get("cancelledAt") is not None,
+        "cancelled_at": node.get("cancelledAt"),
+        "financial_status": node.get("displayFinancialStatus"),
+        "net_payment": _money(node.get("netPaymentSet")),
+        "total": _money(node.get("currentTotalPriceSet")) if node.get("currentTotalPriceSet") else _money(node.get("totalPriceSet")),
+        "tracking_numbers": [
+            (t.get("number") or "").strip()
+            for f in (node.get("fulfillments") or [])
+            for t in (f.get("trackingInfo") or [])
+            if (t.get("number") or "").strip()
+        ],
+    }
+
+
+async def cancel_order(ctx: ShopifyCtx, order_gid: str, staff_note: str) -> str:
+    """Ask Shopify to cancel the order. Returns the async job GID — an empty
+    error list means ACCEPTED, not cancelled; wait_for_cancel settles that."""
+    async def run():
+        data = await _gql(ctx, _ORDER_CANCEL, {"orderId": order_gid, "staffNote": staff_note})
+        payload = _payload(data, "orderCancel", "cancel", errors_field="orderCancelUserErrors")
+        return (payload.get("job") or {}).get("id") or ""
+    return await _with_retry(run)
+
+
+async def wait_for_cancel(ctx: ShopifyCtx, order_gid: str, job_gid: str) -> Dict[str, Any]:
+    """Poll the cancel job, then read the order back. Only `cancelledAt` on the
+    order itself is treated as proof."""
+    for attempt in range(_CANCEL_POLL_ATTEMPTS):
+        if job_gid:
+            data = await _gql(ctx, _CANCEL_JOB, {"id": job_gid})
+            if ((data or {}).get("job") or {}).get("done"):
+                job_gid = ""
+        if not job_gid:
+            state = await fetch_cancel_state(ctx, order_gid)
+            if state and state["cancelled"]:
+                return {"cancelled": True, "cancelled_at": state["cancelled_at"], "state": state}
+        if attempt < _CANCEL_POLL_ATTEMPTS - 1:
+            await asyncio.sleep(_CANCEL_POLL_DELAY_SECONDS)
+    state = await fetch_cancel_state(ctx, order_gid)
+    if state and state["cancelled"]:
+        return {"cancelled": True, "cancelled_at": state["cancelled_at"], "state": state}
+    return {"cancelled": False, "cancelled_at": None, "state": state}
+
+
+def dup_staff_note(twin: Dict[str, Any]) -> str:
+    total = twin.get("sh_total")
+    money = f", ${float(total):,.2f}" if total is not None else ""
+    return (f"Duplicate of {twin.get('sh_name') or twin.get('sh_order_id')} "
+            f"({twin.get('sh_date') or 'date unknown'}{money}) — cancelled by Order Sync")
+
+
+async def apply_duplicate_cancel(ctx: ShopifyCtx, row: Dict[str, Any]) -> Dict[str, Any]:
+    """Cancel one duplicate after re-checking both sides live. Never raises."""
+    order_gid = row["sh_order_id"]
+    twin = row.get("twin") or {}
+    base = {"sh_order_id": order_gid, "sh_name": row.get("sh_name"),
+            "twin_order_id": twin.get("sh_order_id"), "twin_order_name": twin.get("sh_name"),
+            "job_id": None, "verified_cancelled": False}
+    try:
+        if not twin.get("sh_order_id"):
+            return {**base, "status": "skipped", "message": "No surviving order to point at"}
+
+        target, survivor = await asyncio.gather(
+            fetch_cancel_state(ctx, order_gid),
+            fetch_cancel_state(ctx, twin["sh_order_id"]),
+        )
+        if not target:
+            return {**base, "status": "skipped", "message": "Order is no longer in Shopify"}
+        base["sh_name"] = target["name"] or base["sh_name"]
+        if target["cancelled"]:
+            return {**base, "status": "noop", "message": "Already cancelled in Shopify",
+                    "verified_cancelled": True}
+        real, _routes = osync.split_routes(target["tracking_numbers"])
+        if real:
+            return {**base, "status": "skipped",
+                    "message": f"Order now carries tracking ({', '.join(real)}) — it shipped"}
+        if not survivor:
+            return {**base, "status": "skipped", "message": "The surviving order is no longer in Shopify"}
+        if survivor["cancelled"]:
+            return {**base, "status": "skipped", "message": "The surviving order is itself cancelled"}
+
+        job_gid = await cancel_order(ctx, order_gid, dup_staff_note(twin))
+        base["job_id"] = job_gid or None
+        settled = await wait_for_cancel(ctx, order_gid, job_gid)
+        if settled["cancelled"]:
+            return {**base, "status": "cancelled", "verified_cancelled": True,
+                    "cancelled_at": settled["cancelled_at"],
+                    "message": f"Cancelled — duplicate of {twin.get('sh_name')}"}
+        return {**base, "status": "failed",
+                "message": "Shopify accepted the cancellation but the order is still open"}
+    except FixStepError as e:
+        return {**base, "status": "failed", "message": e.message}
+    except ShopifyFetchError as e:
+        return {**base, "status": "failed", "message": str(e)}
+    except Exception as e:
+        return {**base, "status": "failed", "message": str(e)}
 
 
 # ---------------------------------------------------------------------------
