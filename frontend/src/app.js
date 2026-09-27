@@ -9387,7 +9387,7 @@ async function shopifySalesUpdateSourceNote() {
   let html = "";
   if (synced.length) {
     const ages = synced.map((s) => `${s.name} synced ${syncTimeAgo(byId.get(s.id).last_completed_at)}`).join(", ");
-    html += `<span style="color: var(--success);">●</span> ${escapeHtml(`Local data — ${ages}. Orders after a store's last sync are not included; Today's Price is still looked up live.`)}`;
+    html += `<span style="color: var(--success);">●</span> ${escapeHtml(`Local data — ${ages}. Each run first syncs any store not synced in the last 5 minutes; Today's Price is still looked up live.`)}`;
   }
   if (unsynced.length) {
     if (html) html += "<br>";
@@ -9502,6 +9502,7 @@ async function fetchShopifySales() {
   shopifySalesResults = null;
 
   const storeItemMap = new Map();
+  const syncItemMap = new Map();
 
   try {
     const response = await fetch(`${API_BASE}/shopify-sales/stream`, {
@@ -9537,7 +9538,34 @@ async function fetchShopifySales() {
         const data = JSON.parse(dataStr);
 
         if (eventType === "progress") {
-          if (data.status === "started") {
+          if (data.status === "syncing") {
+            progressStatus.textContent = `Checking local data is up to date for ${data.total_stores} store(s)...`;
+          } else if (data.status === "sync_store") {
+            let item = syncItemMap.get(data.store_name);
+            if (!item) {
+              item = document.createElement("div");
+              item.style.cssText = "display: flex; align-items: center; gap: 0.5rem;";
+              syncItemMap.set(data.store_name, item);
+              progressItems.appendChild(item);
+            }
+            const name = escapeHtml(data.store_name);
+            const age = data.last_synced_at ? ` (last synced ${escapeHtml(syncTimeAgo(data.last_synced_at))})` : "";
+            const pulse = `<span style="color: var(--accent-primary); animation: pulse 1.5s ease-in-out infinite;">&#9679;</span>`;
+            if (data.sync_status === "waiting") {
+              item.innerHTML = `${pulse} <span>${name} &mdash; waiting for the running sync to finish...</span>`;
+            } else if (data.sync_status === "syncing") {
+              item.innerHTML = `${pulse} <span>${name} &mdash; syncing latest Shopify changes...</span>`;
+            } else if (data.sync_status === "synced") {
+              item.innerHTML = `<span style="color: var(--success);">&#10003;</span> <span>${name} &mdash; synced, ${(data.orders || 0).toLocaleString()} order(s) updated</span>`;
+            } else if (data.sync_status === "fresh") {
+              item.innerHTML = `<span style="color: var(--success);">&#10003;</span> <span>${name} &mdash; local data is current${age}</span>`;
+            } else if (data.sync_status === "failed" || data.sync_status === "timeout") {
+              item.innerHTML = `<span style="color: var(--warning);">&#9679;</span> <span>${name} &mdash; sync ${data.sync_status === "timeout" ? "timed out" : "failed"}${data.message ? `: ${escapeHtml(data.message)}` : ""}; using last synced data${age}</span>`;
+            } else {
+              item.remove();
+              syncItemMap.delete(data.store_name);
+            }
+          } else if (data.status === "started") {
             const src = data.data_source === "local" ? "local data" : "Shopify";
             progressStatus.textContent = `Fetching orders from ${data.total_stores} store(s) via ${src}...`;
           } else if (data.status === "skipped_store") {
@@ -9787,6 +9815,14 @@ function displayShopifySalesResults(data) {
   const skippedStores = summary.skipped_stores || [];
   if (skippedStores.length > 0) {
     summaryHtml += `<div style="margin-top:6px;padding:6px 10px;border-left:3px solid var(--warning, #f9ab00);background:var(--bg-tertiary, rgba(255,255,255,0.04));border-radius:4px;font-size:0.85rem;">Skipped (not synced): ${escapeHtml(skippedStores.join(", "))} — run a sync in the Data Sync tab or uncheck Use local data.</div>`;
+  }
+
+  const staleStores = summary.stale_stores || [];
+  if (staleStores.length > 0) {
+    const staleList = staleStores
+      .map((s) => `${s.store_name}${s.last_synced_at ? ` (as of ${syncTimeAgo(s.last_synced_at)})` : ""}`)
+      .join(", ");
+    summaryHtml += `<div style="margin-top:6px;padding:6px 10px;border-left:3px solid var(--warning, #f9ab00);background:var(--bg-tertiary, rgba(255,255,255,0.04));border-radius:4px;font-size:0.85rem;">May be out of date — the pre-run sync did not complete for: ${escapeHtml(staleList)}. Recent orders may be missing; retry, check the Data Sync tab, or uncheck Use local data.</div>`;
   }
 
   const excludedProducts = summary.excluded_products || [];

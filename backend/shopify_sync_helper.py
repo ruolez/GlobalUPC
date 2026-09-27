@@ -1080,3 +1080,118 @@ async def run_store_sync(
     finally:
         if heartbeat_task is not None:
             heartbeat_task.cancel()
+
+
+# ============================================================================
+# Pre-report catch-up
+# ============================================================================
+
+_STATE_POLL_SECONDS = 2.0
+
+
+def _load_freshness(store_id: int) -> Optional[Dict[str, Any]]:
+    db = SessionLocal()
+    try:
+        row = db.execute(
+            text(
+                "SELECT last_completed_at, last_sync_started_at, error, "
+                "       (status = 'running' AND heartbeat_at > now() - interval '3 minutes') AS running, "
+                "       EXTRACT(EPOCH FROM now() - last_sync_started_at) AS age_seconds "
+                "FROM shopify_sync_state WHERE store_id = :sid"
+            ),
+            {"sid": store_id},
+        ).mappings().first()
+        return dict(row) if row else None
+    finally:
+        db.close()
+
+
+async def ensure_store_current(
+    store: Dict[str, Any],
+    max_age_seconds: float,
+    wait_timeout_seconds: float,
+    on_phase=None,
+) -> Dict[str, Any]:
+    """
+    Bring one store's mirror up to date before a report reads it.
+
+    Freshness is measured from the start of the last successful run — the
+    mirror holds everything Shopify had at that moment. Older than
+    max_age_seconds -> claim and run an incremental sync. A sync already
+    running (another tab, another worker, a first full sync) is waited for
+    rather than skipped, since its result is exactly what the report needs.
+    Never raises for sync failures: the caller decides whether stale data is
+    acceptable.
+
+    store: {id, name, shop_domain, admin_api_key, api_version}
+    on_phase: optional sync callback(phase) with 'waiting' | 'syncing'.
+
+    Returns {status, last_synced_at, orders, error} where status is one of
+    'fresh' | 'synced' | 'never_synced' | 'failed' | 'timeout'.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + wait_timeout_seconds
+    attempted = False
+    announced_wait = False
+
+    def result(status: str, st: Optional[Dict[str, Any]], **extra) -> Dict[str, Any]:
+        last = st.get("last_sync_started_at") if st else None
+        out = {"status": status, "last_synced_at": last.isoformat() if last else None,
+               "orders": 0, "error": None}
+        out.update(extra)
+        return out
+
+    while True:
+        st = await asyncio.to_thread(_load_freshness, store["id"])
+        if st and st["running"]:
+            if loop.time() >= deadline:
+                return result("timeout", st, error="a sync is still running")
+            if on_phase and not announced_wait:
+                on_phase("waiting")
+                announced_wait = True
+            await asyncio.sleep(_STATE_POLL_SECONDS)
+            continue
+
+        if not st or st["last_completed_at"] is None or st["last_sync_started_at"] is None:
+            return result("never_synced", st)
+        if st["age_seconds"] is not None and float(st["age_seconds"]) < max_age_seconds:
+            return result("fresh", st)
+        if attempted:
+            # Our own run (or the one we waited on) did not land a newer sync.
+            return result("failed", st, error=st.get("error") or "sync did not complete")
+
+        token = await asyncio.to_thread(claim_sync, store["id"], "incremental")
+        if token is None:
+            continue  # Lost the claim race; the loop now waits for that run.
+        attempted = True
+        if on_phase:
+            on_phase("syncing")
+
+        async def _quiet_emit(kind, payload):
+            return None
+
+        tracker = _BulkTracker()
+        try:
+            summary = await run_store_sync(
+                store, "incremental", st["last_sync_started_at"], _quiet_emit,
+                tracker=tracker, claim_token=token,
+            )
+            await asyncio.to_thread(
+                release_sync, store["id"], counts=summary["totals"],
+                run_started=summary["run_started"], claim_token=token,
+            )
+        except asyncio.CancelledError:
+            if tracker.current_id:
+                asyncio.create_task(cancel_bulk_operation(store, tracker.current_id))
+            asyncio.create_task(asyncio.to_thread(
+                release_sync, store["id"], error="cancelled", claim_token=token))
+            raise
+        except Exception as e:
+            await asyncio.to_thread(
+                release_sync, store["id"], error=str(e)[:500], claim_token=token)
+            return result("failed", st, error=str(e)[:300])
+        return result(
+            "synced", None,
+            last_synced_at=summary["run_started"].isoformat(),
+            orders=int(summary["synced"].get("orders") or 0),
+        )

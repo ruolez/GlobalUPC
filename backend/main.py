@@ -4923,6 +4923,13 @@ async def shopify_fulfillment_status(exclude_ids: str = "", db: Session = Depend
     return {"stores": rows, "totals": totals}
 
 
+# Local-data Shopify Sales catches each store's mirror up first when its last
+# successful sync started longer ago than this; a sync already running is
+# waited for up to the second limit (a first full export can take minutes).
+SHOPIFY_SALES_SYNC_MAX_AGE_SECONDS = 5 * 60
+SHOPIFY_SALES_SYNC_WAIT_SECONDS = 15 * 60
+
+
 @app.post("/api/shopify-sales/stream")
 async def shopify_sales_stream(request: ShopifySalesRequest):
     async def generate_sales_events() -> AsyncGenerator[str, None]:
@@ -4962,6 +4969,49 @@ async def shopify_sales_stream(request: ShopifySalesRequest):
             return
 
         skipped_names = []
+        skip_reasons: Dict[str, str] = {}
+        stale_stores = []
+        sync_outcomes: Dict[int, Dict[str, Any]] = {}
+        if use_local and store_map:
+            # Catch every store's mirror up with Shopify before reading it: an
+            # incremental sync when the last one is older than the freshness
+            # window, or a wait when a sync is already running. A failed catch-up
+            # still reports on the last synced data, flagged as stale.
+            yield f"event: progress\ndata: {json.dumps({'status': 'syncing', 'total_stores': len(store_map)})}\n\n"
+            events: asyncio.Queue = asyncio.Queue()
+
+            async def catch_up(s):
+                try:
+                    res = await shopify_sync.ensure_store_current(
+                        s, SHOPIFY_SALES_SYNC_MAX_AGE_SECONDS, SHOPIFY_SALES_SYNC_WAIT_SECONDS,
+                        on_phase=lambda phase: events.put_nowait(("phase", s, phase)),
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    res = {"status": "failed", "last_synced_at": None, "orders": 0, "error": str(e)[:300]}
+                events.put_nowait(("done", s, res))
+
+            sync_tasks = [asyncio.create_task(catch_up(s)) for s in store_map.values()]
+            try:
+                while len(sync_outcomes) < len(sync_tasks):
+                    try:
+                        kind, s, payload = await asyncio.wait_for(events.get(), timeout=15)
+                    except asyncio.TimeoutError:
+                        yield ": heartbeat\n\n"
+                        continue
+                    if kind == "phase":
+                        yield f"event: progress\ndata: {json.dumps({'status': 'sync_store', 'store_name': s['name'], 'sync_status': payload})}\n\n"
+                        continue
+                    sync_outcomes[s["id"]] = payload
+                    if payload["status"] in ("failed", "timeout"):
+                        stale_stores.append({"store_name": s["name"], "last_synced_at": payload["last_synced_at"], "error": payload["error"]})
+                    yield f"event: progress\ndata: {json.dumps({'status': 'sync_store', 'store_name': s['name'], 'sync_status': payload['status'], 'orders': payload['orders'], 'last_synced_at': payload['last_synced_at'], 'message': payload['error']})}\n\n"
+            finally:
+                for t in sync_tasks:
+                    if not t.done():
+                        t.cancel()
+
         if use_local:
             # Stores without a completed sync are skipped, never silently
             # routed to the live API — the checkbox means "no live order pull".
@@ -4970,7 +5020,16 @@ async def shopify_sales_stream(request: ShopifySalesRequest):
             synced_map = await asyncio.to_thread(shopify_sync.get_synced_stores)
             for sid in list(store_map):
                 if sid not in synced_map:
-                    skipped_names.append(store_map.pop(sid)["name"])
+                    name = store_map.pop(sid)["name"]
+                    skipped_names.append(name)
+                    # A full resync still rewriting the mirror is unreadable,
+                    # so it is a skip, not a stale read.
+                    stale_stores = [x for x in stale_stores if x["store_name"] != name]
+                    skip_reasons[name] = (
+                        "Full sync still running — skipped in local data mode"
+                        if sync_outcomes.get(sid, {}).get("status") == "timeout"
+                        else "Not synced — skipped in local data mode"
+                    )
                 else:
                     store_map[sid]["tz"] = synced_map[sid].get("shop_timezone") or fallback_tz
 
@@ -4980,7 +5039,7 @@ async def shopify_sales_stream(request: ShopifySalesRequest):
         yield f"event: progress\ndata: {json.dumps({'status': 'started', 'total_stores': total_stores, 'data_source': data_source})}\n\n"
 
         for name in skipped_names:
-            yield f"event: progress\ndata: {json.dumps({'status': 'skipped_store', 'store_name': name, 'message': 'Not synced — skipped in local data mode'})}\n\n"
+            yield f"event: progress\ndata: {json.dumps({'status': 'skipped_store', 'store_name': name, 'message': skip_reasons[name]})}\n\n"
 
         for s in store_map.values():
             yield f"event: progress\ndata: {json.dumps({'status': 'searching_store', 'store_name': s['name'], 'data_source': data_source})}\n\n"
@@ -5211,7 +5270,7 @@ async def shopify_sales_stream(request: ShopifySalesRequest):
         total_quantity = sum(r["total_quantity"] for r in results)
         total_revenue = sum(float(r["total_revenue"]) for r in results)
 
-        yield f"event: complete\ndata: {json.dumps({'results': results, 'summary': {'total_items': len(results), 'total_orders': len(seen_orders), 'total_quantity': total_quantity, 'total_revenue': f'{total_revenue:.2f}', 'total_shipping': f'{total_shipping:.2f}', 'stores_searched': len(store_map), 'date_range': {'start': start_date, 'end': end_date}, 'excluded_products': excluded_products, 'excluded_total_revenue': f'{excluded_total_revenue:.2f}', 'excluded_total_quantity': excluded_total_quantity, 'data_source': data_source, 'skipped_stores': skipped_names}})}\n\n"
+        yield f"event: complete\ndata: {json.dumps({'results': results, 'summary': {'total_items': len(results), 'total_orders': len(seen_orders), 'total_quantity': total_quantity, 'total_revenue': f'{total_revenue:.2f}', 'total_shipping': f'{total_shipping:.2f}', 'stores_searched': len(store_map), 'date_range': {'start': start_date, 'end': end_date}, 'excluded_products': excluded_products, 'excluded_total_revenue': f'{excluded_total_revenue:.2f}', 'excluded_total_quantity': excluded_total_quantity, 'data_source': data_source, 'skipped_stores': skipped_names, 'stale_stores': stale_stores}})}\n\n"
 
     async def generate_sales_events_safe() -> AsyncGenerator[str, None]:
         try:
