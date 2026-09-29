@@ -2429,9 +2429,13 @@ class OrderSyncFixRequest(BaseModel):
     # Opt-in: create the Shopify product for a UPC that has no variant, so
     # the line can be added instead of being reported unsupported.
     create_products: bool = False
+    # Restrict the fix to these steps (order_sync_helper.FIX_STEPS); None =
+    # every step, which is what the manual page sends.
+    steps: Optional[Dict[str, bool]] = None
 
 
 class OrderSyncFixAction(BaseModel):
+    step: Optional[str] = None                 # set on skipped_actions: the switch that was off
     kind: str                                  # refund | add | tracking | mark_paid | variant_price | shipping_line | create_product
     reason: str                                # remove | reduce | replace | add | increase | tracking | mark_paid | price | shipping | shipping_remove | create
     title: Optional[str] = None                # shipping_line: Shopify shipping line title; create_product: new product title
@@ -2493,6 +2497,7 @@ class OrderSyncFixPlan(BaseModel):
     actions: List[OrderSyncFixAction] = []
     unsupported: List[OrderSyncFixUnsupported] = []
     notes: List[OrderSyncFixNote] = []
+    skipped_actions: List[OrderSyncFixAction] = []
     summary: Dict[str, Any] = {}
 
 
@@ -2763,3 +2768,88 @@ class OrderSyncCancelledOrdersResponse(BaseModel):
     orders: List[OrderSyncCancelledOrderRow] = []
     total: int = 0
     warnings: List[str] = []
+
+
+# ===== Order Sync automation =====
+
+class OrderSyncAutoConfigUpdate(BaseModel):
+    enabled: bool = False
+    run_time: str = "06:00"                    # HH:MM in the Shopify store's time zone
+    days: List[int] = [0, 1, 2, 3, 4, 5, 6]    # weekday(): 0 = Monday
+    dry_run: bool = True
+    steps: Dict[str, bool] = {}
+
+    @field_validator("run_time")
+    @classmethod
+    def _run_time(cls, v: str) -> str:
+        if not re.match(r"^([01]\d|2[0-3]):[0-5]\d$", v or ""):
+            raise ValueError("run_time must be HH:MM (24-hour)")
+        return v
+
+    @field_validator("days")
+    @classmethod
+    def _days(cls, v: List[int]) -> List[int]:
+        if any(d < 0 or d > 6 for d in v):
+            raise ValueError("days must be 0 (Mon) – 6 (Sun)")
+        return sorted(set(v))
+
+
+class OrderSyncAutoConfigResponse(BaseModel):
+    configured: bool                           # the Order Sync store pair is set
+    enabled: bool = False
+    run_time: str = "06:00"
+    days: List[int] = []
+    timezone: str
+    dry_run: bool = True
+    steps: Dict[str, bool] = {}
+    next_run_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class OrderSyncAutoRunRequest(BaseModel):
+    dry_run: Optional[bool] = None             # None = the saved setting
+    date: Optional[str] = None                 # YYYY-MM-DD reconciled; None = yesterday
+
+    @field_validator("date")
+    @classmethod
+    def _date(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and not re.match(r"^\d{4}-\d{2}-\d{2}$", v):
+            raise ValueError("date must be YYYY-MM-DD")
+        return v
+
+
+class OrderSyncAutoRunRow(BaseModel):
+    id: int
+    trigger: str
+    status: str
+    dry_run: bool
+    slot_date: Optional[str] = None
+    run_date: Optional[str] = None
+    phase: Optional[str] = None
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    counts: Dict[str, Any] = {}
+    error: Optional[str] = None
+    stop_requested: bool = False
+
+
+class OrderSyncAutoRunDetail(OrderSyncAutoRunRow):
+    options: Dict[str, Any] = {}
+    progress: Dict[str, Any] = {}
+    summary_before: Optional[Dict[str, Any]] = None
+    summary_after: Optional[Dict[str, Any]] = None
+    report: Dict[str, Any] = {}
+
+
+class OrderSyncAutoRunsResponse(BaseModel):
+    runs: List[OrderSyncAutoRunRow] = []
+    total: int = 0
+
+
+class OrderSyncAutoStatusResponse(BaseModel):
+    enabled: bool = False
+    dry_run: bool = True
+    next_run_at: Optional[str] = None
+    timezone: Optional[str] = None
+    running: Optional[OrderSyncAutoRunRow] = None
+    last: Optional[OrderSyncAutoRunRow] = None

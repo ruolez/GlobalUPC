@@ -1466,24 +1466,67 @@ def plan_order_fix(order: Dict[str, Any], invoice: Dict[str, Any],
     if outstanding > 0.004:
         actions.append({"kind": "mark_paid", "reason": "mark_paid", "amount": outstanding})
 
-    refunds = [a for a in actions if a["kind"] == "refund"]
-    adds = [a for a in actions if a["kind"] == "add"]
     return {
         "actions": actions,
         "unsupported": unsupported,
         "notes": notes,
-        "summary": {
-            "refunds": len(refunds), "refund_units": sum(a["qty"] for a in refunds),
-            "adds": len(adds), "add_units": sum(a["qty"] for a in adds),
-            "add_amount": round(sum(a["qty"] * a["unit_price"] for a in adds), 2),
-            "tracking": any(a["kind"] == "tracking" for a in actions),
-            "shipping_lines": sum(1 for a in actions if a["kind"] == "shipping_line"),
-            "mark_paid": outstanding if outstanding > 0.004 else 0.0,
-            "unsupported": len(unsupported),
-            "variant_prices": sum(1 for a in actions if a["kind"] == "variant_price"),
-            "create_products": sum(1 for a in actions if a["kind"] == "create_product"),
-        },
+        "summary": _plan_summary(actions, unsupported),
         "noop": not actions,
+    }
+
+
+def _plan_summary(actions: List[Dict[str, Any]], unsupported: List[Dict[str, Any]]) -> Dict[str, Any]:
+    refunds = [a for a in actions if a["kind"] == "refund"]
+    adds = [a for a in actions if a["kind"] == "add"]
+    mark_paid = next((a for a in actions if a["kind"] == "mark_paid"), None)
+    return {
+        "refunds": len(refunds), "refund_units": sum(a["qty"] for a in refunds),
+        "adds": len(adds), "add_units": sum(a["qty"] for a in adds),
+        "add_amount": round(sum(a["qty"] * a["unit_price"] for a in adds), 2),
+        "tracking": any(a["kind"] == "tracking" for a in actions),
+        "shipping_lines": sum(1 for a in actions if a["kind"] == "shipping_line"),
+        "mark_paid": mark_paid["amount"] if mark_paid else 0.0,
+        "unsupported": len(unsupported),
+        "variant_prices": sum(1 for a in actions if a["kind"] == "variant_price"),
+        "create_products": sum(1 for a in actions if a["kind"] == "create_product"),
+    }
+
+
+# Which switch of a partial fix (see filter_fix_plan) each action belongs to.
+FIX_STEPS = ("fix_lines", "fix_shipping", "push_tracking", "mark_paid", "store_price", "create_products")
+
+
+def fix_action_step(action: Dict[str, Any]) -> str:
+    kind = action["kind"]
+    if kind == "create_product":
+        return "create_products"
+    if kind in ("refund", "add"):
+        return "fix_shipping" if action.get("key") == SHIPPING_KEY else "fix_lines"
+    return {"shipping_line": "fix_shipping", "tracking": "push_tracking",
+            "mark_paid": "mark_paid", "variant_price": "store_price"}[kind]
+
+
+def filter_fix_plan(plan: Dict[str, Any], steps: Optional[Dict[str, bool]]) -> Dict[str, Any]:
+    """The plan restricted to the switched-on steps (None = every step, the
+    manual page's behaviour). Dropped actions are kept in `skipped_actions`
+    so a run report can say what was left alone and why. A created product
+    only exists to be added to the order, so it needs `fix_lines` too."""
+    if steps is None:
+        return {**plan, "skipped_actions": []}
+    kept: List[Dict[str, Any]] = []
+    skipped: List[Dict[str, Any]] = []
+    for a in plan["actions"]:
+        step = fix_action_step(a)
+        on = bool(steps.get(step))
+        if step == "create_products":
+            on = on and bool(steps.get("fix_lines"))
+        (kept if on else skipped).append(a if on else {**a, "step": step})
+    return {
+        **plan,
+        "actions": kept,
+        "skipped_actions": skipped,
+        "summary": _plan_summary(kept, plan["unsupported"]),
+        "noop": not kept,
     }
 
 

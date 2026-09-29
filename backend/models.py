@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, BigInteger, String, Boolean, DateTime, ForeignKey, Enum, Text, Numeric, UniqueConstraint, ForeignKeyConstraint
+from sqlalchemy import Column, Integer, BigInteger, String, Boolean, Date, DateTime, ForeignKey, Enum, Text, Numeric, UniqueConstraint, ForeignKeyConstraint
 from sqlalchemy.dialects.postgresql import JSONB, ARRAY
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -237,6 +237,46 @@ class OrderSyncCancelledOrder(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
 
     shopify_store = relationship("Store", foreign_keys=[shopify_store_id])
+
+
+class OrderSyncAutoConfig(Base):
+    """The Order Sync automation schedule (singleton)."""
+    __tablename__ = "order_sync_auto_config"
+
+    id = Column(Integer, primary_key=True, index=True)
+    enabled = Column(Boolean, nullable=False, default=False)
+    run_time = Column(String(5), nullable=False, default="06:00")
+    days = Column(ARRAY(Integer), nullable=False)
+    timezone = Column(String(64))
+    dry_run = Column(Boolean, nullable=False, default=True)
+    steps = Column(JSONB, nullable=False, default=dict)
+    effective_from = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class OrderSyncAutoRun(Base):
+    """One automation run: live progress while `running`, then its report."""
+    __tablename__ = "order_sync_auto_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    trigger = Column(String(16), nullable=False)         # scheduled | catch_up | manual
+    slot_date = Column(Date)
+    run_date = Column(Date)
+    status = Column(String(16), nullable=False)          # running | succeeded | partial | failed | stopped | missed
+    dry_run = Column(Boolean, nullable=False, default=False)
+    options = Column(JSONB)
+    phase = Column(String(255))
+    progress = Column(JSONB)
+    summary_before = Column(JSONB)
+    summary_after = Column(JSONB)
+    report = Column(JSONB)
+    counts = Column(JSONB)
+    stop_requested = Column(Boolean, nullable=False, default=False)
+    error = Column(Text)
+    started_at = Column(DateTime(timezone=True), server_default=func.now())
+    heartbeat_at = Column(DateTime(timezone=True), server_default=func.now())
+    finished_at = Column(DateTime(timezone=True))
 
 
 class SalesExclusion(Base):

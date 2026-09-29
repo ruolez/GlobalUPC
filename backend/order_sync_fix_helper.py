@@ -942,9 +942,11 @@ def _fix_barcodes(order: Dict[str, Any], invoice: Dict[str, Any]) -> Tuple[List[
 
 async def prepare_target(ctx: ShopifyCtx, tz: Optional[str], target: Dict[str, Any],
                          invoice_conn: Dict[str, Any], push_tracking_numbers: bool = True,
-                         create_products: bool = False) -> Dict[str, Any]:
+                         create_products: bool = False,
+                         steps: Optional[Dict[str, bool]] = None) -> Dict[str, Any]:
     """Fresh order + invoice + plan for one target. `status` is one of
-    ready | noop | skipped | error; `order`/`invoice` are present when fetched."""
+    ready | noop | skipped | error; `order`/`invoice` are present when fetched.
+    `steps` restricts the plan to the switched-on steps (None = all)."""
     order_gid, invoice_id = target["sh_order_id"], int(target["bo_invoice_id"])
     (ok_o, err_o, order), (ok_i, err_i, invoice) = await asyncio.gather(
         fetch_order_for_sync(ctx.shop_domain, ctx.admin_api_key, order_gid,
@@ -990,6 +992,7 @@ async def prepare_target(ctx: ShopifyCtx, tz: Optional[str], target: Dict[str, A
     plan = osync.plan_order_fix(order, invoice, variants, push_tracking=push_tracking_numbers,
                                 item_prices=item_prices, item_price_error=item_price_error,
                                 create_products=create_products)
+    plan = osync.filter_fix_plan(plan, steps)
     return {
         **base,
         "status": "noop" if plan["noop"] else "ready",
@@ -1006,10 +1009,14 @@ def _rebuild_row(order: Dict[str, Any], invoice: Dict[str, Any], target: Dict[st
 
 async def apply_order_fix(ctx: ShopifyCtx, tz: Optional[str], target: Dict[str, Any],
                           invoice_conn: Dict[str, Any], note: str,
-                          create_products: bool = False) -> Dict[str, Any]:
+                          create_products: bool = False,
+                          steps: Optional[Dict[str, bool]] = None) -> Dict[str, Any]:
     """Plan from fresh data, execute, re-fetch, rebuild the row. Never raises
-    for a per-order failure — the outcome is in `status`/`steps`."""
-    prep = await prepare_target(ctx, tz, target, invoice_conn, create_products=create_products)
+    for a per-order failure — the outcome is in `status`/`steps`. With
+    `steps`, only the switched-on steps run (see osync.filter_fix_plan)."""
+    prep = await prepare_target(ctx, tz, target, invoice_conn, create_products=create_products,
+                                steps=steps)
+    allow_mark_paid = steps is None or bool(steps.get("mark_paid"))
     result: Dict[str, Any] = {
         "sh_order_id": prep["sh_order_id"], "sh_name": prep.get("sh_name"),
         "bo_invoice_id": prep["bo_invoice_id"], "bo_invoice_number": prep.get("bo_invoice_number"),
@@ -1018,6 +1025,7 @@ async def apply_order_fix(ctx: ShopifyCtx, tz: Optional[str], target: Dict[str, 
         "actions": (prep.get("plan") or {}).get("actions", []),
         "created_products": [],   # products this run ADDED to the catalog
         "status_before": None, "row": None,
+        "skipped_actions": (prep.get("plan") or {}).get("skipped_actions", []),
     }
     order, invoice = prep.get("order"), prep.get("invoice")
     if order and invoice:
@@ -1096,7 +1104,9 @@ async def apply_order_fix(ctx: ShopifyCtx, tz: Optional[str], target: Dict[str, 
             else:
                 step("fulfill", True, "No open fulfillment order after the edit", [])
 
-        if outstanding > 0.004:
+        if outstanding > 0.004 and not allow_mark_paid:
+            step("mark_paid", True, f"${gross_outstanding or outstanding:.2f} left unpaid — mark as paid is switched off", [])
+        elif outstanding > 0.004:
             try:
                 status = await _with_retry(lambda: mark_paid(ctx, order["id"]))
                 step("mark_paid", True, f"Marked ${gross_outstanding or outstanding:.2f} as paid ({status})", [])
@@ -1104,7 +1114,7 @@ async def apply_order_fix(ctx: ShopifyCtx, tz: Optional[str], target: Dict[str, 
                 if not _is_already_paid(e.message):
                     raise
                 step("mark_paid", True, f"Shopify already shows the order as paid — {e.message}", [])
-        elif adds or shipping:
+        elif (adds or shipping) and allow_mark_paid:
             step("mark_paid", True,
                  "No balance to collect — Shopify shows the order as paid"
                  + (f" (earlier $0 refunds left a credit covering the ${gross_outstanding:.2f} added)" if gross_outstanding > 0.004 else ""),

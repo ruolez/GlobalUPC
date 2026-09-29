@@ -160,6 +160,7 @@
                 <path d="M24 22H8m0 0 4-4m-4 4 4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
               </svg>
               <span>Order Sync</span>
+              <span class="osync-auto-nav-badge" id="osync-auto-nav-badge" hidden></span>
             </a>
           </div>
 
@@ -4842,7 +4843,12 @@
           <div id="osync-config-bar" style="margin-bottom: 1rem; background: var(--bg-secondary); border-radius: var(--radius-md); border: 1px solid var(--border-color); overflow: hidden; display: none;">
             <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.625rem 1rem;">
               <span id="osync-config-label" style="font-size: 0.8125rem; color: var(--text-secondary)">Stores: <strong style="color: var(--text-primary)">Not configured</strong></span>
-              <button type="button" class="btn btn-secondary" id="osync-config-edit-btn" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Edit</button>
+              <div style="display: flex; align-items: center; gap: 0.5rem;">
+                <button type="button" class="osync-auto-pill" id="osync-auto-pill" title="Daily automation: schedule, run history and reports">
+                  <span class="osync-auto-dot" id="osync-auto-dot"></span><span id="osync-auto-pill-text">Automation</span>
+                </button>
+                <button type="button" class="btn btn-secondary" id="osync-config-edit-btn" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Edit</button>
+              </div>
             </div>
           </div>
 
@@ -6094,6 +6100,27 @@
           <button type="button" class="btn btn-secondary" id="osync-created-export" disabled>Export</button>
           <button type="button" class="btn btn-primary" id="osync-created-close">Close</button>
         </div>
+      </div>
+    </div>
+
+    <!-- Order Sync: daily automation — schedule, run history, run reports -->
+    <div id="osync-auto-modal" class="modal">
+      <div class="modal-content osync-fix-modal-content osync-auto-modal-content">
+        <div class="modal-header osync-modal-header">
+          <div class="osync-modal-titles">
+            <h3>Order Sync automation</h3>
+            <span id="osync-auto-sub" class="osync-modal-pos"></span>
+          </div>
+          <div class="osync-modal-nav">
+            <button type="button" class="modal-close" id="osync-auto-x">&times;</button>
+          </div>
+        </div>
+        <div class="osync-auto-tabs" role="tablist">
+          <button type="button" class="osync-auto-tab" role="tab" data-osync-auto-tab="schedule">Schedule</button>
+          <button type="button" class="osync-auto-tab" role="tab" data-osync-auto-tab="runs">Runs <span class="osync-auto-tab-badge" id="osync-auto-runs-badge" hidden></span></button>
+        </div>
+        <div class="modal-body osync-fix-body osync-auto-body" id="osync-auto-body"></div>
+        <div class="modal-footer osync-modal-footer" id="osync-auto-footer"></div>
       </div>
     </div>
 

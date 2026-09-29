@@ -184,6 +184,7 @@ async def lifespan(app: FastAPI):
     oauth_refresh_task = asyncio.create_task(token_refresh_loop())
     quickbooks_task = asyncio.create_task(quickbooks_keepalive_loop())
     activity_flush_task = asyncio.create_task(flush_activity_loop())
+    order_sync_auto_task = asyncio.create_task(order_sync_auto_loop())
     try:
         await asyncio.to_thread(_bov_token_secret)   # create settings.bov_token_secret once
     except Exception as e:
@@ -199,6 +200,10 @@ async def lifespan(app: FastAPI):
     oauth_refresh_task.cancel()
     print("[SHUTDOWN] Cancelling QuickBooks keep-alive loop...")
     quickbooks_task.cancel()
+    print("[SHUTDOWN] Cancelling Order Sync automation loop and runs...")
+    order_sync_auto_task.cancel()
+    for task in list(_osauto_tasks):
+        task.cancel()
     print("[SHUTDOWN] Disposing database connections...")
     engine.dispose()
     print("[SHUTDOWN] Shutting down MSSQL thread pool...")
@@ -316,6 +321,8 @@ class ActivityTrackerMiddleware:
                 scope["type"] == "http"
                 and scope["path"].startswith("/api/")
                 and not scope["path"].startswith("/api/health")
+                # A background poll every open tab makes — not a person acting.
+                and scope["path"] != "/api/order-sync/auto/status"
             ):
                 ip = resolve_client_ip(scope)
                 if ip:
@@ -13753,9 +13760,8 @@ def _order_sync_fix_targets(req: OrderSyncFixRequest) -> List[Dict[str, Any]]:
     return targets
 
 
-@app.post("/api/order-sync/fix/plan", response_model=OrderSyncFixPlanResponse)
-async def plan_order_sync_fix(req: OrderSyncFixRequest):
-    """Dry run: what would change on each target order. No mutations."""
+async def _order_sync_fix_plan(req: OrderSyncFixRequest) -> Dict[str, Any]:
+    """What would change on each target order. No mutations."""
     ctx = await _order_sync_fix_context()
     targets = _order_sync_fix_targets(req)
     sem = asyncio.Semaphore(4)
@@ -13770,7 +13776,7 @@ async def plan_order_sync_fix(req: OrderSyncFixRequest):
         async def one(target: Dict[str, Any]) -> Dict[str, Any]:
             async with sem:
                 prep = await ofix.prepare_target(sctx, ctx["tz"], target, ctx["invoice_conn"],
-                                                 create_products=req.create_products)
+                                                 create_products=req.create_products, steps=req.steps)
             plan = prep.get("plan") or {}
             return {
                 "sh_order_id": prep["sh_order_id"], "sh_name": prep.get("sh_name"),
@@ -13779,16 +13785,24 @@ async def plan_order_sync_fix(req: OrderSyncFixRequest):
                 "status": prep["status"], "message": prep.get("message"),
                 "actions": plan.get("actions", []), "unsupported": plan.get("unsupported", []),
                 "notes": plan.get("notes", []),
+                "skipped_actions": plan.get("skipped_actions", []),
                 "summary": plan.get("summary", {}),
             }
 
         plans = await asyncio.gather(*(one(t) for t in targets))
 
+    return {"plans": list(plans), "scopes_missing": scopes_missing, "warnings": warnings}
+
+
+@app.post("/api/order-sync/fix/plan", response_model=OrderSyncFixPlanResponse)
+async def plan_order_sync_fix(req: OrderSyncFixRequest):
+    """Dry run: what would change on each target order. No mutations."""
+    payload = await _order_sync_fix_plan(req)
     return OrderSyncFixPlanResponse(
         configured=True,
-        plans=[OrderSyncFixPlan(**p) for p in plans],
-        scopes_missing=scopes_missing,
-        warnings=warnings,
+        plans=[OrderSyncFixPlan(**p) for p in payload["plans"]],
+        scopes_missing=payload["scopes_missing"],
+        warnings=payload["warnings"],
     )
 
 
@@ -13836,7 +13850,11 @@ def _order_sync_fix_record(batch_id: str, ctx: Dict[str, Any], target: Dict[str,
         print(f"order_sync_fix_history write failed for {result.get('sh_order_id')}: {e}")
 
 
-async def _order_sync_fix_run(req: OrderSyncFixRequest, progress=None) -> Dict[str, Any]:
+async def _order_sync_fix_run(req: OrderSyncFixRequest, progress=None, trim: bool = True,
+                              should_stop=None) -> Dict[str, Any]:
+    """Apply the fix to each target. `trim=False` keeps every result field
+    (the automation's run report wants the actions and before/after status);
+    `should_stop()` is checked before each order starts, never mid-order."""
     ctx = await _order_sync_fix_context()
     targets = _order_sync_fix_targets(req)
     batch_id = str(uuid.uuid4())
@@ -13861,11 +13879,17 @@ async def _order_sync_fix_run(req: OrderSyncFixRequest, progress=None) -> Dict[s
         async def one(target: Dict[str, Any]) -> Dict[str, Any]:
             nonlocal done
             async with sem:
+                if should_stop and should_stop():
+                    done += 1
+                    return {"sh_order_id": target["sh_order_id"], "sh_name": None,
+                            "bo_invoice_id": target["bo_invoice_id"],
+                            "bo_invoice_number": target.get("bo_invoice_number"),
+                            "status": "skipped", "message": "Run stopped before this order", "steps": []}
                 await emit({"sh_order_id": target["sh_order_id"], "status": "running",
                             "done": done, "total": len(targets)})
                 note = f"Order Sync: matched to BackOffice invoice {target.get('bo_invoice_number') or target['bo_invoice_id']}"
                 result = await ofix.apply_order_fix(sctx, ctx["tz"], target, ctx["invoice_conn"], note,
-                                                    create_products=req.create_products)
+                                                    create_products=req.create_products, steps=req.steps)
                 done += 1
                 _order_sync_fix_record(batch_id, ctx, target, result)
                 await emit({"sh_order_id": result["sh_order_id"], "sh_name": result.get("sh_name"),
@@ -13877,9 +13901,10 @@ async def _order_sync_fix_run(req: OrderSyncFixRequest, progress=None) -> Dict[s
 
     return {
         "batch_id": batch_id,
-        "results": [{k: v for k, v in r.items()
-                     if k not in ("actions", "created_products", "status_before", "status_after")}
-                    for r in results],
+        "results": results if not trim else [
+            {k: v for k, v in r.items()
+             if k not in ("actions", "created_products", "status_before", "status_after", "skipped_actions")}
+            for r in results],
         "warnings": warnings,
     }
 
@@ -14029,12 +14054,10 @@ from schemas import OrderSyncMissingProductsRequest, OrderSyncMissingProductsRes
 from shopify_helper import find_barcodes_in_catalog, ShopifyFetchError
 
 
-@app.post("/api/order-sync/missing-products", response_model=OrderSyncMissingProductsResponse)
-async def order_sync_missing_products(req: OrderSyncMissingProductsRequest):
+async def _order_sync_missing(orders: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Which barcodes on the given BackOffice-only invoices have no ACTIVE
     variant in the configured Shopify store. Read-only."""
     ctx = await _order_sync_fix_context()
-    orders = [o.model_dump() for o in req.orders]
     barcodes = sorted({
         (li.get("barcode") or "").strip()
         for o in orders for li in o["lines"]
@@ -14049,14 +14072,24 @@ async def order_sync_missing_products(req: OrderSyncMissingProductsRequest):
                     session, ctx["shop_domain"], ctx["admin_api_key"], ctx["api_version"], barcodes)
             except ShopifyFetchError as e:
                 raise HTTPException(status_code=502, detail=f"Shopify catalog lookup failed: {e}")
-    products = osync.aggregate_missing_products(orders, found)
+    return {
+        "shopify_store_name": ctx["shopify_store_name"],
+        "orders_checked": len(orders),
+        "barcodes_checked": len(barcodes),
+        "products": osync.aggregate_missing_products(orders, found),
+        "warnings": warnings,
+    }
+
+
+@app.post("/api/order-sync/missing-products", response_model=OrderSyncMissingProductsResponse)
+async def order_sync_missing_products(req: OrderSyncMissingProductsRequest):
+    """Which barcodes on the given BackOffice-only invoices have no ACTIVE
+    variant in the configured Shopify store. Read-only."""
+    payload = await _order_sync_missing([o.model_dump() for o in req.orders])
+    products = payload.pop("products")
     return OrderSyncMissingProductsResponse(
-        configured=True,
-        shopify_store_name=ctx["shopify_store_name"],
-        orders_checked=len(orders),
-        barcodes_checked=len(barcodes),
+        configured=True, **payload,
         products=[OrderSyncMissingProduct(**p) for p in products],
-        warnings=warnings,
     )
 
 
@@ -14258,7 +14291,8 @@ def _order_sync_dup_close_record(record_id: Optional[int], result: Dict[str, Any
         print(f"order_sync_cancelled_orders update failed for {record_id}: {e}")
 
 
-async def _order_sync_dup_run(req: OrderSyncDupCancelRequest, progress=None) -> Dict[str, Any]:
+async def _order_sync_dup_run(req: OrderSyncDupCancelRequest, progress=None,
+                              should_stop=None) -> Dict[str, Any]:
     """Re-plan from fresh data, keep only the pairs the user confirmed that
     the plan still proposes, then cancel them one at a time."""
     payload = await _order_sync_dup_plan(req.date_from, req.date_to,
@@ -14289,7 +14323,11 @@ async def _order_sync_dup_run(req: OrderSyncDupCancelRequest, progress=None) -> 
             await emit({"sh_order_id": t.sh_order_id, "status": "running",
                         "done": done, "total": total})
             row = by_id.get(t.sh_order_id)
-            if not row or row["status"] not in ("proposed", "ambiguous"):
+            if should_stop and should_stop():
+                result = {"sh_order_id": t.sh_order_id, "sh_name": (row or {}).get("sh_name"),
+                          "twin_order_id": None, "twin_order_name": None, "status": "skipped",
+                          "message": "Run stopped before this order", "verified_cancelled": False}
+            elif not row or row["status"] not in ("proposed", "ambiguous"):
                 result = {"sh_order_id": t.sh_order_id, "sh_name": (row or {}).get("sh_name"),
                           "twin_order_id": None, "twin_order_name": None, "status": "skipped",
                           "message": (row or {}).get("reason") or "No longer a duplicate — nothing was cancelled",
@@ -14432,7 +14470,8 @@ async def plan_order_sync_channel_cancel(req: OrderSyncChannelPlanRequest):
     )
 
 
-async def _order_sync_channel_run(req: OrderSyncChannelCancelRequest, progress=None) -> Dict[str, Any]:
+async def _order_sync_channel_run(req: OrderSyncChannelCancelRequest, progress=None,
+                                  should_stop=None) -> Dict[str, Any]:
     """Re-plan from fresh data and cancel only the confirmed orders the plan
     still proposes, one at a time."""
     payload = await _order_sync_channel_plan(req.date_from, req.date_to)
@@ -14457,7 +14496,11 @@ async def _order_sync_channel_run(req: OrderSyncChannelCancelRequest, progress=N
         for done, order_id in enumerate(targets):
             await emit({"sh_order_id": order_id, "status": "running", "done": done, "total": total})
             row = by_id.get(order_id)
-            if not row or row["status"] != "proposed":
+            if should_stop and should_stop():
+                result = {"sh_order_id": order_id, "sh_name": (row or {}).get("sh_name"),
+                          "status": "skipped", "verified_cancelled": False, "fulfillments_cancelled": 0,
+                          "message": "Run stopped before this order"}
+            elif not row or row["status"] != "proposed":
                 result = {"sh_order_id": order_id, "sh_name": (row or {}).get("sh_name"),
                           "status": "skipped", "verified_cancelled": False, "fulfillments_cancelled": 0,
                           "message": (row or {}).get("reason")
@@ -14532,6 +14575,688 @@ async def order_sync_cancelled_duplicates(limit: int = 200):
             twin_admin_url=_order_sync_dup_admin_url(domains.get(r.shopify_store_id), r.twin_order_id),
         ) for r in rows]
     return OrderSyncCancelledOrdersResponse(orders=out, total=total)
+
+
+
+# ============================================================================
+# Order Sync — automation: one daily run of the switched-on steps
+# ============================================================================
+#
+# The loop runs in every worker and the database decides which one acts: a
+# scheduled run claims its day with INSERT … ON CONFLICT DO NOTHING against
+# the slot_date unique index, and the `status = 'running'` unique index keeps
+# two runs (scheduled or manual) from ever overlapping. A run is a detached
+# task that reports through its own row — heartbeat, phase, progress log,
+# the report so far — so the page polls it and nobody keeps a connection open.
+# Every step reuses the manual page's code path, and only acts on what the
+# page would pre-tick; the rest is listed under "Needs review".
+
+import random
+import threading
+import order_sync_auto as osauto
+from models import OrderSyncAutoConfig, OrderSyncAutoRun
+from schemas import (
+    OrderSyncAutoConfigUpdate, OrderSyncAutoConfigResponse, OrderSyncAutoRunRequest,
+    OrderSyncAutoRunRow, OrderSyncAutoRunDetail, OrderSyncAutoRunsResponse, OrderSyncAutoStatusResponse,
+)
+
+_OSAUTO_TICK_SECONDS = 30
+_OSAUTO_PUMP_SECONDS = 2
+_OSAUTO_STALE_SECONDS = 90
+_OSAUTO_LOG_LINES = 60
+_OSAUTO_FIX_CHUNK = 200       # OrderSyncFixRequest.targets max
+_OSAUTO_CANCEL_CHUNK = 50     # cancel requests' max
+_osauto_tasks: set = set()
+
+
+def _osauto_iso(v) -> Optional[str]:
+    return v.isoformat() if v else None
+
+
+def _osauto_cfg(cfg: Optional[OrderSyncAutoConfig]) -> Dict[str, Any]:
+    if not cfg:
+        return {"enabled": False, "run_time": osauto.DEFAULT_RUN_TIME, "days": list(osauto.DEFAULT_DAYS),
+                "timezone": osauto.DEFAULT_TIMEZONE, "dry_run": True,
+                "steps": osauto.normalize_steps(None), "effective_from": None, "updated_at": None}
+    return {"enabled": bool(cfg.enabled), "run_time": cfg.run_time, "days": list(cfg.days or []),
+            "timezone": cfg.timezone or osauto.DEFAULT_TIMEZONE, "dry_run": bool(cfg.dry_run),
+            "steps": osauto.normalize_steps(cfg.steps), "effective_from": cfg.effective_from,
+            "updated_at": cfg.updated_at}
+
+
+def _osauto_load() -> Tuple[Dict[str, Any], Set[date]]:
+    """The schedule, and the recent slot days that already have a run row."""
+    with db_session() as db:
+        cfg = _osauto_cfg(db.query(OrderSyncAutoConfig).first())
+        since = date.today() - timedelta(days=osauto.MISSED_LOOKBACK_DAYS + 2)
+        rows = db.query(OrderSyncAutoRun.slot_date).filter(OrderSyncAutoRun.slot_date >= since).all()
+    return cfg, {r[0] for r in rows if r[0]}
+
+
+def _osauto_row(run: OrderSyncAutoRun, detail: bool = False) -> Dict[str, Any]:
+    out = {
+        "id": run.id, "trigger": run.trigger, "status": run.status, "dry_run": bool(run.dry_run),
+        "slot_date": _osauto_iso(run.slot_date), "run_date": _osauto_iso(run.run_date),
+        "phase": run.phase, "started_at": _osauto_iso(run.started_at),
+        "finished_at": _osauto_iso(run.finished_at), "counts": run.counts or {},
+        "error": run.error, "stop_requested": bool(run.stop_requested),
+    }
+    if detail:
+        out.update(options=run.options or {}, progress=run.progress or {},
+                   summary_before=run.summary_before, summary_after=run.summary_after,
+                   report=run.report or {})
+    return out
+
+
+def _osauto_mark_stale() -> None:
+    """A `running` row whose worker died (restart, deploy) stops blocking."""
+    with db_session() as db:
+        db.execute(sa_text("""
+            UPDATE order_sync_auto_runs
+               SET status = 'failed', finished_at = now(),
+                   error = COALESCE(error, 'The server stopped during the run')
+             WHERE status = 'running'
+               AND heartbeat_at < now() - make_interval(secs => :secs)
+        """), {"secs": _OSAUTO_STALE_SECONDS})
+        db.commit()
+
+
+def _osauto_insert_run(trigger: str, slot: Optional[date], run_date: date, dry_run: bool,
+                       steps: Dict[str, bool]) -> Optional[int]:
+    """The new run's id, or None when that day is already claimed or another
+    run is in progress (either unique index)."""
+    with db_session() as db:
+        row = db.execute(sa_text("""
+            INSERT INTO order_sync_auto_runs
+                   (trigger, slot_date, run_date, status, dry_run, options, phase, progress, counts)
+            VALUES (:trigger, :slot, :run_date, 'running', :dry, CAST(:opts AS jsonb), 'Starting…',
+                    CAST(:progress AS jsonb), '{}'::jsonb)
+            ON CONFLICT DO NOTHING
+            RETURNING id
+        """), {"trigger": trigger, "slot": slot, "run_date": run_date, "dry": dry_run,
+               "opts": json.dumps({"steps": steps}),
+               "progress": json.dumps({"stage": None, "done": 0, "total": 0, "log": []})}).first()
+        db.commit()
+    return row[0] if row else None
+
+
+def _osauto_insert_missed(days: List[date], cfg: Dict[str, Any]) -> None:
+    with db_session() as db:
+        for day in days:
+            db.execute(sa_text("""
+                INSERT INTO order_sync_auto_runs
+                       (trigger, slot_date, run_date, status, dry_run, options, counts, error, finished_at)
+                VALUES ('scheduled', :slot, :run_date, 'missed', :dry, CAST(:opts AS jsonb), '{}'::jsonb,
+                        'The server was not running at the scheduled time', now())
+                ON CONFLICT DO NOTHING
+            """), {"slot": day, "run_date": osauto.scan_date(day), "dry": cfg["dry_run"],
+                   "opts": json.dumps({"steps": cfg["steps"]})})
+        db.commit()
+
+
+def _osauto_save_timezone(tz: str) -> None:
+    with db_session() as db:
+        cfg = db.query(OrderSyncAutoConfig).first()
+        if cfg and cfg.timezone != tz:
+            cfg.timezone = tz
+            db.commit()
+
+
+def _osauto_json(value: Any) -> Any:
+    """A detached deep copy the JSONB columns can store."""
+    return json.loads(json.dumps(value, default=str))
+
+
+class _OsAutoTracker:
+    """One run's live state. Pumped to its row every few seconds; the pump is
+    also the heartbeat and where a Stop request is picked up."""
+
+    def __init__(self, run_id: int):
+        self.run_id = run_id
+        self.phase = "Starting…"
+        self.progress: Dict[str, Any] = {"stage": None, "done": 0, "total": 0, "log": []}
+        self.fields: Dict[str, Any] = {}
+        self.dirty = True
+        self.stopped = False
+        self._lock = threading.Lock()
+        self._closed = False
+
+    def log(self, msg: str) -> None:
+        entry = {"at": datetime.now(timezone.utc).isoformat(), "msg": msg}
+        self.progress["log"] = (self.progress["log"] + [entry])[-_OSAUTO_LOG_LINES:]
+        self.dirty = True
+
+    async def note(self, msg: str) -> None:
+        self.log(msg)
+
+    def set_phase(self, phase: str, stage: Optional[str]) -> None:
+        self.phase = phase
+        self.progress.update(stage=stage, done=0, total=0)
+        self.log(phase)
+
+    def count(self, done: int, total: int) -> None:
+        self.progress.update(done=done, total=total)
+        self.dirty = True
+
+    def set(self, **fields: Any) -> None:
+        self.fields.update(fields)
+        self.dirty = True
+
+    def should_stop(self) -> bool:
+        return self.stopped
+
+    def _snapshot(self) -> Optional[Dict[str, Any]]:
+        if not self.dirty:
+            return None
+        self.dirty = False
+        return {"phase": self.phase[:255], "progress": _osauto_json(self.progress),
+                **{k: _osauto_json(v) for k, v in self.fields.items()}}
+
+    def _write(self, snap: Optional[Dict[str, Any]], final: bool = False) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = final
+            with db_session() as db:
+                run = db.query(OrderSyncAutoRun).filter(OrderSyncAutoRun.id == self.run_id).first()
+                if not run:
+                    return
+                run.heartbeat_at = datetime.now(timezone.utc)
+                for k, v in (snap or {}).items():
+                    setattr(run, k, v)
+                db.commit()
+                self.stopped = self.stopped or bool(run.stop_requested)
+
+    async def pump(self) -> None:
+        while True:
+            try:
+                await asyncio.to_thread(self._write, self._snapshot())
+            except Exception as e:
+                print(f"[order-sync-auto] run {self.run_id} progress write failed: {e}")
+            await asyncio.sleep(_OSAUTO_PUMP_SECONDS)
+
+    def finish(self, **final: Any) -> None:
+        """Last write. Synchronous so it also lands while shutdown cancels us;
+        the lock keeps a pump write already in flight from landing after it."""
+        self.fields.update(final)
+        self.dirty = True
+        self._write(self._snapshot(), final=True)
+
+
+def _osauto_fix_entry(p: Dict[str, Any], shop: str, dry_run: bool) -> Dict[str, Any]:
+    status = p.get("status")
+    if dry_run and status == "ready":
+        status = "would_fix"
+    return {
+        "sh_order_id": p.get("sh_order_id"), "sh_name": p.get("sh_name"),
+        "admin_url": _order_sync_dup_admin_url(shop, p.get("sh_order_id")),
+        "bo_invoice_id": p.get("bo_invoice_id"), "bo_invoice_number": p.get("bo_invoice_number"),
+        "status": status, "message": p.get("message"),
+        "actions": p.get("actions") or [], "skipped_actions": p.get("skipped_actions") or [],
+        "unsupported": p.get("unsupported") or [], "notes": p.get("notes") or [],
+        "steps": p.get("steps") or [],
+        "status_before": p.get("status_before"), "status_after": p.get("status_after"),
+    }
+
+
+def _osauto_cancel_entry(kind: str, row: Dict[str, Any], status: str, message: Optional[str],
+                         result: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    twin = row.get("twin") or row.get("copy") or {}
+    return {
+        "kind": kind, "sh_order_id": row.get("sh_order_id"),
+        "sh_name": row.get("sh_name") or (result or {}).get("sh_name"),
+        "admin_url": row.get("admin_url"), "sh_total": row.get("sh_total"), "sh_date": row.get("sh_date"),
+        "flags": row.get("flags") or [],
+        "twin_name": twin.get("sh_name"), "twin_admin_url": twin.get("admin_url"),
+        "status": status, "message": message,
+        "fulfillments_cancelled": int((result or {}).get("fulfillments_cancelled") or 0),
+    }
+
+
+def _osauto_cancel_progress(t: _OsAutoTracker, offset: int, total: int):
+    async def progress(ev: Dict[str, Any]) -> None:
+        if ev.get("status") == "running":
+            return
+        t.count(offset + int(ev.get("done") or 0), total)
+        t.log(f"{ev.get('sh_name') or ev.get('sh_order_id')}: {ev.get('status')}"
+              + (f" — {ev['message']}" if ev.get("message") else ""))
+    return progress
+
+
+async def _osauto_missing(rows: List[Dict[str, Any]], report: Dict[str, Any]) -> Dict[str, Any]:
+    orders = osauto.backoffice_only_orders(rows)
+    if not orders:
+        return {"message": "No BackOffice-only invoice to check"}
+    payload = await _order_sync_missing(orders)
+    report["missing_products"] = payload["products"]
+    report["warnings"] += payload["warnings"]
+    n = len(payload["products"])
+    invoices = f"{len(orders)} BackOffice-only invoice{'s' if len(orders) != 1 else ''}"
+    if not n:
+        return {"message": f"Every product on {invoices} is active in Shopify"}
+    return {"message": f"{n} product{'s' if n != 1 else ''} on {invoices} not active in Shopify"}
+
+
+async def _osauto_fix(t: _OsAutoTracker, rows: List[Dict[str, Any]], report: Dict[str, Any],
+                      steps: Dict[str, bool], dry_run: bool, shop: str) -> Dict[str, Any]:
+    targets, review = osauto.select_fix_targets(rows)
+    report["review"] += review
+    report["found"]["fix_targets"] = len(targets)
+    if not targets:
+        return {"message": "No matched order needs a fix"}
+    fix_steps = {k: steps[k] for k in osync.FIX_STEPS}
+    create = steps["fix_lines"] and steps["create_products"]
+    total = len(targets)
+    t.count(0, total)
+    for i in range(0, total, _OSAUTO_FIX_CHUNK):
+        if t.stopped:
+            break
+        req = OrderSyncFixRequest(targets=targets[i:i + _OSAUTO_FIX_CHUNK], create_products=create, steps=fix_steps)
+        if dry_run:
+            payload = await _order_sync_fix_plan(req)
+            if payload["scopes_missing"]:
+                report["warnings"].append("Shopify token is missing scopes: " + ", ".join(payload["scopes_missing"]))
+            entries = [_osauto_fix_entry(p, shop, True) for p in payload["plans"]]
+            t.count(min(i + _OSAUTO_FIX_CHUNK, total), total)
+        else:
+            payload = await _order_sync_fix_run(req, progress=_osauto_cancel_progress(t, i, total),
+                                                trim=False, should_stop=t.should_stop)
+            report["batch_ids"].setdefault("fix", []).append(payload["batch_id"])
+            entries = [_osauto_fix_entry(r, shop, False) for r in payload["results"]]
+            for r in payload["results"]:
+                report["created_products"] += [{**cp, "sh_order_name": r.get("sh_name"),
+                                                "bo_invoice_number": r.get("bo_invoice_number")}
+                                               for cp in r.get("created_products") or []]
+        report["warnings"] += payload["warnings"]
+        report["fixes"] += entries
+        t.dirty = True
+    for f in report["fixes"]:
+        if f["unsupported"]:
+            report["review"].append({
+                "category": "unsupported", "sh_order_id": f["sh_order_id"], "sh_name": f["sh_name"],
+                "admin_url": f["admin_url"], "bo_invoice_id": f["bo_invoice_id"],
+                "bo_invoice_number": f["bo_invoice_number"],
+                "reason": "; ".join(f"{u.get('barcode') or u.get('description') or u.get('key')}: {u.get('message')}"
+                                    for u in f["unsupported"]),
+            })
+    counts = osauto.report_counts(report)
+    if dry_run:
+        return {"message": f"{counts['would_fix']} of {total} order{'s' if total != 1 else ''} would change"}
+    return {"message": f"{counts['fixed']} fixed, {counts['fix_failed']} failed, of {total} "
+                       f"order{'s' if total != 1 else ''}"}
+
+
+async def _osauto_cancels(t: _OsAutoTracker, kind: str, act: List[Dict[str, Any]], day: str,
+                          report: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
+    """Cancel (or, in a dry run, list) the confirmed orders of one pass."""
+    if dry_run:
+        report["cancels"] += [_osauto_cancel_entry(kind, r, "would_cancel", None) for r in act]
+        return {"message": f"{len(act)} order{'s' if len(act) != 1 else ''} would be cancelled"}
+    by_id = {r["sh_order_id"]: r for r in act}
+    total = len(act)
+    t.count(0, total)
+    done = 0
+    for i in range(0, total, _OSAUTO_CANCEL_CHUNK):
+        if t.stopped:
+            break
+        chunk = act[i:i + _OSAUTO_CANCEL_CHUNK]
+        progress = _osauto_cancel_progress(t, i, total)
+        if kind == "online_store":
+            res = await _order_sync_channel_run(OrderSyncChannelCancelRequest(
+                date_from=day, date_to=day, targets=[r["sh_order_id"] for r in chunk]),
+                progress=progress, should_stop=t.should_stop)
+        else:
+            res = await _order_sync_dup_run(OrderSyncDupCancelRequest(
+                date_from=day, date_to=day,
+                targets=[{"sh_order_id": r["sh_order_id"], "twin_order_id": r["twin"]["sh_order_id"]}
+                         for r in chunk]),
+                progress=progress, should_stop=t.should_stop)
+        report["batch_ids"].setdefault(kind, []).append(res["batch_id"])
+        report["warnings"] += res.get("warnings") or []
+        for x in res["results"]:
+            report["cancels"].append(_osauto_cancel_entry(
+                kind, by_id.get(x["sh_order_id"]) or {}, x["status"], x.get("message"), x))
+            done += x["status"] == "cancelled"
+        t.dirty = True
+    return {"message": f"{done} of {total} order{'s' if total != 1 else ''} cancelled"}
+
+
+async def _osauto_online_store(t: _OsAutoTracker, day: str, rows: List[Dict[str, Any]],
+                               report: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
+    plan = await _order_sync_channel_plan(day, day)
+    plan.pop("_ctx")
+    invoice_of = osauto.invoice_by_order(rows)
+    act: List[Dict[str, Any]] = []
+    for r in plan["rows"]:
+        if r["status"] != "proposed":
+            continue
+        invoice = invoice_of.get(r["sh_order_id"])
+        if invoice:
+            report["review"].append({
+                "category": "online_store_invoiced", "sh_order_id": r["sh_order_id"], "sh_name": r.get("sh_name"),
+                "admin_url": r.get("admin_url"), "bo_invoice_number": invoice, "sh_total": r.get("sh_total"),
+                "reason": f"Online Store order matched to invoice {invoice} — it may be the only Shopify record of the sale",
+            })
+        else:
+            act.append(r)
+    report["found"]["online_store"] = len(act)
+    if not act:
+        return {"message": "No Online Store order to cancel"}
+    return await _osauto_cancels(t, "online_store", act, day, report, dry_run)
+
+
+async def _osauto_duplicates(t: _OsAutoTracker, day: str, rows: List[Dict[str, Any]],
+                             report: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
+    # An order the Online Store pass already took (or would take) is not
+    # offered again as a duplicate.
+    handled = {c["sh_order_id"] for c in report["cancels"] if c["status"] in ("cancelled", "would_cancel")}
+    targets = [o for o in osauto.select_dup_targets(rows) if o not in handled]
+    report["found"]["dup_candidates"] = len(targets)
+    if not targets:
+        return {"message": "No Shopify-only order is missing tracking"}
+    plan = await _order_sync_dup_plan(day, day, targets[:500])
+    shop = plan.pop("_ctx")["shop_domain"]
+    act: List[Dict[str, Any]] = []
+    for r in plan["rows"]:
+        r["admin_url"] = _order_sync_dup_admin_url(shop, r["sh_order_id"])
+        if r.get("twin"):
+            r["twin"]["admin_url"] = _order_sync_dup_admin_url(shop, r["twin"].get("sh_order_id"))
+        if r["status"] == "proposed":
+            act.append(r)
+        elif r["status"] == "ambiguous":
+            report["review"].append({
+                "category": "ambiguous_duplicate", "sh_order_id": r["sh_order_id"], "sh_name": r.get("sh_name"),
+                "admin_url": r["admin_url"], "sh_total": r.get("sh_total"),
+                "twin_name": (r.get("twin") or {}).get("sh_name"),
+                "twin_admin_url": (r.get("twin") or {}).get("admin_url"),
+                "reason": "Possible duplicate — " + (r.get("reason") or "needs a person to confirm"),
+            })
+    report["found"]["duplicates"] = len(act)
+    if not act:
+        return {"message": f"No certain duplicate among {len(targets)} untracked Shopify-only order"
+                           f"{'s' if len(targets) != 1 else ''}"}
+    return await _osauto_cancels(t, "duplicate", act, day, report, dry_run)
+
+
+async def _osauto_execute(run_id: int, run_date: date, dry_run: bool, steps: Dict[str, bool]) -> None:
+    t = _OsAutoTracker(run_id)
+    day = run_date.isoformat()
+    report: Dict[str, Any] = {
+        "run_date": day, "dry_run": dry_run, "steps": steps, "stores": {}, "stages": {}, "found": {},
+        "fixes": [], "cancels": [], "created_products": [], "review": [], "missing_products": [],
+        "warnings": [], "batch_ids": {}, "delta": {},
+    }
+    t.set(report=report)
+    pump = asyncio.create_task(t.pump())
+    final: Dict[str, Any] = {"status": "failed"}
+
+    async def stage(key: str, label: str, enabled: bool, fn) -> None:
+        if not enabled:
+            report["stages"][key] = {"status": "off"}
+            return
+        if t.stopped:
+            report["stages"][key] = {"status": "skipped", "message": "Run stopped"}
+            return
+        t.set_phase(label, key)
+        try:
+            report["stages"][key] = {"status": "done", **(await fn() or {})}
+        except HTTPException as e:
+            report["stages"][key] = {"status": "failed", "message": str(e.detail)}
+        except Exception as e:
+            report["stages"][key] = {"status": "failed", "message": str(e)}
+        if report["stages"][key].get("message"):
+            t.log(report["stages"][key]["message"])
+        t.dirty = True
+
+    try:
+        t.set_phase("Checking the Order Sync setup…", "setup")
+        ctx = await _order_sync_fix_context()
+        shop = ctx["shop_domain"]
+        report["stores"]["shopify"] = ctx["shopify_store_name"]
+        if ctx.get("tz"):
+            report["timezone"] = ctx["tz"]
+            await asyncio.to_thread(_osauto_save_timezone, ctx["tz"])
+
+        t.set_phase(f"Comparing orders for {day}…", "before")
+        before = await _order_sync_payload(day, day, progress=t.note)
+        rows = before["rows"]
+        snap_before = osauto.summary_snapshot(before["summary"], rows)
+        report["stores"]["backoffice"] = before.get("mssql_store_name")
+        report["warnings"] += before.get("warnings") or []
+        report["stages"]["before"] = {
+            "status": "done",
+            "message": f"{snap_before['shopify_total']} Shopify orders, {snap_before['backoffice_total']} invoices"}
+        t.set(summary_before=snap_before)
+
+        await stage("missing", "Checking invoice products missing in Shopify…", steps["missing_check"],
+                    lambda: _osauto_missing(rows, report))
+        await stage("fix", "Dry run: planning fixes…" if dry_run else "Fixing orders in Shopify…",
+                    osauto.any_fix_step(steps),
+                    lambda: _osauto_fix(t, rows, report, steps, dry_run, shop))
+        await stage("online_store", "Looking for Online Store orders to cancel…", steps["cancel_online_store"],
+                    lambda: _osauto_online_store(t, day, rows, report, dry_run))
+        await stage("duplicates", "Looking for duplicate orders to cancel…", steps["cancel_duplicates"],
+                    lambda: _osauto_duplicates(t, day, rows, report, dry_run))
+
+        snap_after = None
+        if dry_run:
+            report["stages"]["after"] = {"status": "skipped", "message": "Dry run — nothing was changed in Shopify"}
+        else:
+            t.set_phase(f"Comparing orders for {day} again…", "after")
+            try:
+                after = await _order_sync_payload(day, day, progress=t.note)
+                snap_after = osauto.summary_snapshot(after["summary"], after["rows"])
+                report["stages"]["after"] = {"status": "done"}
+            except HTTPException as e:
+                report["stages"]["after"] = {"status": "failed", "message": str(e.detail)}
+            except Exception as e:
+                report["stages"]["after"] = {"status": "failed", "message": str(e)}
+        report["delta"] = osauto.summary_delta(snap_before, snap_after)
+        counts = osauto.report_counts(report)
+        final = {"status": osauto.final_status(counts, t.stopped), "summary_after": snap_after}
+    except asyncio.CancelledError:
+        final = {"status": "failed", "error": "The server stopped during the run"}
+        raise
+    except HTTPException as e:
+        final = {"status": "failed", "error": str(e.detail)}
+    except Exception as e:
+        final = {"status": "failed", "error": str(e)}
+    finally:
+        pump.cancel()
+        labels = {"succeeded": "Finished", "partial": "Finished with problems", "stopped": "Stopped",
+                  "failed": "Failed"}
+        t.phase = labels.get(final["status"], final["status"])
+        t.log(t.phase + (f": {final['error']}" if final.get("error") else ""))
+        try:
+            t.finish(**final, counts=osauto.report_counts(report), report=report,
+                     finished_at=datetime.now(timezone.utc))
+        except Exception as e:
+            print(f"[order-sync-auto] run {run_id} final write failed: {e}")
+
+
+def _osauto_spawn(run_id: int, run_date: date, dry_run: bool, steps: Dict[str, bool]) -> None:
+    task = asyncio.create_task(_osauto_execute(run_id, run_date, dry_run, steps))
+    _osauto_tasks.add(task)
+    task.add_done_callback(_osauto_tasks.discard)
+
+
+async def _osauto_tick() -> None:
+    await asyncio.to_thread(_osauto_mark_stale)
+    cfg, recorded = await asyncio.to_thread(_osauto_load)
+    if not cfg["enabled"]:
+        return
+    now = datetime.now(timezone.utc)
+    missed = osauto.missed_slots(now, cfg, recorded)
+    if missed:
+        await asyncio.to_thread(_osauto_insert_missed, missed, cfg)
+    slot = osauto.due_slot(now, cfg, recorded)
+    if not slot:
+        return
+    run_date = osauto.scan_date(slot)
+    run_id = await asyncio.to_thread(_osauto_insert_run, osauto.slot_trigger(now, slot, cfg), slot,
+                                     run_date, cfg["dry_run"], cfg["steps"])
+    if run_id:
+        print(f"[order-sync-auto] run {run_id} claimed for {slot} (reconciling {run_date})")
+        _osauto_spawn(run_id, run_date, cfg["dry_run"], cfg["steps"])
+
+
+async def order_sync_auto_loop() -> None:
+    """Every worker ticks; the unique indexes let exactly one of them run."""
+    await asyncio.sleep(random.uniform(3, 15))
+    while True:
+        try:
+            await _osauto_tick()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"[order-sync-auto] tick failed: {e}")
+        await asyncio.sleep(_OSAUTO_TICK_SECONDS)
+
+
+def _osauto_config_response(cfg: Dict[str, Any], recorded: Set[date], configured: bool) -> OrderSyncAutoConfigResponse:
+    nxt = osauto.next_run_at(datetime.now(timezone.utc), cfg, recorded)
+    return OrderSyncAutoConfigResponse(
+        configured=configured, enabled=cfg["enabled"], run_time=cfg["run_time"], days=cfg["days"],
+        timezone=cfg["timezone"], dry_run=cfg["dry_run"], steps=cfg["steps"],
+        next_run_at=_osauto_iso(nxt), updated_at=_osauto_iso(cfg["updated_at"]),
+    )
+
+
+def _osauto_pair_configured() -> bool:
+    with db_session() as db:
+        cfg = db.query(OrderSyncConfig).first()
+        return bool(cfg and cfg.mssql_store_id and cfg.shopify_store_id)
+
+
+@app.get("/api/order-sync/auto/config", response_model=OrderSyncAutoConfigResponse)
+async def get_order_sync_auto_config():
+    cfg, recorded = await asyncio.to_thread(_osauto_load)
+    return _osauto_config_response(cfg, recorded, await asyncio.to_thread(_osauto_pair_configured))
+
+
+@app.put("/api/order-sync/auto/config", response_model=OrderSyncAutoConfigResponse)
+async def save_order_sync_auto_config(body: OrderSyncAutoConfigUpdate):
+    """Save the schedule. Turning it on, or moving its time or days, restarts
+    it from now — a slot that already passed today waits for its next day."""
+    if body.enabled and not body.days:
+        raise HTTPException(status_code=400, detail="Pick at least one day")
+    tz: Optional[str] = None
+    if _osauto_pair_configured():
+        try:
+            ctx = await _order_sync_fix_context()
+            tz = ctx.get("tz")
+        except HTTPException:
+            tz = None
+    elif body.enabled:
+        raise HTTPException(status_code=400, detail="Set the BackOffice and Shopify stores for Order Sync first")
+    steps = osauto.normalize_steps(body.steps)
+    with db_session() as db:
+        cfg = db.query(OrderSyncAutoConfig).first()
+        restart = (not cfg or (body.enabled and not cfg.enabled)
+                   or cfg.run_time != body.run_time or sorted(cfg.days or []) != body.days)
+        if not cfg:
+            cfg = OrderSyncAutoConfig(days=body.days)
+            db.add(cfg)
+        cfg.enabled = body.enabled
+        cfg.run_time = body.run_time
+        cfg.days = body.days
+        cfg.dry_run = body.dry_run
+        cfg.steps = steps
+        if tz:
+            cfg.timezone = tz
+        if restart:
+            cfg.effective_from = datetime.now(timezone.utc)
+        db.commit()
+    cfg_d, recorded = await asyncio.to_thread(_osauto_load)
+    return _osauto_config_response(cfg_d, recorded, True)
+
+
+@app.post("/api/order-sync/auto/run", response_model=OrderSyncAutoRunDetail)
+async def start_order_sync_auto_run(body: OrderSyncAutoRunRequest):
+    """Run the saved steps now (for yesterday, or `date`)."""
+    if not _osauto_pair_configured():
+        raise HTTPException(status_code=400, detail="Order Sync is not configured")
+    cfg, _recorded = await asyncio.to_thread(_osauto_load)
+    today = datetime.now(_BovZoneInfo(cfg["timezone"])).date()
+    if body.date:
+        try:
+            run_date = datetime.strptime(body.date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
+        if run_date > today:
+            raise HTTPException(status_code=400, detail="date cannot be in the future")
+    else:
+        run_date = osauto.scan_date(today)
+    dry_run = cfg["dry_run"] if body.dry_run is None else body.dry_run
+    await asyncio.to_thread(_osauto_mark_stale)
+    run_id = await asyncio.to_thread(_osauto_insert_run, "manual", None, run_date, dry_run, cfg["steps"])
+    if not run_id:
+        raise HTTPException(status_code=409, detail="A run is already in progress")
+    _osauto_spawn(run_id, run_date, dry_run, cfg["steps"])
+    with db_session() as db:
+        run = db.query(OrderSyncAutoRun).filter(OrderSyncAutoRun.id == run_id).first()
+        return OrderSyncAutoRunDetail(**_osauto_row(run, detail=True))
+
+
+@app.get("/api/order-sync/auto/runs", response_model=OrderSyncAutoRunsResponse)
+def list_order_sync_auto_runs(limit: int = 50, offset: int = 0):
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+    cols = (OrderSyncAutoRun.id, OrderSyncAutoRun.trigger, OrderSyncAutoRun.status, OrderSyncAutoRun.dry_run,
+            OrderSyncAutoRun.slot_date, OrderSyncAutoRun.run_date, OrderSyncAutoRun.phase,
+            OrderSyncAutoRun.started_at, OrderSyncAutoRun.finished_at, OrderSyncAutoRun.counts,
+            OrderSyncAutoRun.error, OrderSyncAutoRun.stop_requested)
+    with db_session() as db:
+        total = db.query(OrderSyncAutoRun).count()
+        rows = (db.query(*cols)
+                .order_by(OrderSyncAutoRun.started_at.desc(), OrderSyncAutoRun.id.desc())
+                .offset(offset).limit(limit).all())
+    return OrderSyncAutoRunsResponse(total=total, runs=[OrderSyncAutoRunRow(**_osauto_row(r)) for r in rows])
+
+
+@app.get("/api/order-sync/auto/runs/{run_id}", response_model=OrderSyncAutoRunDetail)
+def get_order_sync_auto_run(run_id: int):
+    with db_session() as db:
+        run = db.query(OrderSyncAutoRun).filter(OrderSyncAutoRun.id == run_id).first()
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        return OrderSyncAutoRunDetail(**_osauto_row(run, detail=True))
+
+
+@app.post("/api/order-sync/auto/runs/{run_id}/stop", response_model=OrderSyncAutoRunRow)
+def stop_order_sync_auto_run(run_id: int):
+    """Ask a run to stop. It finishes the order in hand — a fix is never left
+    half-applied — and skips the rest."""
+    with db_session() as db:
+        run = db.query(OrderSyncAutoRun).filter(OrderSyncAutoRun.id == run_id).first()
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        if run.status == "running" and not run.stop_requested:
+            run.stop_requested = True
+            db.commit()
+        return OrderSyncAutoRunRow(**_osauto_row(run))
+
+
+@app.get("/api/order-sync/auto/status", response_model=OrderSyncAutoStatusResponse)
+async def order_sync_auto_status():
+    """What the page's pill and the nav badge show."""
+    def read():
+        cfg, recorded = _osauto_load()
+        with db_session() as db:
+            running = (db.query(OrderSyncAutoRun).filter(OrderSyncAutoRun.status == "running")
+                       .order_by(OrderSyncAutoRun.id.desc()).first())
+            last = (db.query(OrderSyncAutoRun).filter(OrderSyncAutoRun.status != "running")
+                    .order_by(OrderSyncAutoRun.started_at.desc(), OrderSyncAutoRun.id.desc()).first())
+            return (cfg, recorded, _osauto_row(running) if running else None,
+                    _osauto_row(last) if last else None)
+
+    cfg, recorded, running, last = await asyncio.to_thread(read)
+    nxt = osauto.next_run_at(datetime.now(timezone.utc), cfg, recorded)
+    return OrderSyncAutoStatusResponse(
+        enabled=cfg["enabled"], dry_run=cfg["dry_run"], next_run_at=_osauto_iso(nxt), timezone=cfg["timezone"],
+        running=OrderSyncAutoRunRow(**running) if running else None,
+        last=OrderSyncAutoRunRow(**last) if last else None,
+    )
 
 
 if __name__ == "__main__":

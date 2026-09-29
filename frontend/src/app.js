@@ -29633,3 +29633,743 @@ function osyncChanClose() {
 }
 
 // ===== End Order Sync =====
+
+// ===== Order Sync: daily automation =====
+//
+// One saved job runs on the server once a day (/api/order-sync/auto/*): it
+// compares yesterday and runs the switched-on steps, acting only on what the
+// manual tools would pre-tick. A run is a server-side task that reports
+// through its own row, so this UI only polls — closing the modal or the tab
+// never affects a run.
+
+const OSYNC_AUTO_DAYS = [["Mon", 0], ["Tue", 1], ["Wed", 2], ["Thu", 3], ["Fri", 4], ["Sat", 5], ["Sun", 6]];
+
+const OSYNC_AUTO_STEP_GROUPS = [
+  {
+    title: "Fix in Shopify",
+    hint: "Matched orders only. Ambiguous matches and combined shipments are left for review.",
+    steps: [
+      ["fix_lines", "Correct product lines", "Refund extra units ($0, no restock), add missing lines or units at the invoice price, reprice lines."],
+      ["fix_shipping", "Correct the shipping charge", "Replace or remove the Shopify shipping line so it matches the invoice."],
+      ["push_tracking", "Push tracking numbers", "Copy BackOffice tracking onto Shopify fulfillments that have none."],
+      ["mark_paid", "Mark balances as paid", "Record the balance an added line leaves as paid (no money is collected). Without it, fixed orders can show a balance due."],
+      ["store_price", "Update storefront prices", "Set the Shopify price of a repriced product to BackOffice Items_tbl.UnitPrice. Affects future orders."],
+      ["create_products", "Create missing products", "Create a hidden Shopify product for a UPC the store doesn't carry, so its line can be added. Needs “Correct product lines”."],
+    ],
+  },
+  {
+    title: "Cancel orders",
+    hint: "Cancellations can't be undone. No refund, no restock, and the customer is never notified.",
+    danger: true,
+    steps: [
+      ["cancel_online_store", "Cancel Online Store copies", "Online Store orders that aren't Unfulfilled. Ones matched to an invoice are left for review."],
+      ["cancel_duplicates", "Cancel duplicate orders", "Untracked Shopify-only orders with a certain twin from the same customer. Uncertain ones are left for review."],
+    ],
+  },
+  {
+    title: "Checks",
+    steps: [
+      ["missing_check", "Missing in Shopify check", "List products on BackOffice-only invoices that the Shopify store doesn't carry. Read-only."],
+    ],
+  },
+];
+
+const OSYNC_AUTO_STATUS = {
+  running: ["Running", "is-muted"], succeeded: ["Succeeded", "is-ok"], partial: ["Finished with problems", "is-warn"],
+  failed: ["Failed", "is-bad"], stopped: ["Stopped", "is-warn"], missed: ["Missed", "is-bad"],
+};
+const OSYNC_AUTO_TRIGGERS = { scheduled: "Scheduled", catch_up: "Catch-up", manual: "Manual" };
+const OSYNC_AUTO_STAGES = [
+  ["before", "Compare"], ["missing", "Missing check"], ["fix", "Fix in Shopify"],
+  ["online_store", "Online Store"], ["duplicates", "Duplicates"], ["after", "Compare again"],
+];
+const OSYNC_AUTO_STAGE_STATUS = {
+  done: ["Done", "is-ok"], off: ["Off", "is-muted"], skipped: ["Skipped", "is-muted"], failed: ["Failed", "is-bad"],
+};
+const OSYNC_AUTO_REVIEW = {
+  ambiguous_match: "Ambiguous match", combined: "Combined shipment", unsupported: "Can't fix automatically",
+  online_store_invoiced: "Online Store order with an invoice", ambiguous_duplicate: "Possible duplicate",
+};
+const OSYNC_AUTO_TILES = [
+  ["matched_ok", "Matched"], ["matched_diffs", "Differences"], ["shopify_unmatched", "Shopify only"],
+  ["backoffice_unmatched", "BackOffice only"], ["shopify_no_tracking", "No tracking"], ["fixable", "Fixable"],
+];
+const OSYNC_AUTO_CANCEL_STATUS = {
+  would_cancel: ["Would cancel", "is-warn"], cancelled: ["Cancelled", "is-ok"], noop: ["Already cancelled", "is-muted"],
+  skipped: ["Skipped", "is-muted"], failed: ["Failed", "is-bad"],
+};
+OSYNC_FIX_STATUS.would_fix = ["Would fix", "is-ok"];
+
+const osyncAuto = { tab: "schedule", cfg: null, draft: null, runs: null, runId: null, run: null, status: null, pollTimer: null, busy: false };
+
+async function osyncAutoCall(method, endpoint, body) {
+  const resp = await fetch(`${API_BASE}${endpoint}`, {
+    method, headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    const detail = Array.isArray(err.detail) ? err.detail.map((d) => d.msg).join("; ") : err.detail;
+    throw new Error(detail || `HTTP ${resp.status}`);
+  }
+  return resp.json();
+}
+
+function osyncAutoIsOpen() {
+  return document.getElementById("osync-auto-modal")?.classList.contains("active");
+}
+
+function osyncAutoStopPolling() {
+  clearTimeout(osyncAuto.pollTimer);
+  osyncAuto.pollTimer = null;
+}
+
+function osyncAutoPoll(fn, ms) {
+  osyncAutoStopPolling();
+  osyncAuto.pollTimer = setTimeout(() => {
+    if (osyncAutoIsOpen()) fn();
+  }, ms);
+}
+
+function osyncAutoWhen(iso, tz) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  const opts = { weekday: "short", hour: "numeric", minute: "2-digit" };
+  if (tz) opts.timeZone = tz;
+  try {
+    return d.toLocaleString([], opts);
+  } catch {
+    return formatDateTime(iso);
+  }
+}
+
+function osyncAutoYesterday(tz) {
+  const d = new Date(Date.now() - 86400000);
+  try {
+    return d.toLocaleDateString("en-CA", tz ? { timeZone: tz } : {});
+  } catch {
+    return d.toISOString().slice(0, 10);
+  }
+}
+
+function osyncAutoDuration(run) {
+  if (!run.started_at || !run.finished_at) return "";
+  const s = Math.max(0, Math.round((new Date(run.finished_at) - new Date(run.started_at)) / 1000));
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
+}
+
+function osyncAutoPill(map, status) {
+  const [label, tone] = map[status] || [status, "is-muted"];
+  return `<span class="osync-fix-pill ${tone}">${escapeHtml(label)}</span>`;
+}
+
+function osyncAutoPlural(n, word) {
+  return `${n} ${word}${n === 1 ? "" : "s"}`;
+}
+
+function osyncAutoCountsText(c, dryRun) {
+  c = c || {};
+  const parts = [];
+  if (dryRun) {
+    if (c.would_fix) parts.push(`${c.would_fix} would fix`);
+    if (c.would_cancel) parts.push(`${c.would_cancel} would cancel`);
+  } else {
+    if (c.fixed) parts.push(`${c.fixed} fixed`);
+    if (c.cancelled) parts.push(`${c.cancelled} cancelled`);
+    if (c.created_products) parts.push(osyncAutoPlural(c.created_products, "product") + " created");
+  }
+  const failed = (c.fix_failed || 0) + (c.cancel_failed || 0);
+  if (failed) parts.push(`${failed} failed`);
+  if (c.stage_errors) parts.push(osyncAutoPlural(c.stage_errors, "step") + " failed");
+  if (c.review) parts.push(`${c.review} to review`);
+  if (c.missing_products) parts.push(osyncAutoPlural(c.missing_products, "product") + " missing in Shopify");
+  return parts.join(" · ") || "No changes needed";
+}
+
+// ---- Page pill + nav badge ----
+
+async function osyncAutoRefreshStatus() {
+  try {
+    osyncAuto.status = await osyncAutoCall("GET", "/order-sync/auto/status");
+  } catch {
+    return;
+  }
+  osyncAutoRenderPill();
+}
+
+function osyncAutoRenderPill() {
+  const s = osyncAuto.status;
+  if (!s) return;
+  const text = document.getElementById("osync-auto-pill-text");
+  const pill = document.getElementById("osync-auto-pill");
+  const badge = document.getElementById("osync-auto-nav-badge");
+  const last = s.last;
+  const lastBad = last && ["failed", "partial", "missed"].includes(last.status);
+  const review = (last && last.counts && last.counts.review) || 0;
+  let label;
+  let tone = "";
+  if (s.running) {
+    label = `Automation running · ${s.running.phase || ""}`;
+    tone = "is-run";
+  } else if (lastBad) {
+    label = `Last run: ${(OSYNC_AUTO_STATUS[last.status] || [last.status])[0].toLowerCase()}`;
+    tone = last.status === "partial" ? "is-warn" : "is-bad";
+  } else if (s.enabled) {
+    label = `Next run ${osyncAutoWhen(s.next_run_at, s.timezone)}${s.dry_run ? " · dry run" : ""}`;
+    tone = "is-ok";
+  } else {
+    label = "Automation off";
+  }
+  if (!s.running && review) label += ` · ${review} to review`;
+  if (text) text.textContent = label;
+  if (pill) pill.className = `osync-auto-pill ${tone}`;
+  if (badge) {
+    const show = s.running || lastBad || review > 0;
+    badge.hidden = !show;
+    badge.textContent = s.running ? "…" : lastBad ? "!" : String(review);
+    badge.className = `osync-auto-nav-badge ${s.running ? "is-run" : lastBad ? "is-bad" : "is-warn"}`;
+    badge.title = s.running ? "Order Sync automation is running"
+      : lastBad ? `The last automation run ${last.status === "missed" ? "was missed" : "had problems"}`
+      : `${review} item${review === 1 ? "" : "s"} from the last automation run need review`;
+  }
+}
+
+// ---- Modal ----
+
+function osyncAutoOpen() {
+  const running = osyncAuto.status && osyncAuto.status.running;
+  openModal("osync-auto-modal");
+  if (running) {
+    osyncAutoSetTab("runs", running.id);
+  } else {
+    osyncAutoSetTab(osyncAuto.tab || "schedule");
+  }
+}
+
+function osyncAutoClose() {
+  if (osyncAuto.tab === "schedule" && osyncAutoDirty() && !confirm("Discard your unsaved automation changes?")) return;
+  osyncAutoStopPolling();
+  closeModal("osync-auto-modal");
+  osyncAutoRefreshStatus();
+}
+
+function osyncAutoSetTab(tab, runId = null) {
+  if (osyncAuto.tab === "schedule" && tab !== "schedule" && osyncAutoDirty()
+      && !confirm("Discard your unsaved automation changes?")) return;
+  osyncAuto.tab = tab;
+  osyncAutoStopPolling();
+  document.querySelectorAll("[data-osync-auto-tab]").forEach((b) => {
+    b.classList.toggle("active", b.getAttribute("data-osync-auto-tab") === tab);
+  });
+  if (tab === "schedule") {
+    osyncAutoLoadConfig();
+  } else if (runId) {
+    osyncAutoOpenRun(runId);
+  } else {
+    osyncAuto.runId = null;
+    osyncAutoLoadRuns();
+  }
+}
+
+function osyncAutoLoading(message) {
+  const body = document.getElementById("osync-auto-body");
+  if (body) body.innerHTML = `<div class="osync-fix-loading"><span class="progress-spinner"></span>${escapeHtml(message)}</div>`;
+}
+
+function osyncAutoError(message) {
+  const body = document.getElementById("osync-auto-body");
+  if (body) body.innerHTML = `<div class="osync-fix-error">${escapeHtml(message)}</div>`;
+}
+
+function osyncAutoFooter(html) {
+  const footer = document.getElementById("osync-auto-footer");
+  if (footer) footer.innerHTML = html;
+}
+
+// ---- Schedule tab ----
+
+async function osyncAutoLoadConfig() {
+  osyncAutoLoading("Loading the schedule…");
+  osyncAutoFooter(`<button type="button" class="btn btn-primary" data-osync-auto-act="close">Close</button>`);
+  try {
+    osyncAuto.cfg = await osyncAutoCall("GET", "/order-sync/auto/config");
+  } catch (e) {
+    osyncAutoError(e.message || String(e));
+    return;
+  }
+  osyncAuto.draft = osyncAutoDraftOf(osyncAuto.cfg);
+  osyncAutoRenderSchedule();
+}
+
+function osyncAutoDraftOf(cfg) {
+  return {
+    enabled: !!cfg.enabled, run_time: cfg.run_time || "06:00", days: [...(cfg.days || [])],
+    dry_run: cfg.dry_run !== false, steps: { ...(cfg.steps || {}) },
+  };
+}
+
+function osyncAutoDirty() {
+  if (!osyncAuto.cfg || !osyncAuto.draft) return false;
+  return JSON.stringify(osyncAutoDraftOf(osyncAuto.cfg)) !== JSON.stringify(osyncAuto.draft);
+}
+
+function osyncAutoRenderSchedule() {
+  const body = document.getElementById("osync-auto-body");
+  const sub = document.getElementById("osync-auto-sub");
+  const cfg = osyncAuto.cfg;
+  const d = osyncAuto.draft;
+  if (!body || !cfg || !d) return;
+  if (sub) sub.textContent = cfg.enabled ? `Next run ${osyncAutoWhen(cfg.next_run_at, cfg.timezone)}` : "Off";
+  const groups = OSYNC_AUTO_STEP_GROUPS.map((g) =>
+    `<div class="osync-auto-group${g.danger ? " is-danger" : ""}">` +
+    `<div class="osync-auto-group-head"><span class="osync-auto-group-title">${escapeHtml(g.title)}</span>` +
+    (g.hint ? `<span class="osync-auto-group-hint">${escapeHtml(g.hint)}</span>` : "") + `</div>` +
+    g.steps.map(([key, label, help]) => {
+      const needsLines = key === "create_products" && !d.steps.fix_lines;
+      return `<label class="osync-auto-step${needsLines ? " is-inert" : ""}">` +
+        `<input type="checkbox" data-osync-auto-step="${key}" ${d.steps[key] ? "checked" : ""}>` +
+        `<span><span class="osync-auto-step-label">${escapeHtml(label)}</span>` +
+        `<span class="osync-auto-step-help">${escapeHtml(help)}</span></span></label>`;
+    }).join("") +
+    `</div>`).join("");
+
+  const anyStep = Object.values(d.steps).some(Boolean);
+  const liveCancels = !d.dry_run && (d.steps.cancel_online_store || d.steps.cancel_duplicates);
+  body.innerHTML =
+    (cfg.configured ? "" : `<div class="osync-fix-error">Pick the BackOffice and Shopify stores for Order Sync first — the automation uses the same pair.</div>`) +
+    `<div class="osync-auto-section">` +
+    `<label class="osync-auto-switch"><input type="checkbox" data-osync-auto-field="enabled" ${d.enabled ? "checked" : ""}>` +
+    `<span><strong>Run automatically every day</strong></span></label>` +
+    `<div class="osync-auto-when${d.enabled ? "" : " is-inert"}">` +
+    `<label class="osync-auto-time">At <input type="time" class="dark-input" data-osync-auto-field="run_time" value="${escapeHtml(d.run_time)}"></label>` +
+    `<div class="osync-auto-days" role="group" aria-label="Days">` +
+    OSYNC_AUTO_DAYS.map(([label, n]) =>
+      `<button type="button" class="osync-auto-day${d.days.includes(n) ? " is-on" : ""}" data-osync-auto-day="${n}" aria-pressed="${d.days.includes(n)}">${label}</button>`).join("") +
+    `</div></div>` +
+    `<div class="osync-auto-hint">Each run reconciles the previous day, in the Shopify store's time zone (${escapeHtml(cfg.timezone)}). ` +
+    `If the server is down at run time, the run happens once when it comes back the same day.</div>` +
+    `</div>` +
+    `<div class="osync-auto-section">` +
+    `<div class="osync-auto-section-title">Mode</div>` +
+    `<label class="osync-auto-radio"><input type="radio" name="osync-auto-mode" value="dry" ${d.dry_run ? "checked" : ""}>` +
+    `<span><strong>Dry run</strong> — plan everything and write the report, change nothing in Shopify</span></label>` +
+    `<label class="osync-auto-radio"><input type="radio" name="osync-auto-mode" value="live" ${d.dry_run ? "" : "checked"}>` +
+    `<span><strong>Live</strong> — make the changes in Shopify</span></label>` +
+    (liveCancels ? `<div class="osync-fix-warn">Live mode with a cancel step switched on will cancel Shopify orders every day without asking.</div>` : "") +
+    `</div>` +
+    `<div class="osync-auto-section">` +
+    `<div class="osync-auto-section-title">Steps</div>` +
+    (anyStep ? "" : `<div class="osync-auto-hint">With no step switched on, a run only compares and reports.</div>`) +
+    groups +
+    `</div>`;
+  osyncAutoRenderScheduleFooter();
+}
+
+function osyncAutoRenderScheduleFooter() {
+  const cfg = osyncAuto.cfg;
+  const dirty = osyncAutoDirty();
+  const runnable = cfg && cfg.configured;
+  const blockRun = dirty ? ' disabled title="Save your changes first"' : runnable ? "" : " disabled";
+  osyncAutoFooter(
+    `<span class="osync-modal-fix-note">${dirty ? "Unsaved changes" : ""}</span>` +
+    `<label class="osync-auto-date-label">Day <input type="date" class="dark-input" id="osync-auto-date" value="${osyncAutoYesterday(cfg && cfg.timezone)}"></label>` +
+    `<button type="button" class="btn btn-secondary" data-osync-auto-act="dry-now"${blockRun}>Dry run now</button>` +
+    `<button type="button" class="btn btn-secondary" data-osync-auto-act="live-now"${blockRun}>Run live now</button>` +
+    `<button type="button" class="btn btn-primary" data-osync-auto-act="save"${dirty && !osyncAuto.busy ? "" : " disabled"}>Save</button>`
+  );
+}
+
+async function osyncAutoSave() {
+  const d = osyncAuto.draft;
+  if (!d) return;
+  if (d.enabled && !d.days.length) {
+    showToast("Pick at least one day", "error");
+    return;
+  }
+  const wasLive = osyncAuto.cfg && osyncAuto.cfg.enabled && !osyncAuto.cfg.dry_run;
+  const cancels = d.steps.cancel_online_store || d.steps.cancel_duplicates;
+  if (d.enabled && !d.dry_run && !wasLive &&
+      !confirm(`The automation will make changes in Shopify every day${cancels ? ", including cancelling orders," : ""} without asking. Turn on live mode?`)) {
+    return;
+  }
+  osyncAuto.busy = true;
+  osyncAutoRenderScheduleFooter();
+  try {
+    osyncAuto.cfg = await osyncAutoCall("PUT", "/order-sync/auto/config", d);
+    osyncAuto.draft = osyncAutoDraftOf(osyncAuto.cfg);
+    showToast(osyncAuto.cfg.enabled ? `Automation saved — next run ${osyncAutoWhen(osyncAuto.cfg.next_run_at, osyncAuto.cfg.timezone)}` : "Automation saved (off)", "success");
+    osyncAutoRefreshStatus();
+  } catch (e) {
+    showToast(e.message || String(e), "error");
+  } finally {
+    osyncAuto.busy = false;
+    osyncAutoRenderSchedule();
+  }
+}
+
+async function osyncAutoRunNow(dryRun) {
+  const date = document.getElementById("osync-auto-date")?.value || null;
+  const steps = (osyncAuto.cfg && osyncAuto.cfg.steps) || {};
+  if (!dryRun) {
+    const cancels = steps.cancel_online_store || steps.cancel_duplicates;
+    if (!confirm(`Run the saved steps LIVE for ${date || "yesterday"}? Changes are made in Shopify${cancels ? ", including cancelling orders" : ""}.`)) return;
+  }
+  try {
+    const run = await osyncAutoCall("POST", "/order-sync/auto/run", { dry_run: dryRun, date });
+    osyncAutoRefreshStatus();
+    osyncAutoSetTab("runs", run.id);
+  } catch (e) {
+    showToast(e.message || String(e), "error");
+  }
+}
+
+function osyncAutoOnScheduleInput(e) {
+  const d = osyncAuto.draft;
+  if (!d) return;
+  const field = e.target.getAttribute("data-osync-auto-field");
+  const step = e.target.getAttribute("data-osync-auto-step");
+  if (field === "enabled") d.enabled = e.target.checked;
+  else if (field === "run_time") d.run_time = e.target.value || d.run_time;
+  else if (step) d.steps[step] = e.target.checked;
+  else if (e.target.name === "osync-auto-mode") d.dry_run = e.target.value === "dry";
+  else return;
+  osyncAutoRenderSchedule();
+}
+
+// ---- Runs tab ----
+
+async function osyncAutoLoadRuns({ quiet = false } = {}) {
+  const sub = document.getElementById("osync-auto-sub");
+  if (!quiet) {
+    osyncAutoLoading("Loading runs…");
+    if (sub) sub.textContent = "";
+  }
+  osyncAutoFooter(
+    `<span class="osync-modal-fix-note"></span>` +
+    `<button type="button" class="btn btn-secondary" data-osync-auto-act="refresh">Refresh</button>` +
+    `<button type="button" class="btn btn-primary" data-osync-auto-act="close">Close</button>`);
+  try {
+    osyncAuto.runs = await osyncAutoCall("GET", "/order-sync/auto/runs?limit=100");
+  } catch (e) {
+    osyncAutoError(e.message || String(e));
+    return;
+  }
+  if (osyncAuto.tab !== "runs" || osyncAuto.runId) return;
+  osyncAutoRenderRuns();
+  if ((osyncAuto.runs.runs || []).some((r) => r.status === "running")) {
+    osyncAutoPoll(() => osyncAutoLoadRuns({ quiet: true }), 3000);
+  }
+}
+
+function osyncAutoRenderRuns() {
+  const body = document.getElementById("osync-auto-body");
+  const sub = document.getElementById("osync-auto-sub");
+  const runs = (osyncAuto.runs && osyncAuto.runs.runs) || [];
+  if (sub) sub.textContent = osyncAutoPlural(osyncAuto.runs.total || 0, "run");
+  if (!body) return;
+  if (!runs.length) {
+    body.innerHTML = `<div class="osync-missing-empty">No runs yet. Save a schedule, or use <strong>Dry run now</strong> on the Schedule tab.</div>`;
+    return;
+  }
+  body.innerHTML =
+    `<table class="osync-missing-table osync-auto-runs"><thead><tr>` +
+    `<th>Started</th><th>Day</th><th>Trigger</th><th>Status</th><th>Result</th><th class="osync-num">Took</th>` +
+    `</tr></thead><tbody>` +
+    runs.map((r) =>
+      `<tr class="osync-auto-run-row" data-osync-auto-run="${r.id}" tabindex="0">` +
+      `<td>${escapeHtml(formatDateTime(r.started_at))}</td>` +
+      `<td>${escapeHtml(r.run_date || "—")}</td>` +
+      `<td>${escapeHtml(OSYNC_AUTO_TRIGGERS[r.trigger] || r.trigger)}${r.dry_run ? ' <span class="osync-auto-dry">dry run</span>' : ""}</td>` +
+      `<td>${osyncAutoPill(OSYNC_AUTO_STATUS, r.status)}</td>` +
+      `<td class="osync-auto-result">${r.status === "running" ? escapeHtml(r.phase || "")
+        : r.status === "missed" || (r.status === "failed" && r.error) ? escapeHtml(r.error || "")
+        : escapeHtml(r.status === "stopped" && osyncAutoCountsText(r.counts, r.dry_run) === "No changes needed"
+          ? "Stopped before making any change" : osyncAutoCountsText(r.counts, r.dry_run))}</td>` +
+      `<td class="osync-num">${escapeHtml(osyncAutoDuration(r))}</td>` +
+      `</tr>`).join("") +
+    `</tbody></table>`;
+}
+
+// ---- Run detail ----
+
+async function osyncAutoOpenRun(id) {
+  osyncAuto.runId = id;
+  osyncAuto.run = null;
+  osyncAutoLoading("Loading the run…");
+  osyncAutoFooter(`<button type="button" class="btn btn-primary" data-osync-auto-act="close">Close</button>`);
+  await osyncAutoFetchRun();
+}
+
+async function osyncAutoFetchRun() {
+  const id = osyncAuto.runId;
+  let run;
+  try {
+    run = await osyncAutoCall("GET", `/order-sync/auto/runs/${id}`);
+  } catch (e) {
+    if (osyncAuto.runId === id) osyncAutoError(e.message || String(e));
+    return;
+  }
+  if (osyncAuto.runId !== id || osyncAuto.tab !== "runs") return;
+  const wasRunning = osyncAuto.run && osyncAuto.run.status === "running";
+  osyncAuto.run = run;
+  osyncAutoRenderRun();
+  if (run.status === "running") {
+    osyncAutoPoll(osyncAutoFetchRun, 2000);
+  } else if (wasRunning) {
+    osyncAutoRefreshStatus();
+  }
+}
+
+function osyncAutoOrderLink(name, url) {
+  const label = escapeHtml(name || "—");
+  return url ? `<a class="osync-created-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" title="Open in Shopify admin">${label}</a>` : label;
+}
+
+function osyncAutoTilesHtml(before, after, delta, dryRun) {
+  if (!before) return "";
+  const tiles = OSYNC_AUTO_TILES.map(([key, label]) => {
+    const b = before[key] || 0;
+    const a = after ? after[key] || 0 : null;
+    const dv = delta && after ? delta[key] || 0 : 0;
+    return `<div class="osync-auto-tile">` +
+      `<span class="osync-auto-tile-label">${escapeHtml(label)}</span>` +
+      `<span class="osync-auto-tile-value">${b}${a != null && a !== b ? ` <span class="osync-muted">→</span> ${a}` : ""}</span>` +
+      (dv ? `<span class="osync-auto-tile-delta ${dv < 0 === (key === "matched_ok") ? "is-bad" : "is-ok"}">${dv > 0 ? "+" : ""}${dv}</span>` : "") +
+      `</div>`;
+  }).join("");
+  const caption = after ? "Before → after the run" : dryRun ? "State found (dry run — nothing changed)" : "State before the run";
+  return `<div class="osync-auto-block"><div class="osync-auto-block-title">${caption} · ` +
+    `${osyncAutoPlural(before.shopify_total || 0, "Shopify order")}, ${osyncAutoPlural(before.backoffice_total || 0, "invoice")}</div>` +
+    `<div class="osync-auto-tiles">${tiles}</div></div>`;
+}
+
+function osyncAutoStagesHtml(stages) {
+  const rows = OSYNC_AUTO_STAGES.filter(([key]) => stages[key]).map(([key, label]) => {
+    const s = stages[key];
+    return `<li><span class="osync-auto-stage-name">${escapeHtml(label)}</span>` +
+      `${osyncAutoPill(OSYNC_AUTO_STAGE_STATUS, s.status)}` +
+      `<span class="osync-auto-stage-msg">${escapeHtml(s.message || "")}</span></li>`;
+  }).join("");
+  return rows ? `<div class="osync-auto-block"><div class="osync-auto-block-title">Steps</div><ul class="osync-auto-stages">${rows}</ul></div>` : "";
+}
+
+function osyncAutoProgressHtml(run) {
+  const p = run.progress || {};
+  const pct = p.total ? Math.round((100 * p.done) / p.total) : null;
+  const log = (p.log || []).slice(-12).reverse();
+  return `<div class="osync-auto-block osync-auto-live">` +
+    `<div class="osync-auto-live-head"><span class="progress-spinner"></span><strong>${escapeHtml(run.phase || "Working…")}</strong>` +
+    (p.total ? `<span class="osync-muted">${p.done} / ${p.total}</span>` : "") +
+    (run.stop_requested ? `<span class="osync-fix-pill is-warn">Stopping after the current order</span>` : "") + `</div>` +
+    (pct != null ? `<div class="osync-auto-bar"><span style="width:${pct}%"></span></div>` : "") +
+    `<ul class="osync-auto-log">` +
+    log.map((l) => `<li><span class="osync-muted">${escapeHtml(new Date(l.at).toLocaleTimeString())}</span> ${escapeHtml(l.msg)}</li>`).join("") +
+    `</ul><div class="osync-auto-hint">The run continues on the server — you can close this window.</div></div>`;
+}
+
+function osyncAutoRenderRun() {
+  const body = document.getElementById("osync-auto-body");
+  const sub = document.getElementById("osync-auto-sub");
+  const run = osyncAuto.run;
+  if (!body || !run) return;
+  const rep = run.report || {};
+  const fixes = rep.fixes || [];
+  const changed = fixes.filter((f) => ["applied", "partial", "failed", "error", "would_fix"].includes(f.status));
+  const untouched = fixes.filter((f) => !changed.includes(f));
+  const cancels = rep.cancels || [];
+  const created = rep.created_products || [];
+  const review = rep.review || [];
+  const missing = rep.missing_products || [];
+  if (sub) sub.textContent = `Run #${run.id} · ${run.run_date || ""}`;
+
+  const head =
+    `<div class="osync-auto-run-head">` +
+    `<button type="button" class="btn btn-secondary osync-auto-back" data-osync-auto-act="back">← All runs</button>` +
+    `<span>${osyncAutoPill(OSYNC_AUTO_STATUS, run.status)}</span>` +
+    `<span>${escapeHtml(OSYNC_AUTO_TRIGGERS[run.trigger] || run.trigger)} run</span>` +
+    (run.dry_run ? `<span class="osync-auto-dry">dry run</span>` : "") +
+    `<span class="osync-muted">Reconciling <strong>${escapeHtml(run.run_date || "—")}</strong>` +
+    (rep.stores && rep.stores.backoffice ? ` · ${escapeHtml(rep.stores.backoffice)} ⇄ ${escapeHtml(rep.stores.shopify || "")}` : "") +
+    ` · started ${escapeHtml(formatDateTime(run.started_at))}` +
+    (run.finished_at ? ` · took ${escapeHtml(osyncAutoDuration(run))}` : "") + `</span></div>`;
+
+  const section = (title, count, html) => count ? `<div class="osync-auto-block"><div class="osync-auto-block-title">${title} <span class="osync-auto-count">${count}</span></div>${html}</div>` : "";
+
+  const fixHtml = changed.map((f) => osyncFixOrderCard(f, {
+    status: f.status, message: f.message, steps: f.steps,
+    after: f.status_after && f.status_after !== f.status_before ? f.status_after : null,
+  })).join("");
+
+  const untouchedHtml = `<ul class="osync-auto-list">` + untouched.map((f) => {
+    const off = [...new Set((f.skipped_actions || []).map((a) => a.step))];
+    const why = off.length
+      ? `Not changed — switched off: ${off.map((s) => osyncAutoStepLabel(s)).join(", ")}`
+      : f.message || "Nothing to change";
+    return `<li>${osyncAutoOrderLink(f.sh_name, f.admin_url)} <span class="osync-muted">⇄ Invoice ${escapeHtml(f.bo_invoice_number || String(f.bo_invoice_id || ""))}</span> — ${osyncAutoPill(OSYNC_FIX_STATUS, f.status)} <span class="osync-muted">${escapeHtml(why)}</span></li>`;
+  }).join("") + `</ul>`;
+
+  const cancelHtml = `<table class="osync-missing-table"><thead><tr><th>Order</th><th>Pass</th><th>Date</th><th class="osync-num">Total</th><th>Kept copy</th><th>Status</th><th>Note</th></tr></thead><tbody>` +
+    cancels.map((c) => `<tr><td>${osyncAutoOrderLink(c.sh_name, c.admin_url)}</td>` +
+      `<td>${c.kind === "online_store" ? "Online Store" : "Duplicate"}</td>` +
+      `<td>${escapeHtml(c.sh_date || "")}</td><td class="osync-num">${osyncMoney(c.sh_total)}</td>` +
+      `<td>${c.twin_name ? osyncAutoOrderLink(c.twin_name, c.twin_admin_url) : '<span class="osync-muted">—</span>'}</td>` +
+      `<td>${osyncAutoPill(OSYNC_AUTO_CANCEL_STATUS, c.status)}</td>` +
+      `<td class="osync-auto-result">${escapeHtml(c.message || "")}${c.fulfillments_cancelled ? ` <span class="osync-muted">(${osyncAutoPlural(c.fulfillments_cancelled, "fulfillment")} cancelled first)</span>` : ""}</td></tr>`).join("") +
+    `</tbody></table>`;
+
+  const createdHtml = `<table class="osync-missing-table"><thead><tr><th>Barcode</th><th>Title</th><th class="osync-num">Price</th><th>For</th></tr></thead><tbody>` +
+    created.map((p) => `<tr><td class="osync-mono">${escapeHtml(p.barcode || "")}</td><td>${escapeHtml(p.title || "")}</td>` +
+      `<td class="osync-num">${osyncMoney(p.price)}</td><td>${escapeHtml([p.sh_order_name, p.bo_invoice_number ? `Inv ${p.bo_invoice_number}` : ""].filter(Boolean).join(" ⇄ "))}</td></tr>`).join("") +
+    `</tbody></table>`;
+
+  const reviewHtml = `<ul class="osync-auto-list">` + review.map((x) =>
+    `<li><span class="osync-auto-review-kind">${escapeHtml(OSYNC_AUTO_REVIEW[x.category] || x.category)}</span> ` +
+    `${osyncAutoOrderLink(x.sh_name, x.admin_url)}` +
+    (x.bo_invoice_number ? ` <span class="osync-muted">⇄ Invoice ${escapeHtml(x.bo_invoice_number)}</span>` : "") +
+    (x.twin_name ? ` <span class="osync-muted">twin</span> ${osyncAutoOrderLink(x.twin_name, x.twin_admin_url)}` : "") +
+    ` <span class="osync-muted">— ${escapeHtml(x.reason || "")}</span></li>`).join("") + `</ul>`;
+
+  const missingHtml = `<table class="osync-missing-table"><thead><tr><th>Barcode</th><th>Description</th><th>In Shopify</th><th class="osync-num">Qty</th><th>Invoices</th></tr></thead><tbody>` +
+    missing.map((m) => `<tr><td class="osync-mono">${escapeHtml(m.barcode)}</td><td>${escapeHtml(m.description || "")}</td>` +
+      `<td>${escapeHtml(m.shopify_status || "")}</td><td class="osync-num">${escapeHtml(String(m.total_qty ?? ""))}</td>` +
+      `<td>${escapeHtml((m.invoices || []).join(", "))}</td></tr>`).join("") +
+    `</tbody></table>`;
+
+  const dry = run.dry_run;
+  body.innerHTML = head +
+    (run.status === "running" ? osyncAutoProgressHtml(run) : "") +
+    (run.error ? `<div class="osync-fix-error">${escapeHtml(run.error)}</div>` : "") +
+    (rep.warnings || []).map((w) => `<div class="osync-fix-warn">${escapeHtml(w)}</div>`).join("") +
+    osyncAutoTilesHtml(run.summary_before, run.summary_after, rep.delta, dry) +
+    osyncAutoStagesHtml(rep.stages || {}) +
+    section(dry ? "Orders it would fix" : "Orders changed", changed.length, `<div class="osync-fix-list">${fixHtml}</div>`) +
+    section(dry ? "Orders it would cancel" : "Orders cancelled", cancels.length, cancelHtml) +
+    section("Products created in Shopify", created.length, createdHtml) +
+    section("Needs review", review.length, reviewHtml) +
+    section("Checked, not changed", untouched.length, untouchedHtml) +
+    section("Missing in Shopify", missing.length, missingHtml) +
+    (run.status !== "running" && !changed.length && !cancels.length && !review.length && !missing.length && !run.error
+      ? `<div class="osync-missing-empty">${run.status === "missed" ? "This run never started." : "Nothing needed attention."}</div>` : "");
+
+  osyncAutoFooter(
+    `<span class="osync-modal-fix-note"></span>` +
+    (run.status === "running"
+      ? `<button type="button" class="btn btn-secondary" data-osync-auto-act="stop"${run.stop_requested ? " disabled" : ""}>Stop</button>`
+      : `<button type="button" class="btn btn-secondary" data-osync-auto-act="export"${run.status === "missed" ? " disabled" : ""}>Export</button>`) +
+    `<button type="button" class="btn btn-primary" data-osync-auto-act="close">Close</button>`);
+}
+
+function osyncAutoStepLabel(step) {
+  for (const g of OSYNC_AUTO_STEP_GROUPS) {
+    const s = g.steps.find(([key]) => key === step);
+    if (s) return s[1];
+  }
+  return step;
+}
+
+async function osyncAutoStop() {
+  const run = osyncAuto.run;
+  if (!run || run.status !== "running") return;
+  if (!confirm("Stop this run? The order being changed right now is finished first; the rest are skipped.")) return;
+  try {
+    await osyncAutoCall("POST", `/order-sync/auto/runs/${run.id}/stop`);
+    run.stop_requested = true;
+    osyncAutoRenderRun();
+  } catch (e) {
+    showToast(e.message || String(e), "error");
+  }
+}
+
+function osyncAutoExport() {
+  const run = osyncAuto.run;
+  if (!run) return;
+  const rep = run.report || {};
+  const data = [];
+  (rep.fixes || []).forEach((f) => {
+    const what = osyncFixActionLines(f.actions || []).map(([, html]) => html.replace(/<[^>]+>/g, "")).join("; ");
+    const steps = (f.steps || []).map((s) => `${s.ok ? "✓" : "✗"} ${OSYNC_FIX_STEP_LABELS[s.step] || s.step}: ${s.message || ""}`).join("; ");
+    data.push(["Fix", f.sh_name || "", f.bo_invoice_number || "", (OSYNC_FIX_STATUS[f.status] || [f.status])[0],
+               [f.message, what, steps].filter(Boolean).join(" | "), f.admin_url || ""]);
+  });
+  (rep.cancels || []).forEach((c) => data.push([
+    c.kind === "online_store" ? "Cancel (Online Store)" : "Cancel (duplicate)", c.sh_name || "", "",
+    (OSYNC_AUTO_CANCEL_STATUS[c.status] || [c.status])[0],
+    [c.twin_name ? `kept ${c.twin_name}` : "", c.message].filter(Boolean).join(" | "), c.admin_url || ""]));
+  (rep.created_products || []).forEach((p) => data.push(["Product created", p.sh_order_name || "", p.bo_invoice_number || "", "Created",
+    `${p.barcode} ${p.title || ""} @ ${p.price ?? ""}`, ""]));
+  (rep.review || []).forEach((x) => data.push(["Needs review", x.sh_name || "", x.bo_invoice_number || "",
+    OSYNC_AUTO_REVIEW[x.category] || x.category, x.reason || "", x.admin_url || ""]));
+  (rep.missing_products || []).forEach((m) => data.push(["Missing in Shopify", "", (m.invoices || []).join(", "),
+    m.shopify_status || "", `${m.barcode} ${m.description || ""} × ${m.total_qty}`, ""]));
+  if (!data.length) {
+    showToast("Nothing to export", "info");
+    return;
+  }
+  bovDownloadSheet({
+    sheet: `Run ${run.id}`,
+    header: ["Section", "Shopify order", "Invoice", "Status", "Detail", "Shopify link"],
+    data,
+    widths: [22, 14, 14, 20, 90, 50],
+    fname: `order-sync-run-${run.id}-${run.run_date || ""}${run.dry_run ? "-dry-run" : ""}`,
+  });
+}
+
+function osyncAutoInit() {
+  document.getElementById("osync-auto-pill")?.addEventListener("click", osyncAutoOpen);
+  document.getElementById("osync-auto-x")?.addEventListener("click", osyncAutoClose);
+  const modal = document.getElementById("osync-auto-modal");
+  // Backdrop clicks go through the same unsaved-changes check (capture phase
+  // beats the global .modal handler).
+  modal?.addEventListener("click", (e) => {
+    if (e.target !== modal) return;
+    e.stopImmediatePropagation();
+    osyncAutoClose();
+  }, true);
+  document.querySelectorAll("[data-osync-auto-tab]").forEach((b) =>
+    b.addEventListener("click", () => osyncAutoSetTab(b.getAttribute("data-osync-auto-tab"))));
+  const body = document.getElementById("osync-auto-body");
+  body?.addEventListener("change", osyncAutoOnScheduleInput);
+  body?.addEventListener("click", (e) => {
+    const day = e.target.closest("[data-osync-auto-day]");
+    if (day && osyncAuto.draft) {
+      const n = Number(day.getAttribute("data-osync-auto-day"));
+      const days = new Set(osyncAuto.draft.days);
+      if (days.has(n)) days.delete(n); else days.add(n);
+      osyncAuto.draft.days = [...days].sort((a, b) => a - b);
+      osyncAutoRenderSchedule();
+      return;
+    }
+    const row = e.target.closest("[data-osync-auto-run]");
+    if (row && !e.target.closest("a")) {
+      osyncAutoOpenRun(Number(row.getAttribute("data-osync-auto-run")));
+      return;
+    }
+    const act = e.target.closest("[data-osync-auto-act]");
+    if (act && act.getAttribute("data-osync-auto-act") === "back") osyncAutoSetTab("runs");
+  });
+  body?.addEventListener("keydown", (e) => {
+    const row = e.target.closest("[data-osync-auto-run]");
+    if (row && (e.key === "Enter" || e.key === " ")) {
+      e.preventDefault();
+      osyncAutoOpenRun(Number(row.getAttribute("data-osync-auto-run")));
+    }
+  });
+  document.getElementById("osync-auto-footer")?.addEventListener("click", (e) => {
+    const act = e.target.closest("[data-osync-auto-act]");
+    if (!act || act.disabled) return;
+    const what = act.getAttribute("data-osync-auto-act");
+    if (what === "close") osyncAutoClose();
+    else if (what === "save") osyncAutoSave();
+    else if (what === "dry-now") osyncAutoRunNow(true);
+    else if (what === "live-now") osyncAutoRunNow(false);
+    else if (what === "refresh") osyncAutoLoadRuns();
+    else if (what === "stop") osyncAutoStop();
+    else if (what === "export") osyncAutoExport();
+  });
+  osyncAutoRefreshStatus();
+  setInterval(osyncAutoRefreshStatus, 60000);
+}
+
+document.addEventListener("DOMContentLoaded", osyncAutoInit);
+
+// ===== End Order Sync automation =====
