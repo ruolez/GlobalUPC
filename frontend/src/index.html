@@ -5302,6 +5302,10 @@
                     <input type="checkbox" id="sacr-cross-store" checked />
                     <span>Exclude customers still ordering under another account</span>
                   </label>
+                  <label class="sacr-check" id="sacr-merge-self-label" title="A new account at the same store is the same person: date it from their first order under the old one, so they are not counted as new again">
+                    <input type="checkbox" id="sacr-merge-self" checked />
+                    <span>Count a new account at the same store as the same customer</span>
+                  </label>
                   <label class="sacr-check">
                     <input type="checkbox" id="sacr-check-arrivals" />
                     <span>Trace where new customers came from</span>
@@ -5318,6 +5322,7 @@
                       <p><strong>Counts as lost after.</strong> A customer is lost once they have gone this long without a completed order, measured from today in each store&rsquo;s own timezone. Because the rule is a duration rather than a fixed date, every month on the chart is judged by the same standard &mdash; which a single cutoff date cannot do, since it leaves recent months needing only weeks of silence while older ones needed years. The most recent months cannot be judged yet and are shown as a shaded zone.</p>
                       <p><strong>Only customers acquired in this window.</strong> Off by default, so the departures cover everyone &mdash; including long-standing customers, who are the ones a churn report usually cares about most. Turn it on to narrow to customers whose <strong>very first completed order</strong> falls on or after the history date; anyone already buying before it is then excluded from the table and from every total.</p>
                       <p><strong>Another account.</strong> Two passes against <strong>every</strong> active Shopify store, including the customer&rsquo;s own: first by email, then by first name + last name + ZIP. The second catches a re-registration, which Shopify forces onto a different email. Anyone who bought elsewhere within the silence period of going quiet here did not leave the business, and is excluded from every figure.</p>
+                      <p><strong>Count a new account at the same store as the same customer.</strong> When the other account is at the <em>same</em> store, the person simply re-registered. With this on, their new account is dated from their first order under the old one, so they are counted as new once, in the month they really started &mdash; or not at all when that was before the history date &mdash; instead of turning up as a brand-new customer. Needs the option above.</p>
                       <p><strong>Min. orders.</strong> 1 includes one-time buyers. Raise it to focus on repeat customers who stopped. Cancelled and refunded orders do not count towards it.</p>
                       <p><strong>Where new customers came from.</strong> Optional, and slower, because it runs the same two passes over everyone acquired in the window rather than just the leavers. It answers whether a &ldquo;new&rdquo; customer was already yours somewhere else &mdash; measured on one store, only half of them were genuinely new to the business. On an all-history run this covers the whole customer base, so it is slow enough to warn about.</p>
                       <p><strong>Sync latest Shopify data first.</strong> Before the report runs, every store with a local sync pulls whatever changed in Shopify since its last sync &mdash; usually a few seconds per store. Turn it off to run instantly on the data as of each store&rsquo;s last sync. Stores that have never been synced are unaffected either way; they always use the live Shopify API.</p>

@@ -14371,6 +14371,7 @@ function loadLostCustomersPanel() {
     "sacr-silence",
     "sacr-min-orders",
     "sacr-acquired-only",
+    "sacr-cross-store",
     "sacr-check-arrivals",
   ].forEach((id) => {
     document.getElementById(id)?.addEventListener("change", updateSacrSetupUi);
@@ -14725,6 +14726,14 @@ function updateSacrSetupUi() {
     const on = document.getElementById("sacr-check-arrivals")?.checked === true;
     warn.hidden = !(on && !from);
   }
+  // Re-registrations are found by the another-account check, so merging them
+  // means nothing without it.
+  const crossOn = document.getElementById("sacr-cross-store")?.checked !== false;
+  const merge = document.getElementById("sacr-merge-self");
+  if (merge) merge.disabled = !crossOn;
+  document
+    .getElementById("sacr-merge-self-label")
+    ?.classList.toggle("is-disabled", !crossOn);
 }
 
 function sacrApplySortHeaders() {
@@ -14815,6 +14824,8 @@ async function runLostCustomersReport() {
           min_orders: minOrders,
           exclude_cross_store:
             document.getElementById("sacr-cross-store")?.checked !== false,
+          merge_same_store_accounts:
+            document.getElementById("sacr-merge-self")?.checked !== false,
           check_arrivals:
             document.getElementById("sacr-check-arrivals")?.checked === true,
           refresh_local_data:
@@ -15710,6 +15721,14 @@ function renderSacrNote() {
         ` — and are excluded from every figure.`,
     );
   }
+  const merged = sacrState.stores.reduce((a, s) => a + (s.reregistered_merged || 0), 0);
+  if (merged) {
+    notes.push(
+      `${merged.toLocaleString()} customer(s) re-registered at the same store — their new ` +
+        `account is dated from their first order under the old one, so they are not ` +
+        `counted as new again.`,
+    );
+  }
   const unknownFirst = sacrState.stores.reduce((a, s) => a + (s.unknown_first_order || 0), 0);
   if (unknownFirst) {
     notes.push(
@@ -16570,7 +16589,11 @@ function renderSacrMoved() {
       ` stopped ordering at their store but bought under another account` +
       (months ? ` within ${months} months of going quiet` : "") +
       `. They are excluded from the lost table and from every total, KPI and ` +
-      `comparison — they did not leave the business.`;
+      `comparison — they did not leave the business.` +
+      (win.merge_same_store_accounts && all.some((r) => r.moved_same_store)
+        ? ` Rows marked "same store" re-registered there; their new account is ` +
+          `counted as the same customer, not as a new one.`
+        : "");
   }
 
   tbody.innerHTML = rows

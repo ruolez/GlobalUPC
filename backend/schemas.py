@@ -743,6 +743,10 @@ class LostCustomersRequest(BaseModel):
     # How soon after going quiet here an order elsewhere counts as a move.
     # None follows silent_months.
     moved_within_months: Optional[Literal[3, 4, 5, 6, 7, 8, 9, 12]] = None
+    # A same-store re-registration found by the moved check is one person: date
+    # the new account from their first order under the old one, so they are not
+    # counted as new again. Needs exclude_cross_store.
+    merge_same_store_accounts: bool = True
     # Trace where the newly-acquired customers came from. Off by default: it is
     # a second cross-store sweep, over a cohort that is far larger than the lost
     # list, so it is worth paying for only when the answer is being read.

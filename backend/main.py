@@ -7226,6 +7226,14 @@ def _split_dates(lo: str, hi: Optional[str], upper: str, parts: int) -> List[tup
     ]
 
 
+def _acquired_local(c: Dict[str, Any]) -> Optional[str]:
+    """
+    The shop-local day this customer was acquired: their own first order, or —
+    for a same-store re-registration — the earlier one under their old account.
+    """
+    return c.get("merged_first_local") or c.get("first_order_local")
+
+
 def _bump_moved(breakdown: Dict[Any, Dict[str, Any]], key: Any, label: str) -> None:
     """
     Tally one customer against the shop they moved to, keyed by shop rather
@@ -7238,7 +7246,7 @@ def _bump_moved(breakdown: Dict[Any, Dict[str, Any]], key: Any, label: str) -> N
 
 def _record_move(c: Dict[str, Any], store_id: Any, label: str, store_name: str,
                  dest_last_order: Optional[str], matched_by: str,
-                 same_store: bool = False) -> None:
+                 same_store: bool = False, dest_customer_id: Any = None) -> None:
     """
     Stamp a customer with where they went, so the move can be listed and not
     merely counted. Both dates are shop-local, but each in its OWN shop's
@@ -7254,6 +7262,9 @@ def _record_move(c: Dict[str, Any], store_id: Any, label: str, store_name: str,
     c["moved_same_store"] = same_store
     c["moved_last_order"] = dest_last_order
     c["moved_matched_by"] = matched_by
+    # The other account's id, so a same-store re-registration can be merged
+    # with it (merge_reregistered). Not sent to the browser.
+    c["moved_to_customer_id"] = dest_customer_id
 
 
 # --- arrivals: where the newly-acquired customers came from -----------------
@@ -7425,6 +7436,7 @@ async def shopify_analytics_lost_customers_stream(
             history_from = f"{history_from[:7]}-01"
         silent_months = int(request.silent_months)
         moved_months = int(request.moved_within_months or silent_months)
+        merge_self = bool(request.merge_same_store_accounts)
         require_acquired = bool(request.require_acquired_in_window)
         min_orders = max(1, int(request.min_orders or 1))
 
@@ -7657,6 +7669,7 @@ async def shopify_analytics_lost_customers_stream(
             "all_history": history_from is None,
             "silent_months": silent_months,
             "moved_within_months": moved_months,
+            "merge_same_store_accounts": merge_self,
             "require_acquired_in_window": require_acquired,
             "min_orders": min_orders,
             "cutoff": report_cutoff,
@@ -8315,7 +8328,8 @@ async def shopify_analytics_lost_customers_stream(
                                     _record_move(
                                         c, hit["store_id"], label, hit["store_name"],
                                         local_date(hit["last_order"], hit["_tz"]),
-                                        "name + ZIP", same_store=hit["same_store"])
+                                        "name + ZIP", same_store=hit["same_store"],
+                                        dest_customer_id=hit["id"])
                                     # Same-store matches are a distinct destination
                                     # from cross-store ones at that shop, so they
                                     # get their own key rather than merging.
@@ -8393,6 +8407,15 @@ async def shopify_analytics_lost_customers_stream(
                     # mistake the order-count caveat above documents. The count is
                     # reported on its own and the client renders it as a note.
 
+                # A new account at the same shop, proven above to have taken over
+                # from a departure, is that same person — not a new customer.
+                # Dated from their first order under either account, so the "new"
+                # series and the arrivals cohort count them once, in the right
+                # month (or not at all, when that first order predates the floor).
+                reregistered_merged = (
+                    merge_reregistered(moved_rows, lost_kept + active_kept)
+                    if merge_self and moved_rows else 0)
+
                 # --- where the arrivals came from ---------------------------
                 # Deliberately placed after the moved check, so it runs on
                 # exactly the population the chart's "new" bars count: the kept
@@ -8406,9 +8429,9 @@ async def shopify_analytics_lost_customers_stream(
                     # modal would report them as customers acquired in the window
                     # while the bars above it counted a fraction of that.
                     cohort = [c for c in (lost_kept + active_kept)
-                              if c.get("first_order_local")
+                              if _acquired_local(c)
                               and (not history_from
-                                   or c["first_order_local"] >= history_from)]
+                                   or _acquired_local(c) >= history_from)]
                     others = [o for o in all_shopify if o["id"] != s["id"]]
                     arr_errors: List[str] = []
                     # customer_id -> that person's records at other shops
@@ -8598,7 +8621,7 @@ async def shopify_analytics_lost_customers_stream(
                     # month's own "new" bar.
                     by_month_arr: Dict[str, Dict[str, Any]] = {}
                     for c in cohort:
-                        here = c["first_order_local"]
+                        here = _acquired_local(c)
                         mine = matches.get(c["customer_id"]) or []
                         verdict, origin = _classify_arrival(here, mine)
                         verdicts[verdict] = verdicts.get(verdict, 0) + 1
@@ -8713,6 +8736,7 @@ async def shopify_analytics_lost_customers_stream(
                     "moved_total": sum(e["count"] for e in moved_breakdown.values()),
                     "matched_by_name": matched_by_name,
                     "no_email": no_email,
+                    "reregistered_merged": reregistered_merged,
                     "arrival": arrival,
                     "sections_total": sections_total,
                     "sections_biased": sections_biased,
@@ -8802,6 +8826,7 @@ async def shopify_analytics_lost_customers_stream(
                     "moved_breakdown": payload.get("moved_breakdown", {}),
                     "matched_by_name": payload.get("matched_by_name", 0),
                     "no_email": payload.get("no_email", 0),
+                    "reregistered_merged": payload.get("reregistered_merged", 0),
                     # `arrival` deliberately omitted: it is the full per-store
                     # arrivals blob including up to _ARRIVAL_MAX_ROWS rows, and it
                     # is sent again merged in `complete`, which is the only copy
@@ -8890,7 +8915,7 @@ async def shopify_analytics_lost_customers_stream(
                 lost_by_month[key] = lost_by_month.get(key, 0) + 1
         for r in shown:
             for c in (r.get("lost") or []) + (r.get("active") or []):
-                key = (c.get("first_order_local") or c.get("first_order_created_at") or "")[:7]
+                key = (_acquired_local(c) or c.get("first_order_created_at") or "")[:7]
                 if not key:
                     continue
                 if floor_month and key < floor_month:
@@ -8944,6 +8969,7 @@ async def shopify_analytics_lost_customers_stream(
                 "moved_breakdown": r.get("moved_breakdown", {}),
                 "matched_by_name": r.get("matched_by_name", 0),
                 "no_email": r.get("no_email", 0),
+                "reregistered_merged": r.get("reregistered_merged", 0),
                 "lost_timing": r.get("lost_timing") or _timing_summary(r.get("lost") or []),
                 "active_timing": (r.get("active_timing")
                                   or _timing_summary(r.get("active") or [])),
@@ -8978,6 +9004,7 @@ async def shopify_analytics_lost_customers_stream(
                 "never_purchased": sum(r.get("never_purchased", 0) for r in shown),
                 "ordered_before_window": sum(r.get("ordered_before_window", 0) for r in shown),
                 "no_email": sum(r.get("no_email", 0) for r in shown),
+                "reregistered_merged": sum(r.get("reregistered_merged", 0) for r in shown),
                 "unknown_first_order": sum(r.get("unknown_first_order", 0) for r in shown),
                 # Kept in the report but left off the chart — see by_month above.
                 "arrivals_before_window": arrivals_before_window,
@@ -9708,6 +9735,7 @@ async def shopify_analytics_lost_products_stream(
 
 import shopify_sync_helper as shopify_sync
 import lost_customers_local
+from lost_customers_merge import merge_reregistered
 import shopify_sales_local
 from sqlalchemy import text as sa_text
 

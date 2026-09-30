@@ -6531,6 +6531,7 @@ tr:hover > td .sacr-copy { opacity: 0.8; }
   white-space: nowrap;
 }
 .sa-page .sacr-check input { width: auto; margin: 0; }
+.sa-page .sacr-check.is-disabled { opacity: 0.5; cursor: default; }
 
 /* The prose is reference material: available, not resident. */
 .sa-page .sacr-help { font-size: 0.75rem; }
