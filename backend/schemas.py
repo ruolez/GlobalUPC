@@ -2786,6 +2786,7 @@ class OrderSyncAutoConfigUpdate(BaseModel):
     days: List[int] = [0, 1, 2, 3, 4, 5, 6]    # weekday(): 0 = Monday
     dry_run: bool = True
     steps: Dict[str, bool] = {}
+    check_day: Literal["previous", "same"] = "previous"   # the day a scheduled run checks
 
     @field_validator("run_time")
     @classmethod
@@ -2810,13 +2811,14 @@ class OrderSyncAutoConfigResponse(BaseModel):
     timezone: str
     dry_run: bool = True
     steps: Dict[str, bool] = {}
+    check_day: str = "previous"
     next_run_at: Optional[str] = None
     updated_at: Optional[str] = None
 
 
 class OrderSyncAutoRunRequest(BaseModel):
     dry_run: Optional[bool] = None             # None = the saved setting
-    date: Optional[str] = None                 # YYYY-MM-DD reconciled; None = yesterday
+    date: Optional[str] = None                 # YYYY-MM-DD reconciled; None = the schedule's check day
 
     @field_validator("date")
     @classmethod

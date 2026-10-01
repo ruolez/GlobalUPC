@@ -1,8 +1,9 @@
 """
 Order Sync automation — pure rules (no database, no network).
 
-One daily job compares yesterday's BackOffice invoices with the Shopify
-orders and runs the switched-on steps. This module decides WHEN a run is due
+One daily job compares a day's BackOffice invoices with the Shopify orders —
+the day before the run, or the run's own day (`check_day`) — and runs the
+switched-on steps. This module decides WHEN a run is due
 and WHAT it may touch; main.py does the I/O. The selection rules deliberately
 mirror what the Order Sync page pre-ticks, so the automation never does
 anything a person would have had to tick by hand.
@@ -18,6 +19,9 @@ CHECK_STEPS = ("missing_check",)
 STEP_KEYS = FIX_STEPS + CANCEL_STEPS + CHECK_STEPS
 
 DEFAULT_RUN_TIME = "06:00"
+# Which day a scheduled run checks: the day before it, or its own day.
+CHECK_DAYS = ("previous", "same")
+DEFAULT_CHECK_DAY = "previous"
 DEFAULT_DAYS = [0, 1, 2, 3, 4, 5, 6]          # Python weekday(): 0 = Monday
 DEFAULT_TIMEZONE = "America/Chicago"
 
@@ -112,9 +116,10 @@ def slot_trigger(now: datetime, slot_day: date, cfg: Dict[str, Any]) -> str:
     return "catch_up" if now - slot > CATCH_UP_AFTER else "scheduled"
 
 
-def scan_date(day: date) -> date:
-    """The day a run on `day` reconciles: the one before it."""
-    return day - timedelta(days=1)
+def scan_date(day: date, check_day: str = DEFAULT_CHECK_DAY) -> date:
+    """The day a run on `day` reconciles: its own day for "same", otherwise
+    the one before it."""
+    return day if check_day == "same" else day - timedelta(days=1)
 
 
 # ---------------------------------------------------------------------------

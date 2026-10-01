@@ -250,6 +250,7 @@ class OrderSyncAutoConfig(Base):
     timezone = Column(String(64))
     dry_run = Column(Boolean, nullable=False, default=True)
     steps = Column(JSONB, nullable=False, default=dict)
+    check_day = Column(String(8), nullable=False, default="previous")   # previous | same
     effective_from = Column(DateTime(timezone=True))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

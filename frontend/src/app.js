@@ -29749,7 +29749,7 @@ const OSYNC_AUTO_CANCEL_STATUS = {
 };
 OSYNC_FIX_STATUS.would_fix = ["Would fix", "is-ok"];
 
-const osyncAuto = { tab: "schedule", cfg: null, draft: null, runs: null, runId: null, run: null, status: null, pollTimer: null, busy: false };
+const osyncAuto = { tab: "schedule", cfg: null, draft: null, runs: null, runId: null, run: null, status: null, pollTimer: null, busy: false, runDay: null };
 
 async function osyncAutoCall(method, endpoint, body) {
   const resp = await fetch(`${API_BASE}${endpoint}`, {
@@ -29792,8 +29792,10 @@ function osyncAutoWhen(iso, tz) {
   }
 }
 
-function osyncAutoYesterday(tz) {
-  const d = new Date(Date.now() - 86400000);
+// The day a run started now would check under `checkDay`: today for "same",
+// otherwise yesterday — in the shop's time zone.
+function osyncAutoCheckDate(tz, checkDay) {
+  const d = new Date(Date.now() - (checkDay === "same" ? 0 : 86400000));
   try {
     return d.toLocaleDateString("en-CA", tz ? { timeZone: tz } : {});
   } catch {
@@ -29938,6 +29940,7 @@ function osyncAutoFooter(html) {
 // ---- Schedule tab ----
 
 async function osyncAutoLoadConfig() {
+  osyncAuto.runDay = null;
   osyncAutoLoading("Loading the schedule…");
   osyncAutoFooter(`<button type="button" class="btn btn-primary" data-osync-auto-act="close">Close</button>`);
   try {
@@ -29954,6 +29957,7 @@ function osyncAutoDraftOf(cfg) {
   return {
     enabled: !!cfg.enabled, run_time: cfg.run_time || "06:00", days: [...(cfg.days || [])],
     dry_run: cfg.dry_run !== false, steps: { ...(cfg.steps || {}) },
+    check_day: cfg.check_day === "same" ? "same" : "previous",
   };
 }
 
@@ -29995,7 +29999,17 @@ function osyncAutoRenderSchedule() {
     OSYNC_AUTO_DAYS.map(([label, n]) =>
       `<button type="button" class="osync-auto-day${d.days.includes(n) ? " is-on" : ""}" data-osync-auto-day="${n}" aria-pressed="${d.days.includes(n)}">${label}</button>`).join("") +
     `</div></div>` +
-    `<div class="osync-auto-hint">Each run reconciles the previous day, in the Shopify store's time zone (${escapeHtml(cfg.timezone)}). ` +
+    `<div class="osync-auto-check${d.enabled ? "" : " is-inert"}" role="radiogroup" aria-label="Day checked">` +
+    `<span class="osync-auto-check-label">Check</span>` +
+    `<label class="osync-auto-radio"><input type="radio" name="osync-auto-check" value="same" ${d.check_day === "same" ? "checked" : ""}>` +
+    `<span><strong>The same day</strong> — e.g. an 11 PM run checks that day</span></label>` +
+    `<label class="osync-auto-radio"><input type="radio" name="osync-auto-check" value="previous" ${d.check_day === "same" ? "" : "checked"}>` +
+    `<span><strong>The previous day</strong> — e.g. an 11 PM run checks the day before</span></label>` +
+    `</div>` +
+    `<div class="osync-auto-hint">Each run checks ${d.check_day === "same" ? "the day it runs on" : "the day before it runs"}, in the Shopify store's time zone (${escapeHtml(cfg.timezone)}). ` +
+    (d.check_day === "same"
+      ? "Orders entered in Shopify after the run, or placed later that evening, are not seen by it. "
+      : "") +
     `If the server is down at run time, the run happens once when it comes back the same day.</div>` +
     `</div>` +
     `<div class="osync-auto-section">` +
@@ -30019,11 +30033,12 @@ function osyncAutoRenderScheduleFooter() {
   const dirty = osyncAutoDirty();
   const runnable = cfg && cfg.configured;
   const blockRun = dirty ? ' disabled title="Save your changes first"' : runnable ? "" : " disabled";
-  // Re-rendered while the schedule is edited, so keep a day the user picked.
-  const day = document.getElementById("osync-auto-date")?.value || osyncAutoYesterday(cfg && cfg.timezone);
+  // Defaults to the day the saved schedule would check; a day the user picked
+  // survives the footer being re-rendered while the schedule is edited.
+  const day = osyncAuto.runDay || osyncAutoCheckDate(cfg && cfg.timezone, cfg && cfg.check_day);
   osyncAutoFooter(
     `<span class="osync-modal-fix-note">${dirty ? "Unsaved changes" : ""}</span>` +
-    `<label class="osync-auto-date-label">Day <input type="date" class="dark-input" id="osync-auto-date" value="${escapeHtml(day)}"></label>` +
+    `<label class="osync-auto-date-label" title="The day the Run now buttons check. Not part of the schedule — Save ignores it.">Run now for <input type="date" class="dark-input" id="osync-auto-date" value="${escapeHtml(day)}"></label>` +
     `<button type="button" class="btn btn-secondary" data-osync-auto-act="dry-now"${blockRun}>Dry run now</button>` +
     `<button type="button" class="btn btn-secondary" data-osync-auto-act="live-now"${blockRun}>Run live now</button>` +
     `<button type="button" class="btn btn-primary" data-osync-auto-act="save"${dirty && !osyncAuto.busy ? "" : " disabled"}>Save</button>`
@@ -30092,6 +30107,7 @@ function osyncAutoOnScheduleInput(e) {
   if (field === "enabled") d.enabled = e.target.checked;
   else if (step) d.steps[step] = e.target.checked;
   else if (e.target.name === "osync-auto-mode") d.dry_run = e.target.value === "dry";
+  else if (e.target.name === "osync-auto-check") d.check_day = e.target.value === "same" ? "same" : "previous";
   else return;
   osyncAutoRenderSchedule();
 }
@@ -30416,6 +30432,9 @@ function osyncAutoInit() {
       e.preventDefault();
       osyncAutoOpenRun(Number(row.getAttribute("data-osync-auto-run")));
     }
+  });
+  document.getElementById("osync-auto-footer")?.addEventListener("change", (e) => {
+    if (e.target.id === "osync-auto-date") osyncAuto.runDay = e.target.value || null;
   });
   document.getElementById("osync-auto-footer")?.addEventListener("click", (e) => {
     const act = e.target.closest("[data-osync-auto-act]");

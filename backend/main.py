@@ -14645,10 +14645,13 @@ def _osauto_cfg(cfg: Optional[OrderSyncAutoConfig]) -> Dict[str, Any]:
     if not cfg:
         return {"enabled": False, "run_time": osauto.DEFAULT_RUN_TIME, "days": list(osauto.DEFAULT_DAYS),
                 "timezone": osauto.DEFAULT_TIMEZONE, "dry_run": True,
-                "steps": osauto.normalize_steps(None), "effective_from": None, "updated_at": None}
+                "steps": osauto.normalize_steps(None), "check_day": osauto.DEFAULT_CHECK_DAY,
+                "effective_from": None, "updated_at": None}
     return {"enabled": bool(cfg.enabled), "run_time": cfg.run_time, "days": list(cfg.days or []),
             "timezone": cfg.timezone or osauto.DEFAULT_TIMEZONE, "dry_run": bool(cfg.dry_run),
-            "steps": osauto.normalize_steps(cfg.steps), "effective_from": cfg.effective_from,
+            "steps": osauto.normalize_steps(cfg.steps),
+            "check_day": cfg.check_day if cfg.check_day in osauto.CHECK_DAYS else osauto.DEFAULT_CHECK_DAY,
+            "effective_from": cfg.effective_from,
             "updated_at": cfg.updated_at}
 
 
@@ -14717,7 +14720,7 @@ def _osauto_insert_missed(days: List[date], cfg: Dict[str, Any]) -> None:
                 VALUES ('scheduled', :slot, :run_date, 'missed', :dry, CAST(:opts AS jsonb), '{}'::jsonb,
                         'The server was not running at the scheduled time', now())
                 ON CONFLICT DO NOTHING
-            """), {"slot": day, "run_date": osauto.scan_date(day), "dry": cfg["dry_run"],
+            """), {"slot": day, "run_date": osauto.scan_date(day, cfg["check_day"]), "dry": cfg["dry_run"],
                    "opts": json.dumps({"steps": cfg["steps"]})})
         db.commit()
 
@@ -15120,7 +15123,7 @@ async def _osauto_tick() -> None:
     slot = osauto.due_slot(now, cfg, recorded)
     if not slot:
         return
-    run_date = osauto.scan_date(slot)
+    run_date = osauto.scan_date(slot, cfg["check_day"])
     run_id = await asyncio.to_thread(_osauto_insert_run, osauto.slot_trigger(now, slot, cfg), slot,
                                      run_date, cfg["dry_run"], cfg["steps"])
     if run_id:
@@ -15146,7 +15149,7 @@ def _osauto_config_response(cfg: Dict[str, Any], recorded: Set[date], configured
     return OrderSyncAutoConfigResponse(
         configured=configured, enabled=cfg["enabled"], run_time=cfg["run_time"], days=cfg["days"],
         timezone=cfg["timezone"], dry_run=cfg["dry_run"], steps=cfg["steps"],
-        next_run_at=_osauto_iso(nxt), updated_at=_osauto_iso(cfg["updated_at"]),
+        check_day=cfg["check_day"], next_run_at=_osauto_iso(nxt), updated_at=_osauto_iso(cfg["updated_at"]),
     )
 
 
@@ -15190,6 +15193,7 @@ async def save_order_sync_auto_config(body: OrderSyncAutoConfigUpdate):
         cfg.days = body.days
         cfg.dry_run = body.dry_run
         cfg.steps = steps
+        cfg.check_day = body.check_day
         if tz:
             cfg.timezone = tz
         if restart:
@@ -15214,7 +15218,7 @@ async def start_order_sync_auto_run(body: OrderSyncAutoRunRequest):
         if run_date > today:
             raise HTTPException(status_code=400, detail="date cannot be in the future")
     else:
-        run_date = osauto.scan_date(today)
+        run_date = osauto.scan_date(today, cfg["check_day"])
     dry_run = cfg["dry_run"] if body.dry_run is None else body.dry_run
     await asyncio.to_thread(_osauto_mark_stale)
     run_id = await asyncio.to_thread(_osauto_insert_run, "manual", None, run_date, dry_run, cfg["steps"])

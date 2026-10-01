@@ -17,6 +17,8 @@ sys.modules.setdefault("pyodbc", types.ModuleType("pyodbc"))
 
 import order_sync_auto as auto  # noqa: E402
 import order_sync_helper as osync  # noqa: E402
+from pydantic import ValidationError  # noqa: E402
+from schemas import OrderSyncAutoConfigUpdate  # noqa: E402
 
 TZ = "America/Chicago"
 RUN_TIME = "06:00"
@@ -70,6 +72,28 @@ class DueSlotTests(unittest.TestCase):
         # 11:30 UTC = 06:30 CDT: due in Chicago.
         now_utc = datetime(2026, 9, 28, 11, 30, tzinfo=ZoneInfo("UTC"))
         self.assertEqual(auto.due_slot(now_utc, _cfg(), set()), MONDAY)
+
+
+class ScanDateTests(unittest.TestCase):
+    def test_previous_day_checks_the_day_before_the_run(self):
+        self.assertEqual(auto.scan_date(MONDAY, "previous"), MONDAY - timedelta(days=1))
+
+    def test_default_is_the_previous_day(self):
+        self.assertEqual(auto.scan_date(MONDAY), MONDAY - timedelta(days=1))
+
+    def test_same_day_checks_the_day_of_the_run(self):
+        self.assertEqual(auto.scan_date(MONDAY, "same"), MONDAY)
+
+
+class CheckDaySchemaTests(unittest.TestCase):
+    def test_check_day_defaults_to_previous_and_accepts_same(self):
+        self.assertEqual(
+            (OrderSyncAutoConfigUpdate().check_day, OrderSyncAutoConfigUpdate(check_day="same").check_day),
+            ("previous", "same"))
+
+    def test_unknown_check_day_is_rejected(self):
+        with self.assertRaises(ValidationError):
+            OrderSyncAutoConfigUpdate(check_day="tomorrow")
 
 
 class MissedSlotTests(unittest.TestCase):

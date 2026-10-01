@@ -9593,8 +9593,11 @@ tr.bov-row-click:focus-visible { outline: 2px solid var(--accent-primary); outli
 }
 .osync-auto-switch input, .osync-auto-radio input, .osync-auto-step input { margin-top: 0.15rem; flex-shrink: 0; accent-color: var(--accent-primary); }
 .osync-auto-radio { margin-bottom: 0.4rem; }
+.osync-auto-check { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 1rem; margin-top: 0.6rem; }
+.osync-auto-check .osync-auto-radio { margin-bottom: 0; }
+.osync-auto-check-label { font-size: 0.8125rem; color: var(--text-secondary); }
 .osync-auto-when { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; margin: 0.75rem 0 0.5rem 1.6rem; }
-.osync-auto-when.is-inert, .osync-auto-step.is-inert { opacity: 0.55; }
+.osync-auto-when.is-inert, .osync-auto-check.is-inert, .osync-auto-step.is-inert { opacity: 0.55; }
 .osync-auto-time { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.8125rem; color: var(--text-secondary); }
 .osync-auto-time input { width: 8rem; font-size: 0.8125rem; padding: 0.3rem 0.5rem; }
 .osync-auto-days { display: inline-flex; gap: 0.25rem; flex-wrap: wrap; }
