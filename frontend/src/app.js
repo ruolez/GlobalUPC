@@ -30019,9 +30019,11 @@ function osyncAutoRenderScheduleFooter() {
   const dirty = osyncAutoDirty();
   const runnable = cfg && cfg.configured;
   const blockRun = dirty ? ' disabled title="Save your changes first"' : runnable ? "" : " disabled";
+  // Re-rendered while the schedule is edited, so keep a day the user picked.
+  const day = document.getElementById("osync-auto-date")?.value || osyncAutoYesterday(cfg && cfg.timezone);
   osyncAutoFooter(
     `<span class="osync-modal-fix-note">${dirty ? "Unsaved changes" : ""}</span>` +
-    `<label class="osync-auto-date-label">Day <input type="date" class="dark-input" id="osync-auto-date" value="${osyncAutoYesterday(cfg && cfg.timezone)}"></label>` +
+    `<label class="osync-auto-date-label">Day <input type="date" class="dark-input" id="osync-auto-date" value="${escapeHtml(day)}"></label>` +
     `<button type="button" class="btn btn-secondary" data-osync-auto-act="dry-now"${blockRun}>Dry run now</button>` +
     `<button type="button" class="btn btn-secondary" data-osync-auto-act="live-now"${blockRun}>Run live now</button>` +
     `<button type="button" class="btn btn-primary" data-osync-auto-act="save"${dirty && !osyncAuto.busy ? "" : " disabled"}>Save</button>`
@@ -30077,8 +30079,17 @@ function osyncAutoOnScheduleInput(e) {
   if (!d) return;
   const field = e.target.getAttribute("data-osync-auto-field");
   const step = e.target.getAttribute("data-osync-auto-step");
+  if (field === "run_time") {
+    // The time field commits on every keystroke, so re-rendering the form here
+    // destroyed it mid-edit: focus was lost after the first digit and the rest
+    // of the time never arrived. Only the footer (Save state) depends on it.
+    const v = e.target.value;
+    if (!v || v === d.run_time) return;
+    d.run_time = v;
+    osyncAutoRenderScheduleFooter();
+    return;
+  }
   if (field === "enabled") d.enabled = e.target.checked;
-  else if (field === "run_time") d.run_time = e.target.value || d.run_time;
   else if (step) d.steps[step] = e.target.checked;
   else if (e.target.name === "osync-auto-mode") d.dry_run = e.target.value === "dry";
   else return;
@@ -30378,6 +30389,9 @@ function osyncAutoInit() {
     b.addEventListener("click", () => osyncAutoSetTab(b.getAttribute("data-osync-auto-tab"))));
   const body = document.getElementById("osync-auto-body");
   body?.addEventListener("change", osyncAutoOnScheduleInput);
+  body?.addEventListener("input", (e) => {
+    if (e.target.matches('[data-osync-auto-field="run_time"]')) osyncAutoOnScheduleInput(e);
+  });
   body?.addEventListener("click", (e) => {
     const day = e.target.closest("[data-osync-auto-day]");
     if (day && osyncAuto.draft) {
