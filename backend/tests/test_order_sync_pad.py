@@ -93,6 +93,25 @@ class PaddedReportTests(unittest.TestCase):
         report = osync.build_report([lonely], [], DATE_FROM, DATE_TO, padded_orders=[])
         self.assertEqual(([r["status"] for r in report["rows"]], report["summary"]["shopify_total"]), (["shopify_unmatched"], 1))
 
+    def test_report_counts_every_order_and_invoice_listed_including_other_days(self):
+        same_day = (_order(order_id="a", date=DATE_FROM, tracking=("1ZA",)),
+                    _full_invoice(invoice_id=1, date=DATE_FROM, tracking="1ZA"))
+        invoiced_day_before = (_order(order_id="b", date=DATE_FROM, tracking=("1ZB",)),
+                               _full_invoice(invoice_id=2, date="2026-09-16", tracking="1ZB"))
+        invoiced_day_before[1]["in_range"] = False
+        keyed_day_after = (_order(order_id="c", date="2026-09-18", tracking=("1ZC",)),
+                           _full_invoice(invoice_id=3, date=DATE_FROM, tracking="1ZC"))
+        report = osync.build_report(
+            [same_day[0], invoiced_day_before[0]],
+            [same_day[1], invoiced_day_before[1], keyed_day_after[1]],
+            DATE_FROM, DATE_TO, padded_orders=[keyed_day_after[0]])
+        s = report["summary"]
+        self.assertEqual(
+            {k: s[k] for k in ("shopify_total", "backoffice_total", "matched_orders", "report_orders",
+                               "report_invoices", "orders_outside_range", "invoices_outside_range")},
+            {"shopify_total": 2, "backoffice_total": 2, "matched_orders": 3, "report_orders": 3,
+             "report_invoices": 3, "orders_outside_range": 1, "invoices_outside_range": 1})
+
 
 if __name__ == "__main__":
     unittest.main()

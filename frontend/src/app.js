@@ -27731,11 +27731,16 @@ function renderOrderSync() {
   const s = data.summary || {};
   const f = orderSyncState.filters;
   const matchedRows = (s.matched_ok || 0) + (s.matched_diffs || 0);
-  const pct = s.shopify_total ? Math.round(((s.matched_orders || 0) / s.shopify_total) * 100) : 0;
+  // Everything the table lists, incl. the other-day partners a pair can pull
+  // in — shopify_total / backoffice_total count the period alone, so they
+  // disagreed with the rows (and pushed the reconciled rate past 100%).
+  const listedOrders = s.report_orders ?? s.shopify_total ?? 0;
+  const listedInvoices = s.report_invoices ?? s.backoffice_total ?? 0;
+  const pct = listedOrders ? Math.round(((s.matched_orders || 0) / listedOrders) * 100) : 0;
   const okPct = matchedRows ? Math.round(((s.matched_ok || 0) / matchedRows) * 100) : 0;
 
   const tiles = [
-    ["all", "All orders", s.shopify_total || 0, `${s.backoffice_total || 0} invoices`, ""],
+    ["all", "All orders", listedOrders, `${listedInvoices} invoices`, ""],
     ["matched_ok", "Matched", s.matched_ok || 0, `${okPct}% of matched clean`, "is-ok"],
     ["matched_diffs", "Differences", s.matched_diffs || 0, "line or total mismatch", "is-warn"],
     ["shopify_unmatched", "Shopify only", s.shopify_unmatched || 0, "no invoice found", "is-bad"],
@@ -27771,6 +27776,7 @@ function renderOrderSync() {
         )
         .join("") +
       `</div>` +
+      osyncRangeNote(data, s) +
       (chips.length
         ? `<div class="osync-chips"><span class="osync-chips-label">Filter by</span>` +
           chips
@@ -27792,6 +27798,24 @@ function renderOrderSync() {
 
 // `.data-table` is table-layout: fixed, so every column needs an explicit
 // width or they all split the table evenly; Customer takes the remainder.
+// Says why the tiles can exceed the period's own counts: a pair is listed when
+// either side is in the period, so its partner may be dated on another day.
+function osyncRangeNote(data, s) {
+  const outO = s.orders_outside_range || 0;
+  const outI = s.invoices_outside_range || 0;
+  if (!outO && !outI) return "";
+  const period =
+    osyncFmtDate(data.date_from) + (data.date_from !== data.date_to ? ` – ${osyncFmtDate(data.date_to)}` : "");
+  const parts = [];
+  if (outO) parts.push(`${outO} Shopify order${outO === 1 ? "" : "s"} placed on another day`);
+  if (outI) parts.push(`${outI} invoice${outI === 1 ? "" : "s"} dated on another day`);
+  return (
+    `<div class="osync-range-note">Includes ${escapeHtml(parts.join(" and "))}, matched to this period's ` +
+    `invoices / orders. ${escapeHtml(period)} alone: ${(s.shopify_total || 0).toLocaleString()} Shopify orders · ` +
+    `${(s.backoffice_total || 0).toLocaleString()} invoices.</div>`
+  );
+}
+
 const OSYNC_COLUMNS = [
   { key: "date", label: "Date", width: 68 },
   { key: "sh_name", label: "Shopify order", width: 182 },
@@ -27829,7 +27853,7 @@ function osyncRenderTable() {
   osyncChanRenderButton();
   const { key: sortKey, dir } = orderSyncState.sort;
   const selecting = osyncFix.selecting;
-  const cols = selecting ? [{ key: "_sel", width: 34 }, ...OSYNC_COLUMNS] : OSYNC_COLUMNS;
+  const cols = [...(selecting ? [{ key: "_sel", width: 34 }] : []), { key: "_idx", width: 44 }, ...OSYNC_COLUMNS];
   const table = document.getElementById("osync-table");
   if (table) {
     table.querySelector("colgroup")?.remove();
@@ -27845,6 +27869,7 @@ function osyncRenderTable() {
     (selecting
       ? `<th class="osync-sel-th"><input type="checkbox" id="osync-fix-all-box" title="Select every fixable row listed"${allChecked ? " checked" : ""}${fixableVisible.length ? "" : " disabled"}></th>`
       : "") +
+    '<th class="osync-num osync-idx">#</th>' +
     OSYNC_COLUMNS.map((c) => {
       const cls = ["qip-sortable"];
       if (c.num) cls.push("osync-num");
@@ -27887,6 +27912,7 @@ function osyncRenderTable() {
       return (
         `<tr data-osync-pos="${pos}" class="osync-row ${tone}${selCls}">` +
         selCell +
+        `<td class="osync-num osync-idx">${pos + 1}</td>` +
         `<td class="osync-nowrap">${escapeHtml(osyncFmtDate(osyncRowDate(r)))}</td>` +
         `<td class="osync-nowrap">${nameCell(r.sh_name, r.sh_no_tracking, (r.sh_orders || []).length, sharedBadge + unpaidBadge + cancelledBadge)}</td>` +
         `<td class="osync-nowrap">${osyncChannelPill(r.sh_channel)}</td>` +

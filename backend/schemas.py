@@ -2354,6 +2354,10 @@ class OrderSyncSummary(BaseModel):
     shopify_total: int = 0
     backoffice_total: int = 0
     matched_orders: int = 0                    # Shopify orders covered by a matched row
+    report_orders: int = 0                     # Shopify orders the rows list, incl. other days
+    report_invoices: int = 0                   # invoices the rows list, incl. other days
+    orders_outside_range: int = 0              # listed orders placed outside the period
+    invoices_outside_range: int = 0            # listed invoices dated outside the period
     combined_groups: int = 0
     ambiguous: int = 0
     issue_counts: Dict[str, int] = {}          # product | qty | price | total -> matched rows carrying it

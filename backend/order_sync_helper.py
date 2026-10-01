@@ -981,7 +981,9 @@ def build_report(orders: List[Dict[str, Any]], invoices: List[Dict[str, Any]],
     """Match, compare, and assemble rows + summary. Out-of-range invoices and
     padded orders (fetched only to find late counterparts) may be consumed by
     matches but are dropped when unmatched; a matched pair is reported when
-    either side is in range. Totals count in-range rows only."""
+    either side is in range. shopify_total / backoffice_total count the period
+    only; report_orders / report_invoices count everything the rows list, so a
+    pair that crosses the period edge is on both sides of the same count."""
     for o in orders:
         o.setdefault("in_range", True)
     for o in padded_orders or []:
@@ -998,8 +1000,15 @@ def build_report(orders: List[Dict[str, Any]], invoices: List[Dict[str, Any]],
         "matched_orders": 0, "combined_groups": 0, "ambiguous": 0,
         "issue_counts": {"product": 0, "qty": 0, "price": 0, "total": 0},
     }
+    # id -> in the period? for every order / invoice a row lists.
+    listed_orders: Dict[Any, bool] = {}
+    listed_invoices: Dict[Any, bool] = {}
 
     for m in result["matches"]:
+        for o in m["orders"]:
+            listed_orders[o["id"]] = o.get("in_range", True)
+        for inv in m["invoices"]:
+            listed_invoices[inv["invoice_id"]] = inv["in_range"]
         row = build_pair_row(m["orders"], m["invoices"], m["method"], m["ambiguous"],
                              m["shared_tracking"])
         rows.append(row)
@@ -1015,6 +1024,7 @@ def build_report(orders: List[Dict[str, Any]], invoices: List[Dict[str, Any]],
     for order in result["unmatched_orders"]:
         if not order.get("in_range", True):
             continue
+        listed_orders[order["id"]] = True
         rows.append({
             "status": "shopify_unmatched", "match_method": None, "ambiguous": False,
             "shared_tracking": shared_note.get(("o", order["id"])), "combined": False,
@@ -1026,6 +1036,7 @@ def build_report(orders: List[Dict[str, Any]], invoices: List[Dict[str, Any]],
     for invoice in result["unmatched_invoices"]:
         if not invoice["in_range"]:
             continue
+        listed_invoices[invoice["invoice_id"]] = True
         rows.append({
             "status": "backoffice_unmatched", "match_method": None, "ambiguous": False,
             "shared_tracking": shared_note.get(("i", invoice["invoice_id"])), "combined": False,
@@ -1036,6 +1047,10 @@ def build_report(orders: List[Dict[str, Any]], invoices: List[Dict[str, Any]],
 
     summary["backoffice_total"] = sum(1 for inv in invoices if inv["in_range"])
     summary["shopify_total"] = sum(1 for o in orders if o.get("in_range", True))
+    summary["report_orders"] = len(listed_orders)
+    summary["report_invoices"] = len(listed_invoices)
+    summary["orders_outside_range"] = sum(1 for v in listed_orders.values() if not v)
+    summary["invoices_outside_range"] = sum(1 for v in listed_invoices.values() if not v)
     summary["shopify_no_tracking"] = sum(
         1 for o in orders if o.get("in_range", True) and not o.get("tracking_numbers"))
     summary["backoffice_no_tracking"] = sum(
