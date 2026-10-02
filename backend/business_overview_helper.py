@@ -3216,6 +3216,14 @@ def shopify_order_costing(lines: List[Tuple[Optional[str], float, float]],
             "product_profit": round(revenue - cost, 2), "cost_coverage": cov}
 
 
+# Shipper parcels.id_status values for cancelled labels — never counted as shipping cost.
+CANCELLED_PARCEL_STATUS_IDS = (4, 9)
+_PARCEL_NOT_CANCELLED = (
+    "(id_status IS NULL OR id_status NOT IN ("
+    + ",".join(str(int(s)) for s in CANCELLED_PARCEL_STATUS_IDS) + "))"
+)
+
+
 def _parcel_costs_window_sync(host, port, database, username, password,
                               date_from: str, date_to_excl: str,
                               ) -> Tuple[bool, Optional[str], Dict[str, Dict[str, float]]]:
@@ -3231,10 +3239,10 @@ def _parcel_costs_window_sync(host, port, database, username, password,
             cur = conn.cursor()
             if not _tables_present(cur, ["parcels"]).get("parcels"):
                 return False, "Table parcels not found on the shipper store", {}
-            cur.execute("""
+            cur.execute(f"""
                 SELECT order_number, SUM(ISNULL(cost, 0)) AS cost, COUNT(*) AS parcels
                 FROM parcels
-                WHERE created_at >= ? AND created_at < ?
+                WHERE created_at >= ? AND created_at < ? AND {_PARCEL_NOT_CANCELLED}
                 GROUP BY order_number
             """, [_bind_dt(date_from), _bind_dt(date_to_excl)])
             out: Dict[str, Dict[str, float]] = {}
@@ -3279,7 +3287,7 @@ def _parcel_costs_sync(host, port, database, username, password,
                 cur.execute(f"""
                     SELECT order_number, SUM(ISNULL(cost, 0)) AS cost, COUNT(*) AS parcels
                     FROM parcels
-                    WHERE order_number IN ({ph})
+                    WHERE order_number IN ({ph}) AND {_PARCEL_NOT_CANCELLED}
                     GROUP BY order_number
                 """, chunk)
                 for r in _rows(cur):
