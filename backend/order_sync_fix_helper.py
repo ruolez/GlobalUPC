@@ -17,7 +17,8 @@ touches unfulfilled line items, so the executor combines three APIs:
            line to the invoice price (orderEditAddLineItemDiscount when the
            invoice price is below the variant price; when it is above, the
            variant price is raised for the duration of the edit and restored
-           in a finally block) → verify the calculated unit price BEFORE
+           in a finally block — decided on the price read live under
+           _bump_lock, never the planned one) → verify the calculated unit price BEFORE
            committing → orderEditCommit → fulfillmentCreate on the new OPEN
            fulfillment order (so the order returns to FULFILLED) →
            orderMarkAsPaid for the created balance.
@@ -247,8 +248,12 @@ async def set_variant_price(ctx: ShopifyCtx, product_id: str, variant_id: str, p
 # A raised variant price is store-wide state. Two orders fixed in parallel
 # that both bump the same variant interleave bump / add / restore and one of
 # them adds its line at the other's price (seen live: 53.55 instead of the
-# bumped 56.50), so edits that need a bump run one at a time. Edits with no
-# bump never touch the catalog and stay parallel.
+# bumped 56.50), so every edit that adds lines runs under this lock, and so
+# does every other catalog price read or write of the fix: the plan's variant
+# lookup and the store-price step. A plan read while another order held a
+# bump saw the bumped price (seen live: 27.00 instead of 26.50 — the line was
+# refunded, then the add came in below the invoice price after the restore),
+# so the bump is decided again from the live price inside the lock.
 _bump_lock = asyncio.Lock()
 
 _BUMP_READBACK_ATTEMPTS = 5
@@ -269,12 +274,13 @@ async def _read_variant_price(ctx: ShopifyCtx, variant_id: str) -> Optional[floa
 
 
 async def _bump_variant_price(ctx: ShopifyCtx, add: Dict[str, Any], target: float,
-                              bumped: List[Dict[str, Any]]) -> None:
+                              bumped: List[Dict[str, Any]], restore: str) -> None:
     """Raise the variant to `target` and wait until Shopify reads it back at
-    that price, so the add that follows cannot be priced off a stale value."""
+    that price, so the add that follows cannot be priced off a stale value.
+    `restore` is the price the finally block puts back."""
     await set_variant_price(ctx, add["product_id"], add["variant_id"], f"{target:.2f}")
     bumped.append({"product_id": add["product_id"], "variant_id": add["variant_id"],
-                   "price": str(add["variant_price_raw"]), "barcode": add.get("barcode")})
+                   "price": restore, "barcode": add.get("barcode")})
     for attempt in range(_BUMP_READBACK_ATTEMPTS):
         price = await _read_variant_price(ctx, add["variant_id"])
         if price is not None and abs(price - target) <= _PRICE_TOL:
@@ -287,14 +293,34 @@ async def _bump_variant_price(ctx: ShopifyCtx, add: Dict[str, Any], target: floa
     )
 
 
+async def _raise_price_for_add(ctx: ShopifyCtx, add: Dict[str, Any], target: float,
+                               bumped: List[Dict[str, Any]]) -> None:
+    """Bump the variant when its price as Shopify has it now is below the
+    invoice price. Called under _bump_lock. The planned price is only the
+    fallback when the read fails."""
+    try:
+        live = await _read_variant_price(ctx, add["variant_id"])
+    except (FixStepError, ShopifyFetchError):
+        live = None
+    if live is None:
+        live, restore = float(add.get("variant_price") or 0), add.get("variant_price_raw")
+    else:
+        restore = f"{live:.2f}"
+    if live + _PRICE_TOL >= target:
+        return
+    if not add.get("product_id") or restore is None:
+        raise FixStepError("edit", f"{add.get('barcode')}: cannot raise the variant price (product unknown)")
+    await _bump_variant_price(ctx, add, target, bumped, str(restore))
+
+
 async def add_lines(ctx: ShopifyCtx, order_gid: str, adds: List[Dict[str, Any]],
                     note: str, shipping: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     """Begin an edit, add every planned line at the invoice price and apply
     every shipping-line replacement, verify, commit. Nothing changes on the
     order unless the commit runs. Variants whose price had to be raised are
-    restored afterwards no matter what, and such edits are serialized across
-    orders (see _bump_lock)."""
-    if not any(a.get("bump_price") for a in adds):
+    restored afterwards no matter what, and edits that add lines are
+    serialized across orders (see _bump_lock)."""
+    if not adds:
         return await _add_lines(ctx, order_gid, adds, note, [], shipping)
     async with _bump_lock:
         return await _add_lines_restoring(ctx, order_gid, adds, note, shipping)
@@ -397,10 +423,7 @@ async def _add_lines(ctx: ShopifyCtx, order_gid: str, adds: List[Dict[str, Any]]
     for a in adds:
         qty = int(a["qty"])
         target = float(a["unit_price"])
-        if a.get("bump_price"):
-            if not a.get("product_id") or a.get("variant_price_raw") is None:
-                raise FixStepError("edit", f"{a.get('barcode')}: cannot raise the variant price (product unknown)")
-            await _bump_variant_price(ctx, a, target, bumped)
+        await _raise_price_for_add(ctx, a, target, bumped)
         data = await _gql(ctx, add_variant, {"id": calc_id, "variantId": a["variant_id"], "quantity": qty})
         line = _payload(data, "orderEditAddVariant", "edit").get("calculatedLineItem") or {}
         line_id = line.get("id")
@@ -628,16 +651,17 @@ async def set_store_prices(ctx: ShopifyCtx, actions: List[Dict[str, Any]]) -> Tu
     returns (variant ids done, error strings)."""
     done: List[str] = []
     errors: List[str] = []
-    for a in actions:
-        if not a.get("product_id"):
-            errors.append(f"{a.get('barcode')}: product unknown")
-            continue
-        try:
-            await set_variant_price(ctx, a["product_id"], a["variant_id"],
-                                    f"{float(a['unit_price']):.2f}", step="variant_price")
-            done.append(a["variant_id"])
-        except (FixStepError, ShopifyFetchError) as e:
-            errors.append(f"{a.get('barcode')}: {getattr(e, 'message', None) or e}")
+    async with _bump_lock:   # never between another order's bump and its add
+        for a in actions:
+            if not a.get("product_id"):
+                errors.append(f"{a.get('barcode')}: product unknown")
+                continue
+            try:
+                await set_variant_price(ctx, a["product_id"], a["variant_id"],
+                                        f"{float(a['unit_price']):.2f}", step="variant_price")
+                done.append(a["variant_id"])
+            except (FixStepError, ShopifyFetchError) as e:
+                errors.append(f"{a.get('barcode')}: {getattr(e, 'message', None) or e}")
     return done, errors
 
 
@@ -968,8 +992,9 @@ async def prepare_target(ctx: ShopifyCtx, tz: Optional[str], target: Dict[str, A
     barcodes, repriced = _fix_barcodes(order, invoice)
     if barcodes:
         try:
-            variants = await find_variants_by_barcode(
-                ctx.session, ctx.shop_domain, ctx.admin_api_key, ctx.api_version, barcodes)
+            async with _bump_lock:   # never plan off another order's temporary bump
+                variants = await find_variants_by_barcode(
+                    ctx.session, ctx.shop_domain, ctx.admin_api_key, ctx.api_version, barcodes)
         except ShopifyFetchError as e:
             return {**base, "status": "error", "message": f"Variant lookup failed: {e}", "order": order, "invoice": invoice}
 
@@ -1154,6 +1179,8 @@ async def apply_order_fix(ctx: ShopifyCtx, tz: Optional[str], target: Dict[str, 
         result["message"] = steps[-1]["message"]
         if failed == "create_product":
             result["message"] = (result["message"] or "") + " — nothing was changed on the order; any product that was created is reused when you run the fix again"
+        elif failed == "edit" and any(s["step"] == "refund" and s["ok"] for s in steps):
+            result["message"] = (result["message"] or "") + " — the refunded units were NOT added back; run Fix in Shopify again to add them"
         elif failed == "fulfill":
             result["message"] = (result["message"] or "") + " — added items are UNFULFILLED in Shopify; fulfill them there or the order drops out of Month End"
         elif failed == "mark_paid":

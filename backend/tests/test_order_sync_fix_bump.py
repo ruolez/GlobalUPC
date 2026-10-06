@@ -24,9 +24,10 @@ INVOICE_PRICE_A = 56.5
 INVOICE_PRICE_B = 53.55
 
 
-def _add(unit_price, bump=True):
+def _add(unit_price, bump=True, planned_price=STORE_PRICE):
     return {"barcode": "0001", "qty": 1, "unit_price": unit_price, "bump_price": bump,
-            "product_id": PRODUCT, "variant_id": VARIANT, "variant_price_raw": STORE_PRICE}
+            "product_id": PRODUCT, "variant_id": VARIANT,
+            "variant_price": float(planned_price), "variant_price_raw": planned_price}
 
 
 class FakeStore:
@@ -47,8 +48,7 @@ class FakeStore:
 
     async def add_lines(self, ctx, order_gid, adds, note, bumped, shipping=None):
         for a in adds:
-            if a.get("bump_price"):
-                await ofix._bump_variant_price(ctx, a, float(a["unit_price"]), bumped)
+            await ofix._raise_price_for_add(ctx, a, float(a["unit_price"]), bumped)
             await asyncio.sleep(0)          # let the other order run if it can
             self.log.append(("add", order_gid, self.price))
         return {"added": adds, "outstanding": 0.0, "open_fulfillment_order_ids": [], "calculated_order_id": "c"}
@@ -62,6 +62,7 @@ class BumpSerializationTests(unittest.TestCase):
         ofix._read_variant_price = self.store.read_price
         ofix._add_lines = self.store.add_lines
         ofix._BUMP_READBACK_DELAY_SECONDS = 0
+        ofix._bump_lock = asyncio.Lock()   # each test runs its own event loop
 
     def tearDown(self):
         ofix.set_variant_price, ofix._read_variant_price, ofix._add_lines, ofix._BUMP_READBACK_DELAY_SECONDS = self._orig
@@ -82,7 +83,7 @@ class BumpSerializationTests(unittest.TestCase):
 
     def test_price_is_restored_even_when_the_edit_fails(self):
         async def failing(ctx, order_gid, adds, note, bumped, shipping=None):
-            await ofix._bump_variant_price(ctx, adds[0], float(adds[0]["unit_price"]), bumped)
+            await ofix._raise_price_for_add(ctx, adds[0], float(adds[0]["unit_price"]), bumped)
             raise ofix.FixStepError("edit", "boom")
         ofix._add_lines = failing
         with self.assertRaises(ofix.FixStepError):
@@ -99,9 +100,44 @@ class BumpSerializationTests(unittest.TestCase):
         self.assertEqual([e for e in self.store.log if e[0] == "add"], [])
         self.assertEqual(self.store.log[-1], ("set", float(STORE_PRICE)))
 
-    def test_edit_without_a_bump_skips_the_lock_and_the_catalog(self):
-        asyncio.run(ofix.add_lines(None, "order-a", [_add(INVOICE_PRICE_A, bump=False)], "n"))
+    def test_edit_at_or_below_the_live_price_never_writes_the_catalog(self):
+        asyncio.run(ofix.add_lines(None, "order-a", [_add(float(STORE_PRICE) - 0.25, bump=False)], "n"))
         self.assertEqual([e for e in self.store.log if e[0] == "set"], [])
+
+    def test_plan_that_read_another_orders_bump_still_adds_at_the_invoice_price(self):
+        # Prod 2026-10-06, FSD12898: planned while FSD12893 held the variant at
+        # 56.50, so it chose a discount; by its edit the price was back at 53.50.
+        async def run():
+            return await asyncio.gather(
+                ofix.add_lines(None, "order-a", [_add(INVOICE_PRICE_A)], "n"),
+                ofix.add_lines(None, "order-b", [_add(INVOICE_PRICE_B, bump=False,
+                                                      planned_price=f"{INVOICE_PRICE_A:.2f}")], "n"),
+            )
+        asyncio.run(run())
+        self.assertEqual(self.store.log, [
+            ("set", INVOICE_PRICE_A), ("add", "order-a", INVOICE_PRICE_A), ("set", float(STORE_PRICE)),
+            ("set", INVOICE_PRICE_B), ("add", "order-b", INVOICE_PRICE_B), ("set", float(STORE_PRICE)),
+        ])
+
+    def test_bump_restores_the_live_price_not_a_stale_planned_one(self):
+        stale_plan = f"{INVOICE_PRICE_A:.2f}"
+        asyncio.run(ofix.add_lines(None, "order-b", [_add(INVOICE_PRICE_B, planned_price=stale_plan)], "n"))
+        self.assertEqual(self.store.price, float(STORE_PRICE))
+
+    def test_store_price_write_waits_for_a_bumped_edit_to_restore(self):
+        new_store_price = 54.0
+
+        async def run():
+            return await asyncio.gather(
+                ofix.add_lines(None, "order-a", [_add(INVOICE_PRICE_A)], "n"),
+                ofix.set_store_prices(None, [{"barcode": "0001", "product_id": PRODUCT, "variant_id": VARIANT,
+                                              "unit_price": new_store_price}]),
+            )
+        asyncio.run(run())
+        self.assertEqual(self.store.log, [
+            ("set", INVOICE_PRICE_A), ("add", "order-a", INVOICE_PRICE_A), ("set", float(STORE_PRICE)),
+            ("set", new_store_price),
+        ])
 
 
 if __name__ == "__main__":
