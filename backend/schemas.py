@@ -2079,7 +2079,7 @@ class MonthEndRow(BaseModel):
     revenue: Optional[float] = None              # product revenue (line-level)
     cost: Optional[float] = None
     product_profit: Optional[float] = None       # revenue - cost
-    shipping_collected: Optional[float] = None   # Shopify checkout shipping; None for BackOffice
+    shipping_collected: Optional[float] = None   # Shopify checkout shipping | BackOffice Σ "Shipping…" invoice lines
     shipping_cost: Optional[float] = None        # BackOffice Invoices_tbl.ShippingCost | Σ shipper parcels.cost
     shipping_missing: bool = False               # Shopify: shipper configured but no parcel matched
     ship_state: Optional[str] = None             # BackOffice Invoices_tbl.ShipState | Shopify shipping address province code
@@ -2090,7 +2090,7 @@ class MonthEndRow(BaseModel):
     shipping_estimate_cross: Optional[bool] = None  # True when the pool is all stores (own store has no candidates)
     shipping_estimate_near: Optional[bool] = None   # True for the nearest-by-total fallback (no comparable in the window)
     parcels: Optional[int] = None                # Shopify: matched parcel/box count
-    profit: Optional[float] = None               # product_profit + shipping_collected - shipping_cost
+    profit: Optional[float] = None               # Shopify: product_profit + shipping_collected - shipping_cost | BackOffice: product_profit
     cost_coverage: Optional[float] = None
     status: Optional[str] = None                 # backoffice: shipped/open · shopify: financial_status
 

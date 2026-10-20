@@ -12928,7 +12928,7 @@ async def _month_end_payload(date_from: Optional[str], date_to: Optional[str],
         return await bov.invoices_in_period_async(
             **_bov_conn_kwargs(st), date_from=period.start.isoformat(), date_to_excl=period.end_excl,
             limit=min(limit, bov.MAX_LIST_LIMIT), sort_by="invoice_date", sort_order="desc", include_list=True,
-            today=period.today, excluded_names=excl_sales, cost_mode=cmode)
+            today=period.today, excluded_names=excl_sales, cost_mode=cmode, split_shipping=True)
 
     est_start = (period.start - timedelta(days=bov.SHIP_EST_LOOKBACK_DAYS)).isoformat()
 
@@ -12954,14 +12954,16 @@ async def _month_end_payload(date_from: Optional[str], date_to: Optional[str],
     )
     timings["fetch"] = round(time.monotonic() - t_fetch, 2)
     if cmode == "s2s":
-        # Same S2S re-cost as /invoices/period; recost_rows_s2s refreshes net_profit per invoice.
+        # Same S2S re-cost as /invoices/period; recost_rows_s2s refreshes profit per invoice.
         await _bov_recost_invoice_results(ctx, bo_results)
 
     stores_status: List[Dict[str, Any]] = []
     rows: List[Dict[str, Any]] = []
     truncated = False
 
-    # ---- BackOffice rows (profit already net of Invoices_tbl.ShippingCost)
+    # ---- BackOffice rows: "Shipping…" invoice lines are shipping collected, not
+    # product revenue; profit is product gross profit (Invoices_tbl.ShippingCost
+    # is shown as the ship cost but not deducted).
     for st, ok, err, payload in bo_results:
         if not ok:
             warnings.append(f"{st.name}: {err}")
@@ -12981,14 +12983,14 @@ async def _month_end_payload(date_from: Optional[str], date_to: Optional[str],
                 "total": inv.get("invoice_total"),
                 "revenue": inv.get("revenue"), "cost": inv.get("cost"),
                 "product_profit": inv.get("profit"),
-                "shipping_collected": None,
+                "shipping_collected": inv.get("shipping_collected"),
                 "shipping_cost": inv.get("shipping_cost"),
                 "shipping_missing": False,
                 "ship_state": inv.get("ship_state"),
                 "sales_rep_id": inv.get("sales_rep_id"),
                 "sales_rep": inv.get("sales_rep"),
                 "parcels": None,
-                "profit": inv.get("net_profit"),
+                "profit": inv.get("profit"),
                 "cost_coverage": inv.get("cost_coverage"),
                 "status": "shipped" if inv.get("is_shipped") else "open",
             })

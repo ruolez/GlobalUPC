@@ -25988,7 +25988,10 @@ function meStoreCell(r) {
 
 function meShipCollectedCell(r) {
   if (r.shipping_collected == null) {
-    return `<span class="bov-cell-muted" title="${r.source === "backoffice" ? "BackOffice invoices do not collect shipping separately" : ""}">—</span>`;
+    return `<span class="bov-cell-muted" title="${r.source === "backoffice" ? "Invoice line details unavailable on this store" : ""}">—</span>`;
+  }
+  if (r.source === "backoffice") {
+    return `<span title="Invoice lines whose description starts with “Shipping” — counted as shipping, not product sales">${escapeHtml(bovMoney(r.shipping_collected))}</span>`;
   }
   return bovMoney(r.shipping_collected);
 }
@@ -26035,7 +26038,7 @@ function meProfitCell(r) {
   const n = bovNum(r.profit);
   const breakdown = r.source === "shopify"
     ? `Product profit ${bovMoney(r.product_profit)} + shipping collected ${bovMoney(r.shipping_collected || 0)} − ${r._estimated ? "estimated " : ""}shipping cost ${bovMoney(r.shipping_cost || 0)}`
-    : `Product profit ${bovMoney(r.product_profit)} − shipping cost ${bovMoney(r.shipping_cost || 0)}`;
+    : `Gross product profit: revenue ${bovMoney(r.revenue)} − cost ${bovMoney(r.cost)} (excludes “Shipping” lines; shipping cost not deducted)`;
   const cov = r.cost_coverage != null && r.cost_coverage < 0.999
     ? `<span class="bov-cell-sub">cost ${Math.round(r.cost_coverage * 100)}% known</span>` : "";
   const est = r._estimated ? `<span class="bov-cell-sub">est. shipping</span>` : "";
@@ -26067,9 +26070,9 @@ function meColumns() {
     { key: "customer", label: "Customer", width: "17%", render: (r) => `<span title="${escapeHtml(bovUnquote(r.customer) || "")}">${escapeHtml(bovUnquote(r.customer) || "—")}</span>` },
     { key: "ship_state", label: "State", width: "6%", render: meStateCell },
     { key: "total", label: "Total", num: true, width: "10%", render: (r) => bovMoney(r.total) },
-    { key: "shipping_collected", label: "Collected", title: "Shipping collected from the customer (Shopify total_shipping)", num: true, width: "10%", render: meShipCollectedCell },
+    { key: "shipping_collected", label: "Collected", title: "Shipping collected from the customer (Shopify total_shipping · BackOffice invoice lines starting with “Shipping”)", num: true, width: "10%", render: meShipCollectedCell },
     { key: "shipping_cost", label: "Ship cost", num: true, width: "10%", render: meShipCostCell },
-    { key: "profit", label: "Profit", num: true, width: "10%", render: meProfitCell },
+    { key: "profit", label: "Profit", title: "BackOffice: product gross profit (shipping not included) · Shopify: product profit + shipping collected − shipping cost", num: true, width: "10%", render: meProfitCell },
     { key: "profit_pct", label: "Profit %", title: "Net profit ÷ order total (invoice total / Shopify order total) — the invoice modal uses the same basis", num: true, width: "7%", render: meProfitPctCell },
   ];
 }
@@ -26105,7 +26108,8 @@ function meSummaryHtml(t) {
     `<div class="me-tile-value">${value}</div>${sub ? `<div class="me-tile-sub">${escapeHtml(sub)}</div>` : ""}</div>`;
   return [
     tile("Orders", bovInt(t.orders)),
-    tile("Total", escapeHtml(bovMoney(t.total))),
+    tile("Product total", escapeHtml(bovMoney(t.total - t.shipping_collected)),
+      `order total ${bovMoney(t.total)} − shipping collected ${bovMoney(t.shipping_collected)}`),
     tile("Shipping collected", escapeHtml(bovMoney(t.shipping_collected))),
     tile("Shipping cost", escapeHtml(bovMoney(t.shipping_cost)),
       t.est_orders ? `incl. ~${bovMoney(t.est_amount)} estimated on ${bovInt(t.est_orders)} order${t.est_orders === 1 ? "" : "s"}` : ""),

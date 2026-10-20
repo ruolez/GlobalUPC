@@ -457,7 +457,13 @@ def _unit_cost_for(cost_mode: str, line_cost: Optional[float], item_cost: Option
     return item_cost if item_cost is not None else line_cost
 
 
-def _invoice_joins(present: Dict[str, bool], cost_mode: str = "sale") -> Dict[str, str]:
+# BackOffice bills shipping as an invoice line ("Shipping & Handling", …).
+# Month End counts those lines as shipping collected, not product revenue.
+_SHIPPING_LINE = "UPPER(LTRIM(ISNULL(d.ProductDescription, ''))) LIKE 'SHIPPING%'"
+
+
+def _invoice_joins(present: Dict[str, bool], cost_mode: str = "sale",
+                   exclude_shipping: bool = False) -> Dict[str, str]:
     j: Dict[str, str] = {}
     if present.get("Employees_tbl"):
         j["rep_join"] = "LEFT JOIN Employees_tbl e ON e.EmployeeID = h.SalesRepID AND h.SalesRepID <> 0"
@@ -480,12 +486,21 @@ def _invoice_joins(present: Dict[str, bool], cost_mode: str = "sale") -> Dict[st
         j["term_join"] = ""
         j["term_expr"] = "CAST(NULL AS nvarchar(50))"
     if present.get("InvoicesDetails_tbl"):
-        j["revenue_expr"] = "(SELECT SUM(ISNULL(d.ExtendedPrice,0)) FROM InvoicesDetails_tbl d WHERE d.InvoiceID = h.InvoiceID)"
         cost_apply, cost_expr = _cost_sql(present, cost_mode)
+        rev_expr = "ISNULL(d.ExtendedPrice,0)"
+        if exclude_shipping:
+            # CASE, not WHERE: an invoice with only shipping lines keeps a $0
+            # product revenue instead of turning "unknown" (NULL).
+            rev_expr = f"CASE WHEN {_SHIPPING_LINE} THEN 0 ELSE {rev_expr} END"
+            cost_expr = f"CASE WHEN {_SHIPPING_LINE} THEN 0 ELSE {cost_expr} END"
+        j["revenue_expr"] = f"(SELECT SUM({rev_expr}) FROM InvoicesDetails_tbl d WHERE d.InvoiceID = h.InvoiceID)"
         j["cost_expr"] = f"(SELECT SUM({cost_expr}) FROM InvoicesDetails_tbl d {cost_apply} WHERE d.InvoiceID = h.InvoiceID)"
+        j["ship_lines_expr"] = (f"(SELECT SUM(ISNULL(d.ExtendedPrice,0)) FROM InvoicesDetails_tbl d "
+                                f"WHERE d.InvoiceID = h.InvoiceID AND {_SHIPPING_LINE})")
     else:
         j["revenue_expr"] = "CAST(NULL AS money)"
         j["cost_expr"] = "CAST(NULL AS money)"
+        j["ship_lines_expr"] = "CAST(NULL AS money)"
     if present.get("Suppliers_tbl"):
         j["sup_join"] = "LEFT JOIN Suppliers_tbl s ON s.SupplierID = h.SupplierID"
         j["sup_contact_expr"] = "s.Contactname"
@@ -990,17 +1005,19 @@ def _margin_fields(revenue: Optional[float], cost: Optional[float],
             "margin_pct": margin_pct(revenue, cost) if revenue else None, "cost_coverage": coverage}
 
 
-def _invoice_units_by_upc(cur, invoice_ids: List[int]) -> Dict[int, List[Tuple[str, float]]]:
+def _invoice_units_by_upc(cur, invoice_ids: List[int],
+                          exclude_shipping: bool = False) -> Dict[int, List[Tuple[str, float]]]:
     """(UPC, QtyShipped) per invoice for S2S re-costing of a list; chunked IN (...)."""
     out: Dict[int, List[Tuple[str, float]]] = {}
     ids = [int(i) for i in invoice_ids]
+    ship_where = f" AND NOT {_SHIPPING_LINE}" if exclude_shipping else ""
     for i in range(0, len(ids), 1000):
         chunk = ids[i:i + 1000]
         ph = ",".join("?" * len(chunk))
         cur.execute(f"""
             SELECT d.InvoiceID, LTRIM(RTRIM(d.ProductUPC)) AS upc, SUM(ISNULL(d.QtyShipped,0)) AS units
             FROM InvoicesDetails_tbl d
-            WHERE d.InvoiceID IN ({ph})
+            WHERE d.InvoiceID IN ({ph}){ship_where}
             GROUP BY d.InvoiceID, LTRIM(RTRIM(d.ProductUPC))
         """, chunk)
         for r in _rows(cur):
@@ -1237,10 +1254,13 @@ def _invoices_in_period_sync(
     today: Optional[date] = None,
     excluded_names: Optional[List[str]] = None,
     cost_mode: str = "sale",
+    split_shipping: bool = False,
 ) -> Tuple[bool, Optional[str], Dict[str, Any]]:
     """
     Every non-void invoice dated (InvoiceDate) in [date_from, date_to_excl),
     each flagged is_shipped = TrackingNo present. Aggregates split the same way.
+    split_shipping (Month End): "Shipping…" lines leave revenue/cost and are
+    returned per invoice as shipping_collected.
     """
     units_by_upc: Dict[int, List[Tuple[str, float]]] = {}
     limit = _clamp_limit(limit)
@@ -1256,7 +1276,8 @@ def _invoices_in_period_sync(
             present = _tables_present(cur, ["Invoices_tbl", "InvoicesDetails_tbl", "Items_tbl", "Employees_tbl", "Shippers_tbl"])
             if not present.get("Invoices_tbl"):
                 return False, "Table Invoices_tbl not found on this store", {}
-            j = _invoice_joins(present, cost_mode)
+            j = _invoice_joins(present, cost_mode, exclude_shipping=split_shipping)
+            ship_select = f", {j['ship_lines_expr']} AS ship_lines" if split_shipping else ""
             cur.execute(f"""
                 SELECT COUNT(*) AS invoices,
                        SUM(CASE WHEN {tracking_blank} THEN 1 ELSE 0 END)                       AS open_count,
@@ -1273,7 +1294,7 @@ def _invoices_in_period_sync(
             if include_list:
                 sort_expr = _sort_sql(SORTABLE_INVOICE_COLUMNS, sort_by, "invoice_date", sort_order, ", h.InvoiceID DESC")
                 cur.execute(f"""
-                    SELECT TOP (?) {_INVOICE_SELECT.format(**j)}
+                    SELECT TOP (?) {_INVOICE_SELECT.format(**j)}{ship_select}
                     FROM Invoices_tbl h
                     {j['rep_join']}
                     {j['shipper_join']}
@@ -1283,9 +1304,12 @@ def _invoices_in_period_sync(
                 for d in _rows(cur):
                     row = _invoice_row(d, today)
                     row["is_shipped"] = has_tracking(d.get("TrackingNo"))
+                    if split_shipping:
+                        row["shipping_collected"] = round(_f(d.get("ship_lines")), 2)
                     invoices.append(row)
                 if cost_mode == "s2s" and invoices and present.get("InvoicesDetails_tbl"):
-                    units_by_upc = _invoice_units_by_upc(cur, [r["invoice_id"] for r in invoices])
+                    units_by_upc = _invoice_units_by_upc(cur, [r["invoice_id"] for r in invoices],
+                                                         exclude_shipping=split_shipping)
         count = int(agg.get("invoices") or 0)
         return True, None, {
             "invoices": invoices,
