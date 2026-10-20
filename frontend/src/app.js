@@ -26120,22 +26120,27 @@ function meTfootHtml(t) {
     `</tr></tfoot>`;
 }
 
+// Five equal tiles: Orders · Product total · Shipping (collected / cost) ·
+// Profit (+ Profit %) · Credit memos. `sub` / `value` are HTML — escape at the call.
 function meSummaryHtml(t, cm) {
-  const tile = (label, value, sub, cls) =>
-    `<div class="me-tile${cls ? ` ${cls}` : ""}"><div class="me-tile-label">${escapeHtml(label)}</div>` +
-    `<div class="me-tile-value">${value}</div>${sub ? `<div class="me-tile-sub">${escapeHtml(sub)}</div>` : ""}</div>`;
+  const tile = (label, value, sub, title) =>
+    `<div class="me-tile"${title ? ` title="${escapeHtml(title)}"` : ""}><div class="me-tile-label">${escapeHtml(label)}</div>` +
+    `<div class="me-tile-value">${value}</div>${sub ? `<div class="me-tile-sub">${sub}</div>` : ""}</div>`;
+  const pair = (k, v) =>
+    `<div class="me-tile-pair"><span class="me-tile-pair-k">${escapeHtml(k)}</span><span class="me-tile-pair-v">${escapeHtml(bovMoney(v))}</span></div>`;
+  const productTotal = t.total - t.shipping_collected;
+  const pct = t.profit_pct != null
+    ? `<span class="bov-margin${bovMarginTone(t.profit_pct)}">${escapeHtml(bovPct(t.profit_pct))}</span> of order total` : "";
+  const profitNote = t.profit_known < t.orders ? `${bovInt(t.orders - t.profit_known)} orders without a known profit` : "";
   return [
     tile("Orders", bovInt(t.orders)),
-    tile("Product total", escapeHtml(bovMoney(t.total - t.shipping_collected)),
-      `order total ${bovMoney(t.total)} − shipping collected ${bovMoney(t.shipping_collected)}`),
-    tile("Shipping collected", escapeHtml(bovMoney(t.shipping_collected))),
-    tile("Shipping cost", escapeHtml(bovMoney(t.shipping_cost)),
-      t.est_orders ? `incl. ~${bovMoney(t.est_amount)} estimated on ${bovInt(t.est_orders)} order${t.est_orders === 1 ? "" : "s"}` : ""),
+    tile("Product total", escapeHtml(bovMoney(productTotal)), `of ${escapeHtml(bovMoney(t.total))} order total`,
+      `Order total ${bovMoney(t.total)} − shipping collected ${bovMoney(t.shipping_collected)}`),
+    tile("Shipping", pair("Collected", t.shipping_collected) + pair("Cost", t.shipping_cost),
+      t.est_orders ? escapeHtml(`cost incl. ~${bovMoney(t.est_amount)} estimated on ${bovInt(t.est_orders)} order${t.est_orders === 1 ? "" : "s"}`) : ""),
     tile("Profit", `<span class="bov-profit${t.profit < 0 ? " is-neg" : ""}">${escapeHtml(bovMoney(t.profit))}</span>`,
-      t.profit_known < t.orders ? `${bovInt(t.orders - t.profit_known)} orders without a known profit` : ""),
-    tile("Profit %", t.profit_pct != null
-      ? `<span class="bov-margin${bovMarginTone(t.profit_pct)}">${escapeHtml(bovPct(t.profit_pct))}</span>` : "—",
-      t.profit_pct != null && t.profit_known < t.orders ? `of ${bovMoney(t.profit_base)} in orders with a known profit` : ""),
+      [pct, escapeHtml(profitNote)].filter(Boolean).join("<br>"),
+      t.profit_pct != null && t.profit_known < t.orders ? `Profit % is over ${bovMoney(t.profit_base)} of orders with a known profit` : ""),
     cm ? tile("Credit memos", escapeHtml(bovMoney(cm.amount)), `${bovInt(cm.count)} credit memo${cm.count === 1 ? "" : "s"}`) : "",
   ].join("");
 }
