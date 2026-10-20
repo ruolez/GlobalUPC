@@ -1328,6 +1328,60 @@ def _invoices_in_period_sync(
         return False, str(e), {}
 
 
+def _credit_memos_in_period_sync(
+    host, port, database, username, password,
+    date_from: str,
+    date_to_excl: str,
+    excluded_names: Optional[List[str]] = None,
+) -> Tuple[bool, Optional[str], Dict[str, Any]]:
+    """
+    Every credit memo dated (CmemoDate) in [date_from, date_to_excl) with its
+    CmemoTotal. Credit memos carry no sales rep, so the rep is the customer's:
+    CustomerID -> Customers_tbl.SalesRepID -> Employees_tbl.FirstName.
+    """
+    where = "m.CmemoDate >= ? AND m.CmemoDate < ?"
+    params: List[Any] = [_bind_dt(date_from), _bind_dt(date_to_excl)]
+    excl_sql, excl_params = _excl_clause(excluded_names or [], column="m.BusinessName")
+    where += excl_sql
+    params.extend(excl_params)
+    try:
+        with _connect(host, port, database, username, password) as conn:
+            cur = conn.cursor()
+            present = _tables_present(cur, ["CreditMemos_tbl", "Customers_tbl", "Employees_tbl"])
+            if not present.get("CreditMemos_tbl"):
+                return True, None, {"present": False, "credit_memos": []}
+            rep_id_expr, rep_join, rep_expr = "CAST(NULL AS int)", "", "CAST(NULL AS nvarchar(50))"
+            if present.get("Customers_tbl"):
+                rep_id_expr = "c.SalesRepID"
+                rep_join = "LEFT JOIN Customers_tbl c ON c.CustomerID = m.CustomerID"
+                if present.get("Employees_tbl"):
+                    rep_join += " LEFT JOIN Employees_tbl e ON e.EmployeeID = c.SalesRepID AND c.SalesRepID <> 0"
+                    rep_expr = "e.FirstName"
+            cur.execute(f"""
+                SELECT m.CmemoID, m.CmemoNumber, m.CmemoDate, m.BusinessName, m.CmemoTotal,
+                       {rep_id_expr} AS SalesRepID, {rep_expr} AS sales_rep
+                FROM CreditMemos_tbl m
+                {rep_join}
+                WHERE {where}
+                ORDER BY m.CmemoDate DESC, m.CmemoID DESC
+            """, params)
+            memos = []
+            for d in _rows(cur):
+                rep_id = _io(d.get("SalesRepID"))
+                memos.append({
+                    "cmemo_id": int(d.get("CmemoID")),
+                    "number": _s(d.get("CmemoNumber")),
+                    "date": _iso(d.get("CmemoDate")),
+                    "customer": _s(d.get("BusinessName")),
+                    "sales_rep_id": rep_id,
+                    "sales_rep": _s(d.get("sales_rep")) if rep_id else None,
+                    "total": round(_f(d.get("CmemoTotal")), 2),
+                })
+        return True, None, {"present": True, "credit_memos": memos}
+    except Exception as e:
+        return False, str(e), {}
+
+
 def _invoice_detail_sync(host, port, database, username, password, invoice_id: int,
                          cost_mode: str = "sale") -> Tuple[bool, Optional[str], Dict[str, Any]]:
     try:
@@ -3450,6 +3504,10 @@ async def shipped_invoices_async(**kw):
 
 async def invoices_in_period_async(**kw):
     return await _run(_invoices_in_period_sync, **kw)
+
+
+async def credit_memos_in_period_async(**kw):
+    return await _run(_credit_memos_in_period_sync, **kw)
 
 
 async def invoice_detail_async(**kw):

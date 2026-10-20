@@ -2095,6 +2095,18 @@ class MonthEndRow(BaseModel):
     status: Optional[str] = None                 # backoffice: shipped/open · shopify: financial_status
 
 
+class MonthEndCreditMemo(BaseModel):
+    store_id: int
+    store_name: str
+    cmemo_id: int
+    number: Optional[str] = None
+    date: Optional[str] = None
+    customer: Optional[str] = None
+    sales_rep_id: Optional[int] = None           # the customer's Customers_tbl.SalesRepID (memos have no rep)
+    sales_rep: Optional[str] = None              # Employees_tbl.FirstName for that rep
+    total: float = 0.0                           # CreditMemos_tbl.CmemoTotal
+
+
 class MonthEndTotals(BaseModel):
     orders: int = 0
     total: float = 0.0
@@ -2131,6 +2143,7 @@ class MonthEndResponse(BaseModel):
     period: Optional[BOVPeriod] = None
     stores: List[MonthEndStoreStatus] = []
     rows: List[MonthEndRow] = []
+    credit_memos: List[MonthEndCreditMemo] = []  # BackOffice credit memos dated in the period (display only)
     totals: Optional[MonthEndTotals] = None
     by_source: Dict[str, MonthEndTotals] = {}
     shipper: MonthEndShipperStatus = MonthEndShipperStatus()

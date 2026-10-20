@@ -25909,6 +25909,13 @@ function meRenderRepFilter(d) {
     if (e) e.count += 1;
     else counts.set(k, { label: k === "—" ? "No rep" : String(r.sales_rep).trim(), count: 1 });
   });
+  // Credit memos carry their customer's rep — a rep with memos but no invoices stays selectable.
+  if (f.type === "backoffice") {
+    ((d && d.credit_memos) || []).forEach((m) => {
+      const k = meRepKey(m);
+      if (!counts.has(k)) counts.set(k, { label: k === "—" ? "No rep" : String(m.sales_rep).trim(), count: 0 });
+    });
+  }
   const options = Array.from(counts.entries()).sort((a, b) => a[1].label.localeCompare(b[1].label));
   monthEndState.repOptions = options.map(([key]) => key);
   const val = document.getElementById("me-reps-value");
@@ -25959,6 +25966,17 @@ function meToggleRep(value) {
     f.reps = cur.length >= options.length ? null : cur;
   }
   renderMonthEnd();
+}
+
+// BackOffice credit memos (display only) under the same type / store-chip / rep
+// filters as the invoice rows; the rep is the memo customer's sales rep.
+function meCreditMemoTotals(d) {
+  const f = monthEndState.filters;
+  if (!d || !Array.isArray(d.credit_memos) || f.type === "shopify") return null;
+  let memos = d.credit_memos;
+  if (f.stores.size) memos = memos.filter((m) => f.stores.has(m.store_id));
+  if (f.type === "backoffice" && f.reps != null) memos = memos.filter((m) => f.reps.includes(meRepKey(m)));
+  return { count: memos.length, amount: memos.reduce((sum, m) => sum + bovNum(m.total), 0) };
 }
 
 function meTotals(rows) {
@@ -26102,7 +26120,7 @@ function meTfootHtml(t) {
     `</tr></tfoot>`;
 }
 
-function meSummaryHtml(t) {
+function meSummaryHtml(t, cm) {
   const tile = (label, value, sub, cls) =>
     `<div class="me-tile${cls ? ` ${cls}` : ""}"><div class="me-tile-label">${escapeHtml(label)}</div>` +
     `<div class="me-tile-value">${value}</div>${sub ? `<div class="me-tile-sub">${escapeHtml(sub)}</div>` : ""}</div>`;
@@ -26118,6 +26136,7 @@ function meSummaryHtml(t) {
     tile("Profit %", t.profit_pct != null
       ? `<span class="bov-margin${bovMarginTone(t.profit_pct)}">${escapeHtml(bovPct(t.profit_pct))}</span>` : "—",
       t.profit_pct != null && t.profit_known < t.orders ? `of ${bovMoney(t.profit_base)} in orders with a known profit` : ""),
+    cm ? tile("Credit memos", escapeHtml(bovMoney(cm.amount)), `${bovInt(cm.count)} credit memo${cm.count === 1 ? "" : "s"}`) : "",
   ].join("");
 }
 
@@ -26193,7 +26212,7 @@ function renderMonthEnd() {
   meRenderWarnings(d, t);
 
   const summary = document.getElementById("me-summary");
-  if (summary) { summary.innerHTML = meSummaryHtml(t); summary.style.display = ""; }
+  if (summary) { summary.innerHTML = meSummaryHtml(t, meCreditMemoTotals(d)); summary.style.display = ""; }
 
   const tableCard = document.getElementById("me-table-card");
   const table = document.getElementById("me-table");
