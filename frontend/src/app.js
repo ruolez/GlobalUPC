@@ -26120,29 +26120,38 @@ function meTfootHtml(t) {
     `</tr></tfoot>`;
 }
 
-// Five equal tiles: Orders · Product total · Shipping (collected / cost) ·
-// Profit (+ Profit %) · Credit memos. `sub` / `value` are HTML — escape at the call.
+// One summary card split into sections, widest first: Product total (with the
+// order count) and Profit (with Profit %) lead; Shipping and Credit memos follow.
+// `value` / `sub` are HTML — escape at the call site.
 function meSummaryHtml(t, cm) {
-  const tile = (label, value, sub, title) =>
-    `<div class="me-tile"${title ? ` title="${escapeHtml(title)}"` : ""}><div class="me-tile-label">${escapeHtml(label)}</div>` +
-    `<div class="me-tile-value">${value}</div>${sub ? `<div class="me-tile-sub">${sub}</div>` : ""}</div>`;
-  const pair = (k, v) =>
-    `<div class="me-tile-pair"><span class="me-tile-pair-k">${escapeHtml(k)}</span><span class="me-tile-pair-v">${escapeHtml(bovMoney(v))}</span></div>`;
-  const productTotal = t.total - t.shipping_collected;
+  const section = (label, value, sub, opts = {}) =>
+    `<div class="me-kpi${opts.hero ? " is-hero" : ""}"${opts.title ? ` title="${escapeHtml(opts.title)}"` : ""}>` +
+    `<div class="me-kpi-label">${escapeHtml(label)}</div><div class="me-kpi-value">${value}</div>` +
+    `${sub ? `<div class="me-kpi-sub">${sub}</div>` : ""}</div>`;
+  const row = (k, v, cls) =>
+    `<div class="me-kpi-row${cls ? ` ${cls}` : ""}"><span>${escapeHtml(k)}</span><span>${v}</span></div>`;
+  const shipNet = t.shipping_collected - t.shipping_cost;
   const pct = t.profit_pct != null
-    ? `<span class="bov-margin${bovMarginTone(t.profit_pct)}">${escapeHtml(bovPct(t.profit_pct))}</span> of order total` : "";
-  const profitNote = t.profit_known < t.orders ? `${bovInt(t.orders - t.profit_known)} orders without a known profit` : "";
-  return [
-    tile("Orders", bovInt(t.orders)),
-    tile("Product total", escapeHtml(bovMoney(productTotal)), `of ${escapeHtml(bovMoney(t.total))} order total`,
-      `Order total ${bovMoney(t.total)} − shipping collected ${bovMoney(t.shipping_collected)}`),
-    tile("Shipping", pair("Collected", t.shipping_collected) + pair("Cost", t.shipping_cost),
+    ? ` <span class="me-kpi-pill bov-margin${bovMarginTone(t.profit_pct)}" title="Profit ÷ order total">${escapeHtml(bovPct(t.profit_pct))}</span>` : "";
+  const profitSub = t.profit_known < t.orders
+    ? `${bovInt(t.orders - t.profit_known)} orders without a known profit` : "margin on order total";
+  const parts = [
+    section("Product total", escapeHtml(bovMoney(t.total - t.shipping_collected)),
+      `<strong>${bovInt(t.orders)}</strong> order${t.orders === 1 ? "" : "s"} · of ${escapeHtml(bovMoney(t.total))} order total`,
+      { hero: true, title: `Order total ${bovMoney(t.total)} − shipping collected ${bovMoney(t.shipping_collected)}` }),
+    section("Profit", `<span class="bov-profit${t.profit < 0 ? " is-neg" : ""}">${escapeHtml(bovMoney(t.profit))}</span>${pct}`,
+      escapeHtml(profitSub),
+      { hero: true, title: t.profit_pct != null && t.profit_known < t.orders ? `Profit % is over ${bovMoney(t.profit_base)} of orders with a known profit` : "" }),
+    section("Shipping",
+      row("Collected", escapeHtml(bovMoney(t.shipping_collected))) +
+      row("Cost", escapeHtml(bovMoney(t.shipping_cost))) +
+      row("Net", `<span class="bov-profit${shipNet < 0 ? " is-neg" : ""}">${escapeHtml(shipNet < 0 ? `−${bovMoney(-shipNet)}` : bovMoney(shipNet))}</span>`, "is-net"),
       t.est_orders ? escapeHtml(`cost incl. ~${bovMoney(t.est_amount)} estimated on ${bovInt(t.est_orders)} order${t.est_orders === 1 ? "" : "s"}`) : ""),
-    tile("Profit", `<span class="bov-profit${t.profit < 0 ? " is-neg" : ""}">${escapeHtml(bovMoney(t.profit))}</span>`,
-      [pct, escapeHtml(profitNote)].filter(Boolean).join("<br>"),
-      t.profit_pct != null && t.profit_known < t.orders ? `Profit % is over ${bovMoney(t.profit_base)} of orders with a known profit` : ""),
-    cm ? tile("Credit memos", escapeHtml(bovMoney(cm.amount)), `${bovInt(cm.count)} credit memo${cm.count === 1 ? "" : "s"}`) : "",
-  ].join("");
+  ];
+  if (cm) {
+    parts.push(section("Credit memos", escapeHtml(bovMoney(cm.amount)), `${bovInt(cm.count)} credit memo${cm.count === 1 ? "" : "s"}`));
+  }
+  return `<div class="me-kpis${cm ? "" : " no-cm"}">${parts.join("")}</div>`;
 }
 
 function meRenderStoreChips(d) {
