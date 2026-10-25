@@ -29753,9 +29753,11 @@ const OSYNC_AUTO_STEP_GROUPS = [
     ],
   },
   {
-    title: "Checks",
+    title: "BackOffice-only invoices",
+    hint: "Invoices with no Shopify order, usually because a product is missing and the WebHook couldn't create the order.",
     steps: [
       ["missing_check", "Missing in Shopify check", "List products on BackOffice-only invoices that the Shopify store doesn't carry. Read-only."],
+      ["create_missing", "Create their missing products", "Create each missing product from Items_tbl (title, price, cost; hidden, on no sales channel) so the WebHook can bring the order in on its next pass. Logged under Created products."],
     ],
   },
 ];
@@ -29775,6 +29777,11 @@ const OSYNC_AUTO_STAGE_STATUS = {
 const OSYNC_AUTO_REVIEW = {
   ambiguous_match: "Ambiguous match", combined: "Combined shipment", unsupported: "Can't fix automatically",
   online_store_invoiced: "Online Store order with an invoice", ambiguous_duplicate: "Possible duplicate",
+  missing_product: "Missing in Shopify",
+};
+const OSYNC_AUTO_MISSING_ACTION = {
+  created: ["Created", "is-ok"], would_create: ["Would create", "is-muted"], exists: ["Already there", "is-muted"],
+  failed: ["Failed", "is-bad"], skipped: ["Not created", "is-warn"], listed: ["Listed only", "is-muted"],
 };
 const OSYNC_AUTO_TILES = [
   ["matched_ok", "Matched"], ["matched_diffs", "Differences"], ["shopify_unmatched", "Shopify only"],
@@ -29861,12 +29868,13 @@ function osyncAutoCountsText(c, dryRun) {
   if (dryRun) {
     if (c.would_fix) parts.push(`${c.would_fix} would fix`);
     if (c.would_cancel) parts.push(`${c.would_cancel} would cancel`);
+    if (c.would_create) parts.push(`${osyncAutoPlural(c.would_create, "product")} would be created`);
   } else {
     if (c.fixed) parts.push(`${c.fixed} fixed`);
     if (c.cancelled) parts.push(`${c.cancelled} cancelled`);
     if (c.created_products) parts.push(osyncAutoPlural(c.created_products, "product") + " created");
   }
-  const failed = (c.fix_failed || 0) + (c.cancel_failed || 0);
+  const failed = (c.fix_failed || 0) + (c.cancel_failed || 0) + (c.create_failed || 0);
   if (failed) parts.push(`${failed} failed`);
   if (c.stage_errors) parts.push(osyncAutoPlural(c.stage_errors, "step") + " failed");
   if (c.review) parts.push(`${c.review} to review`);
@@ -30337,15 +30345,21 @@ function osyncAutoRenderRun() {
 
   const reviewHtml = `<ul class="osync-auto-list">` + review.map((x) =>
     `<li><span class="osync-auto-review-kind">${escapeHtml(OSYNC_AUTO_REVIEW[x.category] || x.category)}</span> ` +
-    `${osyncAutoOrderLink(x.sh_name, x.admin_url)}` +
-    (x.bo_invoice_number ? ` <span class="osync-muted">⇄ Invoice ${escapeHtml(x.bo_invoice_number)}</span>` : "") +
+    (x.sh_name || x.sh_order_id ? osyncAutoOrderLink(x.sh_name, x.admin_url) : "") +
+    (x.bo_invoice_number ? ` <span class="osync-muted">${x.sh_name || x.sh_order_id ? "⇄ " : ""}Invoice ${escapeHtml(x.bo_invoice_number)}</span>` : "") +
     (x.twin_name ? ` <span class="osync-muted">twin</span> ${osyncAutoOrderLink(x.twin_name, x.twin_admin_url)}` : "") +
     ` <span class="osync-muted">— ${escapeHtml(x.reason || "")}</span></li>`).join("") + `</ul>`;
 
-  const missingHtml = `<table class="osync-missing-table"><thead><tr><th>Barcode</th><th>Description</th><th>In Shopify</th><th class="osync-num">Qty</th><th>Invoices</th></tr></thead><tbody>` +
+  const anyAction = missing.some((m) => m.action);
+  const missingHtml = `<table class="osync-missing-table"><thead><tr><th>Barcode</th><th>Description</th><th>In Shopify</th><th class="osync-num">Qty</th><th>Invoices</th>${anyAction ? "<th>Action</th>" : ""}</tr></thead><tbody>` +
     missing.map((m) => `<tr><td class="osync-mono">${escapeHtml(m.barcode)}</td><td>${escapeHtml(m.description || "")}</td>` +
       `<td>${escapeHtml(m.shopify_status || "")}</td><td class="osync-num">${escapeHtml(String(m.total_qty ?? ""))}</td>` +
-      `<td>${escapeHtml((m.invoices || []).join(", "))}</td></tr>`).join("") +
+      `<td>${escapeHtml((m.invoices || []).join(", "))}</td>` +
+      (anyAction ? `<td class="osync-auto-result">${m.action ? osyncAutoPill(OSYNC_AUTO_MISSING_ACTION, m.action) : ""}` +
+        (m.admin_url ? ` ${osyncAutoOrderLink("Open", m.admin_url)}` : "") +
+        (m.create_price != null && m.action !== "created" ? ` <span class="osync-muted">at ${osyncMoney(m.create_price)}</span>` : "") +
+        (m.action_message ? ` <span class="osync-muted">${escapeHtml(m.action_message)}</span>` : "") + `</td>` : "") +
+      `</tr>`).join("") +
     `</tbody></table>`;
 
   const dry = run.dry_run;
@@ -30413,7 +30427,8 @@ function osyncAutoExport() {
   (rep.review || []).forEach((x) => data.push(["Needs review", x.sh_name || "", x.bo_invoice_number || "",
     OSYNC_AUTO_REVIEW[x.category] || x.category, x.reason || "", x.admin_url || ""]));
   (rep.missing_products || []).forEach((m) => data.push(["Missing in Shopify", "", (m.invoices || []).join(", "),
-    m.shopify_status || "", `${m.barcode} ${m.description || ""} × ${m.total_qty}`, ""]));
+    [m.shopify_status, m.action ? (OSYNC_AUTO_MISSING_ACTION[m.action] || [m.action])[0] : ""].filter(Boolean).join(" · "),
+    [`${m.barcode} ${m.description || ""} × ${m.total_qty}`, m.action_message].filter(Boolean).join(" | "), m.admin_url || ""]));
   if (!data.length) {
     showToast("Nothing to export", "info");
     return;

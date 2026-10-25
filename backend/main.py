@@ -13874,26 +13874,33 @@ def _order_sync_fix_record(batch_id: str, ctx: Dict[str, Any], target: Dict[str,
             # A catalog change must never be invisible: log every product this
             # run added, even when a later step failed.
             for cp in result.get("created_products") or []:
-                db.add(OrderSyncCreatedProduct(
-                    batch_id=batch_id,
-                    shopify_store_id=ctx["shopify_store_id"],
-                    store_name=ctx["shopify_store_name"],
-                    barcode=cp["barcode"],
-                    title=cp.get("title"),
-                    sku=cp.get("sku"),
-                    price=cp.get("price"),
-                    unit_cost=cp.get("unit_cost"),
-                    price_source=cp.get("price_source"),
-                    product_gid=cp["product_gid"],
-                    variant_gid=cp.get("variant_gid"),
-                    sh_order_id=result["sh_order_id"],
-                    sh_order_name=result.get("sh_name"),
-                    bo_invoice_id=result.get("bo_invoice_id"),
-                    bo_invoice_number=result.get("bo_invoice_number"),
-                ))
+                db.add(_order_sync_created_product_row(
+                    batch_id, ctx, cp, sh_order_id=result["sh_order_id"], sh_order_name=result.get("sh_name"),
+                    bo_invoice_id=result.get("bo_invoice_id"), bo_invoice_number=result.get("bo_invoice_number")))
             db.commit()
     except Exception as e:
         print(f"order_sync_fix_history write failed for {result.get('sh_order_id')}: {e}")
+
+
+def _order_sync_created_product_row(batch_id: str, ctx: Dict[str, Any], cp: Dict[str, Any],
+                                    **order: Any) -> OrderSyncCreatedProduct:
+    """One created-products log row. `order` names what the product was made
+    for: the Shopify order and invoice of a fix, or only the invoice(s) of a
+    BackOffice-only order that is not in Shopify yet."""
+    return OrderSyncCreatedProduct(
+        batch_id=batch_id,
+        shopify_store_id=ctx["shopify_store_id"],
+        store_name=ctx["shopify_store_name"],
+        barcode=cp["barcode"],
+        title=cp.get("title"),
+        sku=cp.get("sku"),
+        price=cp.get("price"),
+        unit_cost=cp.get("unit_cost"),
+        price_source=cp.get("price_source"),
+        product_gid=cp["product_gid"],
+        variant_gid=cp.get("variant_gid"),
+        **order,
+    )
 
 
 async def _order_sync_fix_run(req: OrderSyncFixRequest, progress=None, trim: bool = True,
@@ -14100,10 +14107,10 @@ from schemas import OrderSyncMissingProductsRequest, OrderSyncMissingProductsRes
 from shopify_helper import find_barcodes_in_catalog, ShopifyFetchError
 
 
-async def _order_sync_missing(orders: List[Dict[str, Any]]) -> Dict[str, Any]:
+async def _order_sync_missing(orders: List[Dict[str, Any]], ctx: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Which barcodes on the given BackOffice-only invoices have no ACTIVE
     variant in the configured Shopify store. Read-only."""
-    ctx = await _order_sync_fix_context()
+    ctx = ctx or await _order_sync_fix_context()
     barcodes = sorted({
         (li.get("barcode") or "").strip()
         for o in orders for li in o["lines"]
@@ -14872,18 +14879,115 @@ def _osauto_cancel_progress(t: _OsAutoTracker, offset: int, total: int):
     return progress
 
 
-async def _osauto_missing(rows: List[Dict[str, Any]], report: Dict[str, Any]) -> Dict[str, Any]:
+def _osauto_plural(n: int, word: str) -> str:
+    return f"{n} {word}{'s' if n != 1 else ''}"
+
+
+def _osauto_missing_review(report: Dict[str, Any], product: Dict[str, Any], reason: str) -> None:
+    """A product a BackOffice-only invoice needs stays missing: the order
+    cannot reach Shopify until a person deals with it."""
+    report["review"].append({
+        "category": "missing_product", "sh_order_id": None, "sh_name": None,
+        "bo_invoice_number": ", ".join(product.get("invoices") or []),
+        "barcode": product["barcode"],
+        "reason": f"{product['barcode']} {product.get('description') or ''} — {reason}".replace("  ", " "),
+    })
+
+
+async def _osauto_missing(t: _OsAutoTracker, ctx: Dict[str, Any], rows: List[Dict[str, Any]],
+                          report: Dict[str, Any], create: bool, dry_run: bool) -> Dict[str, Any]:
     orders = osauto.backoffice_only_orders(rows)
     if not orders:
         return {"message": "No BackOffice-only invoice to check"}
-    payload = await _order_sync_missing(orders)
-    report["missing_products"] = payload["products"]
+    payload = await _order_sync_missing(orders, ctx)
+    products = payload["products"]
+    report["missing_products"] = products
     report["warnings"] += payload["warnings"]
-    n = len(payload["products"])
-    invoices = f"{len(orders)} BackOffice-only invoice{'s' if len(orders) != 1 else ''}"
-    if not n:
+    invoices = _osauto_plural(len(orders), "BackOffice-only invoice")
+    if not products:
         return {"message": f"Every product on {invoices} is active in Shopify"}
-    return {"message": f"{n} product{'s' if n != 1 else ''} on {invoices} not active in Shopify"}
+    missing = f"{_osauto_plural(len(products), 'product')} on {invoices} not active in Shopify"
+    if not create:
+        for p in products:
+            p["action"] = "listed"
+            _osauto_missing_review(report, p, "not in Shopify, so the order can't come in; create it there, "
+                                              "or switch on “Create their missing products” in the automation")
+        return {"message": missing}
+    return {"message": missing + " — " + await _osauto_create_missing(t, ctx, orders, products, report, dry_run)}
+
+
+async def _osauto_create_missing(t: _OsAutoTracker, ctx: Dict[str, Any], orders: List[Dict[str, Any]],
+                                 products: List[Dict[str, Any]], report: Dict[str, Any], dry_run: bool) -> str:
+    """Create the products BackOffice-only invoices need. Their orders are not
+    in Shopify because the WebHook can't create an order while a product is
+    missing; once the products exist, its next pass brings the order in and
+    the following Compare matches it. Every product created is logged."""
+    by_barcode = {p["barcode"]: p for p in products}
+    wanted = [p["barcode"] for p in products if p.get("shopify_status") == "MISSING"]
+    item_prices: Optional[Dict[str, Dict[str, Any]]] = None
+    item_error: Optional[str] = None
+    if wanted:
+        ok, err, found = await get_item_prices_batch_async(**ctx["invoice_conn"], upcs=wanted)
+        item_prices, item_error = (found, None) if ok else (None, err or "unknown error")
+    actions, skipped = osync.plan_missing_creates(products, orders, item_prices, item_error)
+    for sk in skipped:
+        by_barcode[sk["barcode"]].update(action="skipped", action_message=sk["message"])
+        _osauto_missing_review(report, by_barcode[sk["barcode"]], sk["message"])
+    if dry_run:
+        for a in actions:
+            by_barcode[a["barcode"]].update(action="would_create", action_message=a["note"],
+                                            create_title=a["title"], create_price=a["unit_price"])
+        return f"would create {_osauto_plural(len(actions), 'product')}" if actions else "none can be created"
+
+    batch_id = str(uuid.uuid4())
+    report["batch_ids"]["create_missing"] = [batch_id]
+    created = failed = 0
+    t.count(0, len(actions))
+    async with aiohttp.ClientSession() as session:
+        sctx = ofix.ShopifyCtx(session, ctx["shop_domain"], ctx["admin_api_key"], ctx["api_version"])
+        for i, a in enumerate(actions):
+            row = by_barcode[a["barcode"]]
+            if t.stopped:
+                row.update(action="skipped", action_message="Run stopped")
+                continue
+            try:
+                made = (await ofix.create_missing_products(sctx, [a]))[a["barcode"]]
+            except Exception as e:
+                failed += 1
+                row.update(action="failed", action_message=str(e))
+                _osauto_missing_review(report, row, f"creating it in Shopify failed: {e}")
+                t.log(f"{a['barcode']}: create failed — {e}")
+                continue
+            finally:
+                t.count(i + 1, len(actions))
+            if made.get("reused"):
+                row.update(action="exists", action_message="Already in Shopify by the time the run got to it")
+                continue
+            cp = {"barcode": a["barcode"], "title": a["title"], "sku": a["sku"], "price": a["unit_price"],
+                  "unit_cost": a["unit_cost"], "price_source": a["price_source"],
+                  "product_gid": made.get("product_id"), "variant_gid": made.get("variant_id")}
+            invoice_numbers = ", ".join(a["invoices"])[:64]
+            try:
+                await asyncio.to_thread(_osauto_log_created, batch_id, ctx, cp, invoice_numbers)
+            except Exception as e:   # the product exists — never hide that behind a log failure
+                report["warnings"].append(f"{a['barcode']} was created but not logged: {e}")
+            report["created_products"].append({**cp, "sh_order_name": None, "bo_invoice_number": invoice_numbers,
+                                               "admin_url": _order_sync_admin_url(ctx["shop_domain"], cp["product_gid"])})
+            row.update(action="created", action_message=a["note"], create_title=a["title"],
+                       create_price=a["unit_price"],
+                       admin_url=_order_sync_admin_url(ctx["shop_domain"], cp["product_gid"]))
+            created += 1
+            t.log(f"{a['barcode']}: created “{a['title']}” at {a['unit_price']:.2f}")
+    parts = [f"created {_osauto_plural(created, 'product')}"]
+    if failed:
+        parts.append(f"{failed} failed")
+    return ", ".join(parts)
+
+
+def _osauto_log_created(batch_id: str, ctx: Dict[str, Any], cp: Dict[str, Any], invoice_numbers: str) -> None:
+    with db_session() as db:
+        db.add(_order_sync_created_product_row(batch_id, ctx, cp, bo_invoice_number=invoice_numbers))
+        db.commit()
 
 
 async def _osauto_fix(t: _OsAutoTracker, rows: List[Dict[str, Any]], report: Dict[str, Any],
@@ -15077,8 +15181,9 @@ async def _osauto_execute(run_id: int, run_date: date, dry_run: bool, steps: Dic
             "message": f"{snap_before['shopify_total']} Shopify orders, {snap_before['backoffice_total']} invoices"}
         t.set(summary_before=snap_before)
 
-        await stage("missing", "Checking invoice products missing in Shopify…", steps["missing_check"],
-                    lambda: _osauto_missing(rows, report))
+        await stage("missing", "Checking invoice products missing in Shopify…",
+                    steps["missing_check"] or steps["create_missing"],
+                    lambda: _osauto_missing(t, ctx, rows, report, steps["create_missing"], dry_run))
         await stage("fix", "Dry run: planning fixes…" if dry_run else "Fixing orders in Shopify…",
                     osauto.any_fix_step(steps),
                     lambda: _osauto_fix(t, rows, report, steps, dry_run, shop))

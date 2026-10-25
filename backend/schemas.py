@@ -2410,6 +2410,7 @@ class OrderSyncMissingLine(BaseModel):
     sku: Optional[str] = None
     description: Optional[str] = None
     qty: Optional[float] = None
+    unit_price: Optional[float] = None           # invoice price; the price of a product created for it
 
 
 class OrderSyncMissingOrder(BaseModel):

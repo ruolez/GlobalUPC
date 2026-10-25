@@ -15,7 +15,10 @@ from zoneinfo import ZoneInfo
 from order_sync_helper import FIX_STEPS
 
 CANCEL_STEPS = ("cancel_online_store", "cancel_duplicates")
-CHECK_STEPS = ("missing_check",)
+# missing_check lists the products a BackOffice-only invoice needs that the
+# Shopify store lacks; create_missing creates them so the WebHook can bring
+# the order in on its next pass.
+CHECK_STEPS = ("missing_check", "create_missing")
 STEP_KEYS = FIX_STEPS + CANCEL_STEPS + CHECK_STEPS
 
 DEFAULT_RUN_TIME = "06:00"
@@ -203,7 +206,8 @@ def backoffice_only_orders(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         "invoice_number": r.get("bo_invoice_number") or "", "date": r.get("bo_date") or "",
         "customer": r.get("bo_customer") or "",
         "lines": [{"barcode": d.get("barcode") or "", "sku": d.get("sku") or "",
-                   "description": d.get("description") or "", "qty": d.get("bo_qty") or 0}
+                   "description": d.get("description") or "", "qty": d.get("bo_qty") or 0,
+                   "unit_price": d.get("bo_unit_price")}
                   for d in r.get("line_diffs") or []],
     } for r in rows if r.get("status") == "backoffice_unmatched"]
 
@@ -243,6 +247,7 @@ def report_counts(report: Dict[str, Any]) -> Dict[str, int]:
     """Headline numbers for the run list and the nav badge."""
     fixes = report.get("fixes") or []
     cancels = report.get("cancels") or []
+    missing = report.get("missing_products") or []
     stages = (report.get("stages") or {}).values()
     return {
         "fixed": sum(1 for f in fixes if f.get("status") in FIX_DONE),
@@ -253,7 +258,9 @@ def report_counts(report: Dict[str, Any]) -> Dict[str, int]:
         "cancel_failed": sum(1 for c in cancels if c.get("status") == "failed"),
         "created_products": len(report.get("created_products") or []),
         "review": len(report.get("review") or []),
-        "missing_products": len(report.get("missing_products") or []),
+        "missing_products": len(missing),
+        "would_create": sum(1 for m in missing if m.get("action") == "would_create"),
+        "create_failed": sum(1 for m in missing if m.get("action") == "failed"),
         "stage_errors": sum(1 for s in stages if s.get("status") == "failed"),
     }
 
@@ -261,6 +268,7 @@ def report_counts(report: Dict[str, Any]) -> Dict[str, int]:
 def final_status(counts: Dict[str, int], stopped: bool) -> str:
     if stopped:
         return "stopped"
-    if counts.get("stage_errors") or counts.get("fix_failed") or counts.get("cancel_failed"):
+    if (counts.get("stage_errors") or counts.get("fix_failed") or counts.get("cancel_failed")
+            or counts.get("create_failed")):
         return "partial"
     return "succeeded"

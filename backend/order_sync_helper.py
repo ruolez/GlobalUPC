@@ -1124,6 +1124,62 @@ def aggregate_missing_products(orders: List[Dict[str, Any]],
     return rows
 
 
+# Why a product missing from a BackOffice-only invoice is NOT created.
+MISSING_CREATE_MESSAGES = {
+    "inactive": "Shopify has this barcode on a {status} product — activate it in Shopify by hand",
+    "no_price": "No BackOffice item price and no invoice price — create it in Shopify by hand",
+}
+
+
+def _latest_invoice_price(orders: List[Dict[str, Any]], barcode: str) -> Optional[float]:
+    """The price the newest invoice charged for `barcode` (>0), else None."""
+    best: Tuple[str, float] = ("", 0.0)
+    for order in orders:
+        date = (order.get("date") or "")[:10]
+        for li in order.get("lines", []):
+            try:
+                price = float(li.get("unit_price") or 0)
+            except (TypeError, ValueError):
+                price = 0.0
+            if (li.get("barcode") or "").strip() == barcode and price > 0 and date >= best[0]:
+                best = (date, price)
+    return best[1] or None
+
+
+def plan_missing_creates(products: List[Dict[str, Any]], orders: List[Dict[str, Any]],
+                         item_prices: Optional[Dict[str, Dict[str, Any]]],
+                         item_price_error: Optional[str]
+                         ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """(create_product actions, skipped) for the rows aggregate_missing_products
+    found on BackOffice-only invoices. The order that needs them does not exist
+    in Shopify yet — the WebHook that brings invoices in cannot create it while
+    a product is missing — so the products are created on their own and the
+    next WebHook pass brings the order. Same product shape as Fix in Shopify's
+    create_product; a barcode Shopify holds on a DRAFT/ARCHIVED product is
+    left to a person (reactivating changes a product someone parked)."""
+    actions: List[Dict[str, Any]] = []
+    skipped: List[Dict[str, Any]] = []
+    for row in products:
+        barcode = row["barcode"]
+        invoices = list(row.get("invoices") or [])
+        status = row.get("shopify_status") or "MISSING"
+        if status != "MISSING":
+            skipped.append({"barcode": barcode, "invoices": invoices, "reason": "inactive",
+                            "message": MISSING_CREATE_MESSAGES["inactive"].format(status=status.lower())})
+            continue
+        invoice_price = _latest_invoice_price(orders, barcode)
+        diff = {"key": barcode, "description": row.get("description"), "sku": row.get("sku")}
+        action, why = _create_product_action(diff, {"barcode": barcode, "unit_price": invoice_price or 0.0},
+                                             item_prices, item_price_error)
+        if action["unit_price"] <= 0:
+            skipped.append({"barcode": barcode, "invoices": invoices, "reason": "no_price",
+                            "message": MISSING_CREATE_MESSAGES["no_price"]})
+            continue
+        actions.append({**action, "invoices": invoices,
+                        "note": CREATE_PRODUCT_MESSAGES.get(why) if why else None})
+    return actions, skipped
+
+
 # ---------------------------------------------------------------------------
 # Fix planning (pure)
 # ---------------------------------------------------------------------------
