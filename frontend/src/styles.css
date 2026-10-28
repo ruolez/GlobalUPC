@@ -8504,6 +8504,11 @@ tr.bov-row-click:focus-visible { outline: 2px solid var(--accent-primary); outli
 .me-kpi-row { display: flex; justify-content: space-between; align-items: baseline; gap: 0.75rem; line-height: 1.6; }
 .me-kpi-row > span:first-child { font-size: 0.75rem; font-weight: 500; color: var(--text-secondary); }
 .me-kpi-row.is-net { border-top: 1px solid var(--border-color); margin-top: 0.2rem; padding-top: 0.2rem; }
+/* Product total: its cost on a ruled line under the order count */
+.me-kpi-row.me-kpi-foot {
+  border-top: 1px solid var(--border-color); margin-top: 0.6rem; padding-top: 0.5rem;
+  font-size: 1rem; font-weight: 600; color: var(--text-primary); font-variant-numeric: tabular-nums;
+}
 @media (max-width: 1000px) {
   .me-kpis, .me-kpis[data-extra] { grid-template-columns: 1fr 1fr; }
   .me-kpi:nth-child(odd) { border-left: 0; }

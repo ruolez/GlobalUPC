@@ -25992,12 +25992,13 @@ function meCardPaymentTotals(d) {
 }
 
 function meTotals(rows) {
-  const t = { orders: rows.length, total: 0, revenue: 0, product_profit: 0,
+  const t = { orders: rows.length, total: 0, revenue: 0, cost: 0, product_profit: 0,
               shipping_collected: 0, shipping_cost: 0, profit: 0, profit_known: 0, profit_base: 0,
               profit_pct: null, ship_missing: 0, est_orders: 0, est_amount: 0 };
   rows.forEach((r) => {
     t.total += bovNum(r.total);
     t.revenue += bovNum(r.revenue);
+    t.cost += bovNum(r.cost);
     t.product_profit += bovNum(r.product_profit);
     t.shipping_collected += bovNum(r.shipping_collected);
     t.shipping_cost += bovNum(r.shipping_cost);
@@ -26139,7 +26140,7 @@ function meSummaryHtml(t, cm, cc) {
   const section = (label, value, sub, opts = {}) =>
     `<div class="me-kpi${opts.hero ? " is-hero" : ""}"${opts.title ? ` title="${escapeHtml(opts.title)}"` : ""}>` +
     `<div class="me-kpi-label">${escapeHtml(label)}</div><div class="me-kpi-value">${value}</div>` +
-    `${sub ? `<div class="me-kpi-sub">${sub}</div>` : ""}</div>`;
+    `${sub ? `<div class="me-kpi-sub">${sub}</div>` : ""}${opts.foot || ""}</div>`;
   const row = (k, v, cls) =>
     `<div class="me-kpi-row${cls ? ` ${cls}` : ""}"><span>${escapeHtml(k)}</span><span>${v}</span></div>`;
   const shipNet = t.shipping_collected - t.shipping_cost;
@@ -26150,7 +26151,8 @@ function meSummaryHtml(t, cm, cc) {
   const parts = [
     section("Product total", escapeHtml(bovMoney(t.total - t.shipping_collected)),
       `<strong>${bovInt(t.orders)}</strong> order${t.orders === 1 ? "" : "s"} · of ${escapeHtml(bovMoney(t.total))} order total`,
-      { hero: true, title: `Order total ${bovMoney(t.total)} − shipping collected ${bovMoney(t.shipping_collected)}` }),
+      { hero: true, title: `Order total ${bovMoney(t.total)} − shipping collected ${bovMoney(t.shipping_collected)}`,
+        foot: `<div class="me-kpi-row me-kpi-foot" title="${escapeHtml(bovCostBasisLabel())}"><span>Product cost</span><span>${escapeHtml(bovMoney(t.cost))}</span></div>` }),
     section("Profit", `<span class="bov-profit${t.profit < 0 ? " is-neg" : ""}">${escapeHtml(bovMoney(t.profit))}</span>${pct}`,
       escapeHtml(profitSub),
       { hero: true, title: t.profit_pct != null && t.profit_known < t.orders ? `Profit % is over ${bovMoney(t.profit_base)} of orders with a known profit` : "" }),
