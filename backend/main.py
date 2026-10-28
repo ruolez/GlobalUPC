@@ -12925,7 +12925,7 @@ async def _month_end_payload(date_from: Optional[str], date_to: Optional[str],
     async def _bo(st):
         # The invoice helper clamps to its own MAX_LIST_LIMIT (5k) — far above
         # monthly BackOffice volume; only the Shopify side needs the higher cap.
-        (ok, err, payload), memos = await asyncio.gather(
+        (ok, err, payload), memos, cards = await asyncio.gather(
             bov.invoices_in_period_async(
                 **_bov_conn_kwargs(st), date_from=period.start.isoformat(), date_to_excl=period.end_excl,
                 limit=min(limit, bov.MAX_LIST_LIMIT), sort_by="invoice_date", sort_order="desc", include_list=True,
@@ -12933,9 +12933,13 @@ async def _month_end_payload(date_from: Optional[str], date_to: Optional[str],
             bov.credit_memos_in_period_async(
                 **_bov_conn_kwargs(st), date_from=period.start.isoformat(), date_to_excl=period.end_excl,
                 excluded_names=excl_sales),
+            bov.card_payments_in_period_async(
+                **_bov_conn_kwargs(st), date_from=period.start.isoformat(), date_to_excl=period.end_excl,
+                excluded_names=excl_sales),
         )
         if ok:
             payload["credit_memos_result"] = memos
+            payload["card_payments_result"] = cards
         return ok, err, payload
 
     est_start = (period.start - timedelta(days=bov.SHIP_EST_LOOKBACK_DAYS)).isoformat()
@@ -12968,6 +12972,7 @@ async def _month_end_payload(date_from: Optional[str], date_to: Optional[str],
     stores_status: List[Dict[str, Any]] = []
     rows: List[Dict[str, Any]] = []
     credit_memos: List[Dict[str, Any]] = []
+    card_payments: List[Dict[str, Any]] = []
     truncated = False
 
     # ---- BackOffice rows: "Shipping…" invoice lines are shipping collected, not
@@ -12987,6 +12992,12 @@ async def _month_end_payload(date_from: Optional[str], date_to: Optional[str],
                                 for m in cm_payload.get("credit_memos") or [])
         else:
             warnings.append(f"{st.name}: credit memos unavailable — {cm_err}")
+        cc_ok, cc_err, cc_payload = payload.get("card_payments_result") or (True, None, {})
+        if cc_ok:
+            card_payments.extend({**p, "store_id": st.id, "store_name": st.name}
+                                 for p in cc_payload.get("card_payments") or [])
+        else:
+            warnings.append(f"{st.name}: credit card payments unavailable — {cc_err}")
         for inv in payload.get("invoices") or []:
             rows.append({
                 "source": "backoffice",
@@ -13195,6 +13206,7 @@ async def _month_end_payload(date_from: Optional[str], date_to: Optional[str],
         "stores": stores_status,
         "rows": rows,
         "credit_memos": credit_memos,
+        "card_payments": card_payments,
         "totals": _month_end_totals(rows),
         "by_source": by_source,
         "shipper": shipper,

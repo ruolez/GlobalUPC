@@ -8474,11 +8474,13 @@ tr.bov-row-click:focus-visible { outline: 2px solid var(--accent-primary); outli
 /* Month End summary: one card, sections sized by weight (heroes widest). */
 #me-summary { display: block; }
 .me-kpis {
-  display: grid; grid-template-columns: 1.3fr 1.3fr 1.1fr 0.9fr;
+  display: grid; grid-template-columns: 1.3fr 1.3fr 1.1fr;
   background: var(--bg-secondary); border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
 }
-.me-kpis.no-cm { grid-template-columns: 1.3fr 1.3fr 1.1fr; }
+/* data-extra = sections after Shipping (Credit memos, Credit cards) */
+.me-kpis[data-extra="1"] { grid-template-columns: 1.3fr 1.3fr 1.1fr 0.9fr; }
+.me-kpis[data-extra="2"] { grid-template-columns: 1.3fr 1.3fr 1.1fr 0.9fr 0.9fr; }
 .me-kpi { padding: 1rem 1.25rem; min-width: 0; border-left: 1px solid var(--border-color); }
 .me-kpi:first-child { border-left: 0; }
 .me-kpi-label {
@@ -8503,7 +8505,7 @@ tr.bov-row-click:focus-visible { outline: 2px solid var(--accent-primary); outli
 .me-kpi-row > span:first-child { font-size: 0.75rem; font-weight: 500; color: var(--text-secondary); }
 .me-kpi-row.is-net { border-top: 1px solid var(--border-color); margin-top: 0.2rem; padding-top: 0.2rem; }
 @media (max-width: 1000px) {
-  .me-kpis, .me-kpis.no-cm { grid-template-columns: 1fr 1fr; }
+  .me-kpis, .me-kpis[data-extra] { grid-template-columns: 1fr 1fr; }
   .me-kpi:nth-child(odd) { border-left: 0; }
   .me-kpi:nth-child(n+3) { border-top: 1px solid var(--border-color); }
   .me-kpi.is-hero .me-kpi-value { font-size: 1.5rem; }

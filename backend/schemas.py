@@ -2107,6 +2107,18 @@ class MonthEndCreditMemo(BaseModel):
     total: float = 0.0                           # CreditMemos_tbl.CmemoTotal
 
 
+class MonthEndCardPayment(BaseModel):
+    store_id: int
+    store_name: str
+    payment_id: int
+    number: Optional[str] = None
+    date: Optional[str] = None                   # ARPayments_tbl.PaymentDate
+    customer: Optional[str] = None
+    sales_rep_id: Optional[int] = None           # the customer's Customers_tbl.SalesRepID
+    sales_rep: Optional[str] = None              # Employees_tbl.FirstName for that rep
+    amount: float = 0.0                          # Σ ARPaymentsDetails_tbl.Pym_amount of its "Credit Card" lines
+
+
 class MonthEndTotals(BaseModel):
     orders: int = 0
     total: float = 0.0
@@ -2144,6 +2156,7 @@ class MonthEndResponse(BaseModel):
     stores: List[MonthEndStoreStatus] = []
     rows: List[MonthEndRow] = []
     credit_memos: List[MonthEndCreditMemo] = []  # BackOffice credit memos dated in the period (display only)
+    card_payments: List[MonthEndCardPayment] = []  # BackOffice credit card payments dated in the period (display only)
     totals: Optional[MonthEndTotals] = None
     by_source: Dict[str, MonthEndTotals] = {}
     shipper: MonthEndShipperStatus = MonthEndShipperStatus()

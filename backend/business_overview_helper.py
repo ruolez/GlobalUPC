@@ -1382,6 +1382,70 @@ def _credit_memos_in_period_sync(
         return False, str(e), {}
 
 
+# ARPaymentsDetails_tbl.Pym_method for card payments (PaymentMethods_tbl.method).
+# Rand's separate "Credit" method is store credit, not a card.
+CARD_PAYMENT_METHOD = "Credit Card"
+
+
+def _card_payments_in_period_sync(
+    host, port, database, username, password,
+    date_from: str,
+    date_to_excl: str,
+    excluded_names: Optional[List[str]] = None,
+) -> Tuple[bool, Optional[str], Dict[str, Any]]:
+    """
+    Every AR payment dated (PaymentDate) in [date_from, date_to_excl) with the
+    part paid by credit card (Σ Pym_amount of its "Credit Card" detail lines;
+    a payment can mix methods). Like credit memos, the rep is the customer's:
+    CustomerID -> Customers_tbl.SalesRepID -> Employees_tbl.FirstName
+    (ARPayments_tbl.EmployeeID is whoever keyed the payment).
+    """
+    where = "p.PaymentDate >= ? AND p.PaymentDate < ? AND LTRIM(RTRIM(d.Pym_method)) = ?"
+    params: List[Any] = [_bind_dt(date_from), _bind_dt(date_to_excl), CARD_PAYMENT_METHOD]
+    excl_sql, excl_params = _excl_clause(excluded_names or [], column="p.BusinessName")
+    where += excl_sql
+    params.extend(excl_params)
+    try:
+        with _connect(host, port, database, username, password) as conn:
+            cur = conn.cursor()
+            present = _tables_present(cur, ["ARPayments_tbl", "ARPaymentsDetails_tbl", "Customers_tbl", "Employees_tbl"])
+            if not (present.get("ARPayments_tbl") and present.get("ARPaymentsDetails_tbl")):
+                return True, None, {"present": False, "card_payments": []}
+            rep_id_expr, rep_join, rep_expr = "CAST(NULL AS int)", "", "CAST(NULL AS nvarchar(50))"
+            if present.get("Customers_tbl"):
+                rep_id_expr = "c.SalesRepID"
+                rep_join = "LEFT JOIN Customers_tbl c ON c.CustomerID = p.CustomerID"
+                if present.get("Employees_tbl"):
+                    rep_join += " LEFT JOIN Employees_tbl e ON e.EmployeeID = c.SalesRepID AND c.SalesRepID <> 0"
+                    rep_expr = "e.FirstName"
+            cur.execute(f"""
+                SELECT p.PaymentID, p.PaymentNumber, p.PaymentDate, p.BusinessName,
+                       {rep_id_expr} AS SalesRepID, {rep_expr} AS sales_rep,
+                       SUM(d.Pym_amount) AS card_amount
+                FROM ARPayments_tbl p
+                INNER JOIN ARPaymentsDetails_tbl d ON d.PaymentID = p.PaymentID
+                {rep_join}
+                WHERE {where}
+                GROUP BY p.PaymentID, p.PaymentNumber, p.PaymentDate, p.BusinessName, {rep_id_expr}, {rep_expr}
+                ORDER BY p.PaymentDate DESC, p.PaymentID DESC
+            """, params)
+            payments = []
+            for d in _rows(cur):
+                rep_id = _io(d.get("SalesRepID"))
+                payments.append({
+                    "payment_id": int(d.get("PaymentID")),
+                    "number": _s(d.get("PaymentNumber")),
+                    "date": _iso(d.get("PaymentDate")),
+                    "customer": _s(d.get("BusinessName")),
+                    "sales_rep_id": rep_id,
+                    "sales_rep": _s(d.get("sales_rep")) if rep_id else None,
+                    "amount": round(_f(d.get("card_amount")), 2),
+                })
+        return True, None, {"present": True, "card_payments": payments}
+    except Exception as e:
+        return False, str(e), {}
+
+
 def _invoice_detail_sync(host, port, database, username, password, invoice_id: int,
                          cost_mode: str = "sale") -> Tuple[bool, Optional[str], Dict[str, Any]]:
     try:
@@ -3508,6 +3572,10 @@ async def invoices_in_period_async(**kw):
 
 async def credit_memos_in_period_async(**kw):
     return await _run(_credit_memos_in_period_sync, **kw)
+
+
+async def card_payments_in_period_async(**kw):
+    return await _run(_card_payments_in_period_sync, **kw)
 
 
 async def invoice_detail_async(**kw):

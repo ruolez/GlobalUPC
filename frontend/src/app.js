@@ -25909,9 +25909,10 @@ function meRenderRepFilter(d) {
     if (e) e.count += 1;
     else counts.set(k, { label: k === "—" ? "No rep" : String(r.sales_rep).trim(), count: 1 });
   });
-  // Credit memos carry their customer's rep — a rep with memos but no invoices stays selectable.
+  // Credit memos and card payments carry their customer's rep — a rep with
+  // those but no invoices stays selectable.
   if (f.type === "backoffice") {
-    ((d && d.credit_memos) || []).forEach((m) => {
+    [...((d && d.credit_memos) || []), ...((d && d.card_payments) || [])].forEach((m) => {
       const k = meRepKey(m);
       if (!counts.has(k)) counts.set(k, { label: k === "—" ? "No rep" : String(m.sales_rep).trim(), count: 0 });
     });
@@ -25977,6 +25978,17 @@ function meCreditMemoTotals(d) {
   if (f.stores.size) memos = memos.filter((m) => f.stores.has(m.store_id));
   if (f.type === "backoffice" && f.reps != null) memos = memos.filter((m) => f.reps.includes(meRepKey(m)));
   return { count: memos.length, amount: memos.reduce((sum, m) => sum + bovNum(m.total), 0) };
+}
+
+// BackOffice credit card payments received in the period (display only), same
+// filters as the credit memos; the rep is the paying customer's sales rep.
+function meCardPaymentTotals(d) {
+  const f = monthEndState.filters;
+  if (!d || !Array.isArray(d.card_payments) || f.type === "shopify") return null;
+  let pays = d.card_payments;
+  if (f.stores.size) pays = pays.filter((p) => f.stores.has(p.store_id));
+  if (f.type === "backoffice" && f.reps != null) pays = pays.filter((p) => f.reps.includes(meRepKey(p)));
+  return { count: pays.length, amount: pays.reduce((sum, p) => sum + bovNum(p.amount), 0) };
 }
 
 function meTotals(rows) {
@@ -26121,9 +26133,9 @@ function meTfootHtml(t) {
 }
 
 // One summary card split into sections, widest first: Product total (with the
-// order count) and Profit (with Profit %) lead; Shipping and Credit memos follow.
-// `value` / `sub` are HTML — escape at the call site.
-function meSummaryHtml(t, cm) {
+// order count) and Profit (with Profit %) lead; Shipping, Credit memos and
+// Credit cards follow. `value` / `sub` are HTML — escape at the call site.
+function meSummaryHtml(t, cm, cc) {
   const section = (label, value, sub, opts = {}) =>
     `<div class="me-kpi${opts.hero ? " is-hero" : ""}"${opts.title ? ` title="${escapeHtml(opts.title)}"` : ""}>` +
     `<div class="me-kpi-label">${escapeHtml(label)}</div><div class="me-kpi-value">${value}</div>` +
@@ -26151,7 +26163,11 @@ function meSummaryHtml(t, cm) {
   if (cm) {
     parts.push(section("Credit memos", escapeHtml(bovMoney(cm.amount)), `${bovInt(cm.count)} credit memo${cm.count === 1 ? "" : "s"}`));
   }
-  return `<div class="me-kpis${cm ? "" : " no-cm"}">${parts.join("")}</div>`;
+  if (cc) {
+    parts.push(section("Credit cards", escapeHtml(bovMoney(cc.amount)), `${bovInt(cc.count)} card payment${cc.count === 1 ? "" : "s"}`,
+      { title: "Credit card payments received in the period (by payment date)" }));
+  }
+  return `<div class="me-kpis" data-extra="${parts.length - 3}">${parts.join("")}</div>`;
 }
 
 function meRenderStoreChips(d) {
@@ -26226,7 +26242,7 @@ function renderMonthEnd() {
   meRenderWarnings(d, t);
 
   const summary = document.getElementById("me-summary");
-  if (summary) { summary.innerHTML = meSummaryHtml(t, meCreditMemoTotals(d)); summary.style.display = ""; }
+  if (summary) { summary.innerHTML = meSummaryHtml(t, meCreditMemoTotals(d), meCardPaymentTotals(d)); summary.style.display = ""; }
 
   const tableCard = document.getElementById("me-table-card");
   const table = document.getElementById("me-table");
