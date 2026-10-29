@@ -24776,7 +24776,7 @@ function bovRenderInvoiceModal(data) {
         net == null ? "cost unknown" : "after shipping · % of invoice total", ` is-hero${netTone}`) +
     `</div>`;
 
-  // Where the revenue went: cost / shipping / profit as one stacked bar.
+  // Revenue split: cost / shipping / profit as one stacked bar.
   let split = "";
   if (net != null && revenue > 0) {
     const profitPart = Math.max(bovNum(net), 0);
@@ -24786,30 +24786,45 @@ function bovRenderInvoiceModal(data) {
     const key = (cls, label, v) => `<span class="bov-inv-key"><i class="${cls}"></i>${label}<b>${escapeHtml(bovMoney(v))}</b><em>${pctOf(v)}</em></span>`;
     split =
       `<div class="bov-inv-split">` +
-        `<div class="bov-inv-split-head"><span>Where ${escapeHtml(bovMoney(revenue))} of sales went</span>` +
-          `<span class="bov-inv-split-keys">${key("is-cost", "Cost", cost)}${key("is-ship", "Shipping", shipCost)}` +
-          `${bovNum(net) < 0 ? `<span class="bov-inv-key is-loss"><i class="is-loss"></i>Loss<b>${escapeHtml(bovMoney(-bovNum(net)))}</b></span>` : key("is-profit", "Profit", profitPart)}</span></div>` +
-        `<div class="bov-inv-bar">${seg("is-cost", cost)}${seg("is-ship", shipCost)}${seg("is-profit", profitPart)}</div>` +
+        `<div class="bov-inv-bar" title="Share of ${escapeHtml(bovMoney(revenue))} sales">${seg("is-cost", cost)}${seg("is-ship", shipCost)}${seg("is-profit", profitPart)}</div>` +
+        `<div class="bov-inv-split-keys">${key("is-cost", "Cost", cost)}${key("is-ship", "Shipping", shipCost)}` +
+          `${bovNum(net) < 0 ? `<span class="bov-inv-key is-loss"><i class="is-loss"></i>Loss<b>${escapeHtml(bovMoney(-bovNum(net)))}</b></span>` : key("is-profit", "Profit", profitPart)}</div>` +
       `</div>`;
   }
 
-  const cityLine = [[h.ship_city, h.ship_state].filter(Boolean).join(", "), h.ship_zip_code].filter(Boolean).join(" ");
-  const addr = [h.ship_to && bovUnquote(h.ship_to) !== bovUnquote(h.business_name) ? bovUnquote(h.ship_to) : null,
-    h.ship_address1, h.ship_address2, cityLine].map(clean).filter(Boolean);
-  const contact = [clean(h.ship_contact), clean(h.ship_phone_no)].filter(Boolean).join(" · ");
-  const fact = (label, valueHtml, cls = "") => `<div class="bov-inv-fact${cls}"><dt>${escapeHtml(label)}</dt><dd>${valueHtml}</dd></div>`;
   const txt = (v) => (clean(v) ? escapeHtml(clean(v)) : dash);
+  const cityLine = [[h.ship_city, h.ship_state].filter(Boolean).join(", "), h.ship_zip_code].filter(Boolean).join(" ");
+  const addr = [h.ship_to ? bovUnquote(h.ship_to) : null, h.ship_address1, h.ship_address2, cityLine].map(clean).filter(Boolean);
+  const contact = [clean(h.ship_contact), clean(h.ship_phone_no)].filter(Boolean).join(" · ");
+  const pair = (label, valueHtml) => `<div class="bov-inv-pair"><dt>${escapeHtml(label)}</dt><dd>${valueHtml}</dd></div>`;
+  // BackOffice tracking sometimes carries a ",N" suffix — copy just the number.
+  const trackRaw = clean(h.tracking_no);
+  const trackMatch = trackRaw.match(/^(.*?)\s*,\s*(\S+)$/);
+  const trackNo = trackMatch ? trackMatch[1] : trackRaw;
+  const parcel = [h.no_boxes ? `${bovInt(h.no_boxes)} box${h.no_boxes === 1 ? "" : "es"}` : "", h.total_weight ? `${bovNum(h.total_weight).toLocaleString()} lb` : ""].filter(Boolean).join(" · ");
   const facts =
-    `<dl class="bov-inv-facts">` +
-      fact("Invoice date", txt(h.invoice_date ? bovDateMdy(h.invoice_date) : null) +
-        (!h.is_shipped && !h.void && h.age_days != null ? ` ${bovAgeChip(h.age_days)}` : "")) +
-      fact("Ship date", txt(h.ship_date ? bovDateMdy(h.ship_date) : null)) +
-      fact("Sales rep", txt(h.sales_rep)) +
-      fact("Shipper", txt(h.shipper) + (h.no_boxes || h.total_weight
-        ? `<span class="bov-inv-contact">${[h.no_boxes ? `${bovInt(h.no_boxes)} box${h.no_boxes === 1 ? "" : "es"}` : "", h.total_weight ? `${bovNum(h.total_weight).toLocaleString()} lb` : ""].filter(Boolean).join(" · ")}</span>` : "")) +
-      fact("Tracking", clean(h.tracking_no) ? `<span class="bov-cell-mono">${escapeHtml(clean(h.tracking_no))}</span>` : dash, " is-wide") +
-      fact("Ship to", `${addr.length ? escapeHtml(addr.join(", ")) : dash}${contact ? `<span class="bov-inv-contact">${escapeHtml(contact)}</span>` : ""}`, " is-wide") +
-    `</dl>`;
+    `<div class="bov-inv-facts">` +
+      `<section class="bov-inv-fcol"><h4>Dates</h4><dl>` +
+        pair("Invoiced", txt(h.invoice_date ? bovDateMdy(h.invoice_date) : null) +
+          (!h.is_shipped && !h.void && h.age_days != null ? ` ${bovAgeChip(h.age_days)}` : "")) +
+        pair("Shipped", txt(h.ship_date ? bovDateMdy(h.ship_date) : null)) +
+        pair("Sales rep", txt(h.sales_rep)) +
+      `</dl></section>` +
+      `<section class="bov-inv-fcol"><h4>Shipping</h4>` +
+        `<div class="bov-inv-carrier">${txt(h.shipper)}${parcel ? `<span>${escapeHtml(parcel)}</span>` : ""}</div>` +
+        (trackNo
+          ? `<div class="bov-inv-track"><span class="bov-cell-mono">${escapeHtml(trackNo)}</span>` +
+              `${trackMatch ? `<span class="bov-inv-track-sfx">, ${escapeHtml(trackMatch[2])}</span>` : ""}` +
+              `<button type="button" class="bov-inv-copy" data-inv-copy="${escapeHtml(trackNo)}" title="Copy tracking number" aria-label="Copy tracking number">` +
+                `<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><rect x="5" y="5" width="9" height="9" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M11 3.5V3a1 1 0 0 0-1-1H3a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h.5" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>` +
+              `</button></div>`
+          : `<div class="bov-inv-track bov-cell-muted">No tracking number</div>`) +
+      `</section>` +
+      `<section class="bov-inv-fcol"><h4>Ship to</h4>` +
+        `<address class="bov-inv-addr">${addr.length ? addr.map(escapeHtml).join("<br>") : dash}</address>` +
+        (contact ? `<div class="bov-inv-contact">${escapeHtml(contact)}</div>` : "") +
+      `</section>` +
+    `</div>`;
 
   const basisChip = data.cost_basis === "s2s"
     ? `<span class="bov-cost-basis is-s2s" title="Every line costed from the Item Tracker S2S Items_tbl.UnitCost by UPC">S2S cost</span>`
@@ -24835,6 +24850,32 @@ function bovRenderInvoiceModal(data) {
       `</div>` +
       (notes ? `<div class="bov-inv-notes"><h4>Notes</h4><p>${escapeHtml(notes)}</p></div>` : "") +
     `</div>`;
+  const copyBtn = body.querySelector("[data-inv-copy]");
+  if (copyBtn) {
+    copyBtn.addEventListener("click", async () => {
+      try {
+        // navigator.clipboard needs a secure context; the LAN install is plain HTTP.
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(copyBtn.dataset.invCopy);
+        } else {
+          const ta = document.createElement("textarea");
+          ta.value = copyBtn.dataset.invCopy;
+          ta.setAttribute("readonly", "");
+          ta.style.cssText = "position:fixed;opacity:0;pointer-events:none";
+          copyBtn.after(ta);
+          ta.select();
+          const ok = document.execCommand("copy");
+          ta.remove();
+          if (!ok) throw new Error("copy failed");
+        }
+        copyBtn.classList.add("is-done");
+        copyBtn.title = "Copied";
+        setTimeout(() => { copyBtn.classList.remove("is-done"); copyBtn.title = "Copy tracking number"; }, 1500);
+      } catch (e) {
+        showToast("Could not copy the tracking number", "error");
+      }
+    });
+  }
 }
 
 function bovLineProfitCell(profit) {
@@ -24853,8 +24894,8 @@ function bovInvoiceLineCols() {
   return [
     { key: "product_description", label: "Product", width: "36%", render: (l) => `<span class="bov-cell-main">${escapeHtml(l.product_description || "—")}</span><span class="bov-cell-sub bov-cell-mono">${escapeHtml([l.product_sku, l.product_upc].filter(Boolean).join(" · "))}${l.unit_desc ? ` · ${escapeHtml(l.unit_desc)}` : ""}</span>` },
     { key: "qty_shipped", label: "Qty", num: true, width: "8%", render: (l) => { const qty = bovNum(l.qty_shipped); return `${bovInt(qty)}${l.qty_ordered != null && bovNum(l.qty_ordered) !== qty ? `<span class="bov-cell-sub">of ${bovInt(l.qty_ordered)}</span>` : ""}`; } },
-    { key: "unit_price", label: "Unit price", num: true, width: "11%", render: (l) => bovMoney(l.unit_price) },
-    { key: "unit_cost", label: "Unit cost", num: true, width: "11%", render: (l) => `${l.unit_cost != null ? bovMoney(l.unit_cost) : "—"}${l.line_unit_cost != null && l.unit_cost != null && Math.abs(bovNum(l.line_unit_cost) - bovNum(l.unit_cost)) > 0.004 ? `<span class="bov-cell-sub" title="Cost stamped on the invoice line">line ${escapeHtml(bovMoney(l.line_unit_cost))}</span>` : ""}` },
+    { key: "unit_price", label: "Unit price", num: true, cls: "is-quiet", width: "11%", render: (l) => bovMoney(l.unit_price) },
+    { key: "unit_cost", label: "Unit cost", num: true, cls: "is-quiet", width: "11%", render: (l) => `${l.unit_cost != null ? bovMoney(l.unit_cost) : "—"}${l.line_unit_cost != null && l.unit_cost != null && Math.abs(bovNum(l.line_unit_cost) - bovNum(l.unit_cost)) > 0.004 ? `<span class="bov-cell-sub" title="Cost stamped on the invoice line">line ${escapeHtml(bovMoney(l.line_unit_cost))}</span>` : ""}` },
     { key: "extended_price", label: "Total", num: true, width: "11%", render: (l) => bovMoney(l.extended_price) },
     { key: "line_profit", label: "Profit", num: true, width: "11%", render: (l) => bovLineProfitCell(l.line_profit) },
     { key: "margin_pct", label: "Margin", num: true, width: "9%", render: (l) => bovLineMarginCell(l.margin_pct) },
