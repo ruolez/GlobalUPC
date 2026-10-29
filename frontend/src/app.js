@@ -24732,95 +24732,107 @@ function bovRenderInvoiceModal(data) {
   bovState.invoiceModalData = data;
   const h = data.header || {};
   const lines = data.lines || [];
+  const dash = `<span class="bov-cell-muted">—</span>`;
+  const clean = (v) => (v != null && String(v).trim() && String(v).trim() !== "0" ? String(v).trim() : "");
+
   const statusChip = h.void
     ? `<span class="qip-status-chip pending">Void</span>`
     : h.is_shipped
       ? `<span class="qip-status-chip complete">Shipped</span>`
       : `<span class="qip-status-chip picking">Open</span>`;
-  if (title) title.innerHTML = `<span>Invoice ${escapeHtml(String(h.invoice_number || h.invoice_id || ""))}</span>${statusChip}`;
+  if (title) {
+    const sub = [escapeHtml(bovUnquote(h.business_name) || ""), h.account_no ? `<span class="bov-cell-mono">${escapeHtml(h.account_no)}</span>` : "",
+      data.store_name ? escapeHtml(data.store_name) : "",
+      clean(h.po_number) ? `PO ${escapeHtml(clean(h.po_number))}` : ""].filter(Boolean).join(`<span class="bov-inv-dot">·</span>`);
+    title.innerHTML = `<span class="bov-inv-title">Invoice ${escapeHtml(String(h.invoice_number || h.invoice_id || ""))}${statusChip}</span>` +
+      (sub ? `<span class="bov-inv-subtitle">${sub}</span>` : "");
+  }
 
-  const dash = `<span class="bov-cell-muted">—</span>`;
-  const text = (v) => (v != null && String(v).trim() ? escapeHtml(String(v).trim()) : dash);
-  const row = (label, valueHtml, cls = "") => `<dt>${escapeHtml(label)}</dt><dd${cls ? ` class="${cls}"` : ""}>${valueHtml}</dd>`;
-  const group = (label, rowsHtml) => `<section class="bov-inv-group"><h4>${escapeHtml(label)}</h4><dl class="bov-inv-dl">${rowsHtml}</dl></section>`;
-  const neg = (v) => (bovNum(v) ? `−${bovMoney(Math.abs(bovNum(v)))}` : bovMoney(0));
-
-  // Customer + ship-to
-  const cityLine = [[h.ship_city, h.ship_state].filter(Boolean).join(", "), h.ship_zip_code].filter(Boolean).join(" ");
-  const addr = [h.ship_to && bovUnquote(h.ship_to) !== bovUnquote(h.business_name) ? bovUnquote(h.ship_to) : null,
-    h.ship_address1, h.ship_address2, cityLine].filter((x) => x && String(x).trim());
-  const customer =
-    `<div class="bov-inv-customer">` +
-      `<div class="bov-inv-name">${escapeHtml(bovUnquote(h.business_name) || "—")}</div>` +
-      `<div class="bov-inv-meta">${[h.account_no ? `<span class="bov-cell-mono">${escapeHtml(h.account_no)}</span>` : "", data.store_name ? escapeHtml(data.store_name) : ""].filter(Boolean).join(" · ")}</div>` +
-      `<div class="bov-inv-label">Ship to</div>` +
-      `<address class="bov-inv-addr">${addr.length ? addr.map((x) => escapeHtml(String(x).trim())).join("<br>") : dash}</address>` +
-      (h.ship_contact || h.ship_phone_no ? `<div class="bov-inv-meta">${[h.ship_contact, h.ship_phone_no].filter(Boolean).map((x) => escapeHtml(x)).join(" · ")}</div>` : "") +
-    `</div>`;
-
-  // Profit breakdown: product revenue − cost + shipping collected − shipping cost
-  // = net_profit (Month End's Profit uses the same formula).
+  // Money: product revenue − cost + shipping collected − shipping cost = net_profit
+  // (Month End's Profit). Shipping collected = "Shipping…" lines, as on the backend.
   const shipCollected = lines.reduce((a, l) => a + (BOV_SHIPPING_LINE_RE.test(l.product_description || "") ? bovNum(l.extended_price) : 0), 0);
+  const revenue = bovNum(h.revenue);
+  const productRevenue = revenue - shipCollected;
+  const cost = bovNum(h.cost);
+  const shipCost = bovNum(h.shipping_cost);
+  const productProfit = h.profit != null ? bovNum(h.profit) - shipCollected : null;
   const net = h.net_profit != null ? h.net_profit : h.profit;
   const netPct = bovProfitPct(net, h.invoice_total);
-  const step = (label, value, cls = "") => `<div class="bov-inv-step${cls ? ` ${cls}` : ""}"><span>${label}</span><span>${value}</span></div>`;
-  const profit = net == null
-    ? `<div class="bov-inv-profit"><div class="bov-inv-label">Profit</div><div class="bov-inv-profit-total">${dash}</div><p class="bov-modal-note">Cost unknown for this invoice's items.</p></div>`
-    : `<div class="bov-inv-profit">` +
-        step("Product revenue", escapeHtml(bovMoney(bovNum(h.revenue) - shipCollected))) +
-        step("Product cost", escapeHtml(neg(h.cost)), "is-minus") +
-        step("Product profit", `${escapeHtml(bovMoney(h.profit - shipCollected))}${h.margin_pct != null && !shipCollected ? ` <span class="bov-inv-hint">${escapeHtml(bovPct(h.margin_pct))}</span>` : ""}`, "is-sub") +
-        (shipCollected ? step("Shipping collected", `+${escapeHtml(bovMoney(shipCollected))}`) : "") +
-        step("Shipping cost", escapeHtml(neg(h.shipping_cost || 0)), "is-minus") +
-        `<div class="bov-inv-profit-total"><span>Profit</span><span><strong class="bov-profit${bovNum(net) < 0 ? " is-neg" : ""}">${escapeHtml(bovMoney(net))}</strong>` +
-          `${netPct != null ? ` <span class="sa-kpi-pct" title="Profit ÷ invoice total (same basis as Month End)">${escapeHtml(bovPct(netPct))}</span>` : ""}</span></div>` +
-      `</div>`;
+  const signed = (v) => (v < 0 ? `−${bovMoney(-v)}` : bovMoney(v));
+  const pill = (pct, tone = "") => (pct != null ? `<span class="bov-inv-pill${tone}">${escapeHtml(bovPct(pct))}</span>` : "");
+  const tile = (label, valueHtml, subHtml, cls = "") =>
+    `<div class="bov-inv-tile${cls}"><div class="bov-inv-tile-label">${label}</div><div class="bov-inv-tile-value">${valueHtml}</div><div class="bov-inv-tile-sub">${subHtml}</div></div>`;
 
-  const balance = bovNum(h.invoice_total) - bovNum(h.total_payments) - bovNum(h.total_credits);
-  const details =
-    `<div class="bov-inv-groups">` +
-      group("Order",
-        row("Invoice date", text(h.invoice_date ? bovDateMdy(h.invoice_date) : null)) +
-        (!h.is_shipped && !h.void && h.age_days != null ? row("Age", bovAgeChip(h.age_days)) : "") +
-        row("Sales rep", text(h.sales_rep)) +
-        row("Terms", text(h.term)) +
-        row("PO #", text(h.po_number))) +
-      group("Shipment",
-        row("Ship date", text(h.ship_date ? bovDateMdy(h.ship_date) : null)) +
-        row("Shipper", text(h.shipper)) +
-        row("Tracking", h.tracking_no && h.tracking_no !== "0" ? `<span class="bov-cell-mono">${escapeHtml(h.tracking_no)}</span>` : dash) +
-        (h.no_boxes || h.total_weight ? row("Boxes · weight", `${h.no_boxes ? bovInt(h.no_boxes) : "—"} · ${h.total_weight ? `${bovNum(h.total_weight).toLocaleString()} lb` : "—"}`) : "")) +
-      group("Payment",
-        row("Subtotal", escapeHtml(bovMoney(h.invoice_subtotal))) +
-        row("Taxes", escapeHtml(bovMoney(h.total_taxes))) +
-        row("Invoice total", `<strong>${escapeHtml(bovMoney(h.invoice_total))}</strong>`) +
-        row("Paid", escapeHtml(bovMoney(h.total_payments))) +
-        (bovNum(h.total_credits) ? row("Credits", escapeHtml(bovMoney(h.total_credits))) : "") +
-        row("Balance", Math.abs(balance) < 0.005 ? `<span class="bov-inv-paid">Paid in full</span>` : `<strong>${escapeHtml(bovMoney(balance))}</strong>`)) +
+  const qty = lines.reduce((a, l) => a + bovNum(l.qty_shipped), 0);
+  const netTone = net == null ? "" : bovNum(net) < 0 ? " is-loss" : " is-gain";
+  const tiles =
+    `<div class="bov-inv-tiles">` +
+      tile("Invoice total", escapeHtml(bovMoney(h.invoice_total)), `${bovInt(lines.length)} item${lines.length === 1 ? "" : "s"} · ${bovInt(qty)} unit${qty === 1 ? "" : "s"}`) +
+      tile("Product profit", productProfit == null ? dash : `${escapeHtml(signed(productProfit))}${pill(bovProfitPct(productProfit, productRevenue))}`,
+        `on ${escapeHtml(bovMoney(productRevenue))} product sales`) +
+      tile("Shipping", shipCost ? escapeHtml(`−${bovMoney(shipCost)}`) : escapeHtml(bovMoney(0)),
+        shipCollected ? `cost · ${escapeHtml(bovMoney(shipCollected))} charged to customer` : (shipCost ? "cost · not charged to customer" : "no shipping cost recorded")) +
+      tile("Profit", net == null ? dash : `${escapeHtml(signed(bovNum(net)))}${pill(netPct, netTone)}`,
+        net == null ? "cost unknown" : "after shipping · % of invoice total", ` is-hero${netTone}`) +
     `</div>`;
 
+  // Where the revenue went: cost / shipping / profit as one stacked bar.
+  let split = "";
+  if (net != null && revenue > 0) {
+    const profitPart = Math.max(bovNum(net), 0);
+    const whole = Math.max(revenue, cost + shipCost);
+    const seg = (cls, v) => (v > 0 ? `<span class="bov-inv-seg ${cls}" style="width:${((v / whole) * 100).toFixed(2)}%"></span>` : "");
+    const pctOf = (v) => `${((v / revenue) * 100).toFixed(1)}%`;
+    const key = (cls, label, v) => `<span class="bov-inv-key"><i class="${cls}"></i>${label}<b>${escapeHtml(bovMoney(v))}</b><em>${pctOf(v)}</em></span>`;
+    split =
+      `<div class="bov-inv-split">` +
+        `<div class="bov-inv-split-head"><span>Where ${escapeHtml(bovMoney(revenue))} of sales went</span>` +
+          `<span class="bov-inv-split-keys">${key("is-cost", "Cost", cost)}${key("is-ship", "Shipping", shipCost)}` +
+          `${bovNum(net) < 0 ? `<span class="bov-inv-key is-loss"><i class="is-loss"></i>Loss<b>${escapeHtml(bovMoney(-bovNum(net)))}</b></span>` : key("is-profit", "Profit", profitPart)}</span></div>` +
+        `<div class="bov-inv-bar">${seg("is-cost", cost)}${seg("is-ship", shipCost)}${seg("is-profit", profitPart)}</div>` +
+      `</div>`;
+  }
+
+  const cityLine = [[h.ship_city, h.ship_state].filter(Boolean).join(", "), h.ship_zip_code].filter(Boolean).join(" ");
+  const addr = [h.ship_to && bovUnquote(h.ship_to) !== bovUnquote(h.business_name) ? bovUnquote(h.ship_to) : null,
+    h.ship_address1, h.ship_address2, cityLine].map(clean).filter(Boolean);
+  const contact = [clean(h.ship_contact), clean(h.ship_phone_no)].filter(Boolean).join(" · ");
+  const fact = (label, valueHtml, cls = "") => `<div class="bov-inv-fact${cls}"><dt>${escapeHtml(label)}</dt><dd>${valueHtml}</dd></div>`;
+  const txt = (v) => (clean(v) ? escapeHtml(clean(v)) : dash);
+  const facts =
+    `<dl class="bov-inv-facts">` +
+      fact("Invoice date", txt(h.invoice_date ? bovDateMdy(h.invoice_date) : null) +
+        (!h.is_shipped && !h.void && h.age_days != null ? ` ${bovAgeChip(h.age_days)}` : "")) +
+      fact("Ship date", txt(h.ship_date ? bovDateMdy(h.ship_date) : null)) +
+      fact("Sales rep", txt(h.sales_rep)) +
+      fact("Shipper", txt(h.shipper) + (h.no_boxes || h.total_weight
+        ? `<span class="bov-inv-contact">${[h.no_boxes ? `${bovInt(h.no_boxes)} box${h.no_boxes === 1 ? "" : "es"}` : "", h.total_weight ? `${bovNum(h.total_weight).toLocaleString()} lb` : ""].filter(Boolean).join(" · ")}</span>` : "")) +
+      fact("Tracking", clean(h.tracking_no) ? `<span class="bov-cell-mono">${escapeHtml(clean(h.tracking_no))}</span>` : dash, " is-wide") +
+      fact("Ship to", `${addr.length ? escapeHtml(addr.join(", ")) : dash}${contact ? `<span class="bov-inv-contact">${escapeHtml(contact)}</span>` : ""}`, " is-wide") +
+    `</dl>`;
+
   const basisChip = data.cost_basis === "s2s"
-    ? `<span class="bov-cost-basis is-s2s" title="Every line costed from the Item Tracker S2S Items_tbl.UnitCost by UPC">S2S UnitCost</span>`
+    ? `<span class="bov-cost-basis is-s2s" title="Every line costed from the Item Tracker S2S Items_tbl.UnitCost by UPC">S2S cost</span>`
     : data.cost_basis === "current"
       ? `<span class="bov-cost-basis" title="Each line costed from this store's Items_tbl.UnitCost by UPC today (invoice line cost when the item is missing)">Current cost</span>`
       : `<span class="bov-cost-basis" title="Each line costed from the cost stamped on the invoice line when it was sold (blank/$0 → current Items_tbl.UnitCost)">Sale cost</span>`;
-  const qty = lines.reduce((a, l) => a + bovNum(l.qty_shipped), 0);
   const tfoot = `<tfoot><tr><td class="bov-num bov-line-no"></td><td>Total</td>` +
     `<td class="bov-num">${bovInt(qty)}</td><td></td><td></td>` +
     `<td class="bov-num">${bovMoney(h.revenue)}</td>` +
-    `<td class="bov-num" title="Before shipping cost — the breakdown above deducts it">${bovMoney(h.profit)}</td>` +
+    `<td class="bov-num" title="Before shipping cost">${bovMoney(h.profit)}</td>` +
     `<td class="bov-num">${h.margin_pct != null ? escapeHtml(bovPct(h.margin_pct)) : "—"}</td></tr></tfoot>`;
-  const notes = h.notes && String(h.notes).trim() && String(h.notes).trim() !== "0" ? String(h.notes).trim() : "";
+  const notes = clean(h.notes);
 
   body.innerHTML =
     `<div class="bov-inv">` +
-      `<div class="bov-inv-top">${customer}${profit}</div>` +
-      details +
-      `<div class="bov-inv-lines-head"><h4>${bovInt(lines.length)} line${lines.length === 1 ? "" : "s"}</h4><span>Cost basis ${basisChip}</span></div>` +
-      (lines.length
-        ? bovTableHtml("invoiceLines", bovInvoiceLineCols(), bovSortRows(lines, bovState.sort.invoiceLines),
-                       { tfoot, plainRows: true, rowAttrs: (l) => (l.void ? 'style="opacity:.55" title="Voided line"' : "") })
-        : `<p class="bov-modal-note">No line items on this invoice.</p>`) +
+      tiles + split + facts +
+      `<div class="bov-inv-section">` +
+        `<div class="bov-inv-lines-head"><h4>Items <span>${bovInt(lines.length)}</span></h4><span>Cost basis ${basisChip}</span></div>` +
+        (lines.length
+          ? bovTableHtml("invoiceLines", bovInvoiceLineCols(), bovSortRows(lines, bovState.sort.invoiceLines),
+                         { tfoot, plainRows: true, rowAttrs: (l) => (l.void ? 'style="opacity:.55" title="Voided line"' : "") })
+          : `<p class="bov-modal-note">No line items on this invoice.</p>`) +
+      `</div>` +
       (notes ? `<div class="bov-inv-notes"><h4>Notes</h4><p>${escapeHtml(notes)}</p></div>` : "") +
     `</div>`;
 }
