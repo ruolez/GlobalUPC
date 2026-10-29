@@ -12999,6 +12999,9 @@ async def _month_end_payload(date_from: Optional[str], date_to: Optional[str],
         else:
             warnings.append(f"{st.name}: credit card payments unavailable — {cc_err}")
         for inv in payload.get("invoices") or []:
+            pp = inv.get("profit")
+            profit = (round(pp + (inv.get("shipping_collected") or 0.0) - (inv.get("shipping_cost") or 0.0), 2)
+                      if pp is not None else None)
             rows.append({
                 "source": "backoffice",
                 "row_key": f"bo:{st.id}:{inv['invoice_id']}",
@@ -13016,7 +13019,7 @@ async def _month_end_payload(date_from: Optional[str], date_to: Optional[str],
                 "sales_rep_id": inv.get("sales_rep_id"),
                 "sales_rep": inv.get("sales_rep"),
                 "parcels": None,
-                "profit": inv.get("profit"),
+                "profit": profit,
                 "cost_coverage": inv.get("cost_coverage"),
                 "status": "shipped" if inv.get("is_shipped") else "open",
             })

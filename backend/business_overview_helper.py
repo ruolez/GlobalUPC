@@ -490,9 +490,9 @@ def _invoice_joins(present: Dict[str, bool], cost_mode: str = "sale",
         rev_expr = "ISNULL(d.ExtendedPrice,0)"
         if exclude_shipping:
             # CASE, not WHERE: an invoice with only shipping lines keeps a $0
-            # product revenue instead of turning "unknown" (NULL).
+            # product revenue instead of turning "unknown" (NULL). Their cost
+            # (BackOffice stamps $0.01) stays, so profit matches the invoice modal.
             rev_expr = f"CASE WHEN {_SHIPPING_LINE} THEN 0 ELSE {rev_expr} END"
-            cost_expr = f"CASE WHEN {_SHIPPING_LINE} THEN 0 ELSE {cost_expr} END"
         j["revenue_expr"] = f"(SELECT SUM({rev_expr}) FROM InvoicesDetails_tbl d WHERE d.InvoiceID = h.InvoiceID)"
         j["cost_expr"] = f"(SELECT SUM({cost_expr}) FROM InvoicesDetails_tbl d {cost_apply} WHERE d.InvoiceID = h.InvoiceID)"
         j["ship_lines_expr"] = (f"(SELECT SUM(ISNULL(d.ExtendedPrice,0)) FROM InvoicesDetails_tbl d "

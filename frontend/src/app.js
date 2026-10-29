@@ -26067,9 +26067,7 @@ function meProfitCell(r) {
     return `<span class="bov-cell-muted" title="${escapeHtml(why)}">—</span>`;
   }
   const n = bovNum(r.profit);
-  const breakdown = r.source === "shopify"
-    ? `Product profit ${bovMoney(r.product_profit)} + shipping collected ${bovMoney(r.shipping_collected || 0)} − ${r._estimated ? "estimated " : ""}shipping cost ${bovMoney(r.shipping_cost || 0)}`
-    : `Gross product profit: revenue ${bovMoney(r.revenue)} − cost ${bovMoney(r.cost)} (excludes “Shipping” lines; shipping cost not deducted)`;
+  const breakdown = `Product profit ${bovMoney(r.product_profit)} + shipping collected ${bovMoney(r.shipping_collected || 0)} − ${r._estimated ? "estimated " : ""}shipping cost ${bovMoney(r.shipping_cost || 0)}`;
   const cov = r.cost_coverage != null && r.cost_coverage < 0.999
     ? `<span class="bov-cell-sub">cost ${Math.round(r.cost_coverage * 100)}% known</span>` : "";
   const est = r._estimated ? `<span class="bov-cell-sub">est. shipping</span>` : "";
@@ -26103,7 +26101,7 @@ function meColumns() {
     { key: "total", label: "Total", num: true, width: "10%", render: (r) => bovMoney(r.total) },
     { key: "shipping_collected", label: "Collected", title: "Shipping collected from the customer (Shopify total_shipping · BackOffice invoice lines starting with “Shipping”)", num: true, width: "10%", render: meShipCollectedCell },
     { key: "shipping_cost", label: "Ship cost", num: true, width: "10%", render: meShipCostCell },
-    { key: "profit", label: "Profit", title: "BackOffice: product gross profit (shipping not included) · Shopify: product profit + shipping collected − shipping cost", num: true, width: "10%", render: meProfitCell },
+    { key: "profit", label: "Profit", title: "Product profit + shipping collected − shipping cost (BackOffice: Invoices_tbl.ShippingCost · Shopify: shipper parcels) — same as the invoice modal's Profit", num: true, width: "10%", render: meProfitCell },
     { key: "profit_pct", label: "Profit %", title: "Net profit ÷ order total (invoice total / Shopify order total) — the invoice modal uses the same basis", num: true, width: "7%", render: meProfitPctCell },
   ];
 }
