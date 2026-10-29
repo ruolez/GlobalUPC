@@ -24743,8 +24743,12 @@ function bovRenderInvoiceModal(data) {
   if (title) {
     const sub = [escapeHtml(bovUnquote(h.business_name) || ""), h.account_no ? `<span class="bov-cell-mono">${escapeHtml(h.account_no)}</span>` : "",
       data.store_name ? escapeHtml(data.store_name) : "",
+      clean(h.sales_rep) ? `Rep ${escapeHtml(clean(h.sales_rep))}` : "",
       clean(h.po_number) ? `PO ${escapeHtml(clean(h.po_number))}` : ""].filter(Boolean).join(`<span class="bov-inv-dot">·</span>`);
-    title.innerHTML = `<span class="bov-inv-title">Invoice ${escapeHtml(String(h.invoice_number || h.invoice_id || ""))}${statusChip}</span>` +
+    const date = h.invoice_date
+      ? `<span class="bov-inv-date">${escapeHtml(bovDateMdy(h.invoice_date))}</span>${!h.is_shipped && !h.void && h.age_days != null ? bovAgeChip(h.age_days) : ""}`
+      : "";
+    title.innerHTML = `<span class="bov-inv-title">Invoice ${escapeHtml(String(h.invoice_number || h.invoice_id || ""))}${statusChip}${date}</span>` +
       (sub ? `<span class="bov-inv-subtitle">${sub}</span>` : "");
   }
 
@@ -24796,7 +24800,6 @@ function bovRenderInvoiceModal(data) {
   const cityLine = [[h.ship_city, h.ship_state].filter(Boolean).join(", "), h.ship_zip_code].filter(Boolean).join(" ");
   const addr = [h.ship_to ? bovUnquote(h.ship_to) : null, h.ship_address1, h.ship_address2, cityLine].map(clean).filter(Boolean);
   const contact = [clean(h.ship_contact), clean(h.ship_phone_no)].filter(Boolean).join(" · ");
-  const pair = (label, valueHtml) => `<div class="bov-inv-pair"><dt>${escapeHtml(label)}</dt><dd>${valueHtml}</dd></div>`;
   // BackOffice tracking sometimes carries a ",N" suffix — copy just the number.
   const trackRaw = clean(h.tracking_no);
   const trackMatch = trackRaw.match(/^(.*?)\s*,\s*(\S+)$/);
@@ -24804,13 +24807,7 @@ function bovRenderInvoiceModal(data) {
   const parcel = [h.no_boxes ? `${bovInt(h.no_boxes)} box${h.no_boxes === 1 ? "" : "es"}` : "", h.total_weight ? `${bovNum(h.total_weight).toLocaleString()} lb` : ""].filter(Boolean).join(" · ");
   const facts =
     `<div class="bov-inv-facts">` +
-      `<section class="bov-inv-fcol"><h4>Dates</h4><dl>` +
-        pair("Invoiced", txt(h.invoice_date ? bovDateMdy(h.invoice_date) : null) +
-          (!h.is_shipped && !h.void && h.age_days != null ? ` ${bovAgeChip(h.age_days)}` : "")) +
-        pair("Shipped", txt(h.ship_date ? bovDateMdy(h.ship_date) : null)) +
-        pair("Sales rep", txt(h.sales_rep)) +
-      `</dl></section>` +
-      `<section class="bov-inv-fcol"><h4>Shipping</h4>` +
+      `<section class="bov-inv-fcol"><h4><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M1.5 4h8v6.5h-8zM9.5 6.5h2.8l2.2 2.2v1.8h-5z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><circle cx="4.5" cy="11.5" r="1.3" fill="currentColor"/><circle cx="12" cy="11.5" r="1.3" fill="currentColor"/></svg>Shipping</h4>` +
         `<div class="bov-inv-carrier">${txt(h.shipper)}${parcel ? `<span>${escapeHtml(parcel)}</span>` : ""}</div>` +
         (trackNo
           ? `<div class="bov-inv-track"><span class="bov-cell-mono">${escapeHtml(trackNo)}</span>` +
@@ -24820,8 +24817,8 @@ function bovRenderInvoiceModal(data) {
               `</button></div>`
           : `<div class="bov-inv-track bov-cell-muted">No tracking number</div>`) +
       `</section>` +
-      `<section class="bov-inv-fcol"><h4>Ship to</h4>` +
-        `<address class="bov-inv-addr">${addr.length ? addr.map(escapeHtml).join("<br>") : dash}</address>` +
+      `<section class="bov-inv-fcol"><h4><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M8 14.5s-4.5-4.2-4.5-7.7a4.5 4.5 0 0 1 9 0c0 3.5-4.5 7.7-4.5 7.7z" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="6.8" r="1.6" fill="currentColor"/></svg>Ship to</h4>` +
+        `<address class="bov-inv-addr">${addr.length ? addr.map((x, i) => (i === 0 && addr.length > 1 ? `<strong>${escapeHtml(x)}</strong>` : escapeHtml(x))).join("<br>") : dash}</address>` +
         (contact ? `<div class="bov-inv-contact">${escapeHtml(contact)}</div>` : "") +
       `</section>` +
     `</div>`;

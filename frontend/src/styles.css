@@ -7707,6 +7707,7 @@ tr.bov-row-click:focus-visible { outline: 2px solid var(--accent-primary); outli
 #bov-invoice-title { display: flex; flex-direction: column; gap: 0.25rem; min-width: 0; }
 .bov-inv-title { display: inline-flex; align-items: center; gap: 0.625rem; }
 .bov-inv-title .qip-status-chip { font-size: 0.6875rem; }
+.bov-inv-date { font-size: 0.875rem; font-weight: 400; color: var(--text-secondary); }
 .bov-inv-subtitle {
   display: flex;
   flex-wrap: wrap;
@@ -7798,20 +7799,20 @@ tr.bov-row-click:focus-visible { outline: 2px solid var(--accent-primary); outli
 /* Facts: Dates · Shipping · Ship to */
 .bov-inv-facts {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1.3fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
 }
-.bov-inv-fcol { display: flex; flex-direction: column; gap: 0.5rem; min-width: 0; padding: 0.875rem 1rem; }
+.bov-inv-fcol { display: flex; flex-direction: column; gap: 0.625rem; min-width: 0; padding: 1rem 1.125rem; }
 .bov-inv-fcol + .bov-inv-fcol { border-left: 1px solid var(--border-color); }
-.bov-inv-fcol dl { display: flex; flex-direction: column; gap: 0.3125rem; margin: 0; }
-.bov-inv-pair { display: flex; justify-content: space-between; align-items: baseline; gap: 0.75rem; font-size: 0.8125rem; }
-.bov-inv-pair dt { color: var(--text-secondary); white-space: nowrap; }
-.bov-inv-pair dd { margin: 0; color: var(--text-primary); text-align: right; overflow-wrap: anywhere; }
-.bov-inv-carrier { display: flex; align-items: baseline; justify-content: space-between; gap: 0.75rem; font-size: 0.9375rem; font-weight: 600; color: var(--text-primary); }
+.bov-inv-fcol h4 { display: flex; align-items: center; gap: 0.375rem; }
+.bov-inv-fcol h4 svg { flex: 0 0 auto; opacity: 0.8; }
+.bov-inv-carrier { display: flex; align-items: baseline; gap: 0.75rem; font-size: 0.9375rem; font-weight: 600; color: var(--text-primary); }
 .bov-inv-carrier > span { font-size: 0.75rem; font-weight: 400; color: var(--text-secondary); white-space: nowrap; }
 .bov-inv-track {
-  display: flex;
+  display: inline-flex;
+  align-self: flex-start;
+  max-width: 100%;
   align-items: center;
   gap: 0.125rem;
   min-width: 0;
@@ -7830,7 +7831,7 @@ tr.bov-row-click:focus-visible { outline: 2px solid var(--accent-primary); outli
   flex: 0 0 auto;
   width: 1.625rem;
   height: 1.625rem;
-  margin-left: auto;
+  margin-left: 0.375rem;
   border: 0;
   border-radius: var(--radius-sm);
   background: transparent;
@@ -7840,7 +7841,8 @@ tr.bov-row-click:focus-visible { outline: 2px solid var(--accent-primary); outli
 .bov-inv-copy:hover { color: var(--text-primary); background: color-mix(in srgb, var(--text-primary) 8%, transparent); }
 .bov-inv-copy:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 1px; }
 .bov-inv-copy.is-done { color: var(--success); }
-.bov-inv-addr { font-style: normal; font-size: 0.8125rem; line-height: 1.5; color: var(--text-primary); }
+.bov-inv-addr { font-style: normal; font-size: 0.875rem; line-height: 1.5; color: var(--text-primary); }
+.bov-inv-addr strong { font-weight: 600; }
 .bov-inv-contact { font-size: 0.75rem; color: var(--text-secondary); }
 
 /* Items */
