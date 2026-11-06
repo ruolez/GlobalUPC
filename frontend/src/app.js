@@ -29949,6 +29949,22 @@ function osyncAutoWhen(iso, tz) {
   }
 }
 
+// Run timestamps in the shop's time zone (the one the schedule uses), not the browser's.
+function osyncAutoStamp(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  const tz = (osyncAuto.cfg && osyncAuto.cfg.timezone) || "America/Chicago";
+  try {
+    return d.toLocaleString("en-US", {
+      timeZone: tz, month: "numeric", day: "numeric", year: "numeric",
+      hour: "numeric", minute: "2-digit", timeZoneName: "short",
+    }).replace(",", "");
+  } catch {
+    return formatDateTime(iso);
+  }
+}
+
 // The day a run started now would check under `checkDay`: today for "same",
 // otherwise yesterday — in the shop's time zone.
 function osyncAutoCheckDate(tz, checkDay) {
@@ -30311,7 +30327,7 @@ function osyncAutoRenderRuns() {
     `</tr></thead><tbody>` +
     runs.map((r) =>
       `<tr class="osync-auto-run-row" data-osync-auto-run="${r.id}" tabindex="0">` +
-      `<td>${escapeHtml(formatDateTime(r.started_at))}</td>` +
+      `<td>${escapeHtml(osyncAutoStamp(r.started_at))}</td>` +
       `<td>${escapeHtml(r.run_date || "—")}</td>` +
       `<td>${escapeHtml(OSYNC_AUTO_TRIGGERS[r.trigger] || r.trigger)}${r.dry_run ? ' <span class="osync-auto-dry">dry run</span>' : ""}</td>` +
       `<td>${osyncAutoPill(OSYNC_AUTO_STATUS, r.status)}</td>` +
@@ -30424,7 +30440,7 @@ function osyncAutoRenderRun() {
     (run.dry_run ? `<span class="osync-auto-dry">dry run</span>` : "") +
     `<span class="osync-muted">Reconciling <strong>${escapeHtml(run.run_date || "—")}</strong>` +
     (rep.stores && rep.stores.backoffice ? ` · ${escapeHtml(rep.stores.backoffice)} ⇄ ${escapeHtml(rep.stores.shopify || "")}` : "") +
-    ` · started ${escapeHtml(formatDateTime(run.started_at))}` +
+    ` · started ${escapeHtml(osyncAutoStamp(run.started_at))}` +
     (run.finished_at ? ` · took ${escapeHtml(osyncAutoDuration(run))}` : "") + `</span></div>`;
 
   const section = (title, count, html) => count ? `<div class="osync-auto-block"><div class="osync-auto-block-title">${title} <span class="osync-auto-count">${count}</span></div>${html}</div>` : "";
