@@ -4,7 +4,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 
-from mssql_helper import get_mssql_connection_string
+from mssql_helper import get_mssql_connection_string, mssql_connect, mssql_open
 
 _qip_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="qip")
 
@@ -158,7 +158,7 @@ def _list_quotations_in_progress_sync(
     full_params: List[Any] = [int(limit)] + params
 
     try:
-        with pyodbc.connect(conn_str, timeout=30) as conn:
+        with mssql_connect(conn_str, timeout=30) as conn:
             cursor = conn.cursor()
             cursor.execute(query, full_params)
             cols = [c[0] for c in cursor.description]
@@ -228,7 +228,7 @@ def _get_quotation_products_sync(
     """
 
     try:
-        with pyodbc.connect(conn_str, timeout=30) as conn:
+        with mssql_connect(conn_str, timeout=30) as conn:
             cursor = conn.cursor()
 
             cursor.execute(products_query, (quotation_number,))
@@ -391,7 +391,7 @@ def _search_products_sync(
     full_params: List[Any] = [int(limit)] + params
 
     try:
-        with pyodbc.connect(conn_str, timeout=30) as conn:
+        with mssql_connect(conn_str, timeout=30) as conn:
             cursor = conn.cursor()
             cursor.execute(query, full_params)
             cols = [c[0] for c in cursor.description]
@@ -435,7 +435,7 @@ def _list_distinct_filter_values_sync(
     conn_str = get_mssql_connection_string(host, port, database, username, password)
 
     try:
-        with pyodbc.connect(conn_str, timeout=30) as conn:
+        with mssql_connect(conn_str, timeout=30) as conn:
             cursor = conn.cursor()
 
             cursor.execute("""
@@ -519,7 +519,7 @@ def _count_in_progress_sync(host, port, database, username, password):
     """
     conn_str = get_mssql_connection_string(host, port, database, username, password)
     try:
-        with pyodbc.connect(conn_str, timeout=10) as conn:
+        with mssql_connect(conn_str, timeout=10) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 "SELECT COUNT(DISTINCT QuotationNumber), MIN(StartDate) "

@@ -330,12 +330,14 @@ async def search_barcode_across_shopify_stores(
     """
     async def search_single_store(store: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Search a single store and return formatted results."""
-        success, error, variants = await search_products_by_barcode(
+        # Half the request budget: /api/upc/search runs the MSSQL phase after.
+        from mssql_helper import with_deadline, STORE_DEADLINE_S
+        success, error, variants = await with_deadline(search_products_by_barcode(
             shop_domain=store["shop_domain"],
             admin_api_key=store["admin_api_key"],
             barcode=barcode,
             api_version=store.get("api_version", "2025-01")
-        )
+        ), STORE_DEADLINE_S / 2, store["name"])
 
         if not success:
             # Log error but don't fail entire search
@@ -2735,6 +2737,12 @@ async def _shopify_graphql(
     bucket = _bucket_for(shop_domain)
     payload = {"query": query, "variables": variables or {}}
     last_reason = "unknown error"
+    # A mutation is re-sent only when Shopify certainly did not run it (429,
+    # THROTTLED, or the connection never opened). After a timeout, a dropped
+    # connection or a 5xx it may already have been applied — refunding,
+    # fulfilling or creating twice is worse than reporting the error, and the
+    # order-fix flow re-reads the order before acting again.
+    is_mutation = query.lstrip().lower().startswith("mutation")
 
     for attempt in range(_MAX_ATTEMPTS):
         await bucket.acquire()
@@ -2788,6 +2796,14 @@ async def _shopify_graphql(
                 # --- Transient: server-side wobble.
                 if status >= 500:
                     last_reason = f"server error (HTTP {status})"
+                    if is_mutation:
+                        raise ShopifyFetchError(
+                            f"{op_name}: Shopify returned HTTP {status} for {shop_domain}; "
+                            "the change may or may not have been applied, so it was not re-sent",
+                            status=status,
+                            code="SERVER",
+                            attempts=attempt + 1,
+                        )
                     if attempt < _MAX_ATTEMPTS - 1:
                         if on_retry:
                             on_retry(attempt + 1, _MAX_ATTEMPTS, last_reason)
@@ -2818,6 +2834,13 @@ async def _shopify_graphql(
             raise
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             last_reason = f"network error ({type(e).__name__})"
+            if is_mutation and not isinstance(e, aiohttp.ClientConnectorError):
+                raise ShopifyFetchError(
+                    f"{op_name}: lost the connection to {shop_domain} ({type(e).__name__}); "
+                    "the change may or may not have been applied, so it was not re-sent",
+                    code="NETWORK",
+                    attempts=attempt + 1,
+                )
             if attempt < _MAX_ATTEMPTS - 1:
                 if on_retry:
                     on_retry(attempt + 1, _MAX_ATTEMPTS, last_reason)

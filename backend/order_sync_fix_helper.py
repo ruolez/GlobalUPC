@@ -44,6 +44,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import aiohttp
 
 import order_sync_helper as osync
+from cluster_lock import ClusterLock
 from mssql_helper import get_item_prices_batch_async
 from shopify_helper import (
     ShopifyFetchError,
@@ -254,7 +255,9 @@ async def set_variant_price(ctx: ShopifyCtx, product_id: str, variant_id: str, p
 # bump saw the bumped price (seen live: 27.00 instead of 26.50 — the line was
 # refunded, then the add came in below the invoice price after the restore),
 # so the bump is decided again from the live price inside the lock.
-_bump_lock = asyncio.Lock()
+# A ClusterLock, not an asyncio.Lock: prod runs several worker processes and
+# two orders fixed at once in two of them must wait for each other too.
+_bump_lock = ClusterLock("order_sync_fix.price_bump")
 
 _BUMP_READBACK_ATTEMPTS = 5
 _BUMP_READBACK_DELAY_SECONDS = 1.0
@@ -519,7 +522,7 @@ async def push_tracking(ctx: ShopifyCtx, fulfillment_ids: List[str], numbers: Li
 # A backfilled product is store-wide state and two orders in the same batch
 # can need the same UPC, so creation is serialized and the catalog is
 # re-checked inside the lock — a barcode is never created twice.
-_create_lock = asyncio.Lock()
+_create_lock = ClusterLock("order_sync_fix.create_product")
 
 PRODUCT_BACKFILL_TAG = "order-sync-backfill"
 

@@ -4,7 +4,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 
-from mssql_helper import get_mssql_connection_string
+from mssql_helper import get_mssql_connection_string, mssql_connect, mssql_open
 
 _inv_time_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="invtime")
 
@@ -44,7 +44,7 @@ def _fetch_recount_timestamps_sync(
     """
 
     try:
-        with pyodbc.connect(conn_str, timeout=30) as conn:
+        with mssql_connect(conn_str, timeout=30) as conn:
             cursor = conn.cursor()
             cursor.execute(query, [target_user, date_from, upper])
             timestamps = [r[0] for r in cursor.fetchall() if r[0] is not None]
@@ -84,7 +84,7 @@ def _fetch_distinct_usernames_sync(
     """
 
     try:
-        with pyodbc.connect(conn_str, timeout=30) as conn:
+        with mssql_connect(conn_str, timeout=30) as conn:
             cursor = conn.cursor()
             cursor.execute(query, [date_from, upper])
             users = [r[0] for r in cursor.fetchall() if r[0]]

@@ -102,9 +102,22 @@ sudo ./install.sh
 
 Select **Option 2: Update from GitHub**. This will:
 - Pull the latest code from GitHub
-- Rebuild containers with new code
-- Keep all database data (stores, configurations, history)
-- Preserve your network configuration
+- Build the new images while the current version keeps running
+- Back up the database to `/opt/globalupc/backups/` and apply new migrations (a failing migration stops the update; nothing has been switched yet)
+- Switch backend and frontend to the new version (the database keeps running); users see a short "reconnecting" blip of about 10-20 seconds
+- Roll back to the previous images automatically if the new backend does not become healthy
+- Keep all database data (stores, configurations, history) and your network configuration
+
+**Backups:** a nightly backup runs at 02:30 (7 daily + 4 weekly copies in `/opt/globalupc/backups/`). Option 6 in the installer menu takes a backup on demand or restores one.
+
+### Using the API from other applications
+
+Call the API through nginx, the same address as the web UI: `http://<server>/api/...`. Port 8001 is bound to the server itself only.
+
+- During an update or a backend restart, requests can get a short burst of `502`/`503` answers with a JSON body and a `Retry-After` header. Retry GET requests with a small backoff (e.g. 1 s, 2.5 s, 5 s) and honour `Retry-After`; do not blindly retry requests that change data.
+- A `429` (when rate limiting is enforced) or a `503` saying too many large reports are running means: wait `Retry-After` seconds and try again.
+- A store that does not answer in time is reported as an error for that store; the other stores still answer.
+- `GET /api/health` is a cheap liveness check; `GET /api/health/deep` also checks the database.
 
 ### Managing the Installation
 

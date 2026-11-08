@@ -22,7 +22,7 @@ import hmac
 import hashlib
 import base64
 
-from database import get_db, engine, SessionLocal, db_session, POOL_CAPACITY
+from database import get_db, engine, SessionLocal, db_session, POOL_CAPACITY, release_db, run_db
 from shopify_oauth_helper import fetch_client_credentials_token, apply_token
 from models import Store, MSSQLConnection, ShopifyConnection, Setting, StoreType, StoreCategory, UPCUpdateHistory, UPCExclusion, ItemTrackerConfig, ItemTrackerExclusion, PriceUpdateHistory, StoreMirror, SalesConfig, SalesExclusion, BusinessOverviewConfig, BusinessOverviewShopifyExclusion, BusinessOverviewPoProductExclusion, QuickBooksConnection, QuickBooksAccount
 from schemas import (
@@ -95,6 +95,8 @@ from active_users_helper import (
     SESSION_GAP_MINUTES,
 )
 from mssql_helper import (
+    with_deadline,
+    STORE_DEADLINE_S,
     test_mssql_connection, search_upc_across_mssql_stores, search_products_by_upc,
     update_upc_across_mssql_stores, audit_orphaned_upcs,
     find_matches_by_product_id, find_matches_by_description, update_orphaned_upcs,
@@ -146,6 +148,67 @@ from checked_orders_helper import (
 
 _audit_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="audit")
 
+# Work that must outlive the request that started it (an order fix's refund →
+# edit → fulfill chain, sync clean-up). A bare create_task() result can be
+# garbage-collected mid-run and its exception is never seen; these are held
+# here, logged when they fail, and awaited on shutdown.
+_background_tasks: set = set()
+SHUTDOWN_TASK_GRACE_S = float(os.getenv("SHUTDOWN_TASK_GRACE_S", "60"))
+
+
+def spawn_tracked(coro, name: str) -> asyncio.Task:
+    task = asyncio.create_task(coro, name=name)
+    _background_tasks.add(task)
+
+    def _done(t: asyncio.Task) -> None:
+        _background_tasks.discard(t)
+        if not t.cancelled() and t.exception() is not None:
+            print(f"[BACKGROUND] {name} failed: {t.exception()!r}")
+
+    task.add_done_callback(_done)
+    return task
+
+
+# Large reports (Month End, Lost Customers, orphan audit, Sales, ...) each
+# fan out to several stores and hold executor threads for a long time. A cap
+# per worker keeps a burst of them (or a client stuck in a retry loop) from
+# starving everything else; past it the request gets 503 + Retry-After.
+# Generous on purpose; HEAVY_REPORT_LIMIT=0 turns it off.
+HEAVY_REPORT_LIMIT = int(os.getenv("HEAVY_REPORT_LIMIT", "4"))
+_heavy_running = 0
+
+
+def _heavy_report_check() -> None:
+    if HEAVY_REPORT_LIMIT > 0 and _heavy_running >= HEAVY_REPORT_LIMIT:
+        raise HTTPException(
+            status_code=503,
+            detail="Too many large reports are running on the server right now. Please try again in a moment.",
+            headers={"Retry-After": "15"},
+        )
+
+
+async def heavy_report_stream(agen):
+    """Counts a streaming report as running while its body is being produced."""
+    global _heavy_running
+    _heavy_running += 1
+    try:
+        async for chunk in agen:
+            yield chunk
+    finally:
+        _heavy_running -= 1
+        await agen.aclose()
+
+
+@asynccontextmanager
+async def heavy_report_slot():
+    global _heavy_running
+    _heavy_report_check()
+    _heavy_running += 1
+    try:
+        yield
+    finally:
+        _heavy_running -= 1
+
 
 class BoundedStreamingResponse(StreamingResponse):
     # A send blocked past this bound means the client is gone but never sent a
@@ -177,19 +240,57 @@ class BoundedStreamingResponse(StreamingResponse):
                     pass
 
 
+# Background loops run in every worker. Each already catches its own errors,
+# but if one ever exits or raises it is started again (with backoff) instead
+# of silently stopping for the life of the process.
+_loop_state: Dict[str, Dict[str, Any]] = {}
+
+
+async def _supervised_loop(name: str, factory) -> None:
+    state = _loop_state.setdefault(name, {"running": False, "restarts": 0, "last_error": None})
+    delay = 5.0
+    while True:
+        state["running"] = True
+        try:
+            await factory()
+            state["last_error"] = "exited"
+            print(f"[LOOP] {name} exited; restarting in {delay:.0f}s")
+        except asyncio.CancelledError:
+            state["running"] = False
+            raise
+        except Exception as e:
+            state["last_error"] = repr(e)[:200]
+            print(f"[LOOP] {name} crashed: {e!r}; restarting in {delay:.0f}s")
+        state["running"] = False
+        state["restarts"] += 1
+        await asyncio.sleep(delay)
+        delay = min(delay * 2, 300.0)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from shopify_oauth_helper import token_refresh_loop
     from quickbooks_helper import keepalive_loop as quickbooks_keepalive_loop
-    oauth_refresh_task = asyncio.create_task(token_refresh_loop())
-    quickbooks_task = asyncio.create_task(quickbooks_keepalive_loop())
-    activity_flush_task = asyncio.create_task(flush_activity_loop())
-    order_sync_auto_task = asyncio.create_task(order_sync_auto_loop())
+    oauth_refresh_task = asyncio.create_task(_supervised_loop("shopify_token_refresh", token_refresh_loop))
+    quickbooks_task = asyncio.create_task(_supervised_loop("quickbooks_keepalive", quickbooks_keepalive_loop))
+    activity_flush_task = asyncio.create_task(_supervised_loop("active_users_flush", flush_activity_loop))
+    order_sync_auto_task = asyncio.create_task(_supervised_loop("order_sync_auto", order_sync_auto_loop))
     try:
         await asyncio.to_thread(_bov_token_secret)   # create settings.bov_token_secret once
     except Exception as e:
         print(f"[STARTUP] Business Overview token secret not ready yet: {e}")
     yield
+    # Let in-flight order fixes / cancels / automation runs finish (each
+    # order's Shopify chain must not be cut half-way) before anything below
+    # tears down the loops, the pool and the executors.
+    pending = [t for t in list(_background_tasks) + list(_osauto_tasks) if not t.done()]
+    if pending:
+        print(f"[SHUTDOWN] Waiting up to {SHUTDOWN_TASK_GRACE_S:.0f}s for {len(pending)} background task(s)...")
+        _done, still = await asyncio.wait(pending, timeout=SHUTDOWN_TASK_GRACE_S)
+        for t in still:
+            t.cancel()
+        if still:
+            await asyncio.wait(still, timeout=10)
     print("[SHUTDOWN] Cancelling active-users flush loop (final flush)...")
     activity_flush_task.cancel()
     try:
@@ -204,6 +305,10 @@ async def lifespan(app: FastAPI):
     order_sync_auto_task.cancel()
     for task in list(_osauto_tasks):
         task.cancel()
+    await asyncio.wait(
+        [oauth_refresh_task, quickbooks_task, order_sync_auto_task, *_osauto_tasks],
+        timeout=10,
+    )
     print("[SHUTDOWN] Disposing database connections...")
     engine.dispose()
     print("[SHUTDOWN] Shutting down MSSQL thread pool...")
@@ -283,6 +388,13 @@ class BOVAuthMiddleware:
                 if k == b"x-bov-token":
                     token = v.decode("latin-1").strip()
                     break
+            if token and not _bov_token_secret_cache and not (os.getenv("BOV_TOKEN_SECRET") or "").strip():
+                # Secret not loaded yet (startup could not reach Postgres):
+                # load it off the event loop rather than querying inline.
+                try:
+                    await asyncio.to_thread(_bov_token_secret)
+                except Exception as e:
+                    print(f"[BOV] token secret unavailable: {e}")
             role = _bov_verify_token(token) if token else None
             if role is None:
                 body = b'{"detail":"locked"}'
@@ -334,34 +446,115 @@ class ActivityTrackerMiddleware:
 
 app.add_middleware(ActivityTrackerMiddleware)
 
+SLOW_REQUEST_S = float(os.getenv("SLOW_REQUEST_S", "3"))
+
+
+class RequestLogMiddleware:
+    """Pure ASGI: one log line per slow (> SLOW_REQUEST_S) or failed (5xx)
+    API request, with nginx's X-Request-ID so a user's report can be found in
+    both logs. Streams are only logged when they fail. Only observes `send`;
+    the response itself passes through unchanged."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or not scope["path"].startswith("/api/") or scope["path"].startswith("/api/health"):
+            await self.app(scope, receive, send)
+            return
+        started = time.monotonic()
+        info = {"status": None, "stream": False}
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                info["status"] = message.get("status")
+                for k, v in message.get("headers") or []:
+                    if k == b"content-type" and v.startswith(b"text/event-stream"):
+                        info["stream"] = True
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_wrapper)
+        except Exception:
+            info["status"] = info["status"] or 500
+            raise
+        finally:
+            try:
+                elapsed = time.monotonic() - started
+                status = info["status"] or 0
+                if status >= 500 or (elapsed > SLOW_REQUEST_S and not info["stream"]):
+                    rid = ""
+                    for k, v in scope.get("headers") or []:
+                        if k == b"x-request-id":
+                            rid = v.decode("latin-1")
+                            break
+                    kind = "ERROR" if status >= 500 else "SLOW"
+                    print(f"[REQ] {kind} {status or '-'} {scope.get('method')} {scope['path']} "
+                          f"{elapsed:.1f}s pid={os.getpid()}" + (f" rid={rid}" if rid else ""))
+            except Exception:
+                pass
+
+
+app.add_middleware(RequestLogMiddleware)
+
 # Health check
 @app.get("/api/health")
 def health_check():
     return {"status": "healthy", "service": "Global UPC API"}
 
+HEALTH_PROBE_TIMEOUT_S = 3
+
+
+def _executor_backlog() -> Dict[str, int]:
+    """Queued (not yet running) jobs per thread pool in this worker."""
+    import mssql_helper, item_tracker_helper, business_overview_helper
+    pools = {
+        "mssql": mssql_helper._mssql_executor,
+        "item_tracker": item_tracker_helper._item_tracker_executor,
+        "business_overview": business_overview_helper._bov_executor,
+        "audit": _audit_executor,
+    }
+    out = {}
+    for name, ex in pools.items():
+        try:
+            out[name] = ex._work_queue.qsize()
+        except Exception:
+            out[name] = -1
+    return out
+
+
 @app.get("/api/health/deep")
 async def health_check_deep():
+    """Readiness for the Docker healthcheck (autoheal restarts on repeated 503).
+
+    503 only when this worker cannot reach Postgres within a few seconds: a
+    busy pool is reported ("degraded") but is not a reason to restart, because
+    a restart would cut every running report and order fix. A worker whose
+    event loop is stuck never gets here; gunicorn replaces that one itself.
+    """
     from sqlalchemy import text as _sa_text
     pool = engine.pool
     stats = {
         "pool_checked_out": pool.checkedout(),
         "pool_capacity": POOL_CAPACITY,
         "pool_overflow": pool.overflow(),
+        "pid": os.getpid(),
+        "background_tasks": len(_background_tasks),
+        "executor_backlog": _executor_backlog(),
+        "loops": _loop_state,
     }
-    # Fail fast on exhaustion: engine.connect() would queue for pool_timeout=30s,
-    # longer than the docker healthcheck timeout, and read as a hang instead.
-    if stats["pool_checked_out"] >= POOL_CAPACITY:
-        return JSONResponse(status_code=503, content={"status": "pool_exhausted", **stats})
 
     def probe():
         with engine.connect() as conn:
             conn.execute(_sa_text("SELECT 1"))
 
     try:
-        await asyncio.wait_for(asyncio.to_thread(probe), timeout=5)
+        await asyncio.wait_for(asyncio.to_thread(probe), timeout=HEALTH_PROBE_TIMEOUT_S)
     except Exception as e:
-        return JSONResponse(status_code=503, content={"status": "db_error", "error": str(e)[:200], **stats})
-    return {"status": "healthy", **stats}
+        reason = "db_timeout" if isinstance(e, asyncio.TimeoutError) else "db_error"
+        return JSONResponse(status_code=503, content={"status": reason, "error": str(e)[:200], **stats})
+    status = "degraded" if stats["pool_checked_out"] >= POOL_CAPACITY else "healthy"
+    return {"status": status, **stats}
 
 # Connection test schemas
 class MSSQLConnectionTest(BaseModel):
@@ -506,12 +699,12 @@ async def search_upc_stream(request: UPCSearchRequest):
                 # Create search tasks for all Shopify stores
                 async def search_shopify_store(store):
                     """Search single Shopify store and return store info + results."""
-                    success, error, variants = await search_products_by_barcode(
+                    success, error, variants = await with_deadline(search_products_by_barcode(
                         shop_domain=store["shop_domain"],
                         admin_api_key=store["admin_api_key"],
                         barcode=upc,
                         api_version=store.get("api_version", "2025-01")
-                    )
+                    ), STORE_DEADLINE_S, store["name"], width=3)
                     return store, success, error, variants
 
                 # Start all store searches in parallel
@@ -548,14 +741,14 @@ async def search_upc_stream(request: UPCSearchRequest):
                 # Create search tasks for all MSSQL stores
                 async def search_mssql_store(store):
                     """Search single MSSQL store and return store info + results."""
-                    success, error, table_results = await search_products_by_upc(
+                    success, error, table_results = await with_deadline(search_products_by_upc(
                         host=store["host"],
                         port=store["port"],
                         database=store["database_name"],
                         username=store["username"],
                         password=store["password"],
                         upc=upc
-                    )
+                    ), STORE_DEADLINE_S, store["name"], width=3)
                     return store, success, error, table_results
 
                 # Start all store searches in parallel
@@ -601,11 +794,13 @@ async def search_upc_stream(request: UPCSearchRequest):
             print(f"[SEARCH] Search complete - found {len(all_matches)} total matches")
             yield f"event: complete\ndata: {json.dumps({'upc': upc, 'matches': all_matches, 'total_found': len(all_matches), 'stores_searched': len(active_stores)})}\n\n"
 
-        except GeneratorExit:
+        except (GeneratorExit, asyncio.CancelledError) as _client_gone:
             print("[SEARCH] Client disconnected, cancelling search")
             for task in tasks:
                 if not task.done():
                     task.cancel()
+            if isinstance(_client_gone, asyncio.CancelledError):
+                raise
             return
         except Exception as e:
             print(f"[SEARCH] Error: {e}")
@@ -666,6 +861,8 @@ async def search_upc(request: UPCSearchRequest, db: Session = Depends(get_db)):
                 "username": store.mssql_connection.username,
                 "password": store.mssql_connection.password
             })
+
+    release_db(db)
 
     # Search across all stores in parallel
     all_matches = []
@@ -1046,8 +1243,10 @@ async def update_upc_stream(request: UPCUpdateRequest):
         try:
             async for event in generate_update_events():
                 yield event
-        except GeneratorExit:
+        except (GeneratorExit, asyncio.CancelledError) as _client_gone:
             print("[UPDATE] Client disconnected")
+            if isinstance(_client_gone, asyncio.CancelledError):
+                raise
             return
 
     return BoundedStreamingResponse(
@@ -1066,6 +1265,7 @@ async def audit_orphaned_upcs_stream(request: OrphanedUPCAuditRequest):
     Audit MSSQL store for orphaned UPCs (UPCs in detail tables but not in Items_tbl).
     Returns Server-Sent Events stream with real-time progress.
     """
+    _heavy_report_check()
     async def generate_audit_events() -> AsyncGenerator[str, None]:
         store_id = request.store_id
         target_store_id = request.target_store_id
@@ -1244,17 +1444,19 @@ async def audit_orphaned_upcs_stream(request: OrphanedUPCAuditRequest):
 
             yield f"event: complete\ndata: {json.dumps(result_data)}\n\n"
 
-        except GeneratorExit:
+        except (GeneratorExit, asyncio.CancelledError) as _client_gone:
             print("[AUDIT] Client disconnected, cancelling audit")
             if audit_future and not audit_future.done():
                 audit_future.cancel()
+            if isinstance(_client_gone, asyncio.CancelledError):
+                raise
             return
         except Exception as e:
             print(f"[AUDIT] Error: {e}")
             yield f"event: error\ndata: {json.dumps({'message': str(e)})}\n\n"
 
     return BoundedStreamingResponse(
-        generate_audit_events(),
+        heavy_report_stream(generate_audit_events()),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -1848,6 +2050,7 @@ async def reconcile_orphaned_upcs(request: ReconciliationRequest, db: Session = 
 
     # Get connection details
     conn = store.mssql_connection
+    release_db(db)
 
     # Convert Pydantic models to dicts for helper function
     records_dict = [record.model_dump() for record in orphaned_records]
@@ -1903,6 +2106,7 @@ async def update_reconciled_upcs(request: ReconciliationUpdateRequest, db: Sessi
 
     # Get connection details
     conn = store.mssql_connection
+    release_db(db)
 
     # Convert Pydantic models to dicts for helper function
     updates_dict = [update.model_dump() for update in updates]
@@ -2046,10 +2250,12 @@ async def reconcile_orphaned_upcs_stream(request: ReconciliationRequest):
 
             yield f"event: complete\ndata: {json.dumps(result_data)}\n\n"
 
-        except GeneratorExit:
+        except (GeneratorExit, asyncio.CancelledError) as _client_gone:
             print("[RECONCILIATION] Client disconnected, stopping reconciliation operation")
             if reconcile_future and not reconcile_future.done():
                 reconcile_future.cancel()
+            if isinstance(_client_gone, asyncio.CancelledError):
+                raise
             return
         except Exception as e:
             print(f"[RECONCILIATION] Error in streaming: {e}")
@@ -2210,10 +2416,12 @@ async def update_reconciled_upcs_stream(request: ReconciliationUpdateRequest):
 
             yield f"event: complete\ndata: {json.dumps(result_data)}\n\n"
 
-        except GeneratorExit:
+        except (GeneratorExit, asyncio.CancelledError) as _client_gone:
             print("[RECONCILIATION UPDATE] Client disconnected, stopping update operation")
             if update_future and not update_future.done():
                 update_future.cancel()
+            if isinstance(_client_gone, asyncio.CancelledError):
+                raise
             return
         except Exception as e:
             print(f"[RECONCILIATION UPDATE] Error in streaming: {e}")
@@ -2739,6 +2947,11 @@ def get_item_tracker_stores(db: Session):
             Store.id == config.inventory_store_id,
             Store.store_type == StoreType.mssql
         ).first()
+
+    # Load the connections now: callers release the session before their
+    # MSSQL fan-out and read these afterwards.
+    for st in sales_stores + ([inventory_store] if inventory_store else []):
+        st.mssql_connection
 
     return config, s2s_store, s2s_conn, sales_stores, inventory_store
 
@@ -3346,8 +3559,10 @@ async def search_item_tracker_stream(request: ItemTrackerSearchRequest):
 
             yield f"event: complete\ndata: {json.dumps(result)}\n\n"
 
-        except GeneratorExit:
+        except (GeneratorExit, asyncio.CancelledError) as _client_gone:
             print("[ITEM-TRACKER] Client disconnected")
+            if isinstance(_client_gone, asyncio.CancelledError):
+                raise
             return
         except Exception as e:
             print(f"[ITEM-TRACKER] Error: {e}")
@@ -3378,6 +3593,7 @@ async def get_item_tracker_summary(
         raise HTTPException(status_code=400, detail="UPC is required")
 
     config, s2s_store, s2s_conn, sales_stores, inventory_store = get_item_tracker_stores(db)
+    release_db(db)
 
     all_events = []
     event_counts = {
@@ -3544,6 +3760,7 @@ async def get_item_tracker_summary(
 
     # 5. Apply exclusion filter
     all_events, event_counts = apply_exclusion_filter(all_events, event_counts, db)
+    release_db(db)
 
     # 6. Sort by date (newest first) and calculate running balance
     all_events.sort(key=lambda e: e.event_date if e.event_date else datetime.min, reverse=True)
@@ -3654,6 +3871,7 @@ async def autocomplete_product_description(request: DescriptionAutocompleteReque
         )
 
     conn = s2s_store.mssql_connection
+    release_db(db)
 
     success, error, products = await search_products_by_description_async(
         host=conn.host,
@@ -3682,7 +3900,7 @@ async def autocomplete_product_description(request: DescriptionAutocompleteReque
 
 
 @app.post("/api/item-tracker/exclusions", response_model=ItemTrackerExclusionResponse)
-async def add_item_tracker_exclusion(request: ItemTrackerExclusionCreate, db: Session = Depends(get_db)):
+def add_item_tracker_exclusion(request: ItemTrackerExclusionCreate, db: Session = Depends(get_db)):
     """
     Add a business name (customer/supplier) to the Item Tracker exclusion list.
     void_status: NULL=all events, 0=non-voided only, 1=voided only
@@ -3732,7 +3950,7 @@ async def add_item_tracker_exclusion(request: ItemTrackerExclusionCreate, db: Se
 
 
 @app.get("/api/item-tracker/exclusions", response_model=ItemTrackerExclusionListResponse)
-async def list_item_tracker_exclusions(db: Session = Depends(get_db)):
+def list_item_tracker_exclusions(db: Session = Depends(get_db)):
     """
     List all excluded business names for Item Tracker.
     """
@@ -3756,7 +3974,7 @@ async def list_item_tracker_exclusions(db: Session = Depends(get_db)):
 
 
 @app.delete("/api/item-tracker/exclusions/{exclusion_id}")
-async def delete_item_tracker_exclusion(exclusion_id: int, db: Session = Depends(get_db)):
+def delete_item_tracker_exclusion(exclusion_id: int, db: Session = Depends(get_db)):
     """
     Remove a business name from the Item Tracker exclusion list.
     """
@@ -3819,12 +4037,12 @@ async def fetch_prices_stream(request: PriceSearchRequest):
 
                 async def discover_siblings(store_id, store):
                     conn = store.shopify_connection
-                    success, error, matched, variants_by_pid = await search_product_prices_with_siblings(
+                    success, error, matched, variants_by_pid = await with_deadline(search_product_prices_with_siblings(
                         shop_domain=conn.shop_domain,
                         admin_api_key=conn.admin_api_key,
                         barcodes=[upc],
                         api_version=conn.api_version
-                    )
+                    ), STORE_DEADLINE_S, store.name, width=4)
                     return store_id, store, success, error, matched, variants_by_pid
 
                 tasks = [asyncio.create_task(discover_siblings(sid, s)) for sid, s in shopify_stores_phase1]
@@ -3945,24 +4163,24 @@ async def fetch_prices_stream(request: PriceSearchRequest):
 
             async def search_mssql_batch(store_id, store):
                 conn = store.mssql_connection
-                success, error, items_map = await get_item_prices_batch_async(
+                success, error, items_map = await with_deadline(get_item_prices_batch_async(
                     host=conn.host,
                     port=conn.port,
                     database=conn.database_name,
                     username=conn.username,
                     password=conn.password,
                     upcs=sorted_barcodes
-                )
+                ), STORE_DEADLINE_S, store.name, width=3)
                 return "mssql", store_id, store, success, error, items_map
 
             async def search_shopify_uncached(store_id, store):
                 conn = store.shopify_connection
-                success, error, matched, variants_by_pid = await search_product_prices_with_siblings(
+                success, error, matched, variants_by_pid = await with_deadline(search_product_prices_with_siblings(
                     shop_domain=conn.shop_domain,
                     admin_api_key=conn.admin_api_key,
                     barcodes=sorted_barcodes,
                     api_version=conn.api_version
-                )
+                ), STORE_DEADLINE_S, store.name, width=4)
                 return "shopify", store_id, store, success, error, (matched, variants_by_pid)
 
             phase2_tasks = []
@@ -4135,23 +4353,23 @@ async def fetch_prices_stream(request: PriceSearchRequest):
             async def search_store_b(store_id, store):
                 if store.store_type == StoreType.mssql and store.mssql_connection:
                     conn = store.mssql_connection
-                    success, error, item_data = await get_item_prices_async(
+                    success, error, item_data = await with_deadline(get_item_prices_async(
                         host=conn.host,
                         port=conn.port,
                         database=conn.database_name,
                         username=conn.username,
                         password=conn.password,
                         upc=upc
-                    )
+                    ), STORE_DEADLINE_S, store.name, width=3)
                     return "mssql", store_id, store, success, error, item_data
                 elif store.store_type == StoreType.shopify and store.shopify_connection:
                     conn = store.shopify_connection
-                    success, error, matched, variants_by_pid = await search_product_prices_with_siblings(
+                    success, error, matched, variants_by_pid = await with_deadline(search_product_prices_with_siblings(
                         shop_domain=conn.shop_domain,
                         admin_api_key=conn.admin_api_key,
                         barcodes=[upc],
                         api_version=conn.api_version
-                    )
+                    ), STORE_DEADLINE_S, store.name, width=4)
                     return "shopify", store_id, store, success, error, (matched, variants_by_pid)
                 return None, store_id, store, False, "No connection", None
 
@@ -4267,8 +4485,10 @@ async def fetch_prices_stream(request: PriceSearchRequest):
         try:
             async for event in generate_events():
                 yield event
-        except GeneratorExit:
+        except (GeneratorExit, asyncio.CancelledError) as _client_gone:
             print("[PRICE-FETCH] Client disconnected")
+            if isinstance(_client_gone, asyncio.CancelledError):
+                raise
             return
 
     return BoundedStreamingResponse(
@@ -4717,8 +4937,10 @@ async def update_prices_stream(request: PriceUpdateRequest):
         try:
             async for event in generate_events():
                 yield event
-        except GeneratorExit:
+        except (GeneratorExit, asyncio.CancelledError) as _client_gone:
             print("[PRICE-UPDATE] Client disconnected")
+            if isinstance(_client_gone, asyncio.CancelledError):
+                raise
             return
 
     return BoundedStreamingResponse(
@@ -4852,6 +5074,7 @@ async def price_updates_autocomplete(request: DescriptionAutocompleteRequest, st
         raise HTTPException(status_code=400, detail="MSSQL store not found or missing connection details")
 
     conn = store.mssql_connection
+    release_db(db)
 
     success, error, products = await search_products_by_description_async(
         host=conn.host,
@@ -4911,6 +5134,7 @@ async def shopify_fulfillment_status(exclude_ids: str = "", db: Session = Depend
                 "admin_api_key": store.shopify_connection.admin_api_key,
                 "api_version": store.shopify_connection.api_version,
             })
+    release_db(db)
 
     rows = await asyncio.gather(*[
         count_fulfillment_buckets_for_store(s) for s in store_dicts
@@ -4939,6 +5163,7 @@ SHOPIFY_SALES_SYNC_WAIT_SECONDS = 15 * 60
 
 @app.post("/api/shopify-sales/stream")
 async def shopify_sales_stream(request: ShopifySalesRequest):
+    _heavy_report_check()
     async def generate_sales_events() -> AsyncGenerator[str, None]:
         store_ids = request.store_ids
         start_date = request.start_date
@@ -5283,12 +5508,14 @@ async def shopify_sales_stream(request: ShopifySalesRequest):
         try:
             async for event in generate_sales_events():
                 yield event
-        except GeneratorExit:
+        except (GeneratorExit, asyncio.CancelledError) as _client_gone:
             print("[SHOPIFY-SALES] Client disconnected")
+            if isinstance(_client_gone, asyncio.CancelledError):
+                raise
             return
 
     return BoundedStreamingResponse(
-        generate_sales_events_safe(),
+        heavy_report_stream(generate_sales_events_safe()),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -5397,6 +5624,7 @@ async def search_sales_business_names(query: str = "", db: Session = Depends(get
         if not store or not store.mssql_connection:
             continue
         conn = store.mssql_connection
+        release_db(db)
         success, error, names = await search_business_names_async(
             conn.host, conn.port, conn.database_name,
             conn.username, conn.password, query
@@ -5447,6 +5675,7 @@ def delete_sales_exclusion(exclusion_id: int, db: Session = Depends(get_db)):
 
 @app.post("/api/sales/report/stream")
 async def sales_report_stream(request: SalesReportRequest):
+    _heavy_report_check()
     async def generate_report_events() -> AsyncGenerator[str, None]:
         if not request.mssql_store_ids and not request.shopify_store_ids:
             yield f"event: error\ndata: {json.dumps({'message': 'No stores selected'})}\n\n"
@@ -5676,12 +5905,14 @@ async def sales_report_stream(request: SalesReportRequest):
         try:
             async for event in generate_report_events():
                 yield event
-        except GeneratorExit:
+        except (GeneratorExit, asyncio.CancelledError) as _client_gone:
             print("[SALES-REPORT] Client disconnected")
+            if isinstance(_client_gone, asyncio.CancelledError):
+                raise
             return
 
     return BoundedStreamingResponse(
-        generate_report_events_safe(),
+        heavy_report_stream(generate_report_events_safe()),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -5809,6 +6040,7 @@ async def _enrich_products_stamped(db: Session, payload: Dict[str, Any], cost_mo
         if conn is None:
             conn = by_name
     qn = header.get("quotation_number") or products[0].get("quotation_number")
+    release_db(db)
     stamped: Dict[str, Dict[str, float]] = {}
     if conn is not None and qn:
         ok, _err, stamped = await bov.quotation_line_prices_async(
@@ -5819,6 +6051,7 @@ async def _enrich_products_stamped(db: Session, payload: Dict[str, Any], cost_mo
     s2s_costs: Dict[str, float] = {}
     if cost_mode == "s2s":
         lookup = _bov_make_conn_cost_lookup(_resolve_item_tracker_s2s_conn(db), "unit_cost")
+        release_db(db)
         upcs = sorted({(p.get("product_upc") or "").strip() for p in products if (p.get("product_upc") or "").strip()})
         s2s_costs = await lookup(upcs) if upcs else {}
     for p in products:
@@ -5924,6 +6157,7 @@ async def list_inventory_time_users(
         return InventoryTimeUsersResponse(configured=False, users=[])
 
     conn = store.mssql_connection
+    release_db(db)
     success, error, users = await fetch_distinct_usernames_async(
         host=conn.host,
         port=conn.port,
@@ -5961,6 +6195,7 @@ async def calculate_inventory_time(
     )
 
     conn = store.mssql_connection
+    release_db(db)
     success, error, timestamps = await fetch_recount_timestamps_async(
         host=conn.host,
         port=conn.port,
@@ -6025,6 +6260,7 @@ async def list_checked_orders_users(
         return CheckedOrdersUsersResponse(configured=False, users=[])
 
     conn = store.mssql_connection
+    release_db(db)
     success, error, users = await fetch_checkers_async(
         host=conn.host,
         port=conn.port,
@@ -6056,6 +6292,7 @@ async def calculate_checked_orders(
         return CheckedOrdersResponse(configured=False)
 
     conn = store.mssql_connection
+    release_db(db)
     success, error, rows = await fetch_checked_orders_async(
         host=conn.host,
         port=conn.port,
@@ -6104,6 +6341,7 @@ async def list_quotations_in_progress(
     """List quotations from QuotationsInProgress + QuotationsStatus on the admin DB."""
     store = _resolve_admin_store(db)
     conn = store.mssql_connection
+    release_db(db)
 
     success, error, rows = await list_quotations_in_progress_async(
         host=conn.host,
@@ -6163,6 +6401,7 @@ async def get_quotation_in_progress_products(
     """
     store = _resolve_admin_store(db)
     conn = store.mssql_connection
+    release_db(db)
 
     success, error, payload = await get_quotation_products_async(
         host=conn.host,
@@ -6181,6 +6420,7 @@ async def get_quotation_in_progress_products(
         # Enrich each product line with unit_cost / price from the Item
         # Tracker s2s store. Soft-fails to None when not configured.
         s2s_conn = _resolve_item_tracker_s2s_conn(db)
+        release_db(db)
         await _enrich_products_with_prices(payload["products"], s2s_conn)
 
     return QuotationProductsResponse(
@@ -6213,6 +6453,7 @@ async def search_quotation_in_progress_products(
 
     store = _resolve_admin_store(db)
     conn = store.mssql_connection
+    release_db(db)
 
     success, error, payload = await search_products_async(
         host=conn.host,
@@ -6233,6 +6474,7 @@ async def search_quotation_in_progress_products(
     # Enrich each matched product with unit_cost / price from the Item
     # Tracker s2s store. Soft-fails to None when not configured.
     s2s_conn = _resolve_item_tracker_s2s_conn(db)
+    release_db(db)
     await _enrich_products_with_prices(payload["products"], s2s_conn)
 
     return QuotationSearchResponse(
@@ -6313,6 +6555,7 @@ async def get_dashboard_stats(db: Session = Depends(get_db)):
         in_progress = DashboardInProgressStats(configured=False)
     else:
         conn = admin_store.mssql_connection
+        release_db(db)
         ok, err, payload = await count_in_progress_async(
             host=conn.host,
             port=conn.port,
@@ -6399,7 +6642,7 @@ DEFAULT_FIRST_ORDER_TAG = "First order"
 
 
 @app.put("/api/shopify-analytics/stores/{store_id}/tag")
-async def shopify_analytics_set_first_order_tag(
+def shopify_analytics_set_first_order_tag(
     store_id: int,
     body: ShopifyFirstOrderTagUpdate,
     db: Session = Depends(get_db),
@@ -6581,7 +6824,7 @@ async def shopify_analytics_first_customer_returns_stream(
                 if now - last_heartbeat > 15:
                     yield f": heartbeat\n\n"
                     last_heartbeat = now
-        except GeneratorExit:
+        except (GeneratorExit, asyncio.CancelledError):
             print("[SHOPIFY-ANALYTICS] Client disconnected — cancelling pending tasks")
             for t in tasks:
                 if not t.done():
@@ -6602,8 +6845,10 @@ async def shopify_analytics_first_customer_returns_stream(
         try:
             async for event in generate():
                 yield event
-        except GeneratorExit:
+        except (GeneratorExit, asyncio.CancelledError) as _client_gone:
             print("[SHOPIFY-ANALYTICS] Stream cancelled")
+            if isinstance(_client_gone, asyncio.CancelledError):
+                raise
             return
 
     return BoundedStreamingResponse(
@@ -6834,7 +7079,7 @@ async def shopify_analytics_new_customers_by_month_stream(
                 if now - last_heartbeat > 15:
                     yield f": heartbeat\n\n"
                     last_heartbeat = now
-        except GeneratorExit:
+        except (GeneratorExit, asyncio.CancelledError):
             print("[SHOPIFY-ANALYTICS] New-customers client disconnected — cancelling pending tasks")
             for t in tasks:
                 if not t.done():
@@ -6885,8 +7130,10 @@ async def shopify_analytics_new_customers_by_month_stream(
         try:
             async for event in generate():
                 yield event
-        except GeneratorExit:
+        except (GeneratorExit, asyncio.CancelledError) as _client_gone:
             print("[SHOPIFY-ANALYTICS] New-customers stream cancelled")
+            if isinstance(_client_gone, asyncio.CancelledError):
+                raise
             return
 
     return BoundedStreamingResponse(
@@ -7420,6 +7667,7 @@ def _timing_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
 async def shopify_analytics_lost_customers_stream(
     request: LostCustomersRequest,
 ):
+    _heavy_report_check()
     async def generate() -> AsyncGenerator[str, None]:
         # Snapped to the first of its month, because this report is monthly and a
         # mid-month floor makes the first bar a fraction of a month drawn as a
@@ -7547,9 +7795,9 @@ async def shopify_analytics_lost_customers_stream(
                     return (f"{sh['name']}: {d['orders']:,} order(s), "
                             f"{d['customers']:,} customer(s) updated")
                 except asyncio.CancelledError:
-                    asyncio.create_task(asyncio.to_thread(
+                    spawn_tracked(asyncio.to_thread(
                         shopify_sync.release_sync, sh["id"],
-                        error="cancelled", claim_token=token))
+                        error="cancelled", claim_token=token), "release-sync")
                     raise
                 except Exception as e:
                     await asyncio.to_thread(
@@ -8853,7 +9101,7 @@ async def shopify_analytics_lost_customers_stream(
                 if now - last_heartbeat > 15:
                     yield ": heartbeat\n\n"
                     last_heartbeat = now
-        except GeneratorExit:
+        except (GeneratorExit, asyncio.CancelledError):
             print("[SHOPIFY-ANALYTICS] Lost client disconnected — cancelling")
             for t in list(tasks) + list(collectors):
                 if not t.done():
@@ -9062,12 +9310,14 @@ async def shopify_analytics_lost_customers_stream(
         try:
             async for event in generate():
                 yield event
-        except GeneratorExit:
+        except (GeneratorExit, asyncio.CancelledError) as _client_gone:
             print("[SHOPIFY-ANALYTICS] Lost stream cancelled")
+            if isinstance(_client_gone, asyncio.CancelledError):
+                raise
             return
 
     return BoundedStreamingResponse(
-        generate_safe(),
+        heavy_report_stream(generate_safe()),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )
@@ -9087,6 +9337,7 @@ async def shopify_analytics_customer_detail(
         raise HTTPException(status_code=404, detail="Shopify store not found")
 
     conn = store.shopify_connection
+    release_db(db)
     result = None
     synced_map = await asyncio.to_thread(shopify_sync.get_synced_stores)
     if store.id in synced_map:
@@ -9376,6 +9627,7 @@ def _link_products_across_stores(per_store: List[Dict[str, Any]]) -> tuple:
 async def shopify_analytics_lost_products_stream(
     request: LostProductsRequest,
 ):
+    _heavy_report_check()
     async def generate() -> AsyncGenerator[str, None]:
         selected = [s for s in (request.stores or []) if s.order_ids]
         if not selected:
@@ -9535,7 +9787,7 @@ async def shopify_analytics_lost_products_stream(
                 if now - last_heartbeat > 15:
                     yield ": heartbeat\n\n"
                     last_heartbeat = now
-        except GeneratorExit:
+        except (GeneratorExit, asyncio.CancelledError):
             print("[SHOPIFY-ANALYTICS] Lost-products client disconnected — cancelling")
             for t in list(tasks) + list(collectors):
                 if not t.done():
@@ -9712,12 +9964,14 @@ async def shopify_analytics_lost_products_stream(
         try:
             async for event in generate():
                 yield event
-        except GeneratorExit:
+        except (GeneratorExit, asyncio.CancelledError) as _client_gone:
             print("[SHOPIFY-ANALYTICS] Lost-products stream cancelled")
+            if isinstance(_client_gone, asyncio.CancelledError):
+                raise
             return
 
     return BoundedStreamingResponse(
-        generate_safe(),
+        heavy_report_stream(generate_safe()),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )
@@ -9862,14 +10116,16 @@ async def shopify_sync_stream(
                 if task is not None:
                     task.cancel()
                 if tracker.current_id:
-                    asyncio.create_task(
-                        shopify_sync.cancel_bulk_operation(store, tracker.current_id)
+                    spawn_tracked(
+                        shopify_sync.cancel_bulk_operation(store, tracker.current_id),
+                        "cancel-bulk-operation",
                     )
-                asyncio.create_task(
+                spawn_tracked(
                     asyncio.to_thread(
                         shopify_sync.release_sync, store_id,
                         error="cancelled", claim_token=claim_token,
-                    )
+                    ),
+                    "release-sync",
                 )
                 print(f"[SHOPIFY-SYNC] store {store_id} sync cancelled by client")
 
@@ -10251,7 +10507,10 @@ def _bov_verify_token(token: Optional[str]) -> Optional[str]:
         expected = _bov_token_signature(role, exp)
     except Exception:
         return None
-    if not hmac.compare_digest(sig.encode("ascii"), expected.encode("ascii")):
+    try:
+        if not hmac.compare_digest(sig.encode("ascii"), expected.encode("ascii")):
+            return None
+    except UnicodeEncodeError:
         return None
     if exp < int(time.time()):
         return None
@@ -12498,7 +12757,7 @@ async def business_overview_shopify_refresh(
                        note=f"{int(d.get('orders') or 0):,} order(s) updated",
                        last_synced_at=summary["run_started"].isoformat() if summary.get("run_started") else res["last_synced_at"])
         except asyncio.CancelledError:
-            asyncio.create_task(asyncio.to_thread(shopify_sync.release_sync, sh["id"], error="cancelled", claim_token=token))
+            spawn_tracked(asyncio.to_thread(shopify_sync.release_sync, sh["id"], error="cancelled", claim_token=token), "release-sync")
             raise
         except Exception as e:
             await asyncio.to_thread(shopify_sync.release_sync, sh["id"], error=str(e)[:500], claim_token=token)
@@ -13224,7 +13483,8 @@ async def _month_end_payload(date_from: Optional[str], date_to: Optional[str],
 async def get_month_end(date_from: Optional[str] = None, date_to: Optional[str] = None,
                         limit: int = _MONTH_END_MAX_ROWS, store_ids: Optional[str] = None,
                         cost_mode: str = "sale", role: str = Depends(_bov_role)):
-    payload = await _month_end_payload(date_from, date_to, limit, store_ids, cost_mode=cost_mode, role=role)
+    async with heavy_report_slot():
+        payload = await _month_end_payload(date_from, date_to, limit, store_ids, cost_mode=cost_mode, role=role)
     return MonthEndResponse(**payload)
 
 
@@ -13234,6 +13494,7 @@ async def stream_month_end(date_from: Optional[str] = None, date_to: Optional[st
                            cost_mode: str = "sale", role: str = Depends(_bov_role)):
     """SSE twin of /month-end: progress events while the report is computed,
     then one `result` event carrying the full payload."""
+    _heavy_report_check()
     queue: asyncio.Queue = asyncio.Queue()
 
     async def progress(msg: str):
@@ -13262,14 +13523,14 @@ async def stream_month_end(date_from: Optional[str] = None, date_to: Optional[st
                     break
                 ev, data = item
                 yield f"event: {ev}\ndata: {json.dumps(data)}\n\n"
-        except GeneratorExit:
+        except (GeneratorExit, asyncio.CancelledError):
             task.cancel()
             raise
         finally:
             if not task.done():
                 task.cancel()
 
-    return BoundedStreamingResponse(gen(), media_type="text/event-stream",
+    return BoundedStreamingResponse(heavy_report_stream(gen()), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "Connection": "keep-alive",
                                       "X-Accel-Buffering": "no"})
 
@@ -13716,7 +13977,8 @@ async def _order_sync_payload(date_from: Optional[str], date_to: Optional[str],
 
 @app.get("/api/order-sync/report", response_model=OrderSyncResponse)
 async def get_order_sync_report(date_from: Optional[str] = None, date_to: Optional[str] = None):
-    payload = await _order_sync_payload(date_from, date_to)
+    async with heavy_report_slot():
+        payload = await _order_sync_payload(date_from, date_to)
     return OrderSyncResponse(**payload)
 
 
@@ -13724,6 +13986,7 @@ async def get_order_sync_report(date_from: Optional[str] = None, date_to: Option
 async def stream_order_sync_report(date_from: Optional[str] = None, date_to: Optional[str] = None):
     """SSE twin of /report: progress events while the reconciliation runs,
     then one `result` event carrying the full payload."""
+    _heavy_report_check()
     queue: asyncio.Queue = asyncio.Queue()
 
     async def progress(msg: str):
@@ -13752,14 +14015,14 @@ async def stream_order_sync_report(date_from: Optional[str] = None, date_to: Opt
                     break
                 ev, data = item
                 yield f"event: {ev}\ndata: {json.dumps(data)}\n\n"
-        except GeneratorExit:
+        except (GeneratorExit, asyncio.CancelledError):
             task.cancel()
             raise
         finally:
             if not task.done():
                 task.cancel()
 
-    return BoundedStreamingResponse(gen(), media_type="text/event-stream",
+    return BoundedStreamingResponse(heavy_report_stream(gen()), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "Connection": "keep-alive",
                                       "X-Accel-Buffering": "no"})
 
@@ -14008,7 +14271,7 @@ async def stream_order_sync_fix(req: OrderSyncFixRequest):
         # must finish its refund → edit → fulfill chain rather than being
         # abandoned half-applied. The runner holds no Postgres session while
         # it waits on Shopify, so nothing is pinned.
-        asyncio.create_task(runner())
+        spawn_tracked(runner(), "order-sync-fix")
         while True:
             try:
                 item = await asyncio.wait_for(queue.get(), timeout=15)
@@ -14453,7 +14716,7 @@ def _order_sync_cancel_stream(run) -> "BoundedStreamingResponse":
         # Deliberately NOT cancelled on client disconnect: a cancel already
         # sent to Shopify must be polled to completion so the audit row is
         # truthful rather than stuck on `pending`.
-        asyncio.create_task(runner())
+        spawn_tracked(runner(), "order-sync-cancel")
         while True:
             try:
                 item = await asyncio.wait_for(queue.get(), timeout=15)

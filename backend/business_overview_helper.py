@@ -33,7 +33,7 @@ import pyodbc
 from sqlalchemy import text
 
 from database import engine
-from mssql_helper import get_mssql_connection_string
+from mssql_helper import get_mssql_connection_string, mssql_connect
 
 _bov_executor = ThreadPoolExecutor(max_workers=6, thread_name_prefix="bov")
 
@@ -384,12 +384,11 @@ def aging_bucket(days: Optional[int]) -> Optional[str]:
 # ============================================================================
 
 def _connect(host, port, database, username, password):
-    conn = pyodbc.connect(
+    return mssql_connect(
         get_mssql_connection_string(host, port, database, username, password),
         timeout=MSSQL_TIMEOUT,
+        query_timeout=MSSQL_QUERY_TIMEOUT,
     )
-    conn.timeout = MSSQL_QUERY_TIMEOUT
-    return conn
 
 
 def _tables_present(cursor, names: List[str]) -> Dict[str, bool]:

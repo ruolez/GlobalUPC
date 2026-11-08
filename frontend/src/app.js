@@ -1,5 +1,125 @@
 const API_BASE = "/api";
 
+// ===== Connection resilience =====
+// Every same-origin /api GET retries on its own when the backend is briefly
+// unreachable (deploy swap, worker restart): network error, 502/503/504 from
+// nginx, or 429. Only GET/HEAD are retried: they never change data. While the
+// backend is unreachable a banner says so, and it clears itself once
+// /api/health answers again. Aborted requests are never retried.
+const NET_RETRY_STATUSES = new Set([429, 502, 503, 504]);
+const NET_RETRY_DELAYS_MS = [1000, 2500, 5000];
+const nativeFetch = window.fetch.bind(window);
+const connState = { down: false, timer: null };
+
+function isApiUrl(url) {
+  try {
+    const u = new URL(url, window.location.href);
+    return u.origin === window.location.origin && u.pathname.startsWith(`${API_BASE}/`);
+  } catch (e) {
+    return false;
+  }
+}
+
+function retryAfterMs(resp, fallback) {
+  const v = resp && resp.headers && resp.headers.get("Retry-After");
+  const secs = v ? parseInt(v, 10) : NaN;
+  return Number.isFinite(secs) ? Math.min(Math.max(secs, 1), 15) * 1000 : fallback;
+}
+
+function sleepMs(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal && signal.aborted) return reject(signal.reason || new DOMException("Aborted", "AbortError"));
+    const t = setTimeout(resolve, ms);
+    if (signal) {
+      signal.addEventListener("abort", () => {
+        clearTimeout(t);
+        reject(signal.reason || new DOMException("Aborted", "AbortError"));
+      }, { once: true });
+    }
+  });
+}
+
+function setConnectionDown(down) {
+  if (connState.down === down) return;
+  connState.down = down;
+  let bar = document.getElementById("conn-banner");
+  if (down) {
+    if (!bar) {
+      bar = document.createElement("div");
+      bar.id = "conn-banner";
+      bar.className = "conn-banner";
+      bar.setAttribute("role", "status");
+      bar.textContent = "Connection to the server lost — reconnecting…";
+      document.body.appendChild(bar);
+    }
+    bar.hidden = false;
+    if (!connState.timer) connState.timer = setInterval(probeConnection, 3000);
+  } else {
+    if (bar) bar.hidden = true;
+    if (connState.timer) {
+      clearInterval(connState.timer);
+      connState.timer = null;
+    }
+    showToast("Connection restored", "success");
+  }
+}
+
+async function probeConnection() {
+  try {
+    const r = await nativeFetch(`${API_BASE}/health`, { cache: "no-store" });
+    if (r.ok) setConnectionDown(false);
+  } catch (e) {
+    /* still down */
+  }
+}
+
+window.addEventListener("offline", () => setConnectionDown(true));
+window.addEventListener("online", probeConnection);
+
+window.fetch = async function resilientFetch(input, init = {}) {
+  const url = typeof input === "string" ? input : input && input.url;
+  const method = ((init && init.method) || (input && input.method) || "GET").toUpperCase();
+  if (!url || !isApiUrl(url)) return nativeFetch(input, init);
+  const signal = init && init.signal;
+  const retryable = method === "GET" || method === "HEAD";
+  for (let attempt = 0; ; attempt++) {
+    let resp;
+    try {
+      resp = await nativeFetch(input, init);
+    } catch (err) {
+      if (err && err.name === "AbortError") throw err;
+      setConnectionDown(true);
+      if (!retryable || attempt >= NET_RETRY_DELAYS_MS.length) throw err;
+      await sleepMs(NET_RETRY_DELAYS_MS[attempt], signal);
+      continue;
+    }
+    // 502/504 come from nginx when it cannot reach the backend at all; a
+    // backend 503 can be a busy report, so it does not raise the banner.
+    if (resp.status === 502 || resp.status === 504) setConnectionDown(true);
+    else if (connState.down && resp.status < 500) setConnectionDown(false);
+    if (!retryable || !NET_RETRY_STATUSES.has(resp.status) || attempt >= NET_RETRY_DELAYS_MS.length) {
+      return resp;
+    }
+    await sleepMs(retryAfterMs(resp, NET_RETRY_DELAYS_MS[attempt]), signal);
+  }
+};
+
+// Reads an error body that may not be JSON (nginx error pages, proxies).
+async function readErrorDetail(response) {
+  const text = await response.text().catch(() => "");
+  try {
+    const j = JSON.parse(text);
+    if (j && j.detail) return typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail);
+  } catch (e) {
+    /* not JSON */
+  }
+  if (response.status === 502 || response.status === 503 || response.status === 504) {
+    return "The server is restarting or busy. Please try again in a moment.";
+  }
+  return `API request failed (HTTP ${response.status})`;
+}
+// ===== End connection resilience =====
+
 // Global state for search results
 let currentSearchResults = {
   upc: "",
@@ -113,8 +233,9 @@ async function apiRequest(endpoint, options = {}) {
     });
 
     if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.detail || "API request failed");
+      const error = new Error(await readErrorDetail(response));
+      error.status = response.status;
+      throw error;
     }
 
     if (response.status === 204) {
@@ -124,7 +245,14 @@ async function apiRequest(endpoint, options = {}) {
     return await response.json();
   } catch (error) {
     console.error("API Error:", error);
-    alert(`Error: ${error.message}`);
+    // Outages are shown by the connection banner and a toast; a blocking
+    // alert per failed call would stack up while the server restarts.
+    const outage = !error.status || [502, 503, 504].includes(error.status);
+    if (outage && error.name !== "AbortError") {
+      showToast(`Error: ${error.message}`, "error");
+    } else if (error.name !== "AbortError") {
+      alert(`Error: ${error.message}`);
+    }
     throw error;
   }
 }
@@ -244,7 +372,7 @@ function isDashboardVisible() {
 function startDashboardAutoRefresh() {
   stopDashboardAutoRefresh();
   dashboardState.refreshTimer = setInterval(() => {
-    if (document.hidden || !isDashboardVisible()) return;
+    if (document.hidden || !isDashboardVisible() || dashboardState.refreshing) return;
     loadDashboard();
   }, DASHBOARD_AUTOREFRESH_MS);
 }
@@ -30014,10 +30142,14 @@ function osyncAutoCountsText(c, dryRun) {
 // ---- Page pill + nav badge ----
 
 async function osyncAutoRefreshStatus() {
+  if (osyncAuto.statusInFlight) return;
+  osyncAuto.statusInFlight = true;
   try {
     osyncAuto.status = await osyncAutoCall("GET", "/order-sync/auto/status");
   } catch {
     return;
+  } finally {
+    osyncAuto.statusInFlight = false;
   }
   osyncAutoRenderPill();
 }
@@ -30630,7 +30762,12 @@ function osyncAutoInit() {
     else if (what === "export") osyncAutoExport();
   });
   osyncAutoRefreshStatus();
-  setInterval(osyncAutoRefreshStatus, 60000);
+  setInterval(() => {
+    if (!document.hidden) osyncAutoRefreshStatus();
+  }, 60000);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) osyncAutoRefreshStatus();
+  });
 }
 
 document.addEventListener("DOMContentLoaded", osyncAutoInit);

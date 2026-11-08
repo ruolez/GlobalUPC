@@ -1,10 +1,88 @@
 import pyodbc
 from typing import Optional, List, Dict, Any
 import asyncio
+import os
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 
-_mssql_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="mssql")
+# Every MSSQL helper here is I/O-bound (the thread waits on SQL Server), and
+# with query timeouts on every connection no thread can be held forever, so
+# the pool is sized for a full store fan-out per request.
+_mssql_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="mssql")
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+# Per-statement timeouts (seconds) for every MSSQL connection. Without one a
+# query against a hung store waits forever: FreeTDS does not apply
+# freetds.conf's `timeout` to ODBC statements (verified: a 25 s WAITFOR ran to
+# the end), so the only bound is pyodbc's conn.timeout. A timed-out query
+# raises pyodbc.OperationalError (HYT00), which every helper already turns
+# into that store's error. 300 s matches nginx's proxy_read_timeout: on a
+# request path a single statement running longer could never have reached the
+# client anyway, so the limit only frees threads held by hung stores.
+MSSQL_QUERY_TIMEOUT = _env_int("MSSQL_QUERY_TIMEOUT", 300)
+# Whole-store scans: orphan audit, reconciliation, sales aggregation.
+MSSQL_LONG_QUERY_TIMEOUT = _env_int("MSSQL_LONG_QUERY_TIMEOUT", 900)
+
+
+def mssql_open(conn_string: str, timeout: int = 30, query_timeout: Optional[int] = None, **kwargs):
+    """Open a connection with the login timeout AND a per-statement timeout."""
+    conn = pyodbc.connect(conn_string, timeout=timeout, **kwargs)
+    conn.timeout = MSSQL_QUERY_TIMEOUT if query_timeout is None else query_timeout
+    return conn
+
+
+@contextmanager
+def mssql_connect(conn_string: str, timeout: int = 30, query_timeout: Optional[int] = None, **kwargs):
+    """Drop-in for a pyodbc connection used as a context manager, with timeouts.
+
+    Keeps pyodbc's own block semantics (commit when the block succeeds,
+    rollback when it raises) and then closes the connection, which pyodbc's
+    context manager never does.
+    """
+    conn = mssql_open(conn_string, timeout=timeout, query_timeout=query_timeout, **kwargs)
+    try:
+        yield conn
+        if not conn.autocommit:
+            conn.commit()
+    except BaseException:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+# Overall budget for one store inside a request-bound fan-out. Kept under
+# nginx's 300 s proxy_read_timeout, past which the client is gone anyway.
+STORE_DEADLINE_S = _env_int("STORE_DEADLINE_S", 280)
+
+
+async def with_deadline(awaitable, seconds: float, store_name: str = "", width: int = 3):
+    """Await a per-store helper, but give up after `seconds`.
+
+    On timeout returns the helpers' usual failure shape, (False, error, None)
+    padded with None to `width` items, so the caller reports "timed out" for
+    that one store and carries on with the rest. The worker thread behind it
+    is bounded by the connection's query timeout.
+    """
+    try:
+        return await asyncio.wait_for(awaitable, timeout=seconds)
+    except asyncio.TimeoutError:
+        who = f"{store_name}: " if store_name else ""
+        return (False, f"{who}timed out after {int(seconds)}s") + (None,) * (width - 2)
 
 # Chunk size for processing large tables (prevents timeout)
 CHUNK_SIZE = 1000
@@ -113,7 +191,7 @@ def test_mssql_connection(
             tds_version=tds_version
         )
 
-        with pyodbc.connect(conn_string, timeout=10) as conn:
+        with mssql_connect(conn_string, timeout=10, query_timeout=30) as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT @@VERSION")
             version = cursor.fetchone()[0]
@@ -168,7 +246,7 @@ def _check_upc_exists_sync(
 
         results = []
 
-        with pyodbc.connect(conn_string, timeout=30) as conn:
+        with mssql_connect(conn_string, timeout=30) as conn:
             cursor = conn.cursor()
 
             try:
@@ -306,7 +384,7 @@ def _search_products_by_upc_sync(
 
         results = []
 
-        with pyodbc.connect(conn_string, timeout=30) as conn:
+        with mssql_connect(conn_string, timeout=30) as conn:
             cursor = conn.cursor()
 
             for table in tables:
@@ -408,14 +486,15 @@ async def search_upc_across_mssql_stores(
     """
     async def search_single_store(store: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Search a single MSSQL store and return formatted results."""
-        success, error, table_results = await search_products_by_upc(
+        # Half the request budget: /api/upc/search runs the Shopify phase first.
+        success, error, table_results = await with_deadline(search_products_by_upc(
             host=store["host"],
             port=store["port"],
             database=store["database_name"],
             username=store["username"],
             password=store["password"],
             upc=upc
-        )
+        ), STORE_DEADLINE_S / 2, store["name"])
 
         if not success:
             # Log error but don't fail entire search
@@ -505,7 +584,7 @@ def _update_upc_in_table_sync(
         )
 
         # Open connection and explicitly disable autocommit
-        conn = pyodbc.connect(conn_string, timeout=30, autocommit=False)
+        conn = mssql_open(conn_string, timeout=30, autocommit=False)
         cursor = conn.cursor()
 
         # SQL Server has a limit of 2100 parameters per query
@@ -1040,8 +1119,8 @@ def _audit_orphaned_upcs_sync(
             excluded_tables = {"QuotationDetails", "QuotationsDetails_tbl"}
             cross_db_tables = [t for t in detail_tables if t["name"] not in excluded_tables]
 
-            with pyodbc.connect(source_conn_string, timeout=120) as source_conn, \
-                 pyodbc.connect(target_conn_string, timeout=120) as target_conn:
+            with mssql_connect(source_conn_string, timeout=120, query_timeout=MSSQL_LONG_QUERY_TIMEOUT) as source_conn, \
+                 mssql_connect(target_conn_string, timeout=120, query_timeout=MSSQL_LONG_QUERY_TIMEOUT) as target_conn:
 
                 source_cursor = source_conn.cursor()
                 target_cursor = target_conn.cursor()
@@ -1060,7 +1139,7 @@ def _audit_orphaned_upcs_sync(
                 target_cursor.close()
         else:
             # Same-database mode: open single connection (backward compatibility)
-            with pyodbc.connect(source_conn_string, timeout=60) as conn:
+            with mssql_connect(source_conn_string, timeout=60, query_timeout=MSSQL_LONG_QUERY_TIMEOUT) as conn:
                 cursor = conn.cursor()
 
                 for table in detail_tables:
@@ -1357,7 +1436,7 @@ def find_matches_by_product_id_sync(
         total_records = len(orphaned_records)
         BATCH_SIZE = 500
 
-        with pyodbc.connect(conn_string, timeout=30) as conn:
+        with mssql_connect(conn_string, timeout=30, query_timeout=MSSQL_LONG_QUERY_TIMEOUT) as conn:
             cursor = conn.cursor()
 
             # Process records in batches
@@ -1493,7 +1572,7 @@ def find_matches_by_description_sync(
         total_records = len(orphaned_records)
         BATCH_SIZE = 500
 
-        with pyodbc.connect(conn_string, timeout=30) as conn:
+        with mssql_connect(conn_string, timeout=30, query_timeout=MSSQL_LONG_QUERY_TIMEOUT) as conn:
             cursor = conn.cursor()
 
             # Process records in batches
@@ -1625,7 +1704,7 @@ def update_orphaned_upcs_sync(
 
         results = []
 
-        with pyodbc.connect(conn_string, timeout=30) as conn:
+        with mssql_connect(conn_string, timeout=30, query_timeout=MSSQL_LONG_QUERY_TIMEOUT) as conn:
             cursor = conn.cursor()
 
             for update in updates:
@@ -1759,7 +1838,7 @@ def get_item_prices(
     conn_str = get_mssql_connection_string(host, port, database, username, password, tds_version)
 
     try:
-        conn = pyodbc.connect(conn_str, timeout=30)
+        conn = mssql_open(conn_str, timeout=30)
         cursor = conn.cursor()
 
         cursor.execute(
@@ -1818,7 +1897,7 @@ def get_item_prices_batch(
     conn_str = get_mssql_connection_string(host, port, database, username, password, tds_version)
 
     try:
-        conn = pyodbc.connect(conn_str, timeout=30)
+        conn = mssql_open(conn_str, timeout=30)
         cursor = conn.cursor()
 
         results: Dict[str, Dict[str, Any]] = {}
@@ -1890,7 +1969,7 @@ def update_item_prices(
     conn_str = get_mssql_connection_string(host, port, database, username, password, tds_version)
 
     try:
-        conn = pyodbc.connect(conn_str, timeout=30)
+        conn = mssql_open(conn_str, timeout=30)
         cursor = conn.cursor()
 
         set_clauses = []
@@ -1960,7 +2039,7 @@ def get_active_products(
     conn_str = get_mssql_connection_string(host, port, database, username, password, tds_version)
 
     try:
-        conn = pyodbc.connect(conn_str, timeout=30)
+        conn = mssql_open(conn_str, timeout=30, query_timeout=MSSQL_LONG_QUERY_TIMEOUT)
         cursor = conn.cursor()
 
         cursor.execute("""
@@ -2040,7 +2119,7 @@ def search_business_names(
     conn_str = get_mssql_connection_string(host, port, database, username, password, tds_version)
 
     try:
-        conn = pyodbc.connect(conn_str, timeout=30)
+        conn = mssql_open(conn_str, timeout=30)
         cursor = conn.cursor()
 
         cursor.execute("""
@@ -2104,7 +2183,7 @@ def get_aggregated_sales(
     conn_str = get_mssql_connection_string(host, port, database, username, password, tds_version)
 
     try:
-        conn = pyodbc.connect(conn_str, timeout=60)
+        conn = mssql_open(conn_str, timeout=60, query_timeout=MSSQL_LONG_QUERY_TIMEOUT)
         cursor = conn.cursor()
 
         cursor.execute("""
@@ -2190,7 +2269,7 @@ def get_aggregated_returns(
     conn_str = get_mssql_connection_string(host, port, database, username, password, tds_version)
 
     try:
-        conn = pyodbc.connect(conn_str, timeout=60)
+        conn = mssql_open(conn_str, timeout=60, query_timeout=MSSQL_LONG_QUERY_TIMEOUT)
         cursor = conn.cursor()
 
         cursor.execute("""

@@ -9944,3 +9944,25 @@ tr.bov-row-click:focus-visible { outline: 2px solid var(--accent-primary); outli
   .osync-auto-stages li { grid-template-columns: 1fr auto; }
   .osync-auto-stage-msg { grid-column: 1 / -1; }
 }
+
+/* Connection banner (app.js "Connection resilience"): shown while the API is
+   unreachable, cleared automatically once /api/health answers again. */
+.conn-banner {
+  position: fixed;
+  top: 0.75rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10001;
+  padding: 0.5rem 1rem;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--warning, #f59e0b) 18%, var(--bg-primary));
+  color: var(--text-primary);
+  border: 1px solid color-mix(in srgb, var(--warning, #f59e0b) 55%, var(--bg-primary));
+  box-shadow: var(--shadow-md, 0 4px 12px rgba(0, 0, 0, 0.25));
+  font-size: 0.875rem;
+  font-weight: 500;
+  pointer-events: none;
+}
+.conn-banner[hidden] {
+  display: none;
+}

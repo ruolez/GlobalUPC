@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Global UPC** is an operations dashboard for businesses running multiple MSSQL backends (e.g. BackOffice / S2S systems) plus Shopify storefronts. It centralizes UPC management, price updates, in-progress shipment tracking, sales reporting, and orphan-UPC reconciliation across every configured store.
 
-There is **no automated test suite** — verification is manual via the running app and ad-hoc curl smoke tests.
+Tests: pure-logic unittests in `backend/tests/` (`docker exec -w /app globalupc_backend python -m unittest discover -s tests`), DB-touching ones in `backend/tests/integration/` (`... discover -s tests/integration`, needs the dev Postgres), plus the regression snapshot `backend/tests/smoke/snapshot_endpoints.py` (runs ~76 read-only endpoints against an OLD and a NEW backend side by side and diffs the answers; run the old code from a `git worktree` on another port). Everything else is verified manually in the running app.
 
 ## Stack & runtime
 
@@ -14,13 +14,13 @@ Three Docker services:
 
 | Service | Container | Tech | Port |
 |---|---|---|---|
-| `db` | `globalupc_db` | PostgreSQL 15 | 5433 (host) |
-| `backend` | `globalupc_backend` | FastAPI + SQLAlchemy + pyodbc/FreeTDS | 8001 |
-| `frontend` | `globalupc_frontend` | Nginx serving static files | 80 (prod) / 8080 (dev) |
+| `db` | `globalupc_db` | PostgreSQL 15 | 5433 (host; prod binds 127.0.0.1) |
+| `backend` | `globalupc_backend` | FastAPI + SQLAlchemy + pyodbc/FreeTDS (prod: gunicorn + uvicorn workers) | 8001 (prod binds 127.0.0.1) |
+| `frontend` | `globalupc_frontend` | Nginx serving static files + `/api/` proxy | 80 (prod) / 8080 (dev) |
 
 **Dev (`docker-compose.yml`)**: backend mounts `./backend` so Python edits hot-reload (single `uvicorn --reload` worker). Frontend mounts `./frontend/src` — JS/HTML/CSS edits are visible after a hard refresh (Cmd-Shift-R) since aggressive no-cache headers are set.
 
-**Prod (`docker-compose.prod.yml`)**: 4 uvicorn workers, healthchecks, restart policy. Resource limits applied to all three services. Deployed by `install.sh` to `/opt/globalupc/`.
+**Prod (`docker-compose.prod.yml`)**: gunicorn (`backend/gunicorn.conf.py`) runs 4 uvicorn workers and replaces a worker that crashes or whose event loop stops answering for 120 s, without restarting the container. Healthcheck `/api/health/deep` + `autoheal` restarts the container only when the backend cannot reach Postgres for ~1 min. Log rotation (20 MB × 5) on every service, resource limits, `stop_grace_period: 120s`. Ports 8001/5433 are bound to 127.0.0.1 (`BACKEND_BIND` / `DB_BIND` in `.env` reopen them); every client, including other apps, goes through nginx `/api/`. Deployed by `install.sh` to `/opt/globalupc/`.
 
 ## Common commands
 
@@ -37,7 +37,7 @@ curl -s http://localhost:8001/openapi.json | python3 -m json.tool | less
 curl -s http://localhost:8001/api/health
 ```
 
-Production deploys via `sudo ./install.sh` (option 2 = update preserving data; option 4 = remove + reinstall). The installer runs every `backend/migrations/*.sql` against the live PostgreSQL volume — keep migrations idempotent.
+Production deploys via `sudo ./install.sh` (option 2 = update preserving data; option 4 = remove + reinstall; option 6 = backup / restore). The update builds the new images while the old version keeps serving, takes a `pg_dump` to `/opt/globalupc/backups/`, applies new migrations, then recreates only backend + frontend (Postgres never stops); if the new backend is not healthy within 3 min it rolls back to the `:previous` images. Users and API clients see a ~10-20 s blip (nginx answers JSON 502/503 with `Retry-After`; the SPA retries GETs and shows a "reconnecting" banner). Migrations are tracked in `schema_migrations`, run with `ON_ERROR_STOP` **before** the new code starts and while the OLD code is still running, so every migration must be idempotent AND backward compatible (add tables/columns/indexes; never drop or rename something the running version reads). A nightly cron (`/etc/cron.d/globalupc-backup`) keeps 7 daily + 4 weekly dumps.
 
 ## High-level architecture
 
@@ -65,7 +65,9 @@ When adding a feature that needs one of these stores, **prefer a "soft" resolver
 | `main.py` | All FastAPI endpoints; ~5k lines, keep adding sections at the bottom. Endpoint helpers live next to the endpoints they serve. |
 | `models.py` | SQLAlchemy ORM. Core entity is `Store` (with `store_type` enum + `store_category`); other tables either belong to a store (FK) or to a feature config. |
 | `schemas.py` | Pydantic request/response models. **Use attribute access**, not `dict["key"]`. |
-| `database.py` | SQLAlchemy engine setup. Pool size 5 / overflow 10 / `pool_pre_ping` / `pool_recycle=300`. |
+| `database.py` | SQLAlchemy engine setup. Pool size 5 / overflow 10 / `pool_pre_ping` / `pool_recycle=300`, pool wait 10 s, server-side timeouts via `PG_*` env. `get_db`, `db_session()`, `release_db(db)`, `run_db(fn)`. |
+| `cluster_lock.py` | `ClusterLock`: asyncio lock + Postgres advisory lock, serializes across all workers (order-fix price bump / product creation). |
+| `gunicorn.conf.py` | Prod process manager settings (workers, heartbeat timeout, graceful timeout, keep-alive), all env-overridable. |
 | `init.sql` | Bootstrapped on first container start. Subsequent schema changes go in `migrations/*.sql`. |
 | `mssql_helper.py` | All MSSQL queries that fan out across stores. Owns `_mssql_executor` (4 threads), the `CHUNK_SIZE` constant for chunked operations, and `get_item_prices_batch_async` for UPC→cost lookups. |
 | `item_tracker_helper.py` | Single-store MSSQL queries used by Item Tracker (purchases, sales, customer/vendor returns, inventory recounts). Owns `_item_tracker_executor`. |
@@ -74,7 +76,7 @@ When adding a feature that needs one of these stores, **prefer a "soft" resolver
 | `shopify_sync_helper.py` | Per-store local mirror of Shopify customers/orders into PostgreSQL. Full sync via Bulk Operations API (JSONL download, `__parentId` reassembly for line items), incremental via `updated_at` cursor pagination; both write through the same batch upserts (`execute_values`, per-batch dedupe). The `shopify_sync_state` row doubles as the cross-worker claim (conditional UPDATE + heartbeat staleness takeover). Owns `_sync_executor`. |
 | `lost_customers_local.py` | Local-SQL twins of every Shopify fetch the Lost Customers report makes (scan, first orders, cross-store email/name+ZIP probes, customer detail, lost-products line items). Each returns the exact shape of its live counterpart so the report orchestration runs unchanged. Completed-order rule in SQL: `cancelled_at IS NULL AND financial_status IS DISTINCT FROM 'REFUNDED'` plus no `banned`/`fraud` tag (exact match, case-insensitive — mirrors `ANALYSIS_ORDER_FILTER` in `shopify_helper.py`, which also drops customers carrying those tags); window comparisons via `AT TIME ZONE`. |
 | `business_overview_helper.py` | Business Overview: pure period/bucket math (`resolve_period`, `previous_period`, `rollup_daily`), single-store MSSQL queries for open/shipped invoices, purchase orders, daily sales + credit-memo returns, breakdowns and drill-ins (optional lookup tables `Employees_tbl`/`Shippers_tbl`/`Terms_tbl`/`Suppliers_tbl` guarded via `INFORMATION_SCHEMA`), plus Postgres-mirror Shopify series. Owns `_bov_executor`. |
-| `freetds.conf` | FreeTDS settings. TDS version defaults to 7.4 (SQL Server 2012+). |
+| `freetds.conf` | FreeTDS settings. TDS version defaults to 7.4 (SQL Server 2012+). Its `timeout` does NOT apply to ODBC statements — query timeouts come from `mssql_connect`/`mssql_open`. |
 
 The lifespan handler in `main.py` shuts down each thread-pool executor on app exit — when adding a new helper file with its own `ThreadPoolExecutor`, register a `shutdown_*_executor()` and call it from the lifespan.
 
@@ -128,15 +130,32 @@ yield f"event: progress\ndata: {json.dumps(payload)}\n\n"   # ✅
 yield f"event: progress\ndata: {json.dumps(payload)}\\n\\n" # ❌ breaks the stream
 ```
 
-Heartbeat every ~15s on long streams to keep the client connection alive. Listen for `GeneratorExit` to cancel pending `asyncio.create_task(...)` operations on client disconnect.
+Heartbeat every ~15s on long streams to keep the client connection alive. Catch `(GeneratorExit, asyncio.CancelledError)` to cancel pending `asyncio.create_task(...)` operations on client disconnect (Starlette delivers a disconnect as cancellation), then re-raise the CancelledError.
+
+## Stability rules (keep these when adding code)
+
+The app is used by many people at once and by other apps through `/api/`, so one slow store or one stuck request must never take a worker down. The building blocks:
+
+- **Never hold a Postgres session across slow I/O.** In an `async def` endpoint that takes `Depends(get_db)`, read what you need, then call `release_db(db)` (`database.py`) before awaiting MSSQL/Shopify; it ends the read transaction without expiring loaded objects. Load relationships you will read later (e.g. `store.mssql_connection`) *before* releasing. For new code prefer `await run_db(fn)` (runs `fn(db)` in a thread with its own short session) or the `_bov_ctx()` snapshot pattern. A DB-only endpoint should be a plain `def`, not `async def`. Postgres limits (`PG_*` env in `database.py`): pool wait 10 s, connect 5 s, lock wait 30 s, idle-in-transaction 10 min, statement 15 min.
+- **Every MSSQL connection goes through `mssql_connect(...)` (context manager: pyodbc commit/rollback semantics, then close) or `mssql_open(...)` in `mssql_helper.py`.** Both set a per-statement timeout (`MSSQL_QUERY_TIMEOUT` 300 s, `MSSQL_LONG_QUERY_TIMEOUT` 900 s for whole-store scans; Business Overview keeps its own 60 s). Never call `pyodbc.connect` directly: FreeTDS ignores `freetds.conf`'s `timeout` for ODBC statements (verified), so without `conn.timeout` a hung store holds a thread forever.
+- **Request-bound store fan-outs wrap each store in `with_deadline(coro, STORE_DEADLINE_S, store_name, width=N)`** — returns the helpers' `(False, "timed out…", None…)` shape so the store shows as an error and the rest still answer. Don't put a deadline on writes or on streams that heartbeat for legitimately long work.
+- **Work that outlives its request uses `spawn_tracked(coro, name)`** (logged on failure, awaited up to 60 s on shutdown), never a bare `asyncio.create_task`. Background loops started in the lifespan go through `_supervised_loop` (restarted with backoff if they exit).
+- **Locks that must hold across workers are `ClusterLock` (`cluster_lock.py`, Postgres advisory lock on its own connection)**, not `asyncio.Lock` (one per process; prod has 4).
+- **Heavy reports** (Month End, Lost Customers/Products, orphan audit, Sales, Shopify Sales, Order Sync report) call `_heavy_report_check()` and wrap their stream in `heavy_report_stream(...)` (or `async with heavy_report_slot()` for JSON): past `HEAVY_REPORT_LIMIT` (4 per worker) they answer 503 + `Retry-After`.
+- **Streams**: clean up in `except (GeneratorExit, asyncio.CancelledError)` (a disconnect arrives as cancellation) and re-raise the CancelledError; return through `BoundedStreamingResponse`.
+- **Shopify mutations are not re-sent** after a timeout, dropped connection or 5xx (`_shopify_graphql` detects `mutation`); only 429/THROTTLED/connect errors retry.
+- **Health**: `/api/health` is static; `/api/health/deep` returns 503 only when this worker can't reach Postgres within 3 s ("degraded" = busy pool, still 200) and reports pool, executor backlog, loops and tracked tasks.
+- **Logs**: `RequestLogMiddleware` prints `[REQ] SLOW|ERROR status METHOD path secs pid rid=…` for requests slower than `SLOW_REQUEST_S` (3 s) or failing with 5xx; `rid` matches the `rid=` in nginx's access log.
+- **nginx** (`frontend/nginx.conf`): re-resolves `backend` every 10 s (an update recreates the container), upstream keep-alive, gzip, JSON bodies for nginx-generated 502/503/504/429, per-IP `limit_req`/`limit_conn` in **dry-run** (logs "limiting requests, dry run"; remove the `*_dry_run` lines to enforce once real traffic has been checked).
+- **Frontend**: `window.fetch` is wrapped (top of `app.js`, "Connection resilience") so same-origin `/api` GETs retry on network errors/429/502/503/504 with backoff and `Retry-After`, and a banner shows while the server is unreachable; `apiRequest` shows outages as a toast instead of `alert()`. POSTs are never retried automatically.
 
 ## When rebuilding containers
 
 | Edit | Required action |
 |---|---|
-| `backend/Dockerfile` or `requirements.txt` | `docker-compose build backend` |
+| `backend/Dockerfile`, `requirements.txt` or `gunicorn.conf.py` (prod) | `docker-compose build backend` |
 | `frontend/Dockerfile` or `nginx.conf` | `docker-compose build frontend` |
 | `backend/init.sql` | Drop the `globalupc_postgres_data` volume + recreate (destructive) |
-| `backend/migrations/*.sql` | Lands automatically on prod via `install.sh` option 2; in dev apply manually |
+| `backend/migrations/*.sql` | Lands automatically on prod via `install.sh` option 2 (tracked in `schema_migrations`, applied before the swap); in dev apply manually |
 | Python source under `backend/` | Auto-reload (`uvicorn --reload`) |
 | `frontend/src/*` | Hard refresh in browser |

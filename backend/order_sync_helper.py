@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
-from mssql_helper import get_mssql_connection_string
+from mssql_helper import get_mssql_connection_string, mssql_connect, mssql_open
 
 _ordsync_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ordsync")
 
@@ -125,7 +125,7 @@ def _fetch_invoices_sync(
     """
 
     try:
-        with pyodbc.connect(conn_str, timeout=30) as conn:
+        with mssql_connect(conn_str, timeout=30) as conn:
             cursor = conn.cursor()
             cursor.execute(header_query, [lo, hi])
             headers = cursor.fetchall()
@@ -152,7 +152,7 @@ def _fetch_invoice_sync(
     (`in_range` is always True — there is no range)."""
     conn_str = get_mssql_connection_string(host, port, database, username, password)
     try:
-        with pyodbc.connect(conn_str, timeout=30) as conn:
+        with mssql_connect(conn_str, timeout=30) as conn:
             cursor = conn.cursor()
             cursor.execute(_INVOICE_HEADER_SELECT + " AND h.InvoiceID = ?", [invoice_id])
             r = cursor.fetchone()

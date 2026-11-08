@@ -6,7 +6,7 @@ from datetime import date, datetime
 
 _item_tracker_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="item_tracker")
 
-from mssql_helper import get_mssql_connection_string
+from mssql_helper import get_mssql_connection_string, mssql_connect, mssql_open
 
 
 def get_item_info(
@@ -24,7 +24,7 @@ def get_item_info(
     conn_str = get_mssql_connection_string(host, port, database, username, password)
 
     try:
-        conn = pyodbc.connect(conn_str, timeout=30)
+        conn = mssql_open(conn_str, timeout=30)
         cursor = conn.cursor()
 
         query = """
@@ -79,7 +79,7 @@ def get_purchases(
     conn_str = get_mssql_connection_string(host, port, database, username, password)
 
     try:
-        conn = pyodbc.connect(conn_str, timeout=30)
+        conn = mssql_open(conn_str, timeout=30)
         cursor = conn.cursor()
 
         # Check if tables exist
@@ -158,7 +158,7 @@ def get_sales(
     conn_str = get_mssql_connection_string(host, port, database, username, password)
 
     try:
-        conn = pyodbc.connect(conn_str, timeout=30)
+        conn = mssql_open(conn_str, timeout=30)
         cursor = conn.cursor()
 
         # Check if tables exist
@@ -241,7 +241,7 @@ def get_customer_returns(
     conn_str = get_mssql_connection_string(host, port, database, username, password)
 
     try:
-        conn = pyodbc.connect(conn_str, timeout=30)
+        conn = mssql_open(conn_str, timeout=30)
         cursor = conn.cursor()
 
         # Check if tables exist
@@ -318,7 +318,7 @@ def get_vendor_returns(
     conn_str = get_mssql_connection_string(host, port, database, username, password)
 
     try:
-        conn = pyodbc.connect(conn_str, timeout=30)
+        conn = mssql_open(conn_str, timeout=30)
         cursor = conn.cursor()
 
         # Check if tables exist
@@ -488,7 +488,7 @@ def search_products_by_description(
     conn_str = get_mssql_connection_string(host, port, database, username, password)
 
     try:
-        conn = pyodbc.connect(conn_str, timeout=30)
+        conn = mssql_open(conn_str, timeout=30)
         cursor = conn.cursor()
 
         sql = """
@@ -555,7 +555,7 @@ def get_inventory_recounts(
     conn_str = get_mssql_connection_string(host, port, database, username, password)
 
     try:
-        conn = pyodbc.connect(conn_str, timeout=30)
+        conn = mssql_open(conn_str, timeout=30)
         cursor = conn.cursor()
 
         # Check if table exists
@@ -657,7 +657,7 @@ def get_in_progress(
     conn_str = get_mssql_connection_string(host, port, database, username, password)
 
     try:
-        conn = pyodbc.connect(conn_str, timeout=30)
+        conn = mssql_open(conn_str, timeout=30)
         cursor = conn.cursor()
 
         # Required tables live in DB_ADMIN; degrade gracefully if missing.

@@ -1,9 +1,14 @@
-version: '3.8'
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
 
 services:
   db:
     image: postgres:15-alpine
     container_name: globalupc_db
+    logging: *default-logging
     command: postgres -c max_connections=200
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-globalupc}
@@ -27,6 +32,7 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     container_name: globalupc_backend
+    logging: *default-logging
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-globalupc}:${POSTGRES_PASSWORD:-globalupc}@db:5432/${POSTGRES_DB:-globalupc}
       PYTHONUNBUFFERED: 1
@@ -42,13 +48,14 @@ services:
         condition: service_healthy
     networks:
       - globalupc_network
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload --timeout-keep-alive 75
 
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
     container_name: globalupc_frontend
+    logging: *default-logging
     ports:
       - "${FRONTEND_PORT:-8080}:80"
     volumes:

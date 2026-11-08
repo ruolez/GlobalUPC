@@ -4,7 +4,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 
-from mssql_helper import get_mssql_connection_string
+from mssql_helper import get_mssql_connection_string, mssql_connect, mssql_open
 
 _chkord_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="chkord")
 
@@ -53,7 +53,7 @@ def _fetch_checkers_sync(
     """
 
     try:
-        with pyodbc.connect(conn_str, timeout=30) as conn:
+        with mssql_connect(conn_str, timeout=30) as conn:
             cursor = conn.cursor()
             cursor.execute(query, [date_from, upper])
             users = [{"id": r[0], "name": r[1]} for r in cursor.fetchall() if r[0] is not None]
@@ -101,7 +101,7 @@ def _fetch_checked_orders_sync(
     """
 
     try:
-        with pyodbc.connect(conn_str, timeout=30) as conn:
+        with mssql_connect(conn_str, timeout=30) as conn:
             cursor = conn.cursor()
             cursor.execute(parcels_query, [checker_id, date_from, upper])
             parcels = [(r[0], r[1], r[2], r[3]) for r in cursor.fetchall()]

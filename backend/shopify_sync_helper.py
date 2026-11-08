@@ -15,6 +15,7 @@ UPDATE; a worker that dies mid-run releases it via the heartbeat staleness test.
 """
 
 import asyncio
+import os
 import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -45,6 +46,9 @@ _FLUSH_ORDERS = 500
 _FLUSH_CUSTOMERS = 1000
 
 _BULK_POLL_SECONDS = 4.0
+# A bulk export that never finishes would otherwise keep the sync (and its
+# claim) alive forever; Shopify's own bulk operations expire well before this.
+_BULK_MAX_SECONDS = int(os.getenv("SHOPIFY_BULK_MAX_SECONDS", str(4 * 3600)))
 # Claim heartbeat cadence. Must stay well under the 3-minute staleness window
 # claim_sync uses for takeover.
 _HEARTBEAT_SECONDS = 20.0
@@ -734,7 +738,15 @@ async def _run_bulk_query(
     tracker.current_id = op_id
 
     last_count = -1
+    deadline = asyncio.get_running_loop().time() + _BULK_MAX_SECONDS
     while True:
+        if asyncio.get_running_loop().time() > deadline:
+            tracker.current_id = None
+            await cancel_bulk_operation(store, op_id)
+            raise ShopifyFetchError(
+                f"Bulk operation still running after {_BULK_MAX_SECONDS // 60} min; cancelled",
+                code="BULK_TIMEOUT",
+            )
         await asyncio.sleep(_BULK_POLL_SECONDS)
         data, _ = await _shopify_graphql(
             session, store["shop_domain"], store["admin_api_key"], store["api_version"],
@@ -783,17 +795,20 @@ async def _stream_jsonl(session: aiohttp.ClientSession, url: str, line_handler) 
             raise ShopifyFetchError(
                 f"Bulk result download failed (HTTP {response.status})", code="BULK_DOWNLOAD"
             )
+        # Parse each chunk's complete lines in a worker thread: the file can be
+        # hundreds of MB, and json.loads on the event loop would stall every
+        # other request on this worker for the whole download.
+        def _parse(lines):
+            return [json.loads(line) for line in lines if line.strip()]
+
         buffer = b""
         async for chunk in response.content.iter_chunked(1 << 16):
             buffer += chunk
-            while True:
-                nl = buffer.find(b"\n")
-                if nl < 0:
-                    break
-                line = buffer[:nl]
-                buffer = buffer[nl + 1:]
-                if line.strip():
-                    await line_handler(json.loads(line))
+            if b"\n" not in chunk:
+                continue
+            *lines, buffer = buffer.split(b"\n")
+            for obj in await asyncio.to_thread(_parse, lines):
+                await line_handler(obj)
         if buffer.strip():
             await line_handler(json.loads(buffer))
 
