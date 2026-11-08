@@ -70,7 +70,7 @@ When adding a feature that needs one of these stores, **prefer a "soft" resolver
 | `gunicorn.conf.py` | Prod process manager settings (workers, heartbeat timeout, graceful timeout, keep-alive), all env-overridable. |
 | `init.sql` | Bootstrapped on first container start. Subsequent schema changes go in `migrations/*.sql`. |
 | `mssql_helper.py` | All MSSQL queries that fan out across stores. Owns `_mssql_executor` (4 threads), the `CHUNK_SIZE` constant for chunked operations, and `get_item_prices_batch_async` for UPC→cost lookups. |
-| `item_tracker_helper.py` | Single-store MSSQL queries used by Item Tracker (purchases, sales, customer/vendor returns, inventory recounts). Owns `_item_tracker_executor`. |
+| `item_tracker_helper.py` | Single-store MSSQL queries used by Item Tracker (purchases, sales, customer/vendor returns, inventory recounts). Owns `_item_tracker_executor` (`ITEM_TRACKER_THREADS`, default 12 per worker: IL-Order calls `/api/item-tracker/summary` once per UPC and month in bursts). |
 | `quotations_in_progress_helper.py` | DB_ADMIN aggregations for the In Progress section. Owns `_qip_executor`. |
 | `shopify_helper.py` | Shopify Admin API (REST + GraphQL). Used for barcode search/update, price updates, fulfilled-orders sales reports. |
 | `shopify_sync_helper.py` | Per-store local mirror of Shopify customers/orders into PostgreSQL. Full sync via Bulk Operations API (JSONL download, `__parentId` reassembly for line items), incremental via `updated_at` cursor pagination; both write through the same batch upserts (`execute_values`, per-batch dedupe). The `shopify_sync_state` row doubles as the cross-worker claim (conditional UPDATE + heartbeat staleness takeover). Owns `_sync_executor`. |

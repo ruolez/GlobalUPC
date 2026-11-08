@@ -1,10 +1,16 @@
 import pyodbc
 from typing import Optional, List, Dict, Any, Tuple
 import asyncio
+import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 
-_item_tracker_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="item_tracker")
+# One summary runs a query per table and per sales store, and other apps fetch
+# many UPC x month summaries at once. These threads only wait on SQL Server.
+_item_tracker_executor = ThreadPoolExecutor(
+    max_workers=int(os.getenv("ITEM_TRACKER_THREADS", "12")),
+    thread_name_prefix="item_tracker",
+)
 
 from mssql_helper import get_mssql_connection_string, mssql_connect, mssql_open
 

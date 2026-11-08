@@ -59,13 +59,16 @@ class FakeShopify:
 class CreateMissingProductsTests(unittest.TestCase):
     def setUp(self):
         self.shop = FakeShopify()
-        self._orig = (ofix._gql, ofix.find_variants_by_barcode)
+        self._orig = (ofix._gql, ofix.find_variants_by_barcode, ofix._create_lock)
         ofix._gql = self.shop.gql
         ofix.find_variants_by_barcode = self.shop.find
+        # The real lock is a ClusterLock, which needs Postgres; serialization
+        # across workers has its own test in tests/integration.
+        ofix._create_lock = asyncio.Lock()
         self.ctx = ofix.ShopifyCtx(None, "shop.myshopify.com", "key", "2025-01")
 
     def tearDown(self):
-        ofix._gql, ofix.find_variants_by_barcode = self._orig
+        ofix._gql, ofix.find_variants_by_barcode, ofix._create_lock = self._orig
 
     def test_product_is_created_hidden_untracked_and_carries_the_upc(self):
         made = asyncio.run(ofix.create_missing_products(self.ctx, [_action()]))
