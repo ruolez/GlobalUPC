@@ -16,6 +16,16 @@
         try {
           var theme = localStorage.getItem("selectedTheme") || "author-light";
           if (theme !== "current") root.setAttribute("data-theme", theme);
+          if (theme === "signal") {
+            // This theme sets its own face: fetch it with the first paint.
+            var font = document.createElement("link");
+            font.rel = "preload";
+            font.as = "font";
+            font.type = "font/woff2";
+            font.crossOrigin = "";
+            font.href = "fonts/geist-var.woff2";
+            document.head.appendChild(font);
+          }
           if (localStorage.getItem("sidebarCollapsed") === "1") root.classList.add("sidebar-collapsed");
         } catch (e) {
           root.setAttribute("data-theme", "author-light");
@@ -1736,6 +1746,21 @@
                       <div class="theme-info">
                         <div class="theme-name">Author's Light</div>
                         <div class="theme-description">Light: paper and ledger green (default)</div>
+                      </div>
+                    </div>
+
+                    <div class="theme-option" data-theme-name="signal">
+                      <div class="theme-preview">
+                        <div class="theme-colors">
+                          <span style="background: #f6f6f4"></span>
+                          <span style="background: #ffffff"></span>
+                          <span style="background: #141619"></span>
+                          <span style="background: #16a34a"></span>
+                        </div>
+                      </div>
+                      <div class="theme-info">
+                        <div class="theme-name">Signal</div>
+                        <div class="theme-description">Light: graphite and ink, green only for live</div>
                       </div>
                     </div>
 
@@ -4429,7 +4454,7 @@
                 <input type="date" id="sales-date-from" class="dark-input" style="width: 140px; font-size: var(--text-sm); padding: 0.3rem 0.5rem;">
                 <span style="color: var(--text-tertiary); font-size: var(--text-xs);">to</span>
                 <input type="date" id="sales-date-to" class="dark-input" style="width: 140px; font-size: var(--text-sm); padding: 0.3rem 0.5rem;">
-                <div style="display: flex; gap: 0.375rem; flex-shrink: 0;">
+                <div class="chip-row">
                   <button type="button" class="btn btn-chip" onclick="setSalesDatePreset('7d')">7d</button>
                   <button type="button" class="btn btn-chip" onclick="setSalesDatePreset('30d')">30d</button>
                   <button type="button" class="btn btn-chip" onclick="setSalesDatePreset('thisMonth')">Month</button>
@@ -4546,7 +4571,7 @@
 
           <div class="card" style="margin-bottom: 1.5rem">
             <div style="padding: 1rem 1.5rem;">
-              <label style="display: block; font-size: var(--text-xs); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-tertiary); margin-bottom: 0.625rem;">Stores</label>
+              <label class="caption" style="display: block; margin-bottom: 0.625rem;">Stores</label>
               <div id="fulfillment-status-store-checkboxes" style="display: flex; flex-wrap: wrap; gap: 0.5rem 1.5rem;"></div>
             </div>
             <div
@@ -4733,7 +4758,7 @@
                 <input type="date" id="osync-start-date" class="dark-input" style="width: 140px; font-size: var(--text-sm); padding: 0.3rem 0.5rem;">
                 <span style="color: var(--text-tertiary); font-size: var(--text-xs);">to</span>
                 <input type="date" id="osync-end-date" class="dark-input" style="width: 140px; font-size: var(--text-sm); padding: 0.3rem 0.5rem;">
-                <div style="display: flex; gap: 0.375rem; flex-shrink: 0;">
+                <div class="chip-row">
                   <button type="button" class="btn btn-chip" data-osync-day="0">Today</button>
                   <button type="button" class="btn btn-chip" data-osync-day="1">Yesterday</button>
                   <button type="button" class="btn btn-chip" data-week="0">Week</button>

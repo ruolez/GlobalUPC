@@ -1866,6 +1866,7 @@ function setTheme(themeName) {
 
   // Save to localStorage
   localStorage.setItem("selectedTheme", themeName);
+  localStorage.setItem(LIGHT_THEMES.includes(themeName) ? LAST_LIGHT_THEME_KEY : LAST_DARK_THEME_KEY, themeName);
   // Remember the page being viewed so a reload triggered by the theme change
   // lands back on it instead of the default landing page.
   try {
@@ -1966,10 +1967,21 @@ function syncShellToPage(activeNav) {
   }
 })();
 
-// Theme Toggle (Nord <-> Author's Light)
+// Theme toggle: flips between the light and the dark theme this browser last
+// used, so it never drops the theme someone picked in Settings.
+const LIGHT_THEMES = ["author-light", "signal"];
+const LAST_LIGHT_THEME_KEY = "lastLightTheme";
+const LAST_DARK_THEME_KEY = "lastDarkTheme";
+
+function isLightTheme(themeName) {
+  return LIGHT_THEMES.includes(themeName || document.body.getAttribute("data-theme"));
+}
+
 document.getElementById("themeToggle").addEventListener("click", () => {
   const current = localStorage.getItem("selectedTheme") || "author-light";
-  const next = current === "author-light" ? "nord" : "author-light";
+  const next = isLightTheme(current)
+    ? localStorage.getItem(LAST_DARK_THEME_KEY) || "nord"
+    : localStorage.getItem(LAST_LIGHT_THEME_KEY) || "author-light";
   setTheme(next);
 });
 
@@ -8484,7 +8496,7 @@ const STORE_PALETTE_LIGHT = [
 ];
 
 function getStoreColor(storeId) {
-  const isLight = document.body.getAttribute("data-theme") === "author-light";
+  const isLight = isLightTheme();
   const palette = isLight ? STORE_PALETTE_LIGHT : STORE_PALETTE_DARK;
   const idx = ((storeId - 1) % palette.length + palette.length) % palette.length;
   return palette[idx];
@@ -8495,7 +8507,7 @@ function getStoreBgColor(storeId, intensity = "normal") {
   const r = parseInt(hex.slice(1, 3), 16);
   const g = parseInt(hex.slice(3, 5), 16);
   const b = parseInt(hex.slice(5, 7), 16);
-  const isLight = document.body.getAttribute("data-theme") === "author-light";
+  const isLight = isLightTheme();
   const alpha = intensity === "strong" ? (isLight ? 0.12 : 0.1) : (isLight ? 0.07 : 0.05);
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
@@ -28076,16 +28088,16 @@ function osyncRangeNote(data, s) {
 }
 
 const OSYNC_COLUMNS = [
-  { key: "date", label: "Date", width: 68 },
+  { key: "date", label: "Date", width: 78 },
   { key: "sh_name", label: "Shopify order", width: 182 },
   { key: "sh_channel", label: "Channel", width: 116 },
   { key: "bo_invoice_number", label: "Invoice", width: 158 },
   { key: "customer", label: "Customer" },
   { key: "match_method", label: "Matched by", width: 104 },
   { key: "issues", label: "Issues", width: 150 },
-  { key: "sh_total", label: "Shopify", num: true, width: 96 },
-  { key: "bo_total", label: "BackOffice", num: true, width: 96 },
-  { key: "total_delta", label: "Δ", num: true, width: 86 },
+  { key: "sh_total", label: "Shopify", num: true, width: 110 },
+  { key: "bo_total", label: "BackOffice", num: true, width: 110 },
+  { key: "total_delta", label: "Δ", num: true, width: 96 },
   { key: "status", label: "Status", width: 108 },
 ];
 

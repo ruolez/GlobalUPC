@@ -50,6 +50,24 @@
     U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
 }
 
+/* Geist and Geist Mono: the Signal theme only (the same files the Edge Bourne
+   Ads console uses). The browser fetches them only when that theme is on. */
+@font-face {
+  font-family: "Geist";
+  src: url("fonts/geist-var.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Geist Mono";
+  src: url("fonts/geist-mono-var.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
 * {
   margin: 0;
   padding: 0;
@@ -329,6 +347,87 @@
     0 4px 8px -2px rgba(36, 35, 31, 0.07), 0 18px 40px -8px rgba(36, 35, 31, 0.2);
   --scrim: rgba(36, 35, 31, 0.42);
   --scrim-solid: color-mix(in srgb, #24231f 42%, var(--bg-primary));
+}
+
+/* Theme 8: Signal - the Edge Bourne Ads console's look. Graphite neutrals,
+   ink for the primary action and for selection, green only for "live / ok",
+   Geist with Geist Mono for figures, hairlines instead of shadows. Its
+   component rules are at the end of this file ("Signal theme: components"). */
+[data-theme="signal"] {
+  color-scheme: light;
+
+  --bg-primary: #f6f6f4;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #ffffff;
+  --bg-hover: #eeeeeb;
+
+  --border-color: rgba(20, 22, 25, 0.1);
+  --border-focus: #3b5bdb;
+
+  --text-primary: #141619;
+  --text-secondary: #474c54;
+  --text-tertiary: #62666f;
+
+  /* The primary action is ink, not a colour */
+  --accent-primary: #141619;
+  --accent-hover: #2b2f35;
+  --accent-glow: rgba(59, 91, 219, 0.25);
+  --on-accent: #ffffff;
+
+  --success: #0b7a42;
+  --warning: #8a5b00;
+  --danger: #a42b22;
+  --info: #3b5bdb;
+  --signal: #16a34a; /* the mark (dots, bars); --success is its readable text colour */
+
+  --scrollbar-thumb: #c9cac6;
+  --scrollbar-thumb-hover: #9c9e9a;
+
+  --shadow-sm: 0 0 0 1px rgba(20, 22, 25, 0.09);
+  --shadow-md: 0 0 0 1px rgba(20, 22, 25, 0.08), 0 8px 22px -10px rgba(20, 22, 25, 0.22);
+  --shadow-lg: 0 0 0 1px rgba(20, 22, 25, 0.08), 0 16px 40px -12px rgba(20, 22, 25, 0.35);
+  --scrim: rgba(10, 12, 14, 0.45);
+  --scrim-solid: color-mix(in srgb, #0a0c0e 45%, var(--bg-primary));
+
+  --font-sans: "Geist", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --font-num: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --leading-normal: 1.5;
+
+  /* One pixel up on every step of the shared scale, for easier reading */
+  --text-3xs: 0.75rem;    /* 12 */
+  --text-2xs: 0.8125rem;  /* 13 */
+  --text-xs: 0.875rem;    /* 14 */
+  --text-sm: 0.9375rem;   /* 15 */
+  --text-base: 1rem;      /* 16 */
+  --text-md: 1.0625rem;   /* 17 */
+  --text-lg: 1.1875rem;   /* 19 */
+  --text-xl: 1.375rem;    /* 22 */
+  --text-2xl: 1.5rem;     /* 24 */
+  --text-3xl: 1.875rem;   /* 30 */
+
+  --control-h-sm: 1.875rem;
+  --control-h: 2.25rem;
+  --control-h-lg: 2.625rem;
+
+  --radius-sm: 0.25rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.625rem;
+
+  --border-subtle: rgba(20, 22, 25, 0.08);
+  --border-strong: rgba(20, 22, 25, 0.17);
+  --control-border: rgba(20, 22, 25, 0.17);
+  --control-border-hover: rgba(20, 22, 25, 0.42);
+  --accent-soft: #eeeeeb;
+  --accent-soft-border: rgba(20, 22, 25, 0.17);
+  --focus-ring: 0 0 0 3px rgba(59, 91, 219, 0.25);
+  --row-hover: rgba(20, 22, 25, 0.035);
+}
+
+/* On <html> only: <body> carries the theme attribute too, and a width set
+   there would override the collapsed-rail width for everything inside it. */
+html[data-theme="signal"] {
+  --sidebar-w: 232px;
 }
 
 /* ---------- 4. Base elements ---------- */
@@ -703,11 +802,13 @@ input[type="radio"]:disabled {
   display: block;
 }
 
-[data-theme="author-light"] .theme-toggle .sun-icon {
+[data-theme="author-light"] .theme-toggle .sun-icon,
+[data-theme="signal"] .theme-toggle .sun-icon {
   display: block;
 }
 
-[data-theme="author-light"] .theme-toggle .moon-icon {
+[data-theme="author-light"] .theme-toggle .moon-icon,
+[data-theme="signal"] .theme-toggle .moon-icon {
   display: none;
 }
 
@@ -2134,7 +2235,7 @@ input[type="radio"]:disabled {
     overflow-x: auto;
   }
   #osync-table {
-    min-width: 84rem;
+    min-width: 90rem;
   }
 }
 
@@ -6103,7 +6204,8 @@ body.no-scroll {
   --sancm-c7: #9085e9;
   --sancm-c8: #e66767;
 }
-[data-theme="author-light"] .sancm-chart-card {
+[data-theme="author-light"] .sancm-chart-card,
+[data-theme="signal"] .sancm-chart-card {
   --sancm-c1: #2a78d6;
   --sancm-c2: #eb6834;
   --sancm-c3: #1baf7a;
@@ -6361,7 +6463,8 @@ body.no-scroll {
   --sancm-c1: #3987e5;
   --sancm-c2: #d95926;
 }
-[data-theme="author-light"] .sa-page #sacr-chart-card {
+[data-theme="author-light"] .sa-page #sacr-chart-card,
+[data-theme="signal"] .sa-page #sacr-chart-card {
   --sancm-c1: #2a78d6;
   --sancm-c2: #eb6834;
 }
@@ -11226,4 +11329,285 @@ tr.bov-row-click:focus-visible { outline: 2px solid var(--accent-primary); outli
 .sa-subnav-item {
   flex: 0 0 auto;
   white-space: nowrap;
+}
+
+/* Store rows on a phone: the four actions stay on one line */
+@media (max-width: 640px) {
+  .store-actions {
+    flex-wrap: nowrap;
+    gap: 0;
+  }
+  .store-actions .btn {
+    padding-left: 0.5rem;
+    padding-right: 0.5rem;
+  }
+}
+
+/* Phones: a store's name is never cut short; its tags move to the next line.
+   The scan filter scrolls sideways if it is wider than the screen. */
+@media (max-width: 640px) {
+  .store-header-clickable {
+    flex-wrap: wrap;
+    row-gap: 0.25rem;
+  }
+  .store-info h4 {
+    white-space: normal;
+    overflow: visible;
+  }
+  .qip-segmented {
+    max-width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .qip-segmented button {
+    flex: 0 0 auto;
+  }
+}
+
+/* ===========================================================================
+   Signal theme: components
+   What the palette alone cannot carry over from the Edge Bourne Ads console:
+   how selection, tabs, tables, figures and toasts are drawn.
+   =========================================================================== */
+[data-theme="signal"] :is(h1, h2, h3, h4) {
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+[data-theme="signal"] .page-header h2 {
+  font-weight: 600;
+  letter-spacing: -0.022em;
+}
+
+[data-theme="signal"] :focus-visible {
+  outline-color: var(--info);
+}
+
+[data-theme="signal"] ::selection {
+  background: color-mix(in srgb, var(--text-primary) 20%, transparent);
+}
+
+/* Figures are set in the mono face: KPI values, totals, numeric columns */
+[data-theme="signal"] :is(
+    .dashboard-kpi-value, .stat-figure, .qip-meta-num, #qip-count,
+    .bov-kpi-value, .bov-margin-value, .bov-inv-tile-value, .bov-bar-value,
+    .sa-kpi-value, .me-tile-value, .me-kpi-value, .osync-auto-tile-value, .osync-tile-count,
+    .sacr-stage-metric b, .bov-kpi-delta, .me-kpi-row b,
+    td.bov-num, td.sacr-num, td.osync-num, td.sancm-num, td.sa-num,
+    .qip-products-table td.qip-num, .qip-card-meta-stats b,
+    .data-table td[style*="text-align: right"],
+    .data-table tfoot td:not(:first-child)
+  ) {
+  font-family: var(--font-num);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+[data-theme="signal"] :is(td.bov-num, td.sacr-num, td.osync-num, td.sancm-num, td.sa-num, .qip-products-table td.qip-num, .data-table td[style*="text-align: right"]) {
+  font-size: 0.93em;
+}
+
+[data-theme="signal"] :is(.mono, .ident) {
+  font-size: 0.93em;
+}
+
+/* ---- Sidebar: the selected page is a white card on the canvas ---- */
+[data-theme="signal"] .logo {
+  color: var(--text-primary);
+}
+
+[data-theme="signal"] .logo h1 {
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+[data-theme="signal"] .nav-item.active {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-weight: 600;
+  box-shadow: 0 0 0 1px var(--border-strong);
+}
+
+[data-theme="signal"] .nav-section-label {
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+
+[data-theme="signal"] :is(.settings-subnav-item.active, .bov-cfg-nav-item.active) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* ---- Buttons ---- */
+[data-theme="signal"] .btn-secondary {
+  background: var(--bg-secondary);
+  font-weight: 600;
+}
+
+[data-theme="signal"] .btn-secondary:hover:not(:disabled) {
+  background: var(--bg-secondary);
+}
+
+/* A pressed chip is filled with ink */
+[data-theme="signal"] :is(.btn-chip.active, .btn-chip[aria-pressed="true"], .me-chip.is-active, .sa-page .sa-chip-mini.active) {
+  background: var(--text-primary);
+  border-color: var(--text-primary);
+  color: var(--bg-primary);
+}
+
+/* ---- Segmented switches: a gray track, the chosen option a white tile ---- */
+[data-theme="signal"] :is(
+    .qip-segmented, .tab-pills, .sales-toggle-group, .inv-toggle-group, .bov-cost-seg,
+    .sa-page .sa-chip-group, .sa-page .sancm-mode-group,
+    .bov-card-toolbar .sa-chip-group, .bov-card-toolbar .sancm-mode-group
+  ) {
+  padding: 3px;
+  background: var(--bg-hover);
+  border-color: transparent;
+  border-radius: calc(var(--radius-md) + 1px);
+}
+
+[data-theme="signal"] :is(
+    .qip-segmented button, .tab-pill, .sales-toggle-btn, .inv-toggle-btn, .bov-cost-seg-btn,
+    .sa-page .sa-chip, .sa-page .sancm-mode-btn,
+    .bov-card-toolbar .sa-chip, .bov-card-toolbar .sancm-mode-btn
+  ) {
+  font-weight: 500;
+}
+
+[data-theme="signal"] :is(
+    .qip-segmented button, .tab-pill, .sales-toggle-btn, .inv-toggle-btn, .bov-cost-seg-btn,
+    .sa-page .sa-chip, .sa-page .sancm-mode-btn,
+    .bov-card-toolbar .sa-chip, .bov-card-toolbar .sancm-mode-btn
+  ):hover {
+  background: transparent;
+}
+
+[data-theme="signal"] :is(
+    .qip-segmented button.active, .tab-pill.active, .sales-toggle-btn.active, .inv-toggle-btn.active,
+    .bov-cost-seg-btn.is-active, .sa-page .sa-chip.active, .sa-page .sancm-mode-btn.active,
+    .bov-card-toolbar .sa-chip.active, .bov-card-toolbar .sancm-mode-btn.active
+  ) {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-weight: 600;
+  box-shadow: 0 0 0 1px var(--border-strong);
+}
+
+/* ---- Tabs: plain words on a hairline, the current one underlined in ink ---- */
+[data-theme="signal"] :is(.tab-bar, .sa-subnav, .osync-auto-tabs) {
+  gap: 1.375rem;
+}
+
+[data-theme="signal"] :is(.tab-bar-item, .sa-subnav-item, .osync-auto-tab) {
+  padding: 0.625rem 0 0.5625rem;
+}
+
+[data-theme="signal"] :is(.tab-bar-item, .sa-subnav-item, .bov-subnav-item, .osync-auto-tab) {
+  color: var(--text-tertiary);
+  font-weight: 500;
+}
+
+[data-theme="signal"] :is(.tab-bar-item, .sa-subnav-item, .bov-subnav-item, .osync-auto-tab).active {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+/* ---- Tables: quiet headers, hairline rows ---- */
+[data-theme="signal"] :is(.data-table, .qip-products-table, .price-table, .osync-missing-table) th {
+  color: var(--text-tertiary);
+  font-weight: 500;
+  font-size: var(--text-2xs);
+}
+
+[data-theme="signal"] .qip-hero {
+  background: var(--bg-secondary);
+}
+
+[data-theme="signal"] .qip-hero::after {
+  display: none;
+}
+
+[data-theme="signal"] .qip-products-table thead th,
+[data-theme="signal"] .qip-products-table thead th.qip-sortable:hover {
+  background: var(--bg-secondary);
+}
+
+/* ---- Status: a dot and a word on a tint ---- */
+[data-theme="signal"] :is(.qip-status-chip, .store-state-badge) {
+  border-radius: var(--radius-pill);
+}
+
+[data-theme="signal"] :is(.status-indicator.active, .qip-live-dot) {
+  background: var(--signal);
+}
+
+/* ---- Links are ink with a quiet underline ---- */
+[data-theme="signal"] :is(
+    .dashboard-health-link, .qip-banner-link, .qb-link, .bov-kpi-link, .osync-created-link,
+    .bov-modal-link, .bov-link-btn, .bov-field-help a, .bov-modal a, .sa-reset-link
+  ),
+[data-theme="signal"] :where(.main-content a:not([class])) {
+  text-decoration: underline;
+  text-decoration-color: var(--border-strong);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+/* ---- Toasts: an ink pill at the bottom of the window ---- */
+[data-theme="signal"] #toast-container {
+  top: auto;
+  right: auto;
+  bottom: 1.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  align-items: center;
+}
+
+[data-theme="signal"] .toast {
+  min-width: 0;
+  padding: 0.6875rem 1rem;
+  background: var(--text-primary);
+  border: 0;
+  border-radius: var(--radius-lg);
+  color: var(--bg-primary);
+  font-weight: 600;
+  animation-name: toastUp;
+}
+
+[data-theme="signal"] .toast.is-success::before {
+  background: #4ade80;
+}
+
+[data-theme="signal"] .toast.is-warning::before {
+  background: #f2b53a;
+}
+
+[data-theme="signal"] .toast.is-error {
+  background: #c8372d;
+  color: #ffffff;
+}
+
+[data-theme="signal"] .toast.is-error::before {
+  background: #ffffff;
+}
+
+@keyframes toastUp {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+/* Order Sync has eleven fixed-width columns: a size smaller keeps them whole */
+[data-theme="signal"] .osync-table :is(th, td) {
+  font-size: var(--text-xs);
+}
+
+[data-theme="signal"] .osync-table th {
+  font-size: var(--text-2xs);
+}
+
+[data-theme="signal"] .osync-table td.osync-num {
+  font-size: 0.9em;
 }

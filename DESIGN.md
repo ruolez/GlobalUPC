@@ -7,8 +7,8 @@ context (who uses it and for what) is in `PRODUCT.md`. Everything here lives in
 ## Direction
 
 A back-office ledger: calm, dense and exact. Warm paper neutrals with one
-banker's-green accent on the default light theme; seven dark themes share the
-same structure. The interface is a working tool, so familiar controls,
+banker's-green accent on the default light theme; a second light theme (Signal) and seven dark themes share
+the same structure. The interface is a working tool, so familiar controls,
 consistency and legible numbers come before expression.
 
 - **Depth**: surfaces plus one hairline. The page is the darkest surface, cards
@@ -21,6 +21,30 @@ consistency and legible numbers come before expression.
   people compare digit by digit (UPC, invoice, quotation, tracking numbers).
   Both are self-hosted in `frontend/src/fonts/`.
 - **Labels** are sentence case. Uppercase survives only on short status codes.
+
+### Themes
+
+Nine themes, each one `[data-theme]` block. Two are light:
+
+- **Author's Light** (default): warm paper, ledger green, Source Sans 3.
+- **Signal**: the look of the Edge Bourne Ads console (`~/Desktop/Dev/edgebourne/ads`,
+  `frontend/css/tokens.css` is the reference). Graphite neutrals on an
+  off-white canvas; **ink is the primary action and the selection colour**, so
+  `--accent-primary` is `#141619`; green (`--signal` for marks, `--success`
+  for text) appears only on something live or OK. Geist for text and Geist
+  Mono for figures (`--font-num`), hairlines instead of shadows. Its
+  component rules are the last section of `styles.css` ("Signal theme:
+  components"): the selected page is a white card in the sidebar, segmented
+  switches are a white tile on a gray track, pressed chips are filled with
+  ink, tabs are plain words underlined in ink, table headers are quiet,
+  links are ink with a faint underline, toasts are an ink pill at the bottom.
+  Every type step sits one pixel above the shared scale (16px body, 15px
+  controls and cells), two above the Ads console. Set `--sidebar-w` on
+  `html[data-theme]` only: `<body>` carries the attribute too and would
+  defeat the collapsed rail. `LIGHT_THEMES` in `app.js` lists the light themes.
+
+The other seven are dark. The sidebar toggle flips between the light and the
+dark theme that browser last used.
 
 ## Tokens
 
