@@ -9,12 +9,39 @@
       type="image/svg+xml"
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='2' y='8' width='2' height='16' fill='%23000000'/%3E%3Crect x='6' y='8' width='1' height='16' fill='%23000000'/%3E%3Crect x='9' y='8' width='3' height='16' fill='%23000000'/%3E%3Crect x='14' y='8' width='1' height='16' fill='%23000000'/%3E%3Crect x='17' y='8' width='2' height='16' fill='%23000000'/%3E%3Crect x='21' y='8' width='1' height='16' fill='%23000000'/%3E%3Crect x='24' y='8' width='2' height='16' fill='%23000000'/%3E%3Crect x='28' y='8' width='2' height='16' fill='%23000000'/%3E%3C/svg%3E"
     />
+    <script>
+      // Apply the saved theme and sidebar state before first paint (no flash).
+      (function () {
+        var root = document.documentElement;
+        try {
+          var theme = localStorage.getItem("selectedTheme") || "author-light";
+          if (theme !== "current") root.setAttribute("data-theme", theme);
+          if (localStorage.getItem("sidebarCollapsed") === "1") root.classList.add("sidebar-collapsed");
+        } catch (e) {
+          root.setAttribute("data-theme", "author-light");
+        }
+      })();
+    </script>
+    <link rel="preload" href="fonts/source-sans-3-latin.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
     <div class="container">
+      <!-- App bar: phones and small tablets, where the sidebar is a drawer -->
+      <header class="appbar">
+        <button type="button" class="appbar-btn" id="navOpen" aria-label="Open menu" aria-controls="sidebar" aria-expanded="false">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <line x1="4" y1="7" x2="20" y2="7"></line>
+            <line x1="4" y1="12" x2="20" y2="12"></line>
+            <line x1="4" y1="17" x2="20" y2="17"></line>
+          </svg>
+        </button>
+        <span class="appbar-title" id="appbarTitle">Global UPC</span>
+      </header>
+      <div class="nav-scrim" id="navScrim"></div>
+
       <!-- Sidebar Navigation -->
-      <aside class="sidebar">
+      <aside class="sidebar" id="sidebar" aria-label="Main navigation">
         <div class="logo">
           <svg
             width="32"
@@ -183,8 +210,15 @@
             </a>
           </div>
         </nav>
-        <div class="theme-toggle-wrapper">
-          <button class="theme-toggle" id="themeToggle" title="Toggle light/dark mode">
+        <div class="sidebar-foot">
+          <button type="button" class="sidebar-foot-btn sidebar-collapse-btn" id="sidebarCollapse" aria-label="Collapse sidebar" title="Collapse sidebar">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="3" y="4" width="18" height="16" rx="2"></rect>
+              <line x1="9" y1="4" x2="9" y2="20"></line>
+              <polyline points="15 10 13 12 15 14"></polyline>
+            </svg>
+          </button>
+          <button type="button" class="theme-toggle" id="themeToggle" aria-label="Switch between light and dark theme" title="Switch between light and dark theme">
             <svg class="toggle-icon sun-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="5"></circle>
               <line x1="12" y1="1" x2="12" y2="3"></line>
@@ -573,7 +607,7 @@
             <!-- Month End section -->
             <section class="bov-panel" id="bov-panel-month-end" role="tabpanel" aria-labelledby="bov-tab-month-end" data-bov-panel="month-end" hidden>
               <div id="me-not-configured" class="card" style="display: none; margin-bottom: 1.5rem;">
-                <div style="padding: 1.5rem; color: var(--text-secondary); font-size: 0.875rem; display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
+                <div style="padding: 1.5rem; color: var(--text-secondary); font-size: var(--text-base); display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
                   <span>No data sources are configured — pick the BackOffice sales stores and Shopify stores to use Month End.</span>
                   <button type="button" class="btn btn-primary" data-bov-action="config">Set up data sources</button>
                 </div>
@@ -621,7 +655,7 @@
                   <button type="button" class="btn btn-primary" id="me-idle-run">Run Month End</button>
                 </div>
               </div>
-              <div id="me-empty" style="display: none; text-align: center; padding: 3rem 1rem; color: var(--text-secondary);">
+              <div class="empty-state" id="me-empty" style="display: none">
                 <p>No orders in this period.</p>
               </div>
               <div id="me-table-card" class="card" style="display: none;">
@@ -713,9 +747,7 @@
           <header class="page-header dashboard-page-header">
             <div class="dashboard-page-title">
               <h2>Dashboard</h2>
-              <p class="subtitle">
-                Operations at a glance across all configured stores
-              </p>
+              <p class="subtitle">What is connected, what is moving and what changed this week</p>
             </div>
             <div class="dashboard-page-actions">
               <span class="dashboard-updated" id="dashboard-updated"></span>
@@ -759,7 +791,7 @@
                 </svg>
               </span>
               <div class="dashboard-kpi-body">
-                <div class="dashboard-kpi-label">In Progress</div>
+                <div class="dashboard-kpi-label">Quotations in progress</div>
                 <div class="dashboard-kpi-value" id="kpi-in-progress-value">—</div>
                 <div class="dashboard-kpi-meta" id="kpi-in-progress-meta">Loading…</div>
               </div>
@@ -772,7 +804,7 @@
                 </svg>
               </span>
               <div class="dashboard-kpi-body">
-                <div class="dashboard-kpi-label">UPC Updates · last 7 days</div>
+                <div class="dashboard-kpi-label">UPC updates, last 7 days</div>
                 <div class="dashboard-kpi-value" id="kpi-upc-7d-value">—</div>
                 <div class="dashboard-kpi-meta" id="kpi-upc-7d-meta">Loading…</div>
               </div>
@@ -786,7 +818,7 @@
                 </svg>
               </span>
               <div class="dashboard-kpi-body">
-                <div class="dashboard-kpi-label">Price Updates · last 7 days</div>
+                <div class="dashboard-kpi-label">Price updates, last 7 days</div>
                 <div class="dashboard-kpi-value" id="kpi-price-7d-value">—</div>
                 <div class="dashboard-kpi-meta" id="kpi-price-7d-meta">Loading…</div>
               </div>
@@ -811,7 +843,7 @@
                 </div>
                 <div class="tool-info">
                   <h4>Update UPC</h4>
-                  <p>Search and update barcodes across every store</p>
+                  <p>Replace a barcode in every store at once</p>
                 </div>
               </a>
 
@@ -824,7 +856,7 @@
                 </div>
                 <div class="tool-info">
                   <h4>Price Updates</h4>
-                  <p>Reconcile prices across stores with one workflow</p>
+                  <p>Compare and change prices and costs across stores</p>
                 </div>
               </a>
 
@@ -838,7 +870,7 @@
                 </div>
                 <div class="tool-info">
                   <h4>Item Tracker</h4>
-                  <p>Per-UPC purchase / sales / returns timeline</p>
+                  <p>One product's purchases, sales and returns in date order</p>
                 </div>
               </a>
 
@@ -853,7 +885,7 @@
                 </div>
                 <div class="tool-info">
                   <h4>In Progress</h4>
-                  <p>Quotations in picking &amp; packing on the admin DB</p>
+                  <p>Quotations being picked and packed right now</p>
                 </div>
               </a>
 
@@ -866,7 +898,7 @@
                 </div>
                 <div class="tool-info">
                   <h4>Sales</h4>
-                  <p>Multi-store sales reporting &amp; aggregation</p>
+                  <p>Units sold and on hand per product, all stores</p>
                 </div>
               </a>
 
@@ -879,7 +911,7 @@
                 </div>
                 <div class="tool-info">
                   <h4>Shopify Sales</h4>
-                  <p>Fulfilled-order reports across Shopify storefronts</p>
+                  <p>Product sales from fulfilled Shopify orders</p>
                 </div>
               </a>
 
@@ -893,7 +925,7 @@
                 </div>
                 <div class="tool-info">
                   <h4>Orphan UPCs</h4>
-                  <p>Find UPCs missing from one store but present in another</p>
+                  <p>Barcodes used on records but missing from the catalog</p>
                 </div>
               </a>
 
@@ -907,7 +939,7 @@
                 </div>
                 <div class="tool-info">
                   <h4>History</h4>
-                  <p>Audit log of UPC update batches across stores</p>
+                  <p>Every UPC update and its result</p>
                 </div>
               </a>
             </div>
@@ -918,9 +950,7 @@
         <div id="settings-page" class="page" style="display: none">
           <header class="page-header">
             <h2>Settings</h2>
-            <p class="subtitle">
-              Configure your store connections and preferences
-            </p>
+            <p class="subtitle">Store connections, roles, exclusions and appearance</p>
           </header>
 
           <div class="settings-shell">
@@ -1004,19 +1034,19 @@
                     </p>
                   </div>
                   <div class="button-group">
-                    <button class="btn btn-primary" id="add-mssql-btn">
+                    <button type="button" class="btn btn-secondary" id="add-mssql-btn">
                       <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
                         <path d="M8 3V13M3 8H13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
                       </svg>
                       MSSQL Database
                     </button>
-                    <button class="btn btn-primary" id="add-shopify-btn">
+                    <button type="button" class="btn btn-secondary" id="add-shopify-btn">
                       <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
                         <path d="M8 3V13M3 8H13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
                       </svg>
                       Shopify Store
                     </button>
-                    <button class="btn btn-primary" id="add-shipper-btn">
+                    <button type="button" class="btn btn-secondary" id="add-shipper-btn">
                       <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
                         <path d="M8 3V13M3 8H13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
                       </svg>
@@ -1120,11 +1150,11 @@
                   </div>
                   <div class="role-card-control" style="flex-wrap: wrap; gap: 1rem;">
                     <div class="form-group" style="margin: 0;">
-                      <label for="inventory-timeout-minutes" style="font-size: 0.75rem;">Break timeout (min)</label>
+                      <label for="inventory-timeout-minutes" style="font-size: var(--text-xs);">Break timeout (min)</label>
                       <input type="number" id="inventory-timeout-minutes" min="0" step="0.5" placeholder="10" style="max-width: 140px" />
                     </div>
                     <div class="form-group" style="margin: 0;">
-                      <label for="inventory-isolated-minutes" style="font-size: 0.75rem;">Isolated recount (min)</label>
+                      <label for="inventory-isolated-minutes" style="font-size: var(--text-xs);">Isolated recount (min)</label>
                       <input type="number" id="inventory-isolated-minutes" min="0" step="0.5" placeholder="1" style="max-width: 140px" />
                     </div>
                     <button type="button" class="btn btn-primary" id="inventory-time-settings-save" style="align-self: flex-end;">Save</button>
@@ -1153,11 +1183,11 @@
                   </div>
                   <div class="role-card-control" style="flex-wrap: wrap; gap: 1rem;">
                     <div class="form-group" style="margin: 0;">
-                      <label for="checked-orders-slow-minutes" style="font-size: 0.75rem;">Slow order threshold (min)</label>
+                      <label for="checked-orders-slow-minutes" style="font-size: var(--text-xs);">Slow order threshold (min)</label>
                       <input type="number" id="checked-orders-slow-minutes" min="0" step="0.5" placeholder="15" style="max-width: 140px" />
                     </div>
                     <div class="form-group" style="margin: 0;">
-                      <label for="checked-orders-seconds-per-product" style="font-size: 0.75rem;">Seconds per product (slow-order estimate)</label>
+                      <label for="checked-orders-seconds-per-product" style="font-size: var(--text-xs);">Seconds per product (slow-order estimate)</label>
                       <input type="number" id="checked-orders-seconds-per-product" min="0" step="1" placeholder="10" style="max-width: 140px" />
                     </div>
                     <button type="button" class="btn btn-primary" id="checked-orders-settings-save" style="align-self: flex-end;">Save</button>
@@ -1186,7 +1216,7 @@
                   </div>
                   <div class="role-card-control" style="flex-wrap: wrap; gap: 1rem;">
                     <div class="form-group" style="margin: 0; flex: 1; min-width: 220px;">
-                      <label for="easyship-lookup-url" style="font-size: 0.75rem;">EasyShip base URL</label>
+                      <label for="easyship-lookup-url" style="font-size: var(--text-xs);">EasyShip base URL</label>
                       <input type="text" id="easyship-lookup-url" placeholder="http://192.168.89.14" autocomplete="off" />
                     </div>
                     <button type="button" class="btn btn-secondary" id="easyship-test" style="align-self: flex-end;">Test</button>
@@ -1244,26 +1274,26 @@
                   </div>
                   <div class="role-card-control qb-form">
                     <div class="form-group" style="margin: 0;">
-                      <label for="qb-client-id" style="font-size: 0.75rem;">Client ID</label>
+                      <label for="qb-client-id" style="font-size: var(--text-xs);">Client ID</label>
                       <input type="text" id="qb-client-id" autocomplete="off" spellcheck="false" />
                     </div>
                     <div class="form-group" style="margin: 0;">
-                      <label for="qb-client-secret" style="font-size: 0.75rem;">Client Secret</label>
+                      <label for="qb-client-secret" style="font-size: var(--text-xs);">Client Secret</label>
                       <input type="password" id="qb-client-secret" autocomplete="new-password" placeholder="Client secret" />
                     </div>
                     <div class="form-group qb-form-narrow" style="margin: 0;">
-                      <label for="qb-environment" style="font-size: 0.75rem;">Environment</label>
+                      <label for="qb-environment" style="font-size: var(--text-xs);">Environment</label>
                       <select id="qb-environment">
                         <option value="production">Production</option>
                         <option value="sandbox">Sandbox</option>
                       </select>
                     </div>
                     <div class="form-group qb-form-narrow" style="margin: 0;">
-                      <label for="qb-refresh-minutes" style="font-size: 0.75rem;">Refresh every (min)</label>
+                      <label for="qb-refresh-minutes" style="font-size: var(--text-xs);">Refresh every (min)</label>
                       <input type="number" id="qb-refresh-minutes" min="1" max="1440" step="1" placeholder="15" />
                     </div>
                     <div class="form-group qb-form-full" style="margin: 0;">
-                      <label for="qb-redirect-uri" style="font-size: 0.75rem;">Redirect URI — must be https and match the Intuit portal exactly</label>
+                      <label for="qb-redirect-uri" style="font-size: var(--text-xs);">Redirect URI — must be https and match the Intuit portal exactly</label>
                       <input type="url" id="qb-redirect-uri" placeholder="https://your-placeholder-page.example.com/quickbooks" autocomplete="off" spellcheck="false" />
                     </div>
                     <button type="button" class="btn btn-primary" id="qb-settings-save" style="align-self: flex-end;">Save</button>
@@ -1323,14 +1353,14 @@
 
                   <div class="mirror-add-row">
                     <div class="form-group" style="margin: 0; flex: 1; min-width: 160px">
-                      <label for="mirror-source-store" style="font-size: 0.75rem">Source Store</label>
+                      <label for="mirror-source-store" style="font-size: var(--text-xs)">Source Store</label>
                       <select id="mirror-source-store">
                         <option value="">Select source...</option>
                       </select>
                     </div>
                     <div class="mirror-arrow" aria-hidden="true">&rarr;</div>
                     <div class="form-group" style="margin: 0; flex: 1; min-width: 160px">
-                      <label for="mirror-mirror-store" style="font-size: 0.75rem">Mirror Store</label>
+                      <label for="mirror-mirror-store" style="font-size: var(--text-xs)">Mirror Store</label>
                       <select id="mirror-mirror-store">
                         <option value="">Select mirror...</option>
                       </select>
@@ -1370,7 +1400,7 @@
                     style="display: none; margin-top: 1rem"
                   >
                     <div style="margin-bottom: 0.75rem">
-                      <p style="margin: 0; font-size: 0.875rem; color: var(--text-secondary)">
+                      <p style="margin: 0; font-size: var(--text-base); color: var(--text-secondary)">
                         <strong id="mirrors-count">0</strong> mirror(s) configured
                       </p>
                     </div>
@@ -1445,7 +1475,7 @@
                     style="display: none; margin-top: 1rem"
                   >
                     <div style="margin-bottom: 0.75rem">
-                      <p style="margin: 0; font-size: 0.875rem; color: var(--text-secondary)">
+                      <p style="margin: 0; font-size: var(--text-base); color: var(--text-secondary)">
                         <strong id="active-users-count">0</strong> active user(s)
                         <span id="active-users-refreshed-at"></span>
                       </p>
@@ -1556,7 +1586,7 @@
                     style="display: none; margin-top: 1rem"
                   >
                     <div style="margin-bottom: 0.75rem">
-                      <p style="margin: 0; font-size: 0.875rem; color: var(--text-secondary)">
+                      <p style="margin: 0; font-size: var(--text-base); color: var(--text-secondary)">
                         <strong id="exclusions-count">0</strong> excluded UPCs
                       </p>
                     </div>
@@ -1616,7 +1646,7 @@
                     style="display: none; margin-top: 1rem"
                   >
                     <div style="margin-bottom: 0.75rem">
-                      <p style="margin: 0; font-size: 0.875rem; color: var(--text-secondary)">
+                      <p style="margin: 0; font-size: var(--text-base); color: var(--text-secondary)">
                         <strong id="item-tracker-exclusions-count">0</strong>
                         excluded customers/suppliers
                       </p>
@@ -1694,18 +1724,33 @@
                 <div class="settings-subsection">
                   <h4 class="settings-subsection-title">Theme</h4>
                   <div class="theme-selector">
+                    <div class="theme-option" data-theme-name="author-light">
+                      <div class="theme-preview">
+                        <div class="theme-colors">
+                          <span style="background: #f4f2ed"></span>
+                          <span style="background: #fbfaf7"></span>
+                          <span style="background: #ffffff"></span>
+                          <span style="background: #2f6146"></span>
+                        </div>
+                      </div>
+                      <div class="theme-info">
+                        <div class="theme-name">Author's Light</div>
+                        <div class="theme-description">Light: paper and ledger green (default)</div>
+                      </div>
+                    </div>
+
                     <div class="theme-option" data-theme-name="current">
                       <div class="theme-preview">
                         <div class="theme-colors">
                           <span style="background: #0a0a0f"></span>
                           <span style="background: #121218"></span>
                           <span style="background: #1a1a24"></span>
-                          <span style="background: #6366f1"></span>
+                          <span style="background: #818cf8"></span>
                         </div>
                       </div>
                       <div class="theme-info">
-                        <div class="theme-name">Current (Purple Accent)</div>
-                        <div class="theme-description">Original rainbow gradient theme</div>
+                        <div class="theme-name">Midnight Indigo</div>
+                        <div class="theme-description">Dark, with an indigo accent</div>
                       </div>
                     </div>
 
@@ -1720,7 +1765,7 @@
                       </div>
                       <div class="theme-info">
                         <div class="theme-name">Monochrome Slate</div>
-                        <div class="theme-description">Pure grayscale, corporate feel</div>
+                        <div class="theme-description">Dark, neutral gray, white accent</div>
                       </div>
                     </div>
 
@@ -1735,7 +1780,7 @@
                       </div>
                       <div class="theme-info">
                         <div class="theme-name">Charcoal Gray</div>
-                        <div class="theme-description">Warm undertones, sophisticated</div>
+                        <div class="theme-description">Dark, warm gray</div>
                       </div>
                     </div>
 
@@ -1750,7 +1795,7 @@
                       </div>
                       <div class="theme-info">
                         <div class="theme-name">Steel Gray</div>
-                        <div class="theme-description">Cool blue undertones, technical</div>
+                        <div class="theme-description">Dark, cool blue-gray</div>
                       </div>
                     </div>
 
@@ -1765,7 +1810,7 @@
                       </div>
                       <div class="theme-info">
                         <div class="theme-name">Minimal Contrast</div>
-                        <div class="theme-description">Low contrast, easy on eyes</div>
+                        <div class="theme-description">Dark, softer contrast</div>
                       </div>
                     </div>
 
@@ -1780,7 +1825,7 @@
                       </div>
                       <div class="theme-info">
                         <div class="theme-name">Dark Graphite</div>
-                        <div class="theme-description">True black, maximum contrast</div>
+                        <div class="theme-description">True black, highest contrast</div>
                       </div>
                     </div>
 
@@ -1795,22 +1840,7 @@
                       </div>
                       <div class="theme-info">
                         <div class="theme-name">Nord Aurora</div>
-                        <div class="theme-description">Cool Arctic palette, gentle on eyes</div>
-                      </div>
-                    </div>
-
-                    <div class="theme-option" data-theme-name="author-light">
-                      <div class="theme-preview">
-                        <div class="theme-colors">
-                          <span style="background: #faf9f7"></span>
-                          <span style="background: #f5f4f1"></span>
-                          <span style="background: #ffffff"></span>
-                          <span style="background: #4a7c59"></span>
-                        </div>
-                      </div>
-                      <div class="theme-info">
-                        <div class="theme-name">Author's Light</div>
-                        <div class="theme-description">Professional light theme for easy readability</div>
+                        <div class="theme-description">Muted blue-gray, medium dark</div>
                       </div>
                     </div>
                   </div>
@@ -1896,9 +1926,7 @@
         <div id="update-upc-page" class="page" style="display: none">
           <header class="page-header">
             <h2>Update UPC</h2>
-            <p class="subtitle">
-              Search and update UPC barcodes across all connected stores
-            </p>
+            <p class="subtitle">Find a barcode in every connected store and replace it everywhere at once</p>
           </header>
 
           <div class="settings-section">
@@ -1966,23 +1994,15 @@
             </div>
 
             <!-- Empty State -->
-            <div
+            <div class="empty-state"
               id="upc-search-empty"
-              style="
-                display: none;
-                text-align: center;
-                padding: 3rem 1rem;
-                color: var(--text-tertiary);
-                margin-top: 1.5rem;
-              "
-            >
+              style="display: none">
               <svg
                 width="48"
                 height="48"
                 viewBox="0 0 48 48"
                 fill="none"
                 xmlns="http://www.w3.org/2000/svg"
-                style="margin: 0 auto 1rem"
               >
                 <rect
                   x="6"
@@ -2033,10 +2053,10 @@
                   stroke-width="2"
                 />
               </svg>
-              <p style="margin: 0; font-size: 0.875rem">
+              <p>
                 No products found with this UPC
               </p>
-              <p style="margin: 0.5rem 0 0; font-size: 0.75rem">
+              <p>
                 Try searching for a different barcode
               </p>
             </div>
@@ -2050,7 +2070,7 @@
                 <p
                   style="
                     margin: 0;
-                    font-size: 0.875rem;
+                    font-size: var(--text-base);
                     color: var(--text-secondary);
                   "
                 >
@@ -2119,7 +2139,7 @@
                   <p
                     style="
                       margin: 0;
-                      font-size: 0.875rem;
+                      font-size: var(--text-base);
                       color: var(--text-secondary);
                     "
                   >
@@ -2149,10 +2169,8 @@
         <!-- History Page -->
         <div id="history-page" class="page" style="display: none">
           <header class="page-header">
-            <h2>Update History</h2>
-            <p class="subtitle">
-              View all UPC barcode update operations across all stores
-            </p>
+            <h2>History</h2>
+            <p class="subtitle">Every UPC update, with the stores it reached and the result</p>
           </header>
 
           <div class="settings-section">
@@ -2234,23 +2252,15 @@
             </div>
 
             <!-- Empty State -->
-            <div
+            <div class="empty-state"
               id="history-empty"
-              style="
-                display: none;
-                text-align: center;
-                padding: 3rem 1rem;
-                color: var(--text-tertiary);
-                margin-top: 1.5rem;
-              "
-            >
+              style="display: none">
               <svg
                 width="48"
                 height="48"
                 viewBox="0 0 48 48"
                 fill="none"
                 xmlns="http://www.w3.org/2000/svg"
-                style="margin: 0 auto 1rem"
               >
                 <path
                   d="M24 4L4 12V20C4 30 11 39 24 40C37 39 44 30 44 20V12L24 4Z"
@@ -2261,10 +2271,10 @@
                   fill="none"
                 />
               </svg>
-              <p style="margin: 0; font-size: 0.875rem">
+              <p>
                 No history records found
               </p>
-              <p style="margin: 0.5rem 0 0; font-size: 0.75rem">
+              <p>
                 Update history will appear here after you perform UPC updates
               </p>
             </div>
@@ -2282,7 +2292,7 @@
                 <p
                   style="
                     margin: 0;
-                    font-size: 0.875rem;
+                    font-size: var(--text-base);
                     color: var(--text-secondary);
                   "
                 >
@@ -2291,7 +2301,7 @@
                 <div style="display: flex; gap: 0.5rem; align-items: center">
                   <label
                     for="history-page-size"
-                    style="font-size: 0.875rem; color: var(--text-secondary)"
+                    style="font-size: var(--text-base); color: var(--text-secondary)"
                     >Show:</label
                   >
                   <select
@@ -2343,7 +2353,7 @@
                 </button>
                 <span
                   id="history-page-info"
-                  style="font-size: 0.875rem; color: var(--text-secondary)"
+                  style="font-size: var(--text-base); color: var(--text-secondary)"
                 >
                   Page 1
                 </span>
@@ -2364,154 +2374,74 @@
         <div id="sql-audit-page" class="page" style="display: none">
           <header class="page-header">
             <h2>Orphan UPCs</h2>
-            <p class="subtitle">
-              Validate UPC data integrity by checking for orphaned UPCs in SQL
-              databases
-            </p>
+            <p class="subtitle">UPCs used on invoices, orders and other records that are missing from the item catalog</p>
           </header>
 
           <div class="settings-section">
-            <!-- Store Selection -->
+            <!-- Store, optional dates, optional comparison target, then the action -->
             <div class="form-group">
-              <label for="audit-store-select">Select SQL Store to Audit</label>
-              <div style="display: flex; gap: 0.75rem; align-items: stretch">
-                <select id="audit-store-select" style="width: 300px">
-                  <option value="">-- Select a store --</option>
-                </select>
-                <button
-                  type="button"
-                  class="btn btn-primary"
-                  id="run-audit-btn"
-                  disabled
-                >
-                  Run Audit
-                </button>
-              </div>
-              <small
-                style="
-                  color: var(--text-tertiary);
-                  font-size: 0.75rem;
-                  margin-top: 0.5rem;
-                  display: block;
-                "
-              >
-                This audit will check all detail tables for UPCs that don't
-                exist in the Items_tbl master catalog.
+              <label for="audit-store-select">Store to audit</label>
+              <select id="audit-store-select" style="max-width: 20rem">
+                <option value="">Select a store</option>
+              </select>
+              <small class="field-help">
+                Checks every detail table for UPCs that are missing from this
+                store's item catalog (Items_tbl).
               </small>
             </div>
 
-            <!-- Date Range Filter (Optional) -->
             <div class="form-group">
-              <label>Date Range Filter (Optional)</label>
-              <div style="display: flex; gap: 0.75rem; align-items: center">
-                <div style="flex: 1">
-                  <label
-                    for="audit-date-from"
-                    style="
-                      font-size: 0.875rem;
-                      margin-bottom: 0.25rem;
-                      display: block;
-                    "
-                    >From Date</label
-                  >
-                  <input type="date" id="audit-date-from" style="width: 100%" />
-                </div>
-                <div style="flex: 1">
-                  <label
-                    for="audit-date-to"
-                    style="
-                      font-size: 0.875rem;
-                      margin-bottom: 0.25rem;
-                      display: block;
-                    "
-                    >To Date</label
-                  >
-                  <input type="date" id="audit-date-to" style="width: 100%" />
-                </div>
+              <label for="audit-date-from">Dates <span class="label-optional">optional</span></label>
+              <div class="date-range">
+                <input type="date" id="audit-date-from" aria-label="From date" />
+                <span>to</span>
+                <input type="date" id="audit-date-to" aria-label="To date" />
               </div>
-              <div style="display: flex; gap: 0.5rem; margin-top: 0.75rem">
-                <button
-                  type="button"
-                  class="btn btn-secondary"
-                  id="audit-date-last-month"
-                  style="font-size: 0.75rem; padding: 0.375rem 0.75rem"
-                >
-                  Last Month
-                </button>
-                <button
-                  type="button"
-                  class="btn btn-secondary"
-                  id="audit-date-this-month"
-                  style="font-size: 0.75rem; padding: 0.375rem 0.75rem"
-                >
-                  This Month
-                </button>
-                <button
-                  type="button"
-                  class="btn btn-secondary"
-                  id="audit-date-clear"
-                  style="font-size: 0.75rem; padding: 0.375rem 0.75rem"
-                >
-                  Clear Dates
-                </button>
+              <div class="chip-row" style="margin-top: 0.5rem">
+                <button type="button" class="btn btn-chip" id="audit-date-last-month">Last month</button>
+                <button type="button" class="btn btn-chip" id="audit-date-this-month">This month</button>
+                <button type="button" class="btn btn-chip" id="audit-date-clear">Clear dates</button>
               </div>
-              <small
-                style="
-                  color: var(--text-tertiary);
-                  font-size: 0.75rem;
-                  margin-top: 0.5rem;
-                  display: block;
-                "
-              >
-                Leave empty to audit all records. Provide dates to filter by
-                transaction date from header tables.
+              <small class="field-help">
+                Leave empty to audit every record. With dates, records are
+                filtered by their transaction date.
               </small>
             </div>
 
-            <!-- Cross-Database Comparison Option -->
             <div class="form-group">
-              <label style="display: flex; align-items: center; gap: 0.5rem">
-                <input
-                  type="checkbox"
-                  id="audit-cross-db-checkbox"
-                  style="width: auto; margin: 0"
-                />
-                <span>Compare against different database</span>
+              <label class="check-label">
+                <input type="checkbox" id="audit-cross-db-checkbox" />
+                <span>Compare against another store's catalog</span>
               </label>
-              <small
-                style="
-                  color: var(--text-tertiary);
-                  font-size: 0.75rem;
-                  margin-top: 0.5rem;
-                  display: block;
-                "
-              >
-                Check this option to find UPCs from the selected store that
-                don't exist in a different database's Items_tbl.
+              <small class="field-help">
+                Finds UPCs from the selected store that are missing from a
+                different store's Items_tbl.
               </small>
             </div>
 
-            <!-- Target Database Dropdown (hidden by default) -->
             <div
               class="form-group"
               id="audit-target-db-group"
               style="display: none"
             >
-              <label for="audit-target-store-select">Target Database</label>
-              <select id="audit-target-store-select" style="width: 300px">
-                <option value="">-- Select target database --</option>
+              <label for="audit-target-store-select">Catalog to compare against</label>
+              <select id="audit-target-store-select" style="max-width: 20rem">
+                <option value="">Select a store</option>
               </select>
-              <small
-                style="
-                  color: var(--text-tertiary);
-                  font-size: 0.75rem;
-                  margin-top: 0.5rem;
-                  display: block;
-                "
-              >
-                Select which database's Items_tbl to check against. Only UPCs
-                not found in this database will be reported.
+              <small class="field-help">
+                Only UPCs not found in this store's catalog are reported.
               </small>
+            </div>
+
+            <div class="form-actions">
+              <button
+                type="button"
+                class="btn btn-primary"
+                id="run-audit-btn"
+                disabled
+              >
+                Run audit
+              </button>
             </div>
 
             <!-- Loading State with Progress -->
@@ -2541,23 +2471,15 @@
             </div>
 
             <!-- Empty State -->
-            <div
+            <div class="empty-state"
               id="audit-empty"
-              style="
-                display: none;
-                text-align: center;
-                padding: 3rem 1rem;
-                color: var(--text-tertiary);
-                margin-top: 1.5rem;
-              "
-            >
+              style="display: none">
               <svg
                 width="48"
                 height="48"
                 viewBox="0 0 48 48"
                 fill="none"
                 xmlns="http://www.w3.org/2000/svg"
-                style="margin: 0 auto 1rem"
               >
                 <path
                   d="M24 6L6 12V21C6 31.5 13.5 40.5 24 42C34.5 40.5 42 31.5 42 21V12L24 6Z"
@@ -2575,10 +2497,10 @@
                   stroke-linejoin="round"
                 />
               </svg>
-              <p style="margin: 0; font-size: 0.875rem; color: var(--success)">
+              <p style="margin: 0; font-size: var(--text-base); color: var(--success)">
                 ✓ No orphaned UPCs found!
               </p>
-              <p style="margin: 0.5rem 0 0; font-size: 0.75rem">
+              <p>
                 All UPCs in detail tables are properly referenced in the Items
                 catalog.
               </p>
@@ -2590,7 +2512,7 @@
                 <p
                   style="
                     margin: 0;
-                    font-size: 0.875rem;
+                    font-size: var(--text-base);
                     color: var(--text-secondary);
                   "
                 >
@@ -2617,7 +2539,7 @@
 
               <!-- Table Filter Dropdown -->
               <div class="form-group" style="margin-bottom: 1rem">
-                <label for="audit-table-filter" style="font-size: 0.875rem"
+                <label for="audit-table-filter" style="font-size: var(--text-base)"
                   >Filter by Table</label
                 >
                 <select id="audit-table-filter" style="max-width: 300px">
@@ -2690,7 +2612,7 @@
                     margin-left: auto;
                     align-self: center;
                     color: var(--text-secondary);
-                    font-size: 0.875rem;
+                    font-size: var(--text-base);
                   "
                 >
                   0 selected
@@ -2702,6 +2624,11 @@
 
         <!-- Item Tracker Page -->
         <div id="item-tracker-page" class="page" style="display: none">
+          <header class="page-header">
+            <h2>Item Tracker</h2>
+            <p class="subtitle">Purchases, sales, returns and recounts for one product, in date order</p>
+          </header>
+
           <!-- Configuration Section -->
           <div
             id="item-tracker-config-section"
@@ -2709,12 +2636,13 @@
             style="display: none"
           >
             <div class="card-header">
-              <h3>Configuration Required</h3>
+              <h3>Set up this page</h3>
             </div>
+            <div class="card-body">
             <p
               style="
                 margin: 0 0 1rem;
-                font-size: 0.875rem;
+                font-size: var(--text-base);
                 color: var(--text-secondary);
               "
             >
@@ -2731,13 +2659,7 @@
               >
                 <option value="">Select S2S database...</option>
               </select>
-              <small
-                style="
-                  color: var(--text-tertiary);
-                  font-size: 0.75rem;
-                  margin-top: 0.5rem;
-                  display: block;
-                "
+              <small class="field-help"
               >
                 The main database containing Items_tbl, PurchaseOrders, and
                 PurchasesReturns.
@@ -2757,13 +2679,7 @@
               >
                 <!-- Checkboxes populated by JavaScript -->
               </div>
-              <small
-                style="
-                  color: var(--text-tertiary);
-                  font-size: 0.75rem;
-                  margin-top: 0.5rem;
-                  display: block;
-                "
+              <small class="field-help"
               >
                 Select stores to search for Invoices and CreditMemos. Multiple
                 stores can be selected.
@@ -2780,13 +2696,7 @@
               >
                 <option value="">None - Skip inventory recounts</option>
               </select>
-              <small
-                style="
-                  color: var(--text-tertiary);
-                  font-size: 0.75rem;
-                  margin-top: 0.5rem;
-                  display: block;
-                "
+              <small class="field-help"
               >
                 Database with ManualInventoryUpdate table for tracking inventory
                 recounts.
@@ -2802,6 +2712,7 @@
                 Save Configuration
               </button>
             </div>
+            </div>
           </div>
 
           <!-- Search Section (shown after configuration) -->
@@ -2811,39 +2722,24 @@
             style="display: none"
           >
             <!-- Config Summary (Collapsible) -->
-            <div
+            <div class="config-bar"
               id="item-tracker-config-summary"
-              style="
-                margin-bottom: 1rem;
-                background: var(--bg-secondary);
-                border-radius: var(--radius-md);
-                border: 1px solid var(--border-color);
-                overflow: hidden;
-              "
             >
-              <div
+              <div class="config-bar-head is-toggle"
                 id="item-tracker-config-header"
-                style="
-                  display: flex;
-                  justify-content: space-between;
-                  align-items: center;
-                  padding: 0.625rem 1rem;
-                  cursor: pointer;
-                  user-select: none;
-                "
               >
                 <div style="display: flex; align-items: center; gap: 0.5rem">
                   <span
                     id="item-tracker-config-toggle"
                     style="
-                      font-size: 0.75rem;
+                      font-size: var(--text-xs);
                       color: var(--text-tertiary);
                       transition: transform 0.2s;
                     "
                     >▶</span
                   >
                   <span
-                    style="font-size: 0.8125rem; color: var(--text-secondary)"
+                    style="font-size: var(--text-sm); color: var(--text-secondary)"
                   >
                     Database Config:
                     <strong
@@ -2855,22 +2751,14 @@
                 </div>
                 <button
                   type="button"
-                  class="btn btn-secondary"
+                  class="btn btn-secondary btn-xs"
                   id="edit-item-tracker-config-btn"
-                  style="font-size: 0.6875rem; padding: 0.25rem 0.5rem"
                 >
                   Edit
                 </button>
               </div>
-              <div
-                id="item-tracker-config-details"
-                style="
-                  display: none;
-                  padding: 0.75rem 1rem;
-                  border-top: 1px solid var(--border-color);
-                  font-size: 0.8125rem;
-                  color: var(--text-secondary);
-                "
+              <div class="config-bar-details"
+                id="item-tracker-config-details" style="display: none"
               >
                 <p style="margin: 0 0 0.375rem 0">
                   Sales Stores:
@@ -2907,7 +2795,7 @@
                   <label
                     for="item-tracker-date-from"
                     style="
-                      font-size: 0.75rem;
+                      font-size: var(--text-xs);
                       color: var(--text-tertiary);
                       margin-bottom: 0.25rem;
                       display: block;
@@ -2925,7 +2813,7 @@
                   <label
                     for="item-tracker-date-to"
                     style="
-                      font-size: 0.75rem;
+                      font-size: var(--text-xs);
                       color: var(--text-tertiary);
                       margin-bottom: 0.25rem;
                       display: block;
@@ -2963,7 +2851,7 @@
                   <label
                     for="item-tracker-upc-input"
                     style="
-                      font-size: 0.75rem;
+                      font-size: var(--text-xs);
                       color: var(--text-tertiary);
                       margin-bottom: 0.25rem;
                       display: block;
@@ -2982,7 +2870,7 @@
                   <label
                     for="item-tracker-desc-input"
                     style="
-                      font-size: 0.75rem;
+                      font-size: var(--text-xs);
                       color: var(--text-tertiary);
                       margin-bottom: 0.25rem;
                       display: block;
@@ -3040,23 +2928,15 @@
             </div>
 
             <!-- Empty State -->
-            <div
+            <div class="empty-state"
               id="item-tracker-empty"
-              style="
-                display: none;
-                text-align: center;
-                padding: 3rem 1rem;
-                color: var(--text-tertiary);
-                margin-top: 1.5rem;
-              "
-            >
+              style="display: none">
               <svg
                 width="48"
                 height="48"
                 viewBox="0 0 48 48"
                 fill="none"
                 xmlns="http://www.w3.org/2000/svg"
-                style="margin: 0 auto 1rem"
               >
                 <rect
                   x="6"
@@ -3107,10 +2987,10 @@
                   stroke-width="2"
                 />
               </svg>
-              <p style="margin: 0; font-size: 0.875rem">
+              <p>
                 No history found for this UPC
               </p>
-              <p style="margin: 0.5rem 0 0; font-size: 0.75rem">
+              <p>
                 Try searching for a different barcode
               </p>
             </div>
@@ -3139,7 +3019,7 @@
                     <p
                       style="
                         margin: 0;
-                        font-size: 0.75rem;
+                        font-size: var(--text-xs);
                         color: var(--text-tertiary);
                       "
                     >
@@ -3148,7 +3028,7 @@
                     <p
                       style="
                         margin: 0.25rem 0 0;
-                        font-size: 0.875rem;
+                        font-size: var(--text-sm);
                         font-family: monospace;
                         font-weight: bold;
                         color: var(--accent-primary);
@@ -3162,7 +3042,7 @@
                     <p
                       style="
                         margin: 0;
-                        font-size: 0.75rem;
+                        font-size: var(--text-xs);
                         color: var(--text-tertiary);
                       "
                     >
@@ -3171,7 +3051,7 @@
                     <p
                       style="
                         margin: 0.25rem 0 0;
-                        font-size: 0.875rem;
+                        font-size: var(--text-base);
                         font-weight: 500;
                       "
                       id="item-info-description"
@@ -3183,14 +3063,14 @@
                     <p
                       style="
                         margin: 0;
-                        font-size: 0.75rem;
+                        font-size: var(--text-xs);
                         color: var(--text-tertiary);
                       "
                     >
                       Qty on Hand
                     </p>
                     <p
-                      style="margin: 0.25rem 0 0; font-size: 0.875rem"
+                      style="margin: 0.25rem 0 0; font-size: var(--text-base)"
                       id="item-info-qty"
                     >
                       -
@@ -3222,7 +3102,7 @@
                     <label
                       for="item-tracker-filter"
                       style="
-                        font-size: 0.8125rem;
+                        font-size: var(--text-sm);
                         color: var(--text-tertiary);
                         white-space: nowrap;
                       "
@@ -3237,7 +3117,7 @@
                         border: 1px solid var(--border-color);
                         border-radius: var(--radius-md);
                         color: var(--text-primary);
-                        font-size: 0.875rem;
+                        font-size: var(--text-base);
                       "
                     >
                       <option value="">All Events</option>
@@ -3254,7 +3134,7 @@
                       display: flex;
                       align-items: center;
                       gap: 0.375rem;
-                      font-size: 0.8125rem;
+                      font-size: var(--text-sm);
                       color: var(--text-tertiary);
                       cursor: pointer;
                     "
@@ -3280,14 +3160,14 @@
                 <p
                   style="
                     margin: 0;
-                    font-size: 0.875rem;
+                    font-size: var(--text-base);
                     color: var(--text-secondary);
                   "
                 >
                   <strong id="item-tracker-event-count">0</strong> events found
                   across <strong id="item-tracker-store-count">0</strong> stores
                 </p>
-                <span id="item-tracker-net-qty-top" style="display: none; position: absolute; top: 0; font-weight: 700; font-family: monospace; font-size: 0.875rem; text-align: center;"></span>
+                <span id="item-tracker-net-qty-top" style="display: none; position: absolute; top: 0; font-weight: 700; font-family: monospace; font-size: var(--text-sm); text-align: center;"></span>
               </div>
 
               <!-- Timeline Table -->
@@ -3346,7 +3226,7 @@
                         data-sort="running_balance"
                         class="sortable"
                       >
-                        TRACK QTY <span class="sort-indicator"></span>
+                        Track qty <span class="sort-indicator"></span>
                       </th>
                       <th
                         style="width: 18%; cursor: pointer; user-select: none"
@@ -3380,15 +3260,15 @@
 
         <!-- Quotations In Progress Page -->
         <div id="quotations-in-progress-page" class="page qip-page" style="display: none">
-          <header class="qip-header">
+          <header class="page-header qip-header">
             <div class="qip-header-text">
-              <div class="qip-eyebrow">Operations · Live</div>
-              <h2>In&nbsp;Progress</h2>
+              <h2>In Progress</h2>
+              <p class="subtitle"><span class="qip-live-dot" aria-hidden="true"></span>Quotations being picked and packed, live from the admin database</p>
             </div>
             <div class="qip-header-meta" id="qip-header-meta">
-              <span class="qip-meta-cell"><span class="qip-meta-num" id="qip-meta-total">—</span><span class="qip-meta-label">tracked</span></span>
-              <span class="qip-meta-cell"><span class="qip-meta-num" id="qip-meta-pending">—</span><span class="qip-meta-label">pending scan</span></span>
-              <span class="qip-meta-cell"><span class="qip-meta-num" id="qip-meta-complete">—</span><span class="qip-meta-label">complete</span></span>
+              <span class="qip-meta-cell"><span class="qip-meta-num" id="qip-meta-total">—</span><span class="qip-meta-label">Tracked</span></span>
+              <span class="qip-meta-cell"><span class="qip-meta-num" id="qip-meta-pending">—</span><span class="qip-meta-label">Pending scan</span></span>
+              <span class="qip-meta-cell"><span class="qip-meta-num" id="qip-meta-complete">—</span><span class="qip-meta-label">Complete</span></span>
             </div>
           </header>
 
@@ -3579,8 +3459,13 @@
 
         <!-- Inventory Time Page -->
         <div id="inventory-time-page" class="page" style="display: none">
+          <header class="page-header">
+            <h2>Inventory Time</h2>
+            <p class="subtitle">Time a person spent on inventory recounts, split into sessions</p>
+          </header>
+
           <div id="invtime-not-configured" class="card" style="display: none; margin-bottom: 1.5rem;">
-            <div style="padding: 1.5rem; color: var(--text-secondary); font-size: 0.875rem;">
+            <div style="padding: 1.5rem; color: var(--text-secondary); font-size: var(--text-base);">
               The DB_ADMIN store is not configured. Set it under
               <strong>Settings → Roles &amp; Mirrors</strong> to use Inventory Time.
             </div>
@@ -3591,16 +3476,16 @@
             <div style="padding: 1rem 1.5rem 1.5rem">
               <div class="form-group">
                 <label>Date Range</label>
-                <div style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
-                  <input type="date" id="invtime-start-date" style="max-width: 180px" />
-                  <span style="color: var(--text-secondary)">to</span>
-                  <input type="date" id="invtime-end-date" style="max-width: 180px" />
+                <div class="date-range">
+                  <input type="date" id="invtime-start-date" />
+                  <span>to</span>
+                  <input type="date" id="invtime-end-date" />
                 </div>
-                <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem; flex-wrap: wrap;">
-                  <button type="button" class="btn btn-secondary" data-week="0" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">This Week</button>
-                  <button type="button" class="btn btn-secondary" data-week="1" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Last Week</button>
-                  <button type="button" class="btn btn-secondary" data-week="2" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">2nd Last Week</button>
-                  <button type="button" class="btn btn-secondary" data-week="3" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">3rd Last Week</button>
+                <div class="chip-row" style="margin-top: 0.5rem">
+                  <button type="button" class="btn btn-chip" data-week="0">This Week</button>
+                  <button type="button" class="btn btn-chip" data-week="1">Last Week</button>
+                  <button type="button" class="btn btn-chip" data-week="2">2nd Last Week</button>
+                  <button type="button" class="btn btn-chip" data-week="3">3rd Last Week</button>
                 </div>
               </div>
 
@@ -3609,7 +3494,7 @@
                 <select id="invtime-user" style="max-width: 320px">
                   <option value="">— Select a user —</option>
                 </select>
-                <small id="invtime-user-hint" class="settings-input-help" style="display: block; margin-top: 0.35rem;">Only users who recounted in the selected range are listed.</small>
+                <small id="invtime-user-hint" class="settings-input-help">Only users who recounted in the selected range are listed.</small>
               </div>
 
               <div style="margin-top: 1.25rem">
@@ -3626,25 +3511,25 @@
           <div id="invtime-summary" class="card" style="display: none; margin-bottom: 1.5rem;">
             <div style="padding: 1.25rem 1.5rem; display: flex; flex-wrap: wrap; gap: 2.5rem;">
               <div>
-                <div style="font-size: 0.75rem; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.04em;">Total Time</div>
-                <div id="invtime-total" style="font-size: 1.5rem; font-weight: 600; color: var(--text-primary);">—</div>
+                <div class="caption">Total Time</div>
+                <div class="stat-figure" id="invtime-total">—</div>
               </div>
               <div>
-                <div style="font-size: 0.75rem; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.04em;">Sessions</div>
-                <div id="invtime-session-count" style="font-size: 1.5rem; font-weight: 600; color: var(--text-primary);">—</div>
+                <div class="caption">Sessions</div>
+                <div class="stat-figure" id="invtime-session-count">—</div>
               </div>
               <div>
-                <div style="font-size: 0.75rem; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.04em;">Items Recounted</div>
-                <div id="invtime-item-count" style="font-size: 1.5rem; font-weight: 600; color: var(--text-primary);">—</div>
+                <div class="caption">Items Recounted</div>
+                <div class="stat-figure" id="invtime-item-count">—</div>
               </div>
               <div>
-                <div style="font-size: 0.75rem; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.04em;">Break / Isolated</div>
-                <div id="invtime-settings-info" style="font-size: 0.875rem; color: var(--text-secondary); margin-top: 0.35rem;">—</div>
+                <div class="caption">Break / Isolated</div>
+                <div id="invtime-settings-info" style="font-size: var(--text-base); color: var(--text-secondary); margin-top: 0.35rem;">—</div>
               </div>
             </div>
           </div>
 
-          <div id="invtime-empty" style="display: none; text-align: center; padding: 3rem 1rem; color: var(--text-secondary);">
+          <div class="empty-state" id="invtime-empty" style="display: none">
             <p>No inventory recounts found for this user in the selected date range.</p>
           </div>
 
@@ -3668,8 +3553,13 @@
 
         <!-- Checked Orders Page -->
         <div id="checked-orders-page" class="page" style="display: none">
+          <header class="page-header">
+            <h2>Checked Orders</h2>
+            <p class="subtitle">How many orders a person checked, and how long each one took</p>
+          </header>
+
           <div id="chkord-not-configured" class="card" style="display: none; margin-bottom: 1.5rem;">
-            <div style="padding: 1.5rem; color: var(--text-secondary); font-size: 0.875rem;">
+            <div style="padding: 1.5rem; color: var(--text-secondary); font-size: var(--text-base);">
               No active shipper database is configured. Add one under
               <strong>Settings → Stores</strong> to use Checked Orders.
             </div>
@@ -3680,18 +3570,18 @@
             <div style="padding: 1rem 1.5rem 1.5rem">
               <div class="form-group">
                 <label>Date Range</label>
-                <div style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
-                  <input type="date" id="chkord-start-date" style="max-width: 180px" />
-                  <span style="color: var(--text-secondary)">to</span>
-                  <input type="date" id="chkord-end-date" style="max-width: 180px" />
+                <div class="date-range">
+                  <input type="date" id="chkord-start-date" />
+                  <span>to</span>
+                  <input type="date" id="chkord-end-date" />
                 </div>
-                <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem; flex-wrap: wrap;">
-                  <button type="button" class="btn btn-secondary" data-week="0" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">This Week</button>
-                  <button type="button" class="btn btn-secondary" data-week="1" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Last Week</button>
-                  <button type="button" class="btn btn-secondary" data-week="2" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">2nd Last Week</button>
-                  <button type="button" class="btn btn-secondary" data-week="3" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">3rd Last Week</button>
-                  <button type="button" class="btn btn-secondary" data-month="0" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">This Month</button>
-                  <button type="button" class="btn btn-secondary" data-month="1" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Last Month</button>
+                <div class="chip-row" style="margin-top: 0.5rem">
+                  <button type="button" class="btn btn-chip" data-week="0">This Week</button>
+                  <button type="button" class="btn btn-chip" data-week="1">Last Week</button>
+                  <button type="button" class="btn btn-chip" data-week="2">2nd Last Week</button>
+                  <button type="button" class="btn btn-chip" data-week="3">3rd Last Week</button>
+                  <button type="button" class="btn btn-chip" data-month="0">This Month</button>
+                  <button type="button" class="btn btn-chip" data-month="1">Last Month</button>
                 </div>
               </div>
 
@@ -3700,13 +3590,13 @@
                 <select id="chkord-user" style="max-width: 320px">
                   <option value="">— Select a user —</option>
                 </select>
-                <small id="chkord-user-hint" class="settings-input-help" style="display: block; margin-top: 0.35rem;">Only users who checked orders in the selected range are listed.</small>
+                <small id="chkord-user-hint" class="settings-input-help">Only users who checked orders in the selected range are listed.</small>
               </div>
 
               <div class="form-group" style="margin-top: 1rem">
                 <label for="chkord-threshold">Large order threshold ($)</label>
                 <input type="number" id="chkord-threshold" min="0" step="any" placeholder="e.g. 500" style="max-width: 180px" />
-                <small class="settings-input-help" style="display: block; margin-top: 0.35rem;">Orders at or below this value are small; above it, large.</small>
+                <small class="settings-input-help">Orders at or below this value are small; above it, large.</small>
               </div>
 
               <div style="margin-top: 1.25rem">
@@ -3723,34 +3613,34 @@
           <div id="chkord-summary" class="card" style="display: none; margin-bottom: 1.5rem;">
             <div style="padding: 1.25rem 1.5rem; display: flex; flex-wrap: wrap; gap: 2.5rem;">
               <div>
-                <div style="font-size: 0.75rem; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.04em;">Orders Checked</div>
-                <div id="chkord-order-count" style="font-size: 1.5rem; font-weight: 600; color: var(--text-primary);">—</div>
+                <div class="caption">Orders Checked</div>
+                <div class="stat-figure" id="chkord-order-count">—</div>
               </div>
               <div>
-                <div style="font-size: 0.75rem; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.04em;">Total Time</div>
-                <div id="chkord-total" style="font-size: 1.5rem; font-weight: 600; color: var(--text-primary);">—</div>
+                <div class="caption">Total Time</div>
+                <div class="stat-figure" id="chkord-total">—</div>
               </div>
               <div>
-                <div style="font-size: 0.75rem; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.04em;">Avg / Order</div>
-                <div id="chkord-average" style="font-size: 1.5rem; font-weight: 600; color: var(--text-primary);">—</div>
+                <div class="caption">Avg / Order</div>
+                <div class="stat-figure" id="chkord-average">—</div>
               </div>
               <div>
-                <div style="font-size: 0.75rem; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.04em;">Total Value</div>
-                <div id="chkord-total-value" style="font-size: 1.5rem; font-weight: 600; color: var(--text-primary);">—</div>
+                <div class="caption">Total Value</div>
+                <div class="stat-figure" id="chkord-total-value">—</div>
               </div>
               <div>
-                <div style="font-size: 0.75rem; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.04em;">Small Orders</div>
-                <div id="chkord-small-count" style="font-size: 1.5rem; font-weight: 600; color: var(--text-primary);">—</div>
+                <div class="caption">Small Orders</div>
+                <div class="stat-figure" id="chkord-small-count">—</div>
               </div>
               <div>
-                <div style="font-size: 0.75rem; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.04em;">Large Orders</div>
-                <div id="chkord-large-count" style="font-size: 1.5rem; font-weight: 600; color: var(--text-primary);">—</div>
+                <div class="caption">Large Orders</div>
+                <div class="stat-figure" id="chkord-large-count">—</div>
               </div>
             </div>
             <div id="chkord-summary-note" class="settings-input-help" style="display: none; padding: 0 1.5rem 1.25rem;"></div>
           </div>
 
-          <div id="chkord-empty" style="display: none; text-align: center; padding: 3rem 1rem; color: var(--text-secondary);">
+          <div class="empty-state" id="chkord-empty" style="display: none">
             <p>No checked orders found for this user in the selected date range.</p>
           </div>
 
@@ -3776,6 +3666,11 @@
 
         <!-- Price Updates Page -->
         <div id="price-updates-page" class="page" style="display: none">
+          <header class="page-header price-page-header">
+            <h2>Price Updates</h2>
+            <p class="subtitle">Compare prices and costs across stores and update them together</p>
+          </header>
+
           <!-- Configuration Section -->
           <div
             id="price-updates-config-section"
@@ -3783,12 +3678,13 @@
             style="display: none"
           >
             <div class="card-header">
-              <h3>Configuration Required</h3>
+              <h3>Set up this page</h3>
             </div>
+            <div class="card-body">
             <p
               style="
                 margin: 0 0 1rem;
-                font-size: 0.875rem;
+                font-size: var(--text-base);
                 color: var(--text-secondary);
               "
             >
@@ -3807,13 +3703,7 @@
               >
                 <option value="">Select primary store...</option>
               </select>
-              <small
-                style="
-                  color: var(--text-tertiary);
-                  font-size: 0.75rem;
-                  margin-top: 0.5rem;
-                  display: block;
-                "
+              <small class="field-help"
               >
                 Used for description autocomplete and as the main search
                 database.
@@ -3823,8 +3713,8 @@
             <div class="form-group">
               <label>Stores to Update</label>
               <div style="margin-bottom: 0.5rem; display: flex; gap: 0.5rem;">
-                <button type="button" class="btn btn-secondary" id="price-updates-select-all-btn" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Select All</button>
-                <button type="button" class="btn btn-secondary" id="price-updates-deselect-all-btn" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Deselect All</button>
+                <button type="button" class="btn btn-chip" id="price-updates-select-all-btn">Select All</button>
+                <button type="button" class="btn btn-chip" id="price-updates-deselect-all-btn">Deselect All</button>
               </div>
               <div
                 id="price-updates-store-checkboxes"
@@ -3837,13 +3727,7 @@
               >
                 <!-- Checkboxes populated by JavaScript -->
               </div>
-              <small
-                style="
-                  color: var(--text-tertiary);
-                  font-size: 0.75rem;
-                  margin-top: 0.5rem;
-                  display: block;
-                "
+              <small class="field-help"
               >
                 Select BackOffice and Shopify stores where prices should be fetched
                 and updated.
@@ -3855,13 +3739,7 @@
               <select id="price-updates-rand-store" style="max-width: 400px">
                 <option value="">None</option>
               </select>
-              <small
-                style="
-                  color: var(--text-tertiary);
-                  font-size: 0.75rem;
-                  margin-top: 0.5rem;
-                  display: block;
-                "
+              <small class="field-help"
               >
                 Store whose rows get the exact "Rand Sale Price" in the Delivery
                 Flow fill line.
@@ -3875,13 +3753,7 @@
               <select id="price-updates-fivestars-bo-store" style="max-width: 400px">
                 <option value="">None</option>
               </select>
-              <small
-                style="
-                  color: var(--text-tertiary);
-                  font-size: 0.75rem;
-                  margin-top: 0.5rem;
-                  display: block;
-                "
+              <small class="field-help"
               >
                 Source of sale prices copied to the 5 Stars Shopify store when
                 its variants have no cost.
@@ -3895,13 +3767,7 @@
               <select id="price-updates-fivestars-shopify-store" style="max-width: 400px">
                 <option value="">None</option>
               </select>
-              <small
-                style="
-                  color: var(--text-tertiary);
-                  font-size: 0.75rem;
-                  margin-top: 0.5rem;
-                  display: block;
-                "
+              <small class="field-help"
               >
                 Shopify store that receives the copied 5 Stars BackOffice price
                 when its own cost is missing.
@@ -3917,13 +3783,14 @@
                 Save Configuration
               </button>
             </div>
+            </div>
           </div>
 
           <!-- Tab Navigation -->
           <div id="price-updates-view-toggle" style="display: none">
             <div class="tab-bar">
-              <div class="tab-bar-item active" id="price-updates-main-view-btn">Price Updates</div>
-              <div class="tab-bar-item" id="price-updates-history-view-btn">Update History</div>
+              <button type="button" class="tab-bar-item active" id="price-updates-main-view-btn">Price Updates</button>
+              <button type="button" class="tab-bar-item" id="price-updates-history-view-btn">Update History</button>
             </div>
           </div>
 
@@ -3954,7 +3821,7 @@
                   </div>
                 </div>
                 <div style="display: flex; gap: 0.75rem">
-                  <button type="button" class="btn btn-secondary" id="clear-price-history-filters-btn" style="font-size: 0.75rem; padding: 0.375rem 0.75rem;">Clear Filters</button>
+                  <button type="button" class="btn btn-secondary btn-sm" id="clear-price-history-filters-btn">Clear Filters</button>
                 </div>
               </div>
 
@@ -3964,22 +3831,22 @@
               </div>
 
               <!-- Empty State -->
-              <div id="price-history-empty" style="display: none; text-align: center; padding: 3rem 1rem; color: var(--text-secondary); margin-top: 1.5rem;">
-                <svg width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg" style="margin: 0 auto 1rem">
+              <div class="empty-state" id="price-history-empty" style="display: none">
+                <svg width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
                   <path d="M24 4L4 12V20C4 30 11 39 24 40C37 39 44 30 44 20V12L24 4Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
                 </svg>
-                <p style="margin: 0; font-size: 0.875rem">No price update history found</p>
-                <p style="margin: 0.5rem 0 0; font-size: 0.75rem">History will appear here after you perform price updates</p>
+                <p>No price update history found</p>
+                <p>History will appear here after you perform price updates</p>
               </div>
 
               <!-- Results Section -->
               <div id="price-history-results" style="display: none; margin-top: 1.5rem">
                 <div style="margin-bottom: 1rem; display: flex; justify-content: space-between; align-items: center;">
-                  <p style="margin: 0; font-size: 0.875rem; color: var(--text-secondary);">
+                  <p style="margin: 0; font-size: var(--text-base); color: var(--text-secondary);">
                     <strong id="price-history-total-count">0</strong> records found
                   </p>
                   <div style="display: flex; gap: 0.5rem; align-items: center">
-                    <label for="price-history-page-size" style="font-size: 0.875rem; color: var(--text-secondary)">Show:</label>
+                    <label for="price-history-page-size" style="font-size: var(--text-base); color: var(--text-secondary)">Show:</label>
                     <select id="price-history-page-size" style="padding: 0.25rem 0.5rem">
                       <option value="10">10</option>
                       <option value="25" selected>25</option>
@@ -4009,7 +3876,7 @@
                 <!-- Pagination Controls -->
                 <div style="margin-top: 1rem; display: flex; justify-content: space-between; align-items: center;">
                   <button type="button" class="btn btn-secondary" id="price-history-prev-btn" disabled>Previous</button>
-                  <span id="price-history-page-info" style="font-size: 0.875rem; color: var(--text-secondary)">Page 1</span>
+                  <span id="price-history-page-info" style="font-size: var(--text-base); color: var(--text-secondary)">Page 1</span>
                   <button type="button" class="btn btn-secondary" id="price-history-next-btn" disabled>Next</button>
                 </div>
               </div>
@@ -4022,39 +3889,24 @@
             style="display: none"
           >
             <!-- Config Summary (Collapsible) -->
-            <div
+            <div class="config-bar"
               id="price-updates-config-summary"
-              style="
-                margin-bottom: 1rem;
-                background: var(--bg-secondary);
-                border-radius: var(--radius-md);
-                border: 1px solid var(--border-color);
-                overflow: hidden;
-              "
             >
-              <div
+              <div class="config-bar-head is-toggle"
                 id="price-updates-config-header"
-                style="
-                  display: flex;
-                  justify-content: space-between;
-                  align-items: center;
-                  padding: 0.625rem 1rem;
-                  cursor: pointer;
-                  user-select: none;
-                "
               >
                 <div style="display: flex; align-items: center; gap: 0.5rem">
                   <span
                     id="price-updates-config-toggle"
                     style="
-                      font-size: 0.75rem;
+                      font-size: var(--text-xs);
                       color: var(--text-tertiary);
                       transition: transform 0.2s;
                     "
                     >&#9654;</span
                   >
                   <span
-                    style="font-size: 0.8125rem; color: var(--text-secondary)"
+                    style="font-size: var(--text-sm); color: var(--text-secondary)"
                   >
                     Primary Store:
                     <strong
@@ -4066,22 +3918,14 @@
                 </div>
                 <button
                   type="button"
-                  class="btn btn-secondary"
+                  class="btn btn-secondary btn-xs"
                   id="edit-price-updates-config-btn"
-                  style="font-size: 0.6875rem; padding: 0.25rem 0.5rem"
                 >
                   Edit
                 </button>
               </div>
-              <div
-                id="price-updates-config-details"
-                style="
-                  display: none;
-                  padding: 0.75rem 1rem;
-                  border-top: 1px solid var(--border-color);
-                  font-size: 0.8125rem;
-                  color: var(--text-secondary);
-                "
+              <div class="config-bar-details"
+                id="price-updates-config-details" style="display: none"
               >
                 <p style="margin: 0">
                   Update Stores:
@@ -4108,7 +3952,7 @@
                 <label
                   for="price-updates-upc-input"
                   style="
-                    font-size: 0.75rem;
+                    font-size: var(--text-xs);
                     color: var(--text-tertiary);
                     margin-bottom: 0.25rem;
                     display: block;
@@ -4127,7 +3971,7 @@
                 <label
                   for="price-updates-desc-input"
                   style="
-                    font-size: 0.75rem;
+                    font-size: var(--text-xs);
                     color: var(--text-tertiary);
                     margin-bottom: 0.25rem;
                     display: block;
@@ -4170,7 +4014,7 @@
               </button>
             </div>
 
-            <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.8125rem; color: var(--text-secondary); margin-bottom: 1rem; cursor: pointer; user-select: none;">
+            <label style="display: flex; align-items: center; gap: 0.5rem; font-size: var(--text-sm); color: var(--text-secondary); margin-bottom: 1rem; cursor: pointer; user-select: none;">
               <input type="checkbox" id="price-updates-include-siblings" checked style="accent-color: var(--accent-primary);" />
               Include sibling barcodes in BackOffice
             </label>
@@ -4206,7 +4050,7 @@
                     <p
                       style="
                         margin: 0;
-                        font-size: 0.75rem;
+                        font-size: var(--text-xs);
                         color: var(--text-tertiary);
                       "
                     >
@@ -4215,7 +4059,7 @@
                     <p
                       style="
                         margin: 0.25rem 0 0;
-                        font-size: 0.875rem;
+                        font-size: var(--text-sm);
                         font-family: monospace;
                         font-weight: bold;
                         color: var(--accent-primary);
@@ -4229,7 +4073,7 @@
                     <p
                       style="
                         margin: 0;
-                        font-size: 0.75rem;
+                        font-size: var(--text-xs);
                         color: var(--text-tertiary);
                       "
                     >
@@ -4238,7 +4082,7 @@
                     <p
                       style="
                         margin: 0.25rem 0 0;
-                        font-size: 0.875rem;
+                        font-size: var(--text-base);
                         font-weight: 500;
                       "
                       id="price-info-description"
@@ -4320,7 +4164,7 @@
 
               <!-- Fill All Row (Zone 3: Bulk Edit) -->
               <div class="fill-all-row">
-                <span style="font-size: 0.875rem; font-weight: 500; color: var(--text-secondary)">Apply to All<span id="price-fill-all-scope" style="font-size: 0.75rem; color: var(--text-tertiary)"></span>:</span>
+                <span style="font-size: var(--text-base); font-weight: 500; color: var(--text-secondary)">Apply to All<span id="price-fill-all-scope" style="font-size: var(--text-xs); color: var(--text-tertiary)"></span>:</span>
                 <div class="fill-all-input-group">
                   <span class="fill-all-last-label" id="price-fill-last-price"></span>
                   <input
@@ -4367,25 +4211,22 @@
                 </div>
                 <button
                   type="button"
-                  class="btn btn-secondary"
+                  class="btn btn-secondary btn-sm"
                   id="price-fill-all-btn"
-                  style="font-size: 0.75rem; padding: 0.375rem 0.75rem"
                 >
                   Fill All<span class="fill-all-count" id="price-fill-all-count"></span>
                 </button>
                 <button
                   type="button"
-                  class="btn btn-secondary"
+                  class="btn btn-secondary btn-sm"
                   id="price-clear-all-btn"
-                  style="font-size: 0.75rem; padding: 0.375rem 0.75rem"
                 >
                   Clear All
                 </button>
                 <button
                   type="button"
-                  class="btn btn-secondary"
-                  id="price-fill-b-toggle"
-                  style="font-size: 0.75rem; padding: 0.375rem 0.75rem; margin-left: auto"
+                  class="btn btn-secondary btn-sm"
+                  id="price-fill-b-toggle" style="margin-left: auto"
                 >
                   Delivery Flow
                 </button>
@@ -4393,7 +4234,7 @@
 
               <!-- Delivery Flow Row (Zone 3b: Delivery B route fill) -->
               <div class="fill-all-row" id="price-fill-b-row" style="margin-top: 0.5rem; display: none">
-                <span style="font-size: 0.875rem; font-weight: 500; color: var(--text-secondary)">Delivery Flow:</span>
+                <span style="font-size: var(--text-base); font-weight: 500; color: var(--text-secondary)">Delivery Flow:</span>
                 <div class="fill-all-input-group">
                   <span class="fill-all-last-label" id="price-fill-b-last-price"></span>
                   <input
@@ -4451,9 +4292,8 @@
                 </div>
                 <button
                   type="button"
-                  class="btn btn-secondary"
+                  class="btn btn-secondary btn-sm"
                   id="price-fill-b-btn"
-                  style="font-size: 0.75rem; padding: 0.375rem 0.75rem"
                 >
                   Fill Flow
                 </button>
@@ -4510,9 +4350,9 @@
                 </div>
                 <div class="price-fs-history-pagination">
                   <button type="button" class="btn btn-secondary" id="price-fs-history-prev-btn" disabled>Previous</button>
-                  <span id="price-fs-history-page-info" style="font-size: 0.875rem; color: var(--text-secondary)">Page 1</span>
+                  <span id="price-fs-history-page-info" style="font-size: var(--text-base); color: var(--text-secondary)">Page 1</span>
                   <div style="display: flex; gap: 0.5rem; align-items: center">
-                    <label for="price-fs-history-page-size" style="font-size: 0.875rem; color: var(--text-secondary)">Show:</label>
+                    <label for="price-fs-history-page-size" style="font-size: var(--text-base); color: var(--text-secondary)">Show:</label>
                     <select id="price-fs-history-page-size" style="padding: 0.25rem 0.5rem">
                       <option value="10">10</option>
                       <option value="25" selected>25</option>
@@ -4529,16 +4369,21 @@
 
         <!-- Sales Report Page -->
         <div id="sales-page" class="page" style="display: none">
+          <header class="page-header">
+            <h2>Sales</h2>
+            <p class="subtitle">Units sold, returned and on hand per product across the configured stores</p>
+          </header>
+
           <!-- Collapsible Database Config -->
-          <div id="sales-config-bar" style="margin-bottom: 1rem; background: var(--bg-secondary); border-radius: var(--radius-md); border: 1px solid var(--border-color); overflow: hidden; display: none;">
-            <div id="sales-config-header" onclick="toggleSalesConfig()" style="display: flex; justify-content: space-between; align-items: center; padding: 0.625rem 1rem; cursor: pointer; user-select: none;">
+          <div class="config-bar" id="sales-config-bar" style="display: none">
+            <div class="config-bar-head is-toggle" id="sales-config-header" onclick="toggleSalesConfig()">
               <div style="display: flex; align-items: center; gap: 0.5rem">
-                <span id="sales-config-toggle" style="font-size: 0.75rem; color: var(--text-tertiary); transition: transform 0.2s;">▶</span>
-                <span id="sales-config-label" style="font-size: 0.8125rem; color: var(--text-secondary)">Database Config: <strong style="color: var(--text-primary)">Not configured</strong></span>
+                <span id="sales-config-toggle" style="font-size: var(--text-xs); color: var(--text-tertiary); transition: transform 0.2s;">▶</span>
+                <span id="sales-config-label" style="font-size: var(--text-sm); color: var(--text-secondary)">Database Config: <strong style="color: var(--text-primary)">Not configured</strong></span>
               </div>
-              <button type="button" class="btn btn-secondary" id="sales-config-edit-btn" onclick="event.stopPropagation(); openSalesConfigEdit()" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Edit</button>
+              <button type="button" class="btn btn-secondary btn-xs" id="sales-config-edit-btn" onclick="event.stopPropagation(); openSalesConfigEdit()">Edit</button>
             </div>
-            <div id="sales-config-details" style="display: none; padding: 0.75rem 1rem; border-top: 1px solid var(--border-color); font-size: 0.8125rem; color: var(--text-secondary);">
+            <div class="config-bar-details" id="sales-config-details" style="display: none">
               <p id="sales-config-mssql-info" style="margin: 0 0 0.25rem 0">MSSQL Sales Stores: <strong style="color: var(--text-primary)">-</strong></p>
               <p id="sales-config-shopify-info" style="margin: 0">Shopify Stores: <strong style="color: var(--text-primary)">-</strong></p>
             </div>
@@ -4549,29 +4394,29 @@
             <div class="card" style="margin-bottom: 0.75rem">
               <div style="padding: 0.875rem 1.25rem">
                 <div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem; flex-wrap: wrap;">
-                  <span style="font-size: 0.75rem; color: var(--text-tertiary); font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em;">Primary DB</span>
-                  <select id="sales-s2s-select" style="max-width: 250px; font-size: 0.8125rem; padding: 0.3rem 0.5rem;">
+                  <span class="caption">Primary DB</span>
+                  <select id="sales-s2s-select" style="max-width: 250px; font-size: var(--text-sm); padding: 0.3rem 0.5rem;">
                     <option value="">Select...</option>
                   </select>
                 </div>
                 <div style="margin-bottom: 0.625rem;">
-                  <span style="font-size: 0.75rem; color: var(--text-tertiary); font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; display: block; margin-bottom: 0.375rem;">MSSQL Sales Stores</span>
+                  <span class="caption" style="display: block; margin-bottom: 0.375rem">MSSQL Sales Stores</span>
                   <div id="sales-mssql-checkboxes" style="display: flex; flex-wrap: wrap; gap: 0.375rem;"></div>
                 </div>
                 <div id="sales-shopify-config-group" style="margin-bottom: 0.625rem;">
-                  <span style="font-size: 0.75rem; color: var(--text-tertiary); font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; display: block; margin-bottom: 0.375rem;">Shopify Stores</span>
+                  <span class="caption" style="display: block; margin-bottom: 0.375rem">Shopify Stores</span>
                   <div id="sales-shopify-checkboxes" style="display: flex; flex-wrap: wrap; gap: 0.375rem;"></div>
                 </div>
                 <div style="margin-bottom: 0.625rem;">
                   <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.375rem;">
-                    <span style="font-size: 0.75rem; color: var(--text-tertiary); font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em;">Table Columns</span>
-                    <a href="#" onclick="event.preventDefault(); resetSalesColumns();" style="font-size: 0.6875rem; color: var(--text-tertiary);">Reset</a>
+                    <span class="caption">Table Columns</span>
+                    <a href="#" onclick="event.preventDefault(); resetSalesColumns();" style="font-size: var(--text-2xs); color: var(--text-tertiary);">Reset</a>
                   </div>
                   <div id="sales-column-pills" style="display: flex; flex-wrap: wrap; gap: 0.375rem;"></div>
                 </div>
                 <div style="display: flex; gap: 0.5rem; padding-top: 0.25rem;">
-                  <button type="button" class="btn btn-primary" onclick="saveSalesConfig()" style="font-size: 0.8125rem; padding: 0.35rem 1rem;">Save</button>
-                  <button type="button" class="btn btn-secondary" id="sales-config-cancel-btn" onclick="cancelSalesConfigEdit()" style="display: none; font-size: 0.8125rem; padding: 0.35rem 0.75rem;">Cancel</button>
+                  <button type="button" class="btn btn-primary btn-sm" onclick="saveSalesConfig()">Save</button>
+                  <button type="button" class="btn btn-secondary btn-sm" id="sales-config-cancel-btn" onclick="cancelSalesConfigEdit()" style="display: none">Cancel</button>
                 </div>
               </div>
             </div>
@@ -4581,18 +4426,18 @@
           <div id="sales-controls" style="display: none;">
             <div class="card" style="margin-bottom: 0.75rem">
               <div style="padding: 0.625rem 1rem; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
-                <input type="date" id="sales-date-from" class="dark-input" style="width: 140px; font-size: 0.8125rem; padding: 0.3rem 0.5rem;">
-                <span style="color: var(--text-tertiary); font-size: 0.75rem;">to</span>
-                <input type="date" id="sales-date-to" class="dark-input" style="width: 140px; font-size: 0.8125rem; padding: 0.3rem 0.5rem;">
+                <input type="date" id="sales-date-from" class="dark-input" style="width: 140px; font-size: var(--text-sm); padding: 0.3rem 0.5rem;">
+                <span style="color: var(--text-tertiary); font-size: var(--text-xs);">to</span>
+                <input type="date" id="sales-date-to" class="dark-input" style="width: 140px; font-size: var(--text-sm); padding: 0.3rem 0.5rem;">
                 <div style="display: flex; gap: 0.375rem; flex-shrink: 0;">
-                  <button type="button" class="btn btn-secondary" onclick="setSalesDatePreset('7d')" style="font-size: 0.8125rem; padding: 0.4rem 0.75rem;">7d</button>
-                  <button type="button" class="btn btn-secondary" onclick="setSalesDatePreset('30d')" style="font-size: 0.8125rem; padding: 0.4rem 0.75rem;">30d</button>
-                  <button type="button" class="btn btn-secondary" onclick="setSalesDatePreset('thisMonth')" style="font-size: 0.8125rem; padding: 0.4rem 0.75rem;">Month</button>
-                  <button type="button" class="btn btn-secondary" onclick="setSalesDatePreset('lastMonth')" style="font-size: 0.8125rem; padding: 0.4rem 0.75rem;">Prev Mo</button>
-                  <button type="button" class="btn btn-secondary" onclick="setSalesDatePreset('thisYear')" style="font-size: 0.8125rem; padding: 0.4rem 0.75rem;">Year</button>
-                  <button type="button" class="btn btn-secondary" onclick="setSalesDatePreset('lastYear')" style="font-size: 0.8125rem; padding: 0.4rem 0.75rem;">Prev Yr</button>
+                  <button type="button" class="btn btn-chip" onclick="setSalesDatePreset('7d')">7d</button>
+                  <button type="button" class="btn btn-chip" onclick="setSalesDatePreset('30d')">30d</button>
+                  <button type="button" class="btn btn-chip" onclick="setSalesDatePreset('thisMonth')">Month</button>
+                  <button type="button" class="btn btn-chip" onclick="setSalesDatePreset('lastMonth')">Prev Mo</button>
+                  <button type="button" class="btn btn-chip" onclick="setSalesDatePreset('thisYear')">Year</button>
+                  <button type="button" class="btn btn-chip" onclick="setSalesDatePreset('lastYear')">Prev Yr</button>
                 </div>
-                <button type="button" class="btn btn-primary" id="sales-generate-btn" onclick="fetchSalesReport()" style="font-size: 0.875rem; padding: 0.5rem 1.25rem; margin-left: auto;">Generate Report</button>
+                <button type="button" class="btn btn-primary" id="sales-generate-btn" onclick="fetchSalesReport()" style="margin-left: auto">Generate Report</button>
               </div>
             </div>
           </div>
@@ -4602,7 +4447,7 @@
             <div class="card" style="margin-bottom: 1.5rem">
               <div class="card-header"><h3>Generating Report...</h3></div>
               <div style="padding: 1rem 1.5rem">
-                <ul id="sales-progress-list" style="list-style: none; padding: 0; margin: 0; font-size: 0.8125rem; color: var(--text-secondary)"></ul>
+                <ul id="sales-progress-list" style="list-style: none; padding: 0; margin: 0; font-size: var(--text-sm); color: var(--text-secondary)"></ul>
               </div>
             </div>
           </div>
@@ -4625,10 +4470,10 @@
                   <button type="button" class="sales-toggle-btn" data-view="not-sold" onclick="toggleSalesView('not-sold')">Not Sold</button>
                 </div>
                 <div style="display: flex; gap: 0.375rem; margin-left: auto; flex-shrink: 0;">
-                  <button type="button" class="btn btn-secondary" onclick="selectSellingSubcategories()" style="font-size: 0.8125rem; padding: 0.4rem 0.75rem;" title="Select only subcategories that have sold products">Selling</button>
-                  <button type="button" class="btn btn-secondary" onclick="clearSalesFilters()" style="font-size: 0.8125rem; padding: 0.4rem 0.75rem;">Clear</button>
-                  <button type="button" class="btn btn-secondary" onclick="exportSalesReport()" style="font-size: 0.8125rem; padding: 0.4rem 0.75rem;">Excel</button>
-                  <button type="button" class="btn btn-secondary" onclick="toggleSalesExclusions()" style="font-size: 0.8125rem; padding: 0.4rem 0.75rem;">Exclusions</button>
+                  <button type="button" class="btn btn-secondary btn-sm" onclick="selectSellingSubcategories()" title="Select only subcategories that have sold products">Selling</button>
+                  <button type="button" class="btn btn-secondary btn-sm" onclick="clearSalesFilters()">Clear</button>
+                  <button type="button" class="btn btn-secondary btn-sm" onclick="exportSalesReport()">Excel</button>
+                  <button type="button" class="btn btn-secondary btn-sm" onclick="toggleSalesExclusions()">Exclusions</button>
                 </div>
               </div>
             </div>
@@ -4636,7 +4481,7 @@
             <!-- Exclusions Panel (hidden by default) -->
             <div id="sales-exclusions-panel" class="card" style="display: none; margin-bottom: 1.5rem;">
               <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
-                <h3 style="font-size: 0.875rem;">Account Exclusions</h3>
+                <h3 style="font-size: var(--text-base);">Account Exclusions</h3>
               </div>
               <div style="padding: 1rem 1.5rem">
                 <div style="display: flex; gap: 0.5rem; margin-bottom: 0.75rem; align-items: flex-end;">
@@ -4649,16 +4494,16 @@
                     <option value="0">Non-voided</option>
                     <option value="1">Voided</option>
                   </select>
-                  <button type="button" class="btn btn-primary" onclick="addSalesExclusion()" style="font-size: 0.75rem; padding: 0.4rem 0.75rem; white-space: nowrap;">Add</button>
+                  <button type="button" class="btn btn-primary btn-sm" onclick="addSalesExclusion()" style="white-space: nowrap">Add</button>
                 </div>
-                <div id="sales-exclusions-list" style="font-size: 0.8125rem;"></div>
+                <div id="sales-exclusions-list" style="font-size: var(--text-sm);"></div>
               </div>
             </div>
 
             <!-- Table -->
             <div class="card">
               <div style="padding: 0.75rem 1.5rem; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center;">
-                <span id="sales-results-count" style="font-size: 0.8125rem; color: var(--text-secondary)"></span>
+                <span id="sales-results-count" style="font-size: var(--text-sm); color: var(--text-secondary)"></span>
               </div>
               <div style="overflow: auto; max-height: 75vh;">
                 <table class="data-table" id="sales-table">
@@ -4672,7 +4517,7 @@
               </div>
               <!-- Pagination -->
               <div style="padding: 0.75rem 1.5rem; border-top: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem;">
-                <div style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.8125rem; color: var(--text-secondary)">
+                <div style="display: flex; align-items: center; gap: 0.5rem; font-size: var(--text-sm); color: var(--text-secondary)">
                   <span id="sales-total-records"></span>
                   <select id="sales-page-size" style="padding: 0.25rem 0.5rem;" onchange="changeSalesPageSize()">
                     <option value="50">50</option>
@@ -4683,9 +4528,9 @@
                   <span>per page</span>
                 </div>
                 <div style="display: flex; align-items: center; gap: 0.5rem;">
-                  <button type="button" class="btn btn-secondary" id="sales-prev-page" onclick="changeSalesPage(-1)" style="font-size: 0.75rem; padding: 0.3rem 0.6rem;">Prev</button>
-                  <span id="sales-page-info" style="font-size: 0.8125rem; color: var(--text-secondary)"></span>
-                  <button type="button" class="btn btn-secondary" id="sales-next-page" onclick="changeSalesPage(1)" style="font-size: 0.75rem; padding: 0.3rem 0.6rem;">Next</button>
+                  <button type="button" class="btn btn-secondary btn-sm" id="sales-prev-page" onclick="changeSalesPage(-1)">Prev</button>
+                  <span id="sales-page-info" style="font-size: var(--text-sm); color: var(--text-secondary)"></span>
+                  <button type="button" class="btn btn-secondary btn-sm" id="sales-next-page" onclick="changeSalesPage(1)">Next</button>
                 </div>
               </div>
             </div>
@@ -4701,13 +4546,13 @@
 
           <div class="card" style="margin-bottom: 1.5rem">
             <div style="padding: 1rem 1.5rem;">
-              <label style="display: block; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-tertiary); margin-bottom: 0.625rem;">Stores</label>
+              <label style="display: block; font-size: var(--text-xs); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-tertiary); margin-bottom: 0.625rem;">Stores</label>
               <div id="fulfillment-status-store-checkboxes" style="display: flex; flex-wrap: wrap; gap: 0.5rem 1.5rem;"></div>
             </div>
             <div
               style="display: flex; justify-content: space-between; align-items: center; padding: 0.875rem 1.5rem; gap: 0.75rem; flex-wrap: wrap; border-top: 1px solid var(--border-color);"
             >
-              <div id="fulfillment-status-meta" style="font-size: 0.8125rem; color: var(--text-secondary);"></div>
+              <div id="fulfillment-status-meta" style="font-size: var(--text-sm); color: var(--text-secondary);"></div>
               <button type="button" class="btn btn-secondary" id="fulfillment-status-refresh-btn">Refresh</button>
             </div>
           </div>
@@ -4719,10 +4564,9 @@
             <p>Counting orders across Shopify stores…</p>
           </div>
 
-          <div
+          <div class="empty-state"
             id="fulfillment-status-empty"
-            style="display: none; text-align: center; padding: 3rem 1rem; color: var(--text-secondary);"
-          >
+            style="display: none">
             <p>No active Shopify stores configured.</p>
           </div>
 
@@ -4759,26 +4603,26 @@
               <div class="form-group">
                 <label>Shopify Stores</label>
                 <div style="margin-bottom: 0.5rem; display: flex; gap: 0.5rem;">
-                  <button type="button" class="btn btn-secondary" id="shopify-sales-select-all" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Select All</button>
-                  <button type="button" class="btn btn-secondary" id="shopify-sales-deselect-all" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Deselect All</button>
+                  <button type="button" class="btn btn-chip" id="shopify-sales-select-all">Select All</button>
+                  <button type="button" class="btn btn-chip" id="shopify-sales-deselect-all">Deselect All</button>
                 </div>
                 <div id="shopify-sales-store-checkboxes" style="display: flex; flex-wrap: wrap; gap: 0.5rem 1.5rem;"></div>
               </div>
 
               <div class="form-group" style="margin-top: 1rem">
                 <label>Date Range</label>
-                <div style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
-                  <input type="date" id="shopify-sales-start-date" style="max-width: 180px" />
-                  <span style="color: var(--text-secondary)">to</span>
-                  <input type="date" id="shopify-sales-end-date" style="max-width: 180px" />
+                <div class="date-range">
+                  <input type="date" id="shopify-sales-start-date" />
+                  <span>to</span>
+                  <input type="date" id="shopify-sales-end-date" />
                 </div>
-                <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem; flex-wrap: wrap;">
-                  <button type="button" class="btn btn-secondary" data-range="7" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Last 7 Days</button>
-                  <button type="button" class="btn btn-secondary" data-range="30" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Last 30 Days</button>
-                  <button type="button" class="btn btn-secondary" data-range="this-month" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">This Month</button>
-                  <button type="button" class="btn btn-secondary" data-range="last-month" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Last Month</button>
+                <div class="chip-row" style="margin-top: 0.5rem">
+                  <button type="button" class="btn btn-chip" data-range="7">Last 7 Days</button>
+                  <button type="button" class="btn btn-chip" data-range="30">Last 30 Days</button>
+                  <button type="button" class="btn btn-chip" data-range="this-month">This Month</button>
+                  <button type="button" class="btn btn-chip" data-range="last-month">Last Month</button>
                 </div>
-                <small style="color: var(--text-tertiary); font-size: 0.75rem; margin-top: 0.5rem; display: block;">
+                <small class="field-help">
                   Counts orders placed within the date range (store local time) that are fully fulfilled and not cancelled or refunded — the same rule as Business Overview → Month End. Shopify limits to last 60 days unless your app has <code>read_all_orders</code> scope.
                 </small>
               </div>
@@ -4789,7 +4633,7 @@
                   <input type="checkbox" id="shopify-sales-use-local" checked style="width: auto; margin: 0;" />
                   <span>Use local data</span>
                 </label>
-                <div id="shopify-sales-data-source-note" style="font-size: 0.75rem; color: var(--text-tertiary); margin-top: 0.375rem;"></div>
+                <div id="shopify-sales-data-source-note" style="font-size: var(--text-xs); color: var(--text-tertiary); margin-top: 0.375rem;"></div>
               </div>
 
               <div style="margin-top: 1.25rem">
@@ -4800,31 +4644,31 @@
 
           <div id="shopify-sales-progress" style="display: none; margin-bottom: 1.5rem;">
             <div class="card" style="padding: 1rem 1.5rem">
-              <div id="shopify-sales-progress-status" style="font-size: 0.8125rem; color: var(--text-secondary); margin-bottom: 0.75rem;">Connecting to stores...</div>
+              <div id="shopify-sales-progress-status" style="font-size: var(--text-sm); color: var(--text-secondary); margin-bottom: 0.75rem;">Connecting to stores...</div>
               <div style="width: 100%; height: 6px; background: var(--bg-tertiary); border-radius: 3px; overflow: hidden; margin-bottom: 0.75rem;">
                 <div id="shopify-sales-progress-bar" style="width: 0%; height: 100%; background: var(--accent-primary); border-radius: 3px; transition: width 0.4s ease;"></div>
               </div>
-              <div id="shopify-sales-progress-items" style="display: flex; flex-direction: column; gap: 0.5rem; font-size: 0.8125rem;"></div>
+              <div id="shopify-sales-progress-items" style="display: flex; flex-direction: column; gap: 0.5rem; font-size: var(--text-sm);"></div>
             </div>
           </div>
 
-          <div id="shopify-sales-empty" style="display: none; text-align: center; padding: 3rem 1rem; color: var(--text-secondary);">
+          <div class="empty-state" id="shopify-sales-empty" style="display: none">
             <p>No fulfilled orders were placed in the selected date range.</p>
           </div>
 
           <div id="shopify-sales-results" style="display: none;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.5rem;">
-              <div id="shopify-sales-summary" style="font-size: 0.8125rem; color: var(--text-secondary);"></div>
+              <div id="shopify-sales-summary" style="font-size: var(--text-sm); color: var(--text-secondary);"></div>
               <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
-                <input type="search" id="shopify-sales-filter" placeholder="Filter by description, UPC or SKU" autocomplete="off" style="width: 260px; font-size: 0.8125rem; padding: 0.375rem 0.625rem;" />
-                <span id="shopify-sales-filter-count" style="font-size: 0.75rem; color: var(--text-tertiary); white-space: nowrap;"></span>
-                <button type="button" class="btn btn-secondary" id="shopify-sales-export-btn" style="font-size: 0.75rem; padding: 0.375rem 0.75rem;">Export to Excel</button>
+                <input type="search" id="shopify-sales-filter" placeholder="Filter by description, UPC or SKU" autocomplete="off" style="width: 260px; font-size: var(--text-sm); padding: 0.375rem 0.625rem;" />
+                <span id="shopify-sales-filter-count" style="font-size: var(--text-xs); color: var(--text-tertiary); white-space: nowrap;"></span>
+                <button type="button" class="btn btn-secondary btn-sm" id="shopify-sales-export-btn">Export to Excel</button>
               </div>
             </div>
             <div style="margin-bottom: 1rem;">
               <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.375rem;">
-                <span style="font-size: 0.75rem; color: var(--text-tertiary); font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em;">Table Columns</span>
-                <a href="#" id="shopify-sales-columns-reset" style="font-size: 0.6875rem; color: var(--text-tertiary);">Reset</a>
+                <span class="caption">Table Columns</span>
+                <a href="#" id="shopify-sales-columns-reset" style="font-size: var(--text-2xs); color: var(--text-tertiary);">Reset</a>
               </div>
               <div id="shopify-sales-column-pills" style="display: flex; flex-wrap: wrap; gap: 0.375rem;"></div>
             </div>
@@ -4839,15 +4683,20 @@
         </div>
 
         <div id="order-sync-page" class="page sa-page" style="display: none">
+          <header class="page-header">
+            <h2>Order Sync</h2>
+            <p class="subtitle">Compare BackOffice invoices with Shopify orders and fix the differences</p>
+          </header>
+
           <!-- Config bar (collapsed summary of the store pair) -->
-          <div id="osync-config-bar" style="margin-bottom: 1rem; background: var(--bg-secondary); border-radius: var(--radius-md); border: 1px solid var(--border-color); overflow: hidden; display: none;">
-            <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.625rem 1rem;">
-              <span id="osync-config-label" style="font-size: 0.8125rem; color: var(--text-secondary)">Stores: <strong style="color: var(--text-primary)">Not configured</strong></span>
+          <div class="config-bar" id="osync-config-bar" style="display: none">
+            <div class="config-bar-head">
+              <span id="osync-config-label" style="font-size: var(--text-sm); color: var(--text-secondary)">Stores: <strong style="color: var(--text-primary)">Not configured</strong></span>
               <div style="display: flex; align-items: center; gap: 0.5rem;">
                 <button type="button" class="osync-auto-pill" id="osync-auto-pill" title="Daily automation: schedule, run history and reports">
                   <span class="osync-auto-dot" id="osync-auto-dot"></span><span id="osync-auto-pill-text">Automation</span>
                 </button>
-                <button type="button" class="btn btn-secondary" id="osync-config-edit-btn" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Edit</button>
+                <button type="button" class="btn btn-secondary btn-xs" id="osync-config-edit-btn">Edit</button>
               </div>
             </div>
           </div>
@@ -4856,22 +4705,22 @@
           <div id="osync-config-setup" style="display: none;">
             <div class="card" style="margin-bottom: 0.75rem">
               <div style="padding: 0.875rem 1.25rem">
-                <p style="margin: 0 0 0.75rem 0; font-size: 0.8125rem; color: var(--text-secondary);">
+                <p style="margin: 0 0 0.75rem 0; font-size: var(--text-sm); color: var(--text-secondary);">
                   Order Sync compares shipped orders between one BackOffice database (source of truth) and one Shopify store.
                 </p>
                 <div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem; flex-wrap: wrap;">
-                  <span style="font-size: 0.75rem; color: var(--text-tertiary); font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em;">BackOffice DB</span>
-                  <select id="osync-mssql-select" style="max-width: 250px; font-size: 0.8125rem; padding: 0.3rem 0.5rem;">
+                  <span class="caption">BackOffice DB</span>
+                  <select id="osync-mssql-select" style="max-width: 250px; font-size: var(--text-sm); padding: 0.3rem 0.5rem;">
                     <option value="">Select...</option>
                   </select>
-                  <span style="font-size: 0.75rem; color: var(--text-tertiary); font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em;">Shopify Store</span>
-                  <select id="osync-shopify-select" style="max-width: 250px; font-size: 0.8125rem; padding: 0.3rem 0.5rem;">
+                  <span class="caption">Shopify Store</span>
+                  <select id="osync-shopify-select" style="max-width: 250px; font-size: var(--text-sm); padding: 0.3rem 0.5rem;">
                     <option value="">Select...</option>
                   </select>
                 </div>
                 <div style="display: flex; gap: 0.5rem; padding-top: 0.25rem;">
-                  <button type="button" class="btn btn-primary" id="osync-config-save-btn" style="font-size: 0.8125rem; padding: 0.35rem 1rem;">Save</button>
-                  <button type="button" class="btn btn-secondary" id="osync-config-cancel-btn" style="display: none; font-size: 0.8125rem; padding: 0.35rem 0.75rem;">Cancel</button>
+                  <button type="button" class="btn btn-primary btn-sm" id="osync-config-save-btn">Save</button>
+                  <button type="button" class="btn btn-secondary btn-sm" id="osync-config-cancel-btn" style="display: none">Cancel</button>
                 </div>
               </div>
             </div>
@@ -4881,18 +4730,18 @@
           <div id="osync-controls" style="display: none;">
             <div class="card" style="margin-bottom: 0.75rem">
               <div style="padding: 0.625rem 1rem; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
-                <input type="date" id="osync-start-date" class="dark-input" style="width: 140px; font-size: 0.8125rem; padding: 0.3rem 0.5rem;">
-                <span style="color: var(--text-tertiary); font-size: 0.75rem;">to</span>
-                <input type="date" id="osync-end-date" class="dark-input" style="width: 140px; font-size: 0.8125rem; padding: 0.3rem 0.5rem;">
+                <input type="date" id="osync-start-date" class="dark-input" style="width: 140px; font-size: var(--text-sm); padding: 0.3rem 0.5rem;">
+                <span style="color: var(--text-tertiary); font-size: var(--text-xs);">to</span>
+                <input type="date" id="osync-end-date" class="dark-input" style="width: 140px; font-size: var(--text-sm); padding: 0.3rem 0.5rem;">
                 <div style="display: flex; gap: 0.375rem; flex-shrink: 0;">
-                  <button type="button" class="btn btn-secondary" data-osync-day="0" style="font-size: 0.8125rem; padding: 0.4rem 0.75rem;">Today</button>
-                  <button type="button" class="btn btn-secondary" data-osync-day="1" style="font-size: 0.8125rem; padding: 0.4rem 0.75rem;">Yesterday</button>
-                  <button type="button" class="btn btn-secondary" data-week="0" style="font-size: 0.8125rem; padding: 0.4rem 0.75rem;">Week</button>
-                  <button type="button" class="btn btn-secondary" data-week="1" style="font-size: 0.8125rem; padding: 0.4rem 0.75rem;">Prev Wk</button>
-                  <button type="button" class="btn btn-secondary" data-month="0" style="font-size: 0.8125rem; padding: 0.4rem 0.75rem;">Month</button>
-                  <button type="button" class="btn btn-secondary" data-month="1" style="font-size: 0.8125rem; padding: 0.4rem 0.75rem;">Prev Mo</button>
+                  <button type="button" class="btn btn-chip" data-osync-day="0">Today</button>
+                  <button type="button" class="btn btn-chip" data-osync-day="1">Yesterday</button>
+                  <button type="button" class="btn btn-chip" data-week="0">Week</button>
+                  <button type="button" class="btn btn-chip" data-week="1">Prev Wk</button>
+                  <button type="button" class="btn btn-chip" data-month="0">Month</button>
+                  <button type="button" class="btn btn-chip" data-month="1">Prev Mo</button>
                 </div>
-                <button type="button" class="btn btn-primary" id="osync-run" style="font-size: 0.875rem; padding: 0.5rem 1.25rem; margin-left: auto;">Compare Orders</button>
+                <button type="button" class="btn btn-primary" id="osync-run" style="margin-left: auto">Compare Orders</button>
               </div>
             </div>
           </div>
@@ -4905,7 +4754,7 @@
           </div>
           <div id="osync-loading" style="display: none; padding: 2rem 1rem; color: var(--text-secondary);"></div>
           <div id="osync-error" class="qip-error" style="display: none; margin-bottom: 1.5rem;"></div>
-          <div id="osync-empty" style="display: none; text-align: center; padding: 3rem 1rem; color: var(--text-secondary);">
+          <div class="empty-state" id="osync-empty" style="display: none">
             <p>No shipped orders found on either side for this range.</p>
           </div>
 
@@ -4917,19 +4766,19 @@
             <div class="osync-toolbar">
               <input type="text" id="osync-search" class="dark-input" placeholder="Search order #, invoice #, customer, tracking…">
               <span id="osync-count" class="osync-count"></span>
-              <button type="button" class="btn btn-secondary" id="osync-export" style="font-size: 0.75rem; padding: 0.3rem 0.7rem;">Export</button>
-              <button type="button" class="btn btn-secondary" id="osync-missing" style="font-size: 0.75rem; padding: 0.3rem 0.7rem;" title="Products on BackOffice-only orders that the Shopify store does not carry">Missing in Shopify…</button>
-              <button type="button" class="btn btn-secondary" id="osync-created" style="font-size: 0.75rem; padding: 0.3rem 0.7rem;" title="Every product this app has created in Shopify">Created products…</button>
-              <button type="button" class="btn btn-secondary" id="osync-dup" style="font-size: 0.75rem; padding: 0.3rem 0.7rem;" title="Shopify orders with no tracking that duplicate another order from the same customer">Duplicates…</button>
-              <button type="button" class="btn btn-secondary" id="osync-chan" style="font-size: 0.75rem; padding: 0.3rem 0.7rem;" title="Cancel Online Store orders that are not Unfulfilled — their real copy came in through the web hook">Online Store…</button>
-              <button type="button" class="btn btn-primary" id="osync-fix" style="font-size: 0.75rem; padding: 0.3rem 0.7rem;">Fix in Shopify…</button>
+              <button type="button" class="btn btn-secondary btn-sm" id="osync-export">Export</button>
+              <button type="button" class="btn btn-secondary btn-sm" id="osync-missing" title="Products on BackOffice-only orders that the Shopify store does not carry">Missing in Shopify…</button>
+              <button type="button" class="btn btn-secondary btn-sm" id="osync-created" title="Every product this app has created in Shopify">Created products…</button>
+              <button type="button" class="btn btn-secondary btn-sm" id="osync-dup" title="Shopify orders with no tracking that duplicate another order from the same customer">Duplicates…</button>
+              <button type="button" class="btn btn-secondary btn-sm" id="osync-chan" title="Cancel Online Store orders that are not Unfulfilled — their real copy came in through the web hook">Online Store…</button>
+              <button type="button" class="btn btn-primary btn-sm" id="osync-fix">Fix in Shopify…</button>
             </div>
             <!-- Selection strip, shown while picking orders to fix -->
             <div id="osync-fixbar" class="osync-fixbar" style="display: none;">
               <span class="osync-fixbar-text">Select the orders to correct in Shopify — <span id="osync-fix-count">0 selected</span></span>
-              <button type="button" class="btn btn-secondary" id="osync-fix-all" style="font-size: 0.75rem; padding: 0.3rem 0.7rem;">Select all fixable</button>
-              <button type="button" class="btn btn-secondary" id="osync-fix-cancel-sel" style="font-size: 0.75rem; padding: 0.3rem 0.7rem;">Cancel</button>
-              <button type="button" class="btn btn-primary" id="osync-fix-preview" style="font-size: 0.75rem; padding: 0.3rem 0.7rem;" disabled>Preview fix</button>
+              <button type="button" class="btn btn-chip" id="osync-fix-all">Select all fixable</button>
+              <button type="button" class="btn btn-secondary btn-sm" id="osync-fix-cancel-sel">Cancel</button>
+              <button type="button" class="btn btn-primary btn-sm" id="osync-fix-preview" disabled>Preview fix</button>
             </div>
             <div class="table-container">
               <table class="data-table osync-table" id="osync-table">
@@ -4941,6 +4790,11 @@
         </div>
 
         <div id="shopify-analytics-page" class="page sa-page" style="display: none">
+          <header class="page-header">
+            <h2>Shopify Analytics</h2>
+            <p class="subtitle">Customer retention reports built from Shopify orders</p>
+          </header>
+
           <nav class="sa-subnav" role="tablist" aria-label="Shopify Analytics reports">
             <button type="button" class="sa-subnav-item active" data-sa-tab="first-customer-returns" role="tab" aria-selected="true">
               First-Time Customer Returns
@@ -4971,10 +4825,10 @@
                       <label for="sa-tag">First-Order Tag</label>
                       <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
                         <input type="text" id="sa-tag" placeholder="First order" maxlength="100" style="max-width: 240px" />
-                        <button type="button" class="btn btn-secondary" id="sa-tag-save-btn" style="font-size: 0.75rem; padding: 0.375rem 0.75rem;" disabled>Save for this store</button>
-                        <span id="sa-tag-status" style="font-size: 0.75rem; color: var(--text-tertiary);"></span>
+                        <button type="button" class="btn btn-secondary btn-sm" id="sa-tag-save-btn" disabled>Save for this store</button>
+                        <span id="sa-tag-status" style="font-size: var(--text-xs); color: var(--text-tertiary);"></span>
                       </div>
-                      <small style="color: var(--text-tertiary); font-size: 0.75rem; margin-top: 0.375rem; display: block;">
+                      <small class="field-help">
                         Exact match (case-insensitive). e.g. "1st-order", "1st time", "1st Order".
                       </small>
                     </div>
@@ -4983,24 +4837,24 @@
                   <div class="sa-setup-col">
                     <div class="form-group">
                       <label>First-Order Date Range</label>
-                      <div style="display: flex; gap: 0.625rem; align-items: center; flex-wrap: wrap;">
-                        <input type="date" id="sa-start-date" style="max-width: 170px" />
-                        <span style="color: var(--text-secondary)">to</span>
-                        <input type="date" id="sa-end-date" style="max-width: 170px" />
+                      <div class="date-range">
+                        <input type="date" id="sa-start-date" />
+                        <span>to</span>
+                        <input type="date" id="sa-end-date" />
                       </div>
-                      <div style="display: flex; gap: 0.375rem; margin-top: 0.5rem; flex-wrap: wrap;">
-                        <button type="button" class="btn btn-secondary" data-sa-range="7" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Last 7d</button>
-                        <button type="button" class="btn btn-secondary" data-sa-range="30" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Last 30d</button>
-                        <button type="button" class="btn btn-secondary" data-sa-range="90" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Last 90d</button>
-                        <button type="button" class="btn btn-secondary" data-sa-range="6m" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Last 6 mo</button>
-                        <button type="button" class="btn btn-secondary" data-sa-range="12m" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Last 12 mo</button>
-                        <button type="button" class="btn btn-secondary" data-sa-range="ytd" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">YTD</button>
-                        <button type="button" class="btn btn-secondary" data-sa-range="this-month" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">This month</button>
-                        <button type="button" class="btn btn-secondary" data-sa-range="last-month" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Last month</button>
-                        <button type="button" class="btn btn-secondary" data-sa-range="this-year" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">This year</button>
-                        <button type="button" class="btn btn-secondary" data-sa-range="last-year" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Last year</button>
+                      <div class="chip-row" style="margin-top: 0.5rem">
+                        <button type="button" class="btn btn-chip" data-sa-range="7">Last 7d</button>
+                        <button type="button" class="btn btn-chip" data-sa-range="30">Last 30d</button>
+                        <button type="button" class="btn btn-chip" data-sa-range="90">Last 90d</button>
+                        <button type="button" class="btn btn-chip" data-sa-range="6m">Last 6 mo</button>
+                        <button type="button" class="btn btn-chip" data-sa-range="12m">Last 12 mo</button>
+                        <button type="button" class="btn btn-chip" data-sa-range="ytd">YTD</button>
+                        <button type="button" class="btn btn-chip" data-sa-range="this-month">This month</button>
+                        <button type="button" class="btn btn-chip" data-sa-range="last-month">Last month</button>
+                        <button type="button" class="btn btn-chip" data-sa-range="this-year">This year</button>
+                        <button type="button" class="btn btn-chip" data-sa-range="last-year">Last year</button>
                       </div>
-                      <small style="color: var(--text-tertiary); font-size: 0.75rem; margin-top: 0.5rem; display: block;">
+                      <small class="field-help">
                         Filters tagged orders by <code>created_at</code>. Subsequent orders are queried from each customer's first-order date through today.
                       </small>
                     </div>
@@ -5016,7 +4870,7 @@
 
             <div id="sa-progress" style="display: none; margin-bottom: 1rem;">
               <div class="card" style="padding: 0.875rem 1.25rem">
-                <div id="sa-progress-status" style="font-size: 0.8125rem; color: var(--text-secondary); margin-bottom: 0.625rem;">Connecting...</div>
+                <div id="sa-progress-status" style="font-size: var(--text-sm); color: var(--text-secondary); margin-bottom: 0.625rem;">Connecting...</div>
                 <div style="width: 100%; height: 6px; background: var(--bg-tertiary); border-radius: 3px; overflow: hidden;">
                   <div id="sa-progress-bar" style="width: 0%; height: 100%; background: var(--accent-primary); border-radius: 3px; transition: width 0.4s ease;"></div>
                 </div>
@@ -5123,8 +4977,8 @@
                     <div class="form-group">
                       <label>Shopify Stores</label>
                       <div style="display: flex; gap: 0.375rem; margin-bottom: 0.625rem;">
-                        <button type="button" class="btn btn-secondary" id="sancm-select-all" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Select all</button>
-                        <button type="button" class="btn btn-secondary" id="sancm-deselect-all" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Deselect all</button>
+                        <button type="button" class="btn btn-chip" id="sancm-select-all">Select all</button>
+                        <button type="button" class="btn btn-chip" id="sancm-deselect-all">Deselect all</button>
                       </div>
                       <div id="sancm-store-checkboxes" style="display: flex; flex-wrap: wrap; gap: 0.5rem 1.5rem;"></div>
                     </div>
@@ -5132,7 +4986,7 @@
                     <div class="form-group" style="margin-top: 0.875rem">
                       <label for="sancm-tag">First-Order Tag Override</label>
                       <input type="text" id="sancm-tag" maxlength="100" placeholder="(use each store's saved tag)" style="max-width: 260px" />
-                      <small style="color: var(--text-tertiary); font-size: 0.75rem; margin-top: 0.375rem; display: block;">
+                      <small class="field-help">
                         Leave blank to use each store's own saved tag. Set per-store tags on the First-Time Customer Returns tab.
                       </small>
                     </div>
@@ -5141,20 +4995,20 @@
                   <div class="sa-setup-col">
                     <div class="form-group">
                       <label>Order Date Range</label>
-                      <div style="display: flex; gap: 0.625rem; align-items: center; flex-wrap: wrap;">
-                        <input type="date" id="sancm-start-date" style="max-width: 170px" />
-                        <span style="color: var(--text-secondary)">to</span>
-                        <input type="date" id="sancm-end-date" style="max-width: 170px" />
+                      <div class="date-range">
+                        <input type="date" id="sancm-start-date" />
+                        <span>to</span>
+                        <input type="date" id="sancm-end-date" />
                       </div>
-                      <div style="display: flex; gap: 0.375rem; margin-top: 0.5rem; flex-wrap: wrap;">
-                        <button type="button" class="btn btn-secondary" data-sancm-range="6m" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Last 6 mo</button>
-                        <button type="button" class="btn btn-secondary" data-sancm-range="12m" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Last 12 mo</button>
-                        <button type="button" class="btn btn-secondary" data-sancm-range="24m" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Last 24 mo</button>
-                        <button type="button" class="btn btn-secondary" data-sancm-range="ytd" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">YTD</button>
-                        <button type="button" class="btn btn-secondary" data-sancm-range="this-year" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">This year</button>
-                        <button type="button" class="btn btn-secondary" data-sancm-range="last-year" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Last year</button>
+                      <div class="chip-row" style="margin-top: 0.5rem">
+                        <button type="button" class="btn btn-chip" data-sancm-range="6m">Last 6 mo</button>
+                        <button type="button" class="btn btn-chip" data-sancm-range="12m">Last 12 mo</button>
+                        <button type="button" class="btn btn-chip" data-sancm-range="24m">Last 24 mo</button>
+                        <button type="button" class="btn btn-chip" data-sancm-range="ytd">YTD</button>
+                        <button type="button" class="btn btn-chip" data-sancm-range="this-year">This year</button>
+                        <button type="button" class="btn btn-chip" data-sancm-range="last-year">Last year</button>
                       </div>
-                      <small style="color: var(--text-tertiary); font-size: 0.75rem; margin-top: 0.5rem; display: block;">
+                      <small class="field-help">
                         Buckets tagged orders by <code>created_at</code> month in each shop's local timezone. Presets snap the start to the 1st.
                       </small>
                     </div>
@@ -5170,7 +5024,7 @@
 
             <div id="sancm-progress" style="display: none; margin-bottom: 1rem;">
               <div class="card" style="padding: 0.875rem 1.25rem">
-                <div id="sancm-progress-status" style="font-size: 0.8125rem; color: var(--text-secondary); margin-bottom: 0.625rem;">Connecting...</div>
+                <div id="sancm-progress-status" style="font-size: var(--text-sm); color: var(--text-secondary); margin-bottom: 0.625rem;">Connecting...</div>
                 <div style="width: 100%; height: 6px; background: var(--bg-tertiary); border-radius: 3px; overflow: hidden;">
                   <div id="sancm-progress-bar" style="width: 0%; height: 100%; background: var(--accent-primary); border-radius: 3px; transition: width 0.4s ease;"></div>
                 </div>
@@ -5253,7 +5107,7 @@
                   <div class="sacr-setup-field">
                     <label for="sacr-store-select">Store</label>
                     <select id="sacr-store-select" class="sacr-control"></select>
-                    <div id="sacr-data-source" style="font-size: 0.75rem; margin-top: 0.375rem; color: var(--text-tertiary);"></div>
+                    <div id="sacr-data-source" style="font-size: var(--text-xs); margin-top: 0.375rem; color: var(--text-tertiary);"></div>
                   </div>
 
                   <div class="sacr-setup-field">
@@ -5429,10 +5283,10 @@
                 <button type="button" class="btn btn-secondary sacr-btn sacr-reset" id="sacr-reset-filters" disabled>Reset</button>
               </div>
               <div class="sacr-toolbar-row sacr-toolbar-actions" role="group" aria-label="Analyse these customers">
-                <button type="button" class="btn btn-primary sacr-btn" id="sacr-states-btn">Lost by state</button>
-                <button type="button" class="btn btn-primary sacr-btn" id="sacr-products-btn">Top products</button>
-                <button type="button" class="btn btn-primary sacr-btn" id="sacr-moved-btn">Moved to another store</button>
-                <button type="button" class="btn btn-primary sacr-btn" id="sacr-arrivals-btn" style="display: none">Where new customers came from</button>
+                <button type="button" class="btn btn-secondary sacr-btn" id="sacr-states-btn">Lost by state</button>
+                <button type="button" class="btn btn-secondary sacr-btn" id="sacr-products-btn">Top products</button>
+                <button type="button" class="btn btn-secondary sacr-btn" id="sacr-moved-btn">Moved to another store</button>
+                <button type="button" class="btn btn-secondary sacr-btn" id="sacr-arrivals-btn" style="display: none">Where new customers came from</button>
                 <button type="button" class="btn btn-secondary sacr-btn" id="sacr-export-btn" title="Download the filtered customers as an Excel-compatible CSV">Export Excel</button>
                 <span class="sa-row-count" id="sacr-row-count" aria-live="polite"></span>
               </div>
@@ -5481,7 +5335,7 @@
                     <option value="500">500</option>
                   </select>
                 </label>
-                <span id="sacr-page-info" style="font-size: 0.75rem; color: var(--text-secondary);"></span>
+                <span id="sacr-page-info" style="font-size: var(--text-xs); color: var(--text-secondary);"></span>
                 <button type="button" class="btn btn-secondary sacr-btn" id="sacr-prev-page">Prev</button>
                 <button type="button" class="btn btn-secondary sacr-btn" id="sacr-next-page">Next</button>
               </div>
@@ -5493,10 +5347,10 @@
             <div class="card" style="margin-bottom: 1.25rem">
               <div class="card-header">
                 <h3>Shopify Data Sync</h3>
-                <button type="button" class="btn btn-secondary" id="sync-refresh-btn" style="font-size: 0.75rem; padding: 0.375rem 0.75rem;">Refresh</button>
+                <button type="button" class="btn btn-secondary btn-sm" id="sync-refresh-btn">Refresh</button>
               </div>
               <div style="padding: 1rem 1.5rem 1.25rem">
-                <p style="font-size: 0.8125rem; color: var(--text-secondary); margin: 0 0 1rem;">
+                <p style="font-size: var(--text-sm); color: var(--text-secondary); margin: 0 0 1rem;">
                   Downloads each store's full customer and order history (statuses, tags, notes,
                   line items, fulfillments) into the local database. Once a store is synced, the
                   Lost Customers report runs from local data — fast and independent of the Shopify
@@ -6408,13 +6262,7 @@
                 OAuth client credentials
               </option>
             </select>
-            <small
-              style="
-                color: var(--text-tertiary);
-                font-size: 0.75rem;
-                margin-top: 0.25rem;
-                display: block;
-              "
+            <small class="field-help"
               >New stores can no longer use permanent admin tokens. Create an
               app in the Shopify Dev Dashboard, install it on the store, then
               use its Client ID and Client secret here.</small
@@ -6461,13 +6309,7 @@
               value="2025-01"
               required
             />
-            <small
-              style="
-                color: var(--text-tertiary);
-                font-size: 0.75rem;
-                margin-top: 0.25rem;
-                display: block;
-              "
+            <small class="field-help"
               >Latest stable version. Shopify releases new versions
               quarterly.</small
             >
@@ -6489,13 +6331,7 @@
               />
               <span>Update SKU to match barcode when updating UPCs</span>
             </label>
-            <small
-              style="
-                color: var(--text-tertiary);
-                font-size: 0.75rem;
-                margin-top: 0.25rem;
-                display: block;
-              "
+            <small class="field-help"
               >When enabled, the product variant SKU will be set to the same
               value as the barcode during UPC updates.</small
             >
@@ -6557,7 +6393,7 @@
               <div
                 id="reconciliation-progress-text"
                 style="
-                  font-size: 0.875rem;
+                  font-size: var(--text-base);
                   color: var(--text-secondary);
                   margin-bottom: 0.5rem;
                 "
@@ -6571,7 +6407,7 @@
               <p
                 style="
                   margin: 0;
-                  font-size: 0.875rem;
+                  font-size: var(--text-base);
                   color: var(--text-secondary);
                 "
               >
@@ -6641,7 +6477,7 @@
         </div>
         <div class="modal-body" style="padding: 1.5rem">
           <p
-            style="margin: 0; font-size: 0.875rem; color: var(--text-secondary)"
+            style="margin: 0; font-size: var(--text-base); color: var(--text-secondary)"
           >
             The new UPC is identical to the old UPC. Please enter a different
             barcode value to proceed with the update.
@@ -6655,7 +6491,7 @@
             "
           >
             <p
-              style="margin: 0; font-size: 0.75rem; color: var(--text-tertiary)"
+              style="margin: 0; font-size: var(--text-xs); color: var(--text-tertiary)"
             >
               Current UPC:
               <strong
@@ -6684,11 +6520,11 @@
           <button class="modal-close" id="price-update-modal-x" onclick="closeModal('price-update-modal')">&times;</button>
         </div>
         <div style="padding: 1.5rem">
-          <div id="price-update-modal-summary" style="font-size: 0.8125rem; color: var(--text-secondary); max-height: 50vh; overflow-y: auto;"></div>
+          <div id="price-update-modal-summary" style="font-size: var(--text-sm); color: var(--text-secondary); max-height: 50vh; overflow-y: auto;"></div>
           <div id="price-update-modal-progress" style="display: none;">
             <div id="price-update-modal-progress-items" style="display: flex; flex-direction: column; gap: 0.5rem;"></div>
           </div>
-          <div id="price-update-modal-result" style="display: none; margin-top: 1rem; padding: 0.75rem 1rem; border-radius: var(--radius-md); font-size: 0.875rem; font-weight: 500;"></div>
+          <div id="price-update-modal-result" style="display: none; margin-top: 1rem; padding: 0.75rem 1rem; border-radius: var(--radius-md); font-size: var(--text-base); font-weight: 500;"></div>
         </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-secondary" id="price-update-modal-cancel-btn">Cancel</button>
@@ -6698,7 +6534,7 @@
       </div>
     </div>
 
-    <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+    <script src="vendor/xlsx.full.min.js" defer></script>
     <script src="app.js"></script>
   </body>
 </html>

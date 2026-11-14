@@ -103,8 +103,18 @@ Every large feature follows the same shape: a config table or settings entry, a 
 Single-page app, no build step. Three files do everything:
 
 - `index.html` — every page section is a `<div class="page" data-page-id="..." style="display:none">` inside `.main-content`. Sidebar nav items have `data-page="..."`; clicking calls `navigateTo(page)` which toggles display.
-- `app.js` — ~11k lines, organized by feature area in roughly the order the features were added. State is held in feature-scoped objects (`historyState`, `qipState`, etc.). There is **no framework** — DOM is built via `innerHTML` strings. Reuse the global `escapeHtml(text)` (around line 4836) for any user-controlled string before injecting.
-- `styles.css` — Themes are CSS variables (`--bg-primary`, `--bg-secondary`, `--bg-tertiary`, `--bg-hover`, `--text-primary/secondary/tertiary`, `--accent-primary`, `--success/warning/danger`, `--border-color`, `--radius-*`, `--shadow-*`). Switching theme = swap one root-level rule. There are 8 themes today (Default, Monochrome, Charcoal, Steel, Minimal, Graphite, Nord, Author's Light) — any new feature should consume only existing variables (use `color-mix(in srgb, var(--accent-primary) X%, var(--bg-primary))` for accent-tinted derivations) so it adapts to all themes for free.
+- `app.js` — ~31k lines, organized by feature area in roughly the order the features were added. State is held in feature-scoped objects (`historyState`, `qipState`, etc.). There is **no framework** — DOM is built via `innerHTML` strings. Reuse the global `escapeHtml(text)` (around line 4836) for any user-controlled string before injecting.
+- `styles.css` — starts with the design system (fonts, tokens, themes, base elements, app shell); `DESIGN.md` is the written reference and `PRODUCT.md` the product context. Themes are CSS variables (`--bg-primary` page, `--bg-secondary` card, `--bg-tertiary` control, `--bg-hover`, `--text-primary/secondary/tertiary`, `--accent-primary`, `--on-accent`, `--success/warning/danger/info`, `--border-color`); every theme is one `[data-theme]` block that swaps only those. Eight themes (Author's Light is the default; Midnight Indigo = `:root`, Monochrome, Charcoal, Steel, Minimal, Graphite, Nord). A new feature uses the shared tokens only: sizes from the type scale (`--text-3xs` … `--text-3xl`), radius `--radius-sm/md/lg/pill`, derived colours (`--control-bg`, `--control-border`, `--accent-soft`, `--danger-soft`, `--border-subtle`, `--focus-ring` …), or `color-mix(in srgb, var(--token) N%, var(--bg-secondary))` for a new tint. No hex, rgba or rem font-size literals.
+- `fonts/` (Source Sans 3, JetBrains Mono) and `vendor/` (SheetJS) are served by the app itself, so a page load needs no outside host; nginx caches both for a year, so replace a file under a new name.
+
+Shared UI pieces (all in `DESIGN.md`):
+
+- **Page frame**: every page opens with `<header class="page-header">` (`<h2>` + `.subtitle`, actions in `.page-header-actions`). Report pages go header → `.config-bar` → control `.card` (`.toolbar`, or `.card-header` + body) → results. Forms put fields first and the action last in `.form-actions`.
+- **Controls**: `.btn` + `.btn-primary|secondary|ghost|danger|danger-quiet`, sizes `.btn-sm|xs|lg`; `.btn.btn-chip` in a `.chip-row` for date presets; `.date-range` for a from/to pair. Inputs, selects, checkboxes and textareas are styled globally: do not restyle them per feature.
+- **Dialogs and toasts** (`app.js`, "UI kit"): `await uiConfirm("Question?\n\nDetail", { confirmLabel, danger })`, `uiAlert(text)`, `showToast(message, type)`. Do not call `confirm()` / `alert()`; `alert()` is redirected to a toast or a dialog. Every `.modal` automatically gets dialog semantics, a focus trap, focus return, scroll lock and Escape-to-close; a modal with its own Escape rules must be added to `OWN_ESCAPE`.
+- **Icons**: inline SVG with `currentColor`; from JS use `uiIcon(name)`. No emoji.
+- **Shell**: the sidebar collapses to an icon rail (`html.sidebar-collapsed`, localStorage `sidebarCollapsed`) and becomes a drawer under 900px (`html.nav-open`, app bar `#appbarTitle`). The theme is applied by an inline script in `<head>` before first paint.
+- **Sticky table headers** pin to the window, so `.table-container` must not get `overflow` on desktop (it would capture them); it scrolls sideways only under 900px, and Order Sync under 1560px.
 
 Filter and table patterns to mirror when building new sections (see the In Progress section as the most current reference):
 
@@ -159,3 +169,4 @@ The app is used by many people at once and by other apps through `/api/`, so one
 | `backend/migrations/*.sql` | Lands automatically on prod via `install.sh` option 2 (tracked in `schema_migrations`, applied before the swap); in dev apply manually |
 | Python source under `backend/` | Auto-reload (`uvicorn --reload`) |
 | `frontend/src/*` | Hard refresh in browser |
+| `frontend/nginx.conf` (dev) | `docker restart globalupc_frontend` (the single-file mount keeps the old copy until then) |

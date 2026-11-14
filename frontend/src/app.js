@@ -168,6 +168,7 @@ function navigateTo(page) {
   if (targetNav) {
     targetNav.classList.add("active");
   }
+  syncShellToPage(targetNav);
 
   // Show page
   document.querySelectorAll(".page").forEach((p) => {
@@ -257,68 +258,46 @@ async function apiRequest(endpoint, options = {}) {
   }
 }
 
+// Small inline icons (stroke follows the text colour). Used where the code
+// builds a control itself and cannot carry SVG markup in the page.
+const UI_ICON_PATHS = {
+  trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-12M9 7V4h6v3"/>',
+  ban: '<circle cx="12" cy="12" r="8.5"/><path d="M6 6l12 12"/>',
+  search: '<circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/>',
+  box: '<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3zM4 7.5l8 4.5 8-4.5M12 12v9"/>',
+  refresh: '<path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v5h-5"/>',
+  clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
+  check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+  pencil: '<path d="M4 20h4L19 9l-4-4L4 16v4zM13.5 6.5l4 4"/>',
+  chevron: '<path d="M9 6l6 6-6 6"/>',
+};
+
+function uiIcon(name, size = 16) {
+  return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${UI_ICON_PATHS[name] || ""}</svg>`;
+}
+
 // Toast notification function
 function showToast(message, type = "info") {
-  // Create toast container if it doesn't exist
   let container = document.getElementById("toast-container");
   if (!container) {
     container = document.createElement("div");
     container.id = "toast-container";
-    container.style.position = "fixed";
-    container.style.top = "1rem";
-    container.style.right = "1rem";
-    container.style.zIndex = "10000";
-    container.style.display = "flex";
-    container.style.flexDirection = "column";
-    container.style.gap = "0.5rem";
+    container.setAttribute("role", "status");
+    container.setAttribute("aria-live", "polite");
     document.body.appendChild(container);
   }
 
-  // Create toast element
   const toast = document.createElement("div");
-  toast.style.padding = "0.75rem 1rem";
-  toast.style.borderRadius = "var(--radius-md)";
-  toast.style.boxShadow = "0 4px 12px rgba(0, 0, 0, 0.4)";
-  toast.style.minWidth = "300px";
-  toast.style.maxWidth = "500px";
-  toast.style.fontSize = "0.875rem";
-  toast.style.fontWeight = "500";
-  toast.style.animation = "slideIn 0.3s ease-out";
-  toast.style.transition = "opacity 0.3s";
-
-  // Set color based on type
-  if (type === "success") {
-    toast.style.background = "rgba(16, 185, 129, 0.15)";
-    toast.style.color = "var(--success)";
-    toast.style.border = "1px solid rgba(16, 185, 129, 0.3)";
-  } else if (type === "error") {
-    toast.style.background = "rgba(239, 68, 68, 0.15)";
-    toast.style.color = "var(--error)";
-    toast.style.border = "1px solid rgba(239, 68, 68, 0.3)";
-  } else if (type === "warning") {
-    toast.style.background = "rgba(245, 158, 11, 0.15)";
-    toast.style.color = "var(--warning, #f59e0b)";
-    toast.style.border = "1px solid rgba(245, 158, 11, 0.3)";
-  } else {
-    toast.style.background = "var(--bg-secondary)";
-    toast.style.color = "var(--text-primary)";
-    toast.style.border = "1px solid var(--border-color)";
-  }
-
+  toast.className = `toast is-${type}`;
   toast.textContent = message;
   container.appendChild(toast);
 
-  // Auto-remove after 3 seconds
+  // Errors stay long enough to be read; confirmations get out of the way.
+  const ttl = type === "error" ? 7000 : type === "warning" ? 5000 : 3500;
   setTimeout(() => {
     toast.style.opacity = "0";
-    setTimeout(() => {
-      container.removeChild(toast);
-      // Remove container if empty
-      if (container.children.length === 0) {
-        document.body.removeChild(container);
-      }
-    }, 300);
-  }, 3000);
+    setTimeout(() => toast.remove(), 220);
+  }, ttl);
 }
 
 // ===== Dashboard =====
@@ -746,7 +725,7 @@ async function loadStoreMirrors() {
       const arrowTd = document.createElement("td");
       arrowTd.style.textAlign = "center";
       arrowTd.style.color = "var(--text-tertiary)";
-      arrowTd.style.fontSize = "1.25rem";
+      arrowTd.style.fontSize = "var(--text-xl)";
       arrowTd.innerHTML = "&rarr;";
       row.appendChild(arrowTd);
 
@@ -759,24 +738,18 @@ async function loadStoreMirrors() {
       const date = new Date(mirror.created_at);
       dateTd.textContent = date.toLocaleDateString() + " " + date.toLocaleTimeString();
       dateTd.style.color = "var(--text-secondary)";
-      dateTd.style.fontSize = "0.875rem";
+      dateTd.style.fontSize = "var(--text-base)";
       row.appendChild(dateTd);
 
       const actionsTd = document.createElement("td");
       actionsTd.style.textAlign = "center";
       const deleteBtn = document.createElement("button");
-      deleteBtn.className = "btn-icon";
+      deleteBtn.className = "btn btn-ghost btn-icon btn-sm";
       deleteBtn.title = "Remove mirror";
-      deleteBtn.innerHTML = "\u{1F5D1}\u{FE0F}";
-      deleteBtn.style.cursor = "pointer";
-      deleteBtn.style.fontSize = "1rem";
-      deleteBtn.style.padding = "0.25rem 0.5rem";
-      deleteBtn.style.background = "transparent";
-      deleteBtn.style.border = "1px solid var(--border-color)";
-      deleteBtn.style.borderRadius = "var(--radius-sm)";
-      deleteBtn.style.transition = "all 0.2s";
+      deleteBtn.innerHTML = uiIcon("trash");
+      deleteBtn.setAttribute("aria-label", "Remove mirror");
       deleteBtn.onclick = async () => {
-        if (!confirm(`Remove mirror: ${mirror.source_store_name} \u2192 ${mirror.mirror_store_name}?`)) return;
+        if (!(await uiConfirm(`Remove mirror: ${mirror.source_store_name} \u2192 ${mirror.mirror_store_name}?`, { danger: true, confirmLabel: "Remove mirror" }))) return;
         try {
           await apiRequest(`/store-mirrors/${mirror.id}`, { method: "DELETE" });
           row.style.transition = "opacity 0.3s";
@@ -910,7 +883,7 @@ async function loadExclusions(storeId = null) {
       // UPC
       const upcTd = document.createElement("td");
       upcTd.textContent = exclusion.upc;
-      upcTd.style.fontFamily = "monospace";
+      upcTd.classList.add("ident");
       upcTd.style.fontWeight = "bold";
       upcTd.style.color = "var(--accent-primary)";
       row.appendChild(upcTd);
@@ -921,7 +894,7 @@ async function loadExclusions(storeId = null) {
       dateTd.textContent =
         date.toLocaleDateString() + " " + date.toLocaleTimeString();
       dateTd.style.color = "var(--text-secondary)";
-      dateTd.style.fontSize = "0.875rem";
+      dateTd.style.fontSize = "var(--text-base)";
       row.appendChild(dateTd);
 
       // Notes
@@ -930,28 +903,22 @@ async function loadExclusions(storeId = null) {
       notesTd.style.color = exclusion.notes
         ? "inherit"
         : "var(--text-tertiary)";
-      notesTd.style.fontSize = "0.875rem";
+      notesTd.style.fontSize = "var(--text-base)";
       row.appendChild(notesTd);
 
       // Actions
       const actionsTd = document.createElement("td");
       actionsTd.style.textAlign = "center";
       const deleteBtn = document.createElement("button");
-      deleteBtn.className = "btn-icon";
+      deleteBtn.className = "btn btn-ghost btn-icon btn-sm";
       deleteBtn.title = "Remove exclusion";
-      deleteBtn.innerHTML = "🗑️";
-      deleteBtn.style.cursor = "pointer";
-      deleteBtn.style.fontSize = "1rem";
-      deleteBtn.style.padding = "0.25rem 0.5rem";
-      deleteBtn.style.background = "transparent";
-      deleteBtn.style.border = "1px solid var(--border-color)";
-      deleteBtn.style.borderRadius = "var(--radius-sm)";
-      deleteBtn.style.transition = "all 0.2s";
+      deleteBtn.innerHTML = uiIcon("trash");
+      deleteBtn.setAttribute("aria-label", deleteBtn.title || "Remove");
       deleteBtn.onclick = async () => {
         if (
-          !confirm(
-            `Remove exclusion for UPC ${exclusion.upc}?\n\nThis UPC will appear in future audit results for ${exclusion.store_name}.`,
-          )
+          !(await uiConfirm(
+            `Remove exclusion for UPC ${exclusion.upc}?\n\nThis UPC will appear in future audit results for ${exclusion.store_name}.`, { confirmLabel: "Remove exclusion" }
+          ))
         ) {
           return;
         }
@@ -1060,7 +1027,7 @@ async function loadItemTrackerExclusions() {
         scopeStyle = "color: var(--warning);";
       }
       scopeTd.textContent = scopeText;
-      scopeTd.style.cssText = scopeStyle + " font-size: 0.8125rem;";
+      scopeTd.style.cssText = scopeStyle + " font-size: var(--text-sm);";
       row.appendChild(scopeTd);
 
       // Excluded Date
@@ -1069,7 +1036,7 @@ async function loadItemTrackerExclusions() {
       dateTd.textContent =
         date.toLocaleDateString() + " " + date.toLocaleTimeString();
       dateTd.style.color = "var(--text-secondary)";
-      dateTd.style.fontSize = "0.875rem";
+      dateTd.style.fontSize = "var(--text-base)";
       row.appendChild(dateTd);
 
       // Notes
@@ -1078,28 +1045,22 @@ async function loadItemTrackerExclusions() {
       notesTd.style.color = exclusion.notes
         ? "inherit"
         : "var(--text-tertiary)";
-      notesTd.style.fontSize = "0.875rem";
+      notesTd.style.fontSize = "var(--text-base)";
       row.appendChild(notesTd);
 
       // Actions
       const actionsTd = document.createElement("td");
       actionsTd.style.textAlign = "center";
       const deleteBtn = document.createElement("button");
-      deleteBtn.className = "btn-icon";
+      deleteBtn.className = "btn btn-ghost btn-icon btn-sm";
       deleteBtn.title = "Restore (remove exclusion)";
-      deleteBtn.innerHTML = "🗑️";
-      deleteBtn.style.cursor = "pointer";
-      deleteBtn.style.fontSize = "1rem";
-      deleteBtn.style.padding = "0.25rem 0.5rem";
-      deleteBtn.style.background = "transparent";
-      deleteBtn.style.border = "1px solid var(--border-color)";
-      deleteBtn.style.borderRadius = "var(--radius-sm)";
-      deleteBtn.style.transition = "all 0.2s";
+      deleteBtn.innerHTML = uiIcon("trash");
+      deleteBtn.setAttribute("aria-label", deleteBtn.title || "Remove");
       deleteBtn.onclick = async () => {
         if (
-          !confirm(
-            `Restore "${exclusion.business_name}"?\n\nThis customer/supplier will appear in future Item Tracker searches.`,
-          )
+          !(await uiConfirm(
+            `Restore "${exclusion.business_name}"?\n\nThis customer/supplier will appear in future Item Tracker searches.`, { confirmLabel: "Restore" }
+          ))
         ) {
           return;
         }
@@ -1247,9 +1208,9 @@ document
 
 async function excludeBusinessName(businessName, voidStatus) {
   if (
-    !confirm(
-      `Exclude "${businessName}" from all Item Tracker results?\n\nThis customer/supplier will no longer appear in search results.`,
-    )
+    !(await uiConfirm(
+      `Exclude "${businessName}" from all Item Tracker results?\n\nThis customer/supplier will no longer appear in search results.`, { confirmLabel: "Exclude" }
+    ))
   ) {
     return;
   }
@@ -1362,75 +1323,54 @@ async function loadStores() {
   });
 }
 
-function createStoreCard(store, index) {
+function createStoreCard(store) {
   const connection = store.mssql_connection || store.shopify_connection;
   // Both mssql and shipper stores use the MSSQL connection shape
   const isMssql = store.store_type === "mssql" || store.store_type === "shipper";
+  const typeLabel = { mssql: "MSSQL", shopify: "Shopify", shipper: "Shipper" }[store.store_type] || store.store_type;
+  const category = store.store_category || "retail";
+  const detail = (label, value) => `
+                    <div class="store-detail">
+                        <span class="store-detail-label">${label}</span>
+                        <span class="store-detail-value">${escapeHtml(value)}</span>
+                    </div>`;
 
   return `
-        <div class="store-card collapsed" data-store-id="${store.id}">
+        <div class="store-card collapsed${store.is_active ? "" : " is-inactive"}" data-store-id="${store.id}">
             <div class="store-card-header">
                 <div class="store-info">
                     <div class="store-header-clickable">
-                        <span class="row-number">${index}.</span>
-                        <span class="expand-icon">▶</span>
-                        <h4 id="store-name-${store.id}">${store.name}</h4>
-                        <button class="btn-edit-name" id="edit-name-${store.id}" title="Rename store">&#9998;</button>
-                        <span class="store-type-badge ${store.store_type}">${store.store_type.toUpperCase()}</span>
-                        <span class="store-category-badge ${store.store_category || 'retail'}">${(store.store_category || 'retail').toUpperCase()}</span>
+                        <span class="expand-icon" aria-hidden="true">${uiIcon("chevron", 14)}</span>
+                        <span class="status-indicator ${store.is_active ? "active" : "inactive"}" title="${store.is_active ? "Active" : "Disabled"}"></span>
+                        <h4 id="store-name-${store.id}">${escapeHtml(store.name)}</h4>
+                        <button type="button" class="btn-edit-name" id="edit-name-${store.id}" title="Rename store" aria-label="Rename ${escapeHtml(store.name)}">${uiIcon("pencil", 14)}</button>
+                        <span class="store-type-badge ${store.store_type}">${escapeHtml(typeLabel)}</span>
+                        <span class="store-category-badge ${category}">${category === "wholesale" ? "Wholesale" : "Retail"}</span>
+                        ${store.is_active ? "" : '<span class="store-state-badge">Disabled</span>'}
                     </div>
                 </div>
                 <div class="store-actions">
-                    <button class="btn btn-small btn-secondary" id="category-${store.id}" title="Toggle wholesale/retail">
-                        ${(store.store_category || 'retail') === 'retail' ? 'Set Wholesale' : 'Set Retail'}
+                    <button type="button" class="btn btn-sm btn-ghost" id="category-${store.id}" title="Switch between wholesale and retail">
+                        ${category === "retail" ? "Set wholesale" : "Set retail"}
                     </button>
-                    <button class="btn btn-small btn-secondary" id="toggle-${store.id}">
+                    <button type="button" class="btn btn-sm btn-ghost" id="toggle-${store.id}">
                         ${store.is_active ? "Disable" : "Enable"}
                     </button>
-                    <button class="btn btn-small btn-secondary" id="edit-conn-${store.id}">Edit</button>
-                    <button class="btn btn-small btn-danger" id="delete-${store.id}">Delete</button>
+                    <button type="button" class="btn btn-sm btn-secondary" id="edit-conn-${store.id}">Edit</button>
+                    <button type="button" class="btn btn-sm btn-danger-quiet" id="delete-${store.id}">Delete</button>
                 </div>
             </div>
             <div class="store-details">
                 ${
                   isMssql
-                    ? `
-                    <div class="store-detail">
-                        <span class="store-detail-label">Host</span>
-                        <span class="store-detail-value">${connection.host}:${connection.port}</span>
-                    </div>
-                    <div class="store-detail">
-                        <span class="store-detail-label">Database</span>
-                        <span class="store-detail-value">${connection.database_name}</span>
-                    </div>
-                    <div class="store-detail">
-                        <span class="store-detail-label">Username</span>
-                        <span class="store-detail-value">${connection.username}</span>
-                    </div>
-                `
-                    : `
-                    <div class="store-detail">
-                        <span class="store-detail-label">Shop Domain</span>
-                        <span class="store-detail-value">${connection.shop_domain}</span>
-                    </div>
-                    <div class="store-detail">
-                        <span class="store-detail-label">API Version</span>
-                        <span class="store-detail-value">${connection.api_version}</span>
-                    </div>
-                    <div class="store-detail">
-                        <span class="store-detail-label">Auth</span>
-                        <span class="store-detail-value">${connection.auth_method === "client_credentials" ? "OAuth (client credentials)" : "Admin token"}</span>
-                    </div>
-                    <div class="store-detail">
-                        <span class="store-detail-label">Update SKU with Barcode</span>
-                        <span class="store-detail-value">${connection.update_sku_with_barcode ? "Enabled" : "Disabled"}</span>
-                    </div>
-                `
+                    ? detail("Host", `${connection.host}:${connection.port}`) +
+                      detail("Database", connection.database_name) +
+                      detail("Username", connection.username)
+                    : detail("Shop domain", connection.shop_domain) +
+                      detail("API version", connection.api_version) +
+                      detail("Auth", connection.auth_method === "client_credentials" ? "OAuth (client credentials)" : "Admin token") +
+                      detail("Update SKU with barcode", connection.update_sku_with_barcode ? "Enabled" : "Disabled")
                 }
-            </div>
-            <div class="store-status">
-                <span class="status-indicator ${store.is_active ? "active" : "inactive"}"></span>
-                <span>${store.is_active ? "Active" : "Inactive"}</span>
             </div>
         </div>
     `;
@@ -1453,7 +1393,7 @@ async function toggleStoreCategory(storeId, currentCategory) {
 }
 
 async function deleteStore(storeId) {
-  if (!confirm("Are you sure you want to delete this store?")) {
+  if (!(await uiConfirm("Delete this store?\n\nThe connection is removed from Global UPC. Nothing changes in the store's own database.", { danger: true, confirmLabel: "Delete store" }))) {
     return;
   }
 
@@ -1937,9 +1877,11 @@ function setTheme(themeName) {
   document.querySelectorAll(".theme-option").forEach((option) => {
     option.classList.remove("active");
   });
-  document
-    .querySelector(`[data-theme-name="${themeName}"]`)
-    .classList.add("active");
+  document.querySelectorAll(".theme-option").forEach((option) => {
+    const on = option.dataset.themeName === themeName;
+    option.classList.toggle("active", on);
+    option.setAttribute("aria-pressed", on ? "true" : "false");
+  });
 }
 
 // Theme option click handlers
@@ -1950,6 +1892,79 @@ document.addEventListener("click", (e) => {
     setTheme(themeName);
   }
 });
+
+// The theme cards are plain blocks in the markup: make them reachable and
+// operable from the keyboard like the buttons they are.
+document.querySelectorAll(".theme-option").forEach((option) => {
+  option.setAttribute("role", "button");
+  option.tabIndex = 0;
+  option.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    e.preventDefault();
+    setTheme(option.dataset.themeName);
+  });
+});
+
+// ===== App shell: collapsible sidebar (desktop) and drawer (phones) =====
+
+const SIDEBAR_COLLAPSED_KEY = "sidebarCollapsed";
+
+function setSidebarCollapsed(collapsed) {
+  document.documentElement.classList.toggle("sidebar-collapsed", collapsed);
+  try { localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? "1" : "0"); } catch (e) { /* storage blocked */ }
+  const btn = document.getElementById("sidebarCollapse");
+  if (btn) {
+    const label = collapsed ? "Expand sidebar" : "Collapse sidebar";
+    btn.title = label;
+    btn.setAttribute("aria-label", label);
+  }
+  // Sticky offsets and chart widths are measured from the layout.
+  window.dispatchEvent(new Event("resize"));
+}
+
+function setNavDrawerOpen(open) {
+  document.documentElement.classList.toggle("nav-open", open);
+  const btn = document.getElementById("navOpen");
+  if (btn) btn.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+// Keeps the app bar title and aria-current in step with the visible page.
+function syncShellToPage(activeNav) {
+  document.querySelectorAll(".nav-item[aria-current]").forEach((el) => el.removeAttribute("aria-current"));
+  if (activeNav) activeNav.setAttribute("aria-current", "page");
+  const label = activeNav && activeNav.querySelector("span");
+  const title = document.getElementById("appbarTitle");
+  if (title) title.textContent = label ? label.textContent.trim() : "Global UPC";
+  setNavDrawerOpen(false);
+}
+
+(function initShell() {
+  // The collapsed rail shows icons only, so every item needs its name as a tooltip.
+  document.querySelectorAll(".nav-item").forEach((item) => {
+    const label = item.querySelector("span");
+    if (label && !item.title) item.title = label.textContent.trim();
+  });
+  const collapseBtn = document.getElementById("sidebarCollapse");
+  if (collapseBtn) {
+    collapseBtn.addEventListener("click", () =>
+      setSidebarCollapsed(!document.documentElement.classList.contains("sidebar-collapsed")));
+    setSidebarCollapsedLabel();
+  }
+  const openBtn = document.getElementById("navOpen");
+  if (openBtn) openBtn.addEventListener("click", () => setNavDrawerOpen(true));
+  const scrim = document.getElementById("navScrim");
+  if (scrim) scrim.addEventListener("click", () => setNavDrawerOpen(false));
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && document.documentElement.classList.contains("nav-open")) setNavDrawerOpen(false);
+  });
+
+  function setSidebarCollapsedLabel() {
+    const collapsed = document.documentElement.classList.contains("sidebar-collapsed");
+    const label = collapsed ? "Expand sidebar" : "Collapse sidebar";
+    collapseBtn.title = label;
+    collapseBtn.setAttribute("aria-label", label);
+  }
+})();
 
 // Theme Toggle (Nord <-> Author's Light)
 document.getElementById("themeToggle").addEventListener("click", () => {
@@ -2056,23 +2071,23 @@ async function searchUPC(upc) {
   const createProgressItem = (text, status = "pending") => {
     const item = document.createElement("div");
     item.style.cssText =
-      "display: flex; align-items: center; gap: 0.5rem; font-size: 0.875rem; transition: var(--transition);";
+      "display: flex; align-items: center; gap: 0.5rem; font-size: var(--text-base); transition: var(--transition);";
 
     const icon = document.createElement("span");
     icon.style.cssText = "width: 16px; height: 16px; flex-shrink: 0;";
 
     if (status === "pending") {
-      icon.innerHTML = "⏳";
+      icon.innerHTML = uiIcon("clock", 14);
       item.style.color = "var(--text-tertiary)";
     } else if (status === "active") {
-      icon.innerHTML = "🔍";
+      icon.innerHTML = uiIcon("search", 14);
       item.style.color = "var(--accent-primary)";
       icon.style.animation = "pulse 1.5s ease-in-out infinite";
     } else if (status === "complete") {
-      icon.innerHTML = "✓";
+      icon.innerHTML = uiIcon("check", 14);
       item.style.color = "var(--success)";
     } else if (status === "found") {
-      icon.innerHTML = "📦";
+      icon.innerHTML = uiIcon("box", 14);
       item.style.color = "var(--accent-primary)";
     }
 
@@ -2273,7 +2288,7 @@ function displayUPCResults(data) {
         const tableName = formatTableName(match.table_name);
         variantTd.textContent = `${tableName} (${match.match_count} ${match.match_count === 1 ? "match" : "matches"})`;
         variantTd.style.color = "var(--text-secondary)";
-        variantTd.style.fontSize = "0.875rem";
+        variantTd.style.fontSize = "var(--text-base)";
       } else {
         // Shopify result - show variant title
         variantTd.textContent = match.variant_title || "Default";
@@ -2388,7 +2403,7 @@ document
 
     // Proceed with confirmation dialog and update
     const message = `Update ${currentSearchResults.total_found} item${currentSearchResults.total_found !== 1 ? "s" : ""} from UPC "${oldUPC}" to "${newUPC}"?\n\nNote: Stores with duplicate UPCs will be skipped automatically.`;
-    if (confirm(message)) {
+    if ((await uiConfirm(message, { confirmLabel: "Update UPC" }))) {
       updateUPC(oldUPC, newUPC, currentSearchResults.matches);
     }
   });
@@ -2413,20 +2428,20 @@ async function updateUPC(oldUPC, newUPC, matches) {
   const createProgressItem = (text, status = "pending") => {
     const item = document.createElement("div");
     item.style.cssText =
-      "display: flex; align-items: center; gap: 0.5rem; font-size: 0.875rem; transition: var(--transition);";
+      "display: flex; align-items: center; gap: 0.5rem; font-size: var(--text-base); transition: var(--transition);";
 
     const icon = document.createElement("span");
     icon.style.cssText = "width: 16px; height: 16px; flex-shrink: 0;";
 
     if (status === "pending") {
-      icon.innerHTML = "⏳";
+      icon.innerHTML = uiIcon("clock", 14);
       item.style.color = "var(--text-tertiary)";
     } else if (status === "active") {
-      icon.innerHTML = "🔄";
+      icon.innerHTML = uiIcon("refresh", 14);
       item.style.color = "var(--accent-primary)";
       icon.style.animation = "pulse 1.5s ease-in-out infinite";
     } else if (status === "success") {
-      icon.innerHTML = "✓";
+      icon.innerHTML = uiIcon("check", 14);
       item.style.color = "var(--success)";
     } else if (status === "error") {
       icon.innerHTML = "✗";
@@ -2576,7 +2591,7 @@ function displayUpdateResults(data) {
     // Updated Count
     const countTd = document.createElement("td");
     countTd.textContent = result.updated_count;
-    countTd.style.fontFamily = "monospace";
+    countTd.classList.add("ident");
     row.appendChild(countTd);
 
     // Status
@@ -2585,13 +2600,13 @@ function displayUpdateResults(data) {
       // Store was skipped due to duplicate
       statusTd.innerHTML =
         '<span style="color: var(--warning); font-weight: 500;">⚠ Skipped - Duplicate UPC found</span>';
-      statusTd.style.fontSize = "0.875rem";
+      statusTd.style.fontSize = "var(--text-base)";
     } else if (result.success) {
       statusTd.innerHTML =
         '<span style="color: var(--success);">✓ Success</span>';
     } else {
       statusTd.innerHTML = `<span style="color: var(--error);">✗ Failed${result.error ? ": " + result.error : ""}</span>`;
-      statusTd.style.fontSize = "0.875rem";
+      statusTd.style.fontSize = "var(--text-base)";
     }
     row.appendChild(statusTd);
 
@@ -2688,9 +2703,9 @@ async function importConfiguration(file) {
     const totalStores =
       config.mssql_stores.length + config.shopify_stores.length;
     if (
-      !confirm(
-        `Import ${totalStores} store configuration(s)?\n\nThis will add ${config.mssql_stores.length} MSSQL and ${config.shopify_stores.length} Shopify stores.\nExisting stores with duplicate shop domains will be skipped.`,
-      )
+      !(await uiConfirm(
+        `Import ${totalStores} store configuration(s)?\n\nThis will add ${config.mssql_stores.length} MSSQL and ${config.shopify_stores.length} Shopify stores.\nExisting stores with duplicate shop domains will be skipped.`, { confirmLabel: "Import" }
+      ))
     ) {
       return;
     }
@@ -2779,7 +2794,7 @@ async function loadSQLAuditPage() {
   const runBtn = document.getElementById("run-audit-btn");
 
   // Reset UI
-  select.innerHTML = '<option value="">-- Select a store --</option>';
+  select.innerHTML = '<option value="">Select a store</option>';
   runBtn.disabled = true;
   document.getElementById("audit-loading").style.display = "none";
   document.getElementById("audit-empty").style.display = "none";
@@ -2818,7 +2833,7 @@ async function loadTargetStoreDropdown(excludeStoreId) {
   const select = document.getElementById("audit-target-store-select");
 
   // Reset dropdown
-  select.innerHTML = '<option value="">-- Select target database --</option>';
+  select.innerHTML = '<option value="">Select a store</option>';
 
   try {
     const stores = await apiRequest("/stores");
@@ -3050,14 +3065,14 @@ async function runAudit(storeId) {
           if (data.status === "starting") {
             const item = document.createElement("div");
             item.style.cssText =
-              "font-size: 0.875rem; color: var(--accent-primary);";
+              "font-size: var(--text-base); color: var(--accent-primary);";
             item.textContent = `Starting audit for ${data.store_name}...`;
             progressItems.appendChild(item);
           } else if (data.status === "checking_table") {
             const item = document.createElement("div");
             item.style.cssText =
-              "font-size: 0.875rem; color: var(--text-secondary);";
-            item.textContent = `🔍 Checking ${data.table_name}...`;
+              "font-size: var(--text-base); color: var(--text-secondary);";
+            item.textContent = `Checking ${data.table_name}…`;
             item.dataset.tableName = data.table_name; // Store table name for updates
             progressItems.appendChild(item);
             progressContainer.scrollTop = progressContainer.scrollHeight;
@@ -3075,7 +3090,7 @@ async function runAudit(storeId) {
               );
 
               // Build progress message
-              let message = `🔍 ${data.table_name}: Chunk ${data.chunk}/${data.total_chunks} (${percentage}%)`;
+              let message = `${data.table_name}: chunk ${data.chunk}/${data.total_chunks} (${percentage}%)`;
               message += ` - ${data.records_checked}/${data.total_records} records`;
 
               if (data.total_orphans > 0) {
@@ -3107,7 +3122,7 @@ async function runAudit(storeId) {
           } else if (data.status === "table_skipped") {
             const item = document.createElement("div");
             item.style.cssText =
-              "font-size: 0.875rem; color: var(--text-tertiary);";
+              "font-size: var(--text-base); color: var(--text-tertiary);";
             item.textContent = `○ ${data.table_name} - not found (skipped)`;
             progressItems.appendChild(item);
             progressContainer.scrollTop = progressContainer.scrollHeight;
@@ -3273,13 +3288,13 @@ function displayAuditResults(data, isCrossDatabase = false) {
     // Primary Key
     const pkTd = document.createElement("td");
     pkTd.textContent = record.primary_key;
-    pkTd.style.fontFamily = "monospace";
+    pkTd.classList.add("ident");
     row.appendChild(pkTd);
 
     // UPC
     const upcTd = document.createElement("td");
     upcTd.textContent = record.upc;
-    upcTd.style.fontFamily = "monospace";
+    upcTd.classList.add("ident");
     upcTd.style.fontWeight = "bold";
     upcTd.style.color = "var(--error)";
     row.appendChild(upcTd);
@@ -3296,21 +3311,15 @@ function displayAuditResults(data, isCrossDatabase = false) {
     const actionsTd = document.createElement("td");
     actionsTd.style.textAlign = "center";
     const excludeBtn = document.createElement("button");
-    excludeBtn.className = "btn-icon";
+    excludeBtn.className = "btn btn-ghost btn-icon btn-sm";
     excludeBtn.title = "Exclude this UPC from future audits";
-    excludeBtn.innerHTML = "🚫";
-    excludeBtn.style.cursor = "pointer";
-    excludeBtn.style.fontSize = "1.125rem";
-    excludeBtn.style.padding = "0.25rem 0.5rem";
-    excludeBtn.style.background = "transparent";
-    excludeBtn.style.border = "1px solid var(--border-color)";
-    excludeBtn.style.borderRadius = "var(--radius-sm)";
-    excludeBtn.style.transition = "all 0.2s";
+    excludeBtn.innerHTML = uiIcon("ban");
+    excludeBtn.setAttribute("aria-label", excludeBtn.title || "Exclude");
     excludeBtn.onclick = async () => {
       if (
-        !confirm(
-          `Exclude UPC ${record.upc} from future audits?\n\nThis will hide this UPC from all future orphaned UPC audit results for this store.`,
-        )
+        !(await uiConfirm(
+          `Exclude UPC ${record.upc} from future audits?\n\nThis will hide this UPC from all future orphaned UPC audit results for this store.`, { confirmLabel: "Exclude UPC" }
+        ))
       ) {
         return;
       }
@@ -3833,13 +3842,13 @@ function displayReconciliationResults(data) {
     // Primary Key
     const pkTd = document.createElement("td");
     pkTd.textContent = match.primary_key;
-    pkTd.style.fontFamily = "monospace";
+    pkTd.classList.add("ident");
     row.appendChild(pkTd);
 
     // Orphaned UPC
     const orphanedUpcTd = document.createElement("td");
     orphanedUpcTd.textContent = match.orphaned_upc;
-    orphanedUpcTd.style.fontFamily = "monospace";
+    orphanedUpcTd.classList.add("ident");
     orphanedUpcTd.style.color = "var(--error)";
     row.appendChild(orphanedUpcTd);
 
@@ -3847,7 +3856,7 @@ function displayReconciliationResults(data) {
     const matchedUpcTd = document.createElement("td");
     if (match.match_found) {
       matchedUpcTd.textContent = match.items_tbl_upc;
-      matchedUpcTd.style.fontFamily = "monospace";
+      matchedUpcTd.classList.add("ident");
       matchedUpcTd.style.color = "var(--success)";
       matchedUpcTd.style.fontWeight = "bold";
     } else {
@@ -3870,7 +3879,7 @@ function displayReconciliationResults(data) {
     // Match Field Value
     const matchFieldTd = document.createElement("td");
     matchFieldTd.textContent = match.match_field_value;
-    matchFieldTd.style.fontSize = "0.875rem";
+    matchFieldTd.style.fontSize = "var(--text-base)";
     matchFieldTd.style.color = "var(--text-secondary)";
     row.appendChild(matchFieldTd);
 
@@ -3944,7 +3953,7 @@ document
 
     // Confirm update
     const message = `Update ${updates.length} orphaned UPC${updates.length !== 1 ? "s" : ""} with matched values from Items_tbl?`;
-    if (!confirm(message)) {
+    if (!(await uiConfirm(message))) {
       return;
     }
 
@@ -4217,7 +4226,7 @@ function displayHistoryResults(batches, total) {
     // Row number with expand/collapse icon
     const numCell = document.createElement("td");
     numCell.style.color = "var(--text-tertiary)";
-    numCell.style.fontSize = "0.875rem";
+    numCell.style.fontSize = "var(--text-base)";
     const expandIcon = document.createElement("span");
     expandIcon.textContent = "▶ ";
     expandIcon.style.display = "inline-block";
@@ -4236,7 +4245,7 @@ function displayHistoryResults(batches, total) {
       hour: "2-digit",
       minute: "2-digit",
     });
-    timestampCell.style.fontSize = "0.875rem";
+    timestampCell.style.fontSize = "var(--text-base)";
     batchRow.appendChild(timestampCell);
 
     // Stores summary
@@ -4247,8 +4256,8 @@ function displayHistoryResults(batches, total) {
 
     // UPC Change
     const upcCell = document.createElement("td");
-    upcCell.style.fontFamily = "monospace";
-    upcCell.style.fontSize = "0.875rem";
+    upcCell.classList.add("ident");
+    upcCell.style.fontSize = "var(--text-base)";
     upcCell.innerHTML = `${batch.old_upc} <span style="color: var(--text-tertiary)">→</span> ${batch.new_upc}`;
     batchRow.appendChild(upcCell);
 
@@ -4268,7 +4277,7 @@ function displayHistoryResults(batches, total) {
     } else {
       statusCell.innerHTML = `<span style="color: var(--warning)">${batch.successful_stores} success, ${batch.failed_stores} failed</span>`;
     }
-    statusCell.style.fontSize = "0.875rem";
+    statusCell.style.fontSize = "var(--text-base)";
     batchRow.appendChild(statusCell);
 
     // Empty cell for details column
@@ -4316,7 +4325,7 @@ function displayHistoryResults(batches, total) {
       storeBadge.textContent = update.store_type.toUpperCase();
       storeBadge.style.display = "inline-block";
       storeBadge.style.padding = "0.125rem 0.375rem";
-      storeBadge.style.fontSize = "0.625rem";
+      storeBadge.style.fontSize = "var(--text-3xs)";
       storeBadge.style.fontWeight = "600";
       storeBadge.style.borderRadius = "0.25rem";
       storeBadge.style.marginRight = "0.5rem";
@@ -4331,7 +4340,7 @@ function displayHistoryResults(batches, total) {
 
       // Product/Table info
       const productCell = document.createElement("td");
-      productCell.style.fontSize = "0.875rem";
+      productCell.style.fontSize = "var(--text-base)";
       productCell.style.color = "var(--text-secondary)";
       if (update.table_name) {
         productCell.textContent = update.table_name;
@@ -4359,7 +4368,7 @@ function displayHistoryResults(batches, total) {
       } else {
         detailStatusCell.innerHTML = `<span style="color: var(--error)" title="${update.error_message || "Failed"}">✗ Failed</span>`;
       }
-      detailStatusCell.style.fontSize = "0.875rem";
+      detailStatusCell.style.fontSize = "var(--text-base)";
       detailRow.appendChild(detailStatusCell);
 
       // Details button
@@ -4367,7 +4376,7 @@ function displayHistoryResults(batches, total) {
       const detailsBtn = document.createElement("button");
       detailsBtn.className = "btn btn-secondary";
       detailsBtn.style.padding = "0.25rem 0.5rem";
-      detailsBtn.style.fontSize = "0.75rem";
+      detailsBtn.style.fontSize = "var(--text-xs)";
       detailsBtn.textContent = "View";
       detailsBtn.addEventListener("click", (e) => {
         e.stopPropagation();
@@ -4512,6 +4521,7 @@ async function navigateToItemTrackerWithUpc(upc, days = null, fromDate = null, t
   });
   const trackerNav = document.querySelector('[data-page="item-tracker"]');
   if (trackerNav) trackerNav.classList.add("active");
+  syncShellToPage(trackerNav);
 
   document.querySelectorAll(".page").forEach((p) => {
     p.style.display = "none";
@@ -4808,7 +4818,7 @@ function handleItemTrackerEvent(data, progressItems) {
   if (data.status) {
     // Progress event
     const progressItem = document.createElement("div");
-    progressItem.style.fontSize = "0.875rem";
+    progressItem.style.fontSize = "var(--text-base)";
     progressItem.style.color = "var(--text-secondary)";
 
     if (data.status === "searching") {
@@ -4898,12 +4908,12 @@ function displayItemTrackerResults(data) {
   });
 
   const eventTypes = [
-    { key: "purchase", label: "Purchases", color: "#22c55e" },
-    { key: "sale", label: "Sales", color: "#3b82f6" },
-    { key: "customer_return", label: "Cust. Returns", color: "#f59e0b" },
-    { key: "vendor_return", label: "Vendor Returns", color: "#ef4444" },
-    { key: "inventory_recount", label: "Inv. Recounts", color: "#a855f7" },
-    { key: "in_progress", label: "In Progress", color: "#06b6d4" },
+    { key: "purchase", label: "Purchases" },
+    { key: "sale", label: "Sales" },
+    { key: "customer_return", label: "Cust. returns" },
+    { key: "vendor_return", label: "Vendor returns" },
+    { key: "inventory_recount", label: "Recounts" },
+    { key: "in_progress", label: "In progress" },
   ];
 
   eventTypes.forEach((type) => {
@@ -4911,20 +4921,11 @@ function displayItemTrackerResults(data) {
     if (count > 0) {
       const totalQty = qtyTotals[type.key] || 0;
       const badge = document.createElement("span");
-      badge.style.padding = "0.375rem 0.75rem";
-      badge.style.borderRadius = "var(--radius-sm)";
-      badge.style.fontSize = "0.75rem";
-      badge.style.fontWeight = "500";
-      badge.style.background = type.color + "20";
-      badge.style.color = type.color;
-      badge.style.border = `1px solid ${type.color}40`;
-      badge.style.display = "inline-flex";
-      badge.style.alignItems = "center";
-      badge.style.gap = "0.5rem";
+      badge.className = `ev-chip ev-${type.key} is-summary`;
       badge.innerHTML =
         type.key === "inventory_recount"
-          ? `${type.label}: ${count}`
-          : `${type.label}: ${count} <span style="opacity: 0.6;">·</span> <span style="opacity: 0.7;">${totalQty.toLocaleString()}</span>`;
+          ? `${type.label} <b>${count}</b>`
+          : `${type.label} <b>${count}</b><span class="ev-chip-qty">${totalQty.toLocaleString()} units</span>`;
       summaryEl.appendChild(badge);
     }
   });
@@ -4946,38 +4947,18 @@ function renderItemTrackerTable(events) {
   const tableBody = document.getElementById("item-tracker-table-body");
   tableBody.innerHTML = "";
 
-  const eventTypeColors = {
-    purchase: { bg: "#22c55e20", color: "#22c55e", label: "Purchase" },
-    sale: { bg: "#3b82f620", color: "#3b82f6", label: "Sale" },
-    customer_return: {
-      bg: "#f59e0b20",
-      color: "#f59e0b",
-      label: "Cust. Return",
-    },
-    vendor_return: {
-      bg: "#ef444420",
-      color: "#ef4444",
-      label: "Vendor Return",
-    },
-    inventory_recount: {
-      bg: "#a855f720",
-      color: "#a855f7",
-      label: "Inv. Recount",
-    },
-    in_progress: {
-      bg: "#06b6d420",
-      color: "#06b6d4",
-      label: "In Progress",
-    },
+  const eventTypeLabels = {
+    purchase: "Purchase",
+    sale: "Sale",
+    customer_return: "Cust. return",
+    vendor_return: "Vendor return",
+    inventory_recount: "Recount",
+    in_progress: "In progress",
   };
 
   events.forEach((event, index) => {
     const row = document.createElement("tr");
-    const typeInfo = eventTypeColors[event.event_type] || {
-      bg: "transparent",
-      color: "inherit",
-      label: event.event_type,
-    };
+    const typeLabel = eventTypeLabels[event.event_type] || event.event_type;
 
     // Format date
     let dateStr = "-";
@@ -5011,7 +4992,7 @@ function renderItemTrackerTable(events) {
     // Format document number with voided badge if applicable
     const docNumber = event.document_number || "-";
     const voidedBadge = event.is_voided
-      ? `<span style="margin-left: 0.375rem; padding: 0.125rem 0.375rem; border-radius: var(--radius-sm); font-size: 0.625rem; font-weight: 600; background: #dc262620; color: #f87171; border: 1px solid #dc262640; vertical-align: middle;">VOID</span>`
+      ? `<span style="margin-left: 0.375rem; padding: 0.125rem 0.375rem; border-radius: var(--radius-sm); font-size: var(--text-3xs); font-weight: 600; background: #dc262620; color: #f87171; border: 1px solid #dc262640; vertical-align: middle;">VOID</span>`
       : "";
 
     // Format running balance (no inline variance for recounts - difference is in Qty column)
@@ -5024,14 +5005,14 @@ function renderItemTrackerTable(events) {
 
     row.innerHTML = `
       <td style="color: var(--text-tertiary)">${index + 1}</td>
-      <td style="font-size: 0.8125rem; white-space: nowrap">${dateStr}</td>
+      <td style="font-size: var(--text-sm); white-space: nowrap">${dateStr}</td>
       <td>
-        <span style="padding: 0.25rem 0.5rem; border-radius: var(--radius-sm); font-size: 0.75rem; font-weight: 500; background: ${typeInfo.bg}; color: ${typeInfo.color}; white-space: nowrap;">
-          ${typeInfo.label}
+        <span class="ev-chip ev-${escapeHtml(event.event_type)}">
+          ${escapeHtml(typeLabel)}
         </span>
       </td>
       <td style="font-weight: 500">${isRecount ? "-" : event.store_name || "-"}</td>
-      <td style="font-family: monospace; font-size: 0.8125rem; white-space: nowrap">${isRecount ? "-" : docNumber}${isRecount ? "" : voidedBadge}</td>
+      <td style="font-family: var(--font-mono); font-size: var(--text-xs); white-space: nowrap">${isRecount ? "-" : docNumber}${isRecount ? "" : voidedBadge}</td>
       <td style="text-align: center">${qty}</td>
       <td style="text-align: center; white-space: nowrap">${balanceStr}</td>
       <td style="max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap" title="${escapeHtml(event.business_name || "")}">${escapeHtml(event.business_name || "-")}</td>
@@ -5106,7 +5087,7 @@ function renderItemTrackerTable(events) {
           background: transparent;
           border: none;
           color: var(--text-primary);
-          font-size: 0.75rem;
+          font-size: var(--text-xs);
           text-align: left;
           cursor: pointer;
           transition: background 0.15s;
@@ -5131,9 +5112,9 @@ function renderItemTrackerTable(events) {
           closeExcludeMenu();
 
           if (
-            !confirm(
-              `Exclude "${businessName}" (${scopeText})?\n\nThis will hide matching events from search results.`,
-            )
+            !(await uiConfirm(
+              `Exclude "${businessName}" (${scopeText})?\n\nThis will hide matching events from search results.`, { confirmLabel: "Exclude" }
+            ))
           ) {
             return;
           }
@@ -5201,7 +5182,7 @@ function renderItemTrackerTable(events) {
   let tfoot = table.querySelector("tfoot");
   if (tfoot) tfoot.remove();
   tfoot = document.createElement("tfoot");
-  tfoot.innerHTML = `<tr><td colspan="5" style="border-top: 2px solid var(--border-color);"></td><td style="text-align: center; font-weight: 700; font-family: monospace; font-size: 0.875rem; color: ${netColor}; border-top: 2px solid var(--border-color);">${netText}</td><td colspan="3" style="border-top: 2px solid var(--border-color);"></td></tr>`;
+  tfoot.innerHTML = `<tr><td colspan="5" style="border-top: 2px solid var(--border-color);"></td><td style="text-align: center; font-weight: 700; font-family: var(--font-mono); font-size: var(--text-sm); color: ${netColor}; border-top: 2px solid var(--border-color);">${netText}</td><td colspan="3" style="border-top: 2px solid var(--border-color);"></td></tr>`;
   table.appendChild(tfoot);
 }
 
@@ -5324,7 +5305,7 @@ function exportItemTrackerCSV() {
     "Store",
     "Document #",
     "Qty",
-    "TRACK QTY",
+    "Track qty",
     "Extended Amount",
     "Customer/Supplier",
   ];
@@ -5883,7 +5864,7 @@ async function loadPriceUpdatesPage() {
       const span = document.createElement("span");
       const typeLabel = store.store_type === "mssql" ? "BACKOFFICE" : store.store_type.toUpperCase();
       if (isMirror) {
-        span.innerHTML = `${escapeHtml(store.name)} <span style="font-size:0.75rem;color:var(--text-tertiary);font-style:italic">(mirrors ${escapeHtml(mirrorSourceMap[store.id])})</span>`;
+        span.innerHTML = `${escapeHtml(store.name)} <span style="font-size: var(--text-xs);color:var(--text-tertiary);font-style:italic">(mirrors ${escapeHtml(mirrorSourceMap[store.id])})</span>`;
       } else {
         span.textContent = `${store.name} (${typeLabel})`;
       }
@@ -6370,7 +6351,7 @@ function displayPriceResults(upc, prices, siblingPrices) {
           ? `<td>${currentValueSpan(currentListPrice)}<input type="number" class="dark-input price-input new-list-price" step="0.01" min="0" placeholder="${currentListPrice}"></td>`
           : `<td style="color: var(--text-tertiary)">-</td>`;
         tr.innerHTML = `
-          <td style="font-size: 0.875rem; color: var(--text-primary)">${mssqlDesc} [${escapeHtml(upc)}]</td>
+          <td style="font-size: var(--text-base); color: var(--text-primary)">${mssqlDesc} [${escapeHtml(upc)}]</td>
           <td>${currentValueSpan(currentPrice)}<input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="${currentPrice}"></td>
           <td>${currentValueSpan(currentCost)}<input type="number" class="dark-input price-input new-cost" step="0.01" min="0" placeholder="${currentCost}"></td>
           ${deliveryBCell}
@@ -6409,7 +6390,7 @@ function displayPriceResults(upc, prices, siblingPrices) {
           const vMarkup = formatMarkup(vPriceNum, vCostNum);
           const vCostMarkup = formatCostMarkup(vCostNum, primaryCost, p.store_id);
           tr.innerHTML = `
-            <td style="font-size: 0.875rem; color: var(--text-primary)">${variantLabel}${barcodeLabel}</td>
+            <td style="font-size: var(--text-base); color: var(--text-primary)">${variantLabel}${barcodeLabel}</td>
             <td>${currentValueSpan(vPrice)}<input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="${vPrice}"></td>
             <td>${currentValueSpan(vCost)}<input type="number" class="dark-input price-input new-cost" step="0.01" min="0" placeholder="${vCost}"></td>
             <td style="color: var(--text-tertiary)">-</td>
@@ -6455,7 +6436,7 @@ function displayPriceResults(upc, prices, siblingPrices) {
         : `<td style="color: var(--text-tertiary)">-</td>`;
 
       tr.innerHTML = `
-        <td style="color: var(--text-secondary); font-size: 0.875rem">${siblingLabel}</td>
+        <td style="color: var(--text-secondary); font-size: var(--text-base)">${siblingLabel}</td>
         <td>${currentValueSpan(currentPrice)}<input type="number" class="dark-input price-input new-price" step="0.01" min="0" placeholder="${currentPrice}"></td>
         <td>${currentValueSpan(currentCost)}<input type="number" class="dark-input price-input new-cost" step="0.01" min="0" placeholder="${currentCost}"></td>
         ${siblingDeliveryBCell}
@@ -6683,11 +6664,11 @@ function confirmExitPriceFullscreen() {
   const dialog = document.createElement("div");
   dialog.style.cssText = "background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:var(--radius-lg);padding:1.5rem;max-width:360px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,0.4);animation:slideUp 0.15s ease";
   dialog.innerHTML = `
-    <p style="margin:0 0 0.25rem;font-size:0.9375rem;font-weight:600;color:var(--text-primary)">Exit price updates?</p>
-    <p style="margin:0 0 1.25rem;font-size:0.8125rem;color:var(--text-secondary);line-height:1.5">Unsaved changes will be lost.</p>
+    <p style="margin:0 0 0.25rem;font-size: var(--text-md);font-weight:600;color:var(--text-primary)">Exit price updates?</p>
+    <p style="margin:0 0 1.25rem;font-size: var(--text-sm);color:var(--text-secondary);line-height:1.5">Unsaved changes will be lost.</p>
     <div style="display:flex;gap:0.5rem;justify-content:flex-end">
-      <button id="price-exit-stay-btn" class="btn btn-secondary" style="font-size:0.8125rem;padding:0.4375rem 1rem">Cancel</button>
-      <button id="price-exit-leave-btn" class="btn" style="font-size:0.8125rem;padding:0.4375rem 1rem;background:var(--danger);color:#fff;border:none;border-radius:var(--radius-md);cursor:pointer">Exit</button>
+      <button id="price-exit-stay-btn" class="btn btn-secondary" style="font-size: var(--text-sm);padding:0.4375rem 1rem">Cancel</button>
+      <button id="price-exit-leave-btn" class="btn" style="font-size: var(--text-sm);padding:0.4375rem 1rem;background:var(--danger);color:#fff;border:none;border-radius:var(--radius-md);cursor:pointer">Exit</button>
     </div>
   `;
   overlay.appendChild(dialog);
@@ -7313,7 +7294,7 @@ function showUpdateConfirmation() {
     html += `<div style="font-weight: 600; color: var(--text-primary); margin-bottom: 0.25rem;">${storeName}</div>`;
     items.forEach((item) => {
       html += `<div style="padding-left: 0.75rem; margin-bottom: 0.25rem;">`;
-      if (item.desc) html += `<div style="color: var(--text-tertiary); font-size: 0.75rem;">${item.desc}</div>`;
+      if (item.desc) html += `<div style="color: var(--text-tertiary); font-size: var(--text-xs);">${item.desc}</div>`;
       html += `<div>${item.changes}</div>`;
       html += `</div>`;
     });
@@ -7322,10 +7303,10 @@ function showUpdateConfirmation() {
 
   mirrorGroups.forEach(({ items, sourceName }, mirrorName) => {
     html += `<div style="margin-bottom: 0.75rem; opacity: 0.75;">`;
-    html += `<div style="font-weight: 600; color: var(--text-primary); margin-bottom: 0.25rem;">${mirrorName} <span style="font-size: 0.75rem; font-weight: 400; font-style: italic; color: var(--text-tertiary);">(mirrored from ${escapeHtml(sourceName)})</span></div>`;
+    html += `<div style="font-weight: 600; color: var(--text-primary); margin-bottom: 0.25rem;">${mirrorName} <span style="font-size: var(--text-xs); font-weight: 400; font-style: italic; color: var(--text-tertiary);">(mirrored from ${escapeHtml(sourceName)})</span></div>`;
     items.forEach((item) => {
       html += `<div style="padding-left: 0.75rem; margin-bottom: 0.25rem;">`;
-      if (item.desc) html += `<div style="color: var(--text-tertiary); font-size: 0.75rem;">${item.desc}</div>`;
+      if (item.desc) html += `<div style="color: var(--text-tertiary); font-size: var(--text-xs);">${item.desc}</div>`;
       html += `<div>${item.changes}</div>`;
       html += `</div>`;
     });
@@ -8547,7 +8528,7 @@ function displayPriceHistory(batches, total, targetConfig = null) {
     // # cell with chevron
     const numCell = document.createElement("td");
     numCell.style.color = "var(--text-tertiary)";
-    numCell.style.fontSize = "0.875rem";
+    numCell.style.fontSize = "var(--text-base)";
     const chevron = document.createElement("span");
     chevron.className = "ph-chevron";
     numCell.appendChild(chevron);
@@ -8570,19 +8551,19 @@ function displayPriceHistory(batches, total, targetConfig = null) {
       minute: "2-digit",
       second: "2-digit",
     });
-    timestampCell.style.fontSize = "0.875rem";
+    timestampCell.style.fontSize = "var(--text-base)";
     batchRow.appendChild(timestampCell);
 
     // UPC
     const upcCell = document.createElement("td");
-    upcCell.style.fontFamily = "monospace";
-    upcCell.style.fontSize = "0.875rem";
+    upcCell.classList.add("ident");
+    upcCell.style.fontSize = "var(--text-base)";
     upcCell.textContent = batch.upc;
     batchRow.appendChild(upcCell);
 
     // Product
     const productCell = document.createElement("td");
-    productCell.style.fontSize = "0.875rem";
+    productCell.style.fontSize = "var(--text-base)";
     productCell.style.color = "var(--text-primary)";
     productCell.textContent = batch.product_description || "-";
     batchRow.appendChild(productCell);
@@ -8626,7 +8607,7 @@ function displayPriceHistory(batches, total, targetConfig = null) {
     const totalRowsAffected = filteredEntries.reduce((sum, e) => sum + (e.rows_affected || 0), 0);
     updatedCell.textContent = totalRowsAffected;
     updatedCell.style.fontWeight = "600";
-    updatedCell.style.fontSize = "0.875rem";
+    updatedCell.style.fontSize = "var(--text-base)";
     const filteredStoreCount = filteredEntries.length;
     updatedCell.title = `${totalRowsAffected} product${totalRowsAffected !== 1 ? "s" : ""} updated across ${filteredStoreCount} store${filteredStoreCount !== 1 ? "s" : ""}`;
     batchRow.appendChild(updatedCell);
@@ -8717,7 +8698,7 @@ function displayPriceHistory(batches, total, targetConfig = null) {
       // Price/cost changes spanning # + Timestamp columns
       const changeCell = document.createElement("td");
       changeCell.colSpan = 2;
-      changeCell.style.fontSize = "0.8125rem";
+      changeCell.style.fontSize = "var(--text-sm)";
       changeCell.style.overflow = "hidden";
       changeCell.style.textOverflow = "ellipsis";
       changeCell.style.whiteSpace = "nowrap";
@@ -8778,15 +8759,15 @@ function displayPriceHistory(batches, total, targetConfig = null) {
 
       // Barcode (under UPC column)
       const upcCell = document.createElement("td");
-      upcCell.style.fontFamily = "monospace";
-      upcCell.style.fontSize = "0.8125rem";
+      upcCell.classList.add("ident");
+      upcCell.style.fontSize = "var(--text-sm)";
       upcCell.style.color = "var(--text-secondary)";
       upcCell.textContent = entry.variant_barcode || entry.upc || "";
       detailRow.appendChild(upcCell);
 
       // Store name + product description + variant (under Product column)
       const descCell = document.createElement("td");
-      descCell.style.fontSize = "0.875rem";
+      descCell.style.fontSize = "var(--text-base)";
       descCell.style.color = "var(--text-primary)";
       const storeSpan = document.createElement("span");
       storeSpan.style.color = getStoreColor(entry.store_id);
@@ -8795,7 +8776,7 @@ function displayPriceHistory(batches, total, targetConfig = null) {
       descCell.appendChild(storeSpan);
       if (entry.is_mirror) {
         const mirrorBadge = document.createElement("span");
-        mirrorBadge.style.fontSize = "0.625rem";
+        mirrorBadge.style.fontSize = "var(--text-3xs)";
         mirrorBadge.style.marginLeft = "0.375rem";
         mirrorBadge.style.padding = "0.125rem 0.375rem";
         mirrorBadge.style.borderRadius = "var(--radius-sm)";
@@ -8814,7 +8795,7 @@ function displayPriceHistory(batches, total, targetConfig = null) {
         if (variantTitle && variantTitle.toLowerCase() !== "default title") {
           const variantSpan = document.createElement("span");
           variantSpan.style.color = "var(--text-tertiary)";
-          variantSpan.style.fontSize = "0.75rem";
+          variantSpan.style.fontSize = "var(--text-xs)";
           variantSpan.style.marginLeft = "0.375rem";
           variantSpan.textContent = `(${variantTitle})`;
           descCell.appendChild(variantSpan);
@@ -8844,7 +8825,7 @@ function displayPriceHistory(batches, total, targetConfig = null) {
 
       // Rows affected (under Updated column)
       const rowsCell = document.createElement("td");
-      rowsCell.style.fontSize = "0.8125rem";
+      rowsCell.style.fontSize = "var(--text-sm)";
       rowsCell.textContent = entry.success ? (entry.rows_affected || 0) : "-";
       detailRow.appendChild(rowsCell);
 
@@ -9277,7 +9258,7 @@ async function loadFulfillmentStatusPage() {
 
     if (fulfillmentStores.length === 0) {
       container.innerHTML =
-        '<span style="color: var(--text-tertiary); font-size: 0.8125rem;">No active Shopify stores configured</span>';
+        '<span style="color: var(--text-tertiary); font-size: var(--text-sm);">No active Shopify stores configured</span>';
     } else {
       const excluded = getFulfillmentExcluded();
       fulfillmentStores.forEach((store) => {
@@ -9379,7 +9360,7 @@ function displayFulfillmentStatusResults(data) {
       if (row.error) {
         return `<tr>
           <td>${escapeHtml(row.store_name)}</td>
-          <td colspan="5" style="color: var(--danger); font-size: 0.8125rem;">${escapeHtml(row.error)}</td>
+          <td colspan="5" style="color: var(--danger); font-size: var(--text-sm);">${escapeHtml(row.error)}</td>
         </tr>`;
       }
       return `<tr>
@@ -9445,7 +9426,7 @@ async function loadShopifySalesPage() {
 
     if (shopifyStores.length === 0) {
       container.innerHTML =
-        '<span style="color: var(--text-tertiary); font-size: 0.8125rem;">No active Shopify stores configured</span>';
+        '<span style="color: var(--text-tertiary); font-size: var(--text-sm);">No active Shopify stores configured</span>';
       return;
     }
 
@@ -9808,7 +9789,7 @@ function buildShopifySalesColumnPills() {
   SHOPIFY_SALES_COLUMNS.forEach((col) => {
     const isVisible = !shopifySalesHiddenColumns.includes(col.key);
     const label = document.createElement("label");
-    label.style.cssText = `display: inline-flex; align-items: center; gap: 0.25rem; font-size: 0.75rem; cursor: pointer; padding: 0.2rem 0.5rem; border-radius: 1rem; border: 1px solid var(--border-color); background: ${isVisible ? "var(--bg-tertiary, rgba(255,255,255,0.08))" : "transparent"}; white-space: nowrap; opacity: ${isVisible ? "1" : "0.5"}; transition: opacity 0.15s, background 0.15s;`;
+    label.style.cssText = `display: inline-flex; align-items: center; gap: 0.25rem; font-size: var(--text-xs); cursor: pointer; padding: 0.2rem 0.5rem; border-radius: 1rem; border: 1px solid var(--border-color); background: ${isVisible ? "var(--bg-tertiary, rgba(255,255,255,0.08))" : "transparent"}; white-space: nowrap; opacity: ${isVisible ? "1" : "0.5"}; transition: opacity 0.15s, background 0.15s;`;
     const cb = document.createElement("input");
     cb.type = "checkbox";
     cb.checked = isVisible;
@@ -9942,7 +9923,7 @@ function displayShopifySalesResults(data) {
 
   const skippedStores = summary.skipped_stores || [];
   if (skippedStores.length > 0) {
-    summaryHtml += `<div style="margin-top:6px;padding:6px 10px;border-left:3px solid var(--warning, #f9ab00);background:var(--bg-tertiary, rgba(255,255,255,0.04));border-radius:4px;font-size:0.85rem;">Skipped (not synced): ${escapeHtml(skippedStores.join(", "))} — run a sync in the Data Sync tab or uncheck Use local data.</div>`;
+    summaryHtml += `<div style="margin-top:6px;padding:6px 10px;border-left:3px solid var(--warning, #f9ab00);background:var(--bg-tertiary, rgba(255,255,255,0.04));border-radius:4px;font-size: var(--text-sm);">Skipped (not synced): ${escapeHtml(skippedStores.join(", "))} — run a sync in the Data Sync tab or uncheck Use local data.</div>`;
   }
 
   const staleStores = summary.stale_stores || [];
@@ -9950,15 +9931,15 @@ function displayShopifySalesResults(data) {
     const staleList = staleStores
       .map((s) => `${s.store_name}${s.last_synced_at ? ` (as of ${syncTimeAgo(s.last_synced_at)})` : ""}`)
       .join(", ");
-    summaryHtml += `<div style="margin-top:6px;padding:6px 10px;border-left:3px solid var(--warning, #f9ab00);background:var(--bg-tertiary, rgba(255,255,255,0.04));border-radius:4px;font-size:0.85rem;">May be out of date — the pre-run sync did not complete for: ${escapeHtml(staleList)}. Recent orders may be missing; retry, check the Data Sync tab, or uncheck Use local data.</div>`;
+    summaryHtml += `<div style="margin-top:6px;padding:6px 10px;border-left:3px solid var(--warning, #f9ab00);background:var(--bg-tertiary, rgba(255,255,255,0.04));border-radius:4px;font-size: var(--text-sm);">May be out of date — the pre-run sync did not complete for: ${escapeHtml(staleList)}. Recent orders may be missing; retry, check the Data Sync tab, or uncheck Use local data.</div>`;
   }
 
   const excludedProducts = summary.excluded_products || [];
   if (excludedProducts.length > 0) {
     const exclRev = parseFloat(summary.excluded_total_revenue || 0);
     const exclQty = summary.excluded_total_quantity || 0;
-    let exclRows = excludedProducts.map(p => `<div style="display:flex;justify-content:space-between;padding:2px 0;font-size:0.8125rem;"><span>${escapeHtml(p.product_title)}</span><span>${p.quantity.toLocaleString()} units · $${parseFloat(p.revenue).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></div>`).join("");
-    summaryHtml += `<div style="margin-top:6px;padding:6px 10px;border-left:3px solid var(--warning, #f9ab00);background:var(--bg-tertiary, rgba(255,255,255,0.04));border-radius:4px;font-size:0.85rem;">Excluded: ${excludedProducts.length} product(s) · ${exclQty.toLocaleString()} units · $${exclRev.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} revenue <a href="#" id="toggle-excluded-details" style="margin-left:8px;font-size:0.8rem;">[show]</a><div id="excluded-details" style="display:none;margin-top:4px;padding-top:4px;border-top:1px solid var(--border-color, rgba(255,255,255,0.1));">${exclRows}</div></div>`;
+    let exclRows = excludedProducts.map(p => `<div style="display:flex;justify-content:space-between;padding:2px 0;font-size: var(--text-sm);"><span>${escapeHtml(p.product_title)}</span><span>${p.quantity.toLocaleString()} units · $${parseFloat(p.revenue).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></div>`).join("");
+    summaryHtml += `<div style="margin-top:6px;padding:6px 10px;border-left:3px solid var(--warning, #f9ab00);background:var(--bg-tertiary, rgba(255,255,255,0.04));border-radius:4px;font-size: var(--text-sm);">Excluded: ${excludedProducts.length} product(s) · ${exclQty.toLocaleString()} units · $${exclRev.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} revenue <a href="#" id="toggle-excluded-details" style="margin-left:8px;font-size: var(--text-sm);">[show]</a><div id="excluded-details" style="display:none;margin-top:4px;padding-top:4px;border-top:1px solid var(--border-color, rgba(255,255,255,0.1));">${exclRows}</div></div>`;
   }
 
   summaryEl.innerHTML = summaryHtml;
@@ -10003,9 +9984,9 @@ function displayShopifySalesResults(data) {
         return `<td>${escapeHtml(productDisplay)}</td>`;
       }
       case "barcode":
-        return `<td style="font-family: monospace; font-size: 0.8125rem;">${escapeHtml(r.barcode || "")}</td>`;
+        return `<td style="font-family: var(--font-mono); font-size: var(--text-xs);">${escapeHtml(r.barcode || "")}</td>`;
       case "sku":
-        return `<td style="font-size: 0.8125rem;">${escapeHtml(r.sku || "")}</td>`;
+        return `<td style="font-size: var(--text-sm);">${escapeHtml(r.sku || "")}</td>`;
       case "cost":
       case "real_cost":
       case "avg_price":
@@ -10156,15 +10137,15 @@ function exportShopifySalesToExcel() {
 // ===== Sales Report =====
 
 const SALES_COLUMNS = [
-  { key: "upc",            label: "UPC",         soldOnly: false, baseWidth: 10, align: "left",  thStyle: "",                    tdStyle: "font-family: monospace; font-size: 0.8125rem",                                                                      hasFilter: true },
-  { key: "description",    label: "Description", soldOnly: false, baseWidth: 25, align: "left",  thStyle: "",                    tdStyle: "font-size: 0.8125rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap",                               hasFilter: true },
-  { key: "subcategory",    label: "Subcategory", soldOnly: false, baseWidth: 12, align: "left",  thStyle: "",                    tdStyle: "font-size: 0.8125rem; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap", hasFilter: true },
-  { key: "bin_location",   label: "Bin",         soldOnly: false, baseWidth: 8,  align: "left",  thStyle: "",                    tdStyle: "font-size: 0.8125rem",                                                                                              hasFilter: false },
-  { key: "reorder_level",  label: "Reorder",     soldOnly: false, baseWidth: 6,  align: "right", thStyle: "text-align: right;",  tdStyle: "text-align: right; font-size: 0.8125rem",                                                                           hasFilter: true },
-  { key: "quant_on_hand",  label: "On Hand",     soldOnly: false, baseWidth: 7,  align: "right", thStyle: "text-align: right;",  tdStyle: "text-align: right; font-size: 0.8125rem",                                                                           hasFilter: false },
-  { key: "total_sold",     label: "Sold",        soldOnly: true,  baseWidth: 6,  align: "right", thStyle: "text-align: right;",  tdStyle: "text-align: right; font-size: 0.8125rem",                                                                           hasFilter: false },
-  { key: "total_returned", label: "Returns",     soldOnly: true,  baseWidth: 6,  align: "right", thStyle: "text-align: right;",  tdStyle: "text-align: right; font-size: 0.8125rem; color: var(--warning)",                                                    hasFilter: false },
-  { key: "net_sold",       label: "Net Sold",    soldOnly: true,  baseWidth: 7,  align: "right", thStyle: "text-align: right;",  tdStyle: "text-align: right; font-size: 0.8125rem; font-weight: 600",                                                         hasFilter: false },
+  { key: "upc",            label: "UPC",         soldOnly: false, baseWidth: 10, align: "left",  thStyle: "",                    tdStyle: "font-family: var(--font-mono); font-size: var(--text-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap",                                                                      hasFilter: true },
+  { key: "description",    label: "Description", soldOnly: false, baseWidth: 25, align: "left",  thStyle: "",                    tdStyle: "font-size: var(--text-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap",                               hasFilter: true },
+  { key: "subcategory",    label: "Subcategory", soldOnly: false, baseWidth: 12, align: "left",  thStyle: "",                    tdStyle: "font-size: var(--text-sm); color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap", hasFilter: true },
+  { key: "bin_location",   label: "Bin",         soldOnly: false, baseWidth: 8,  align: "left",  thStyle: "",                    tdStyle: "font-size: var(--text-sm)",                                                                                              hasFilter: false },
+  { key: "reorder_level",  label: "Reorder",     soldOnly: false, baseWidth: 6,  align: "right", thStyle: "text-align: right;",  tdStyle: "text-align: right; font-size: var(--text-sm)",                                                                           hasFilter: true },
+  { key: "quant_on_hand",  label: "On Hand",     soldOnly: false, baseWidth: 7,  align: "right", thStyle: "text-align: right;",  tdStyle: "text-align: right; font-size: var(--text-sm)",                                                                           hasFilter: false },
+  { key: "total_sold",     label: "Sold",        soldOnly: true,  baseWidth: 6,  align: "right", thStyle: "text-align: right;",  tdStyle: "text-align: right; font-size: var(--text-sm)",                                                                           hasFilter: false },
+  { key: "total_returned", label: "Returns",     soldOnly: true,  baseWidth: 6,  align: "right", thStyle: "text-align: right;",  tdStyle: "text-align: right; font-size: var(--text-sm); color: var(--warning)",                                                    hasFilter: false },
+  { key: "net_sold",       label: "Net Sold",    soldOnly: true,  baseWidth: 7,  align: "right", thStyle: "text-align: right;",  tdStyle: "text-align: right; font-size: var(--text-sm); font-weight: 600",                                                         hasFilter: false },
 ];
 
 function getVisibleColumns(isSold) {
@@ -10187,7 +10168,7 @@ function buildColumnTogglePills() {
   SALES_COLUMNS.forEach(col => {
     const isVisible = !salesState.hiddenColumns.includes(col.key);
     const label = document.createElement("label");
-    label.style.cssText = `display: inline-flex; align-items: center; gap: 0.25rem; font-size: 0.75rem; cursor: pointer; padding: 0.2rem 0.5rem; border-radius: 1rem; border: 1px solid var(--border-color); background: ${isVisible ? "var(--bg-tertiary, rgba(255,255,255,0.08))" : "transparent"}; white-space: nowrap; opacity: ${isVisible ? "1" : "0.5"}; transition: opacity 0.15s, background 0.15s;`;
+    label.style.cssText = `display: inline-flex; align-items: center; gap: 0.25rem; font-size: var(--text-xs); cursor: pointer; padding: 0.2rem 0.5rem; border-radius: 1rem; border: 1px solid var(--border-color); background: ${isVisible ? "var(--bg-tertiary, rgba(255,255,255,0.08))" : "transparent"}; white-space: nowrap; opacity: ${isVisible ? "1" : "0.5"}; transition: opacity 0.15s, background 0.15s;`;
     const cb = document.createElement("input");
     cb.type = "checkbox";
     cb.checked = isVisible;
@@ -10343,7 +10324,7 @@ function populateSalesConfigForm(config) {
   const selectedMssql = config ? (config.mssql_store_ids || []) : [];
   salesState.allMssqlStores.forEach((s) => {
     const label = document.createElement("label");
-    label.style.cssText = "display: inline-flex; align-items: center; gap: 0.375rem; font-size: 0.8125rem; cursor: pointer; padding: 0.25rem 0.625rem; border-radius: 1rem; border: 1px solid var(--border-color); background: var(--bg-tertiary); white-space: nowrap;";
+    label.style.cssText = "display: inline-flex; align-items: center; gap: 0.375rem; font-size: var(--text-sm); cursor: pointer; padding: 0.25rem 0.625rem; border-radius: 1rem; border: 1px solid var(--border-color); background: var(--bg-tertiary); white-space: nowrap;";
     const checked = selectedMssql.includes(s.id) ? "checked" : "";
     label.innerHTML = `<input type="checkbox" class="sales-cfg-mssql-cb" value="${s.id}" ${checked}> ${s.name}`;
     mssqlContainer.appendChild(label);
@@ -10357,7 +10338,7 @@ function populateSalesConfigForm(config) {
     shopifyGroup.style.display = "block";
     salesState.allShopifyStores.forEach((s) => {
       const label = document.createElement("label");
-      label.style.cssText = "display: inline-flex; align-items: center; gap: 0.375rem; font-size: 0.8125rem; cursor: pointer; padding: 0.25rem 0.625rem; border-radius: 1rem; border: 1px solid var(--border-color); background: var(--bg-tertiary); white-space: nowrap;";
+      label.style.cssText = "display: inline-flex; align-items: center; gap: 0.375rem; font-size: var(--text-sm); cursor: pointer; padding: 0.25rem 0.625rem; border-radius: 1rem; border: 1px solid var(--border-color); background: var(--bg-tertiary); white-space: nowrap;";
       const checked = selectedShopify.includes(s.id) ? "checked" : "";
       label.innerHTML = `<input type="checkbox" class="sales-cfg-shopify-cb" value="${s.id}" ${checked}> ${s.name}`;
       shopifyContainer.appendChild(label);
@@ -10780,15 +10761,15 @@ function renderSalesTable() {
   if (filterRow.dataset.viewKey !== filterCacheKey) {
     filterRow.dataset.viewKey = filterCacheKey;
 
-    const subcatTrigger = `<div id="sales-subcat-trigger" onclick="toggleSubcatDropdown()" class="dark-input" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center; font-size: 0.75rem; padding: 0.2rem 0.4rem; user-select: none;">
+    const subcatTrigger = `<div id="sales-subcat-trigger" onclick="toggleSubcatDropdown()" class="dark-input" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center; font-size: var(--text-xs); padding: 0.2rem 0.4rem; user-select: none;">
       <span id="sales-subcat-label" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">All</span>
-      <span style="font-size: 0.5rem; color: var(--text-tertiary);">▼</span>
+      <span style="font-size: var(--text-3xs); color: var(--text-tertiary);">▼</span>
     </div>
     <div id="sales-subcat-dropdown" style="display: none; position: fixed; z-index: 100; max-height: 500px; overflow-y: auto; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-md); box-shadow: var(--shadow-md); min-width: 280px;"></div>`;
 
-    const reorderTrigger = `<div id="sales-reorder-trigger" onclick="toggleReorderDropdown()" class="dark-input" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center; font-size: 0.75rem; padding: 0.2rem 0.4rem; user-select: none;">
+    const reorderTrigger = `<div id="sales-reorder-trigger" onclick="toggleReorderDropdown()" class="dark-input" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center; font-size: var(--text-xs); padding: 0.2rem 0.4rem; user-select: none;">
       <span id="sales-reorder-label" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">All</span>
-      <span style="font-size: 0.5rem; color: var(--text-tertiary);">▼</span>
+      <span style="font-size: var(--text-3xs); color: var(--text-tertiary);">▼</span>
     </div>
     <div id="sales-reorder-dropdown" style="display: none; position: fixed; z-index: 100; max-height: 500px; overflow-y: auto; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-md); box-shadow: var(--shadow-md); min-width: 180px;"></div>`;
 
@@ -10804,9 +10785,9 @@ function renderSalesTable() {
       } else if (col.key === "reorder_level") {
         filterHtml += `<td style="${w}">${reorderTrigger}</td>`;
       } else if (col.key === "bin_location") {
-        filterHtml += `<td style="${w}"><select id="sales-filter-bins" class="dark-input" onchange="applySalesFilters()" style="font-size: 0.75rem; padding: 0.2rem 0.3rem;"><option value="">All</option><option value="no-bins">No Bins</option><option value="bins-only">Bins Only</option></select></td>`;
+        filterHtml += `<td style="${w}"><select id="sales-filter-bins" class="dark-input" onchange="applySalesFilters()" style="font-size: var(--text-xs); padding: 0.2rem 0.3rem;"><option value="">All</option><option value="no-bins">No Bins</option><option value="bins-only">Bins Only</option></select></td>`;
       } else if (col.key === "quant_on_hand") {
-        filterHtml += `<td style="${w}"><label style="display: flex; align-items: center; gap: 0.25rem; font-size: 0.75rem; cursor: pointer; white-space: nowrap;"><input type="checkbox" id="sales-filter-instock" onchange="applySalesFilters()"> In Stock</label></td>`;
+        filterHtml += `<td style="${w}"><label style="display: flex; align-items: center; gap: 0.25rem; font-size: var(--text-xs); cursor: pointer; white-space: nowrap;"><input type="checkbox" id="sales-filter-instock" onchange="applySalesFilters()"> In Stock</label></td>`;
       } else {
         filterHtml += `<td style="${w}"></td>`;
       }
@@ -10866,7 +10847,7 @@ function renderSalesTable() {
   tbody.innerHTML = "";
   pageData.forEach((p, i) => {
     const row = document.createElement("tr");
-    let cellsHtml = `<td style="text-align: center; color: var(--text-tertiary); font-size: 0.75rem">${start + i + 1}</td>`;
+    let cellsHtml = `<td style="text-align: center; color: var(--text-tertiary); font-size: var(--text-xs)">${start + i + 1}</td>`;
     visibleCols.forEach(col => {
       const raw = col.key === "subcategory" ? (p.subcategory || "") :
                   col.key === "bin_location" ? (p.bin_location || "") :
@@ -10892,14 +10873,14 @@ function renderSalesTable() {
     let labelPlaced = false;
     visibleCols.forEach((col, idx) => {
       if (col.key === "description") {
-        footHtml += `<td style="font-size: 0.8125rem">Totals</td>`;
+        footHtml += `<td style="font-size: var(--text-sm)">Totals</td>`;
         labelPlaced = true;
       } else if (!labelPlaced && !hasDesc && idx === 0) {
-        footHtml += `<td style="font-size: 0.8125rem">Totals</td>`;
+        footHtml += `<td style="font-size: var(--text-sm)">Totals</td>`;
         labelPlaced = true;
       } else if (totalsMap[col.key] !== undefined) {
         const colorStyle = col.key === "total_returned" ? " color: var(--warning);" : "";
-        footHtml += `<td style="text-align: right; font-size: 0.8125rem;${colorStyle}">${totalsMap[col.key].toLocaleString()}</td>`;
+        footHtml += `<td style="text-align: right; font-size: var(--text-sm);${colorStyle}">${totalsMap[col.key].toLocaleString()}</td>`;
       } else {
         footHtml += `<td></td>`;
       }
@@ -10999,16 +10980,16 @@ function buildSubcatDropdown(subcategories) {
   controls.style.cssText = "display: flex; justify-content: space-between; align-items: center; padding: 0.375rem 0.75rem; border-bottom: 2px solid var(--border-color); gap: 0.25rem;";
   controls.innerHTML = `
     <div style="display: flex; gap: 0.375rem;">
-      <button type="button" class="btn btn-secondary" onclick="salesSubcatCheckAll(true)" style="font-size: 0.625rem; padding: 0.15rem 0.4rem;">All</button>
-      <button type="button" class="btn btn-secondary" onclick="salesSubcatCheckAll(false)" style="font-size: 0.625rem; padding: 0.15rem 0.4rem;">None</button>
+      <button type="button" class="btn btn-secondary" onclick="salesSubcatCheckAll(true)" style="font-size: var(--text-3xs); padding: 0.15rem 0.4rem;">All</button>
+      <button type="button" class="btn btn-secondary" onclick="salesSubcatCheckAll(false)" style="font-size: var(--text-3xs); padding: 0.15rem 0.4rem;">None</button>
     </div>
-    <button type="button" class="btn btn-secondary" onclick="openSubcatExclusions()" style="font-size: 0.625rem; padding: 0.15rem 0.4rem;" title="Hide subcategories from this list">Manage</button>
+    <button type="button" class="btn btn-secondary" onclick="openSubcatExclusions()" style="font-size: var(--text-3xs); padding: 0.15rem 0.4rem;" title="Hide subcategories from this list">Manage</button>
   `;
   container.appendChild(controls);
 
   visibleSubcats.forEach((sc) => {
     const label = document.createElement("label");
-    label.style.cssText = "display: flex; align-items: center; gap: 0.5rem; padding: 0.375rem 0.75rem; cursor: pointer; font-size: 0.8125rem; border-bottom: 1px solid var(--border-color);";
+    label.style.cssText = "display: flex; align-items: center; gap: 0.5rem; padding: 0.375rem 0.75rem; cursor: pointer; font-size: var(--text-sm); border-bottom: 1px solid var(--border-color);";
     label.innerHTML = `<input type="checkbox" class="sales-subcat-cb" value="${sc}" checked onchange="onSubcatChange()"> ${sc}`;
     container.appendChild(label);
   });
@@ -11030,14 +11011,14 @@ function openSubcatExclusions() {
   let html = '<div style="max-height: 300px; overflow-y: auto;">';
   allSubcats.forEach((sc) => {
     const isExcluded = excluded.includes(sc);
-    html += `<label style="display: flex; align-items: center; gap: 0.5rem; padding: 0.375rem 0.75rem; cursor: pointer; font-size: 0.8125rem; border-bottom: 1px solid var(--border-color);">
+    html += `<label style="display: flex; align-items: center; gap: 0.5rem; padding: 0.375rem 0.75rem; cursor: pointer; font-size: var(--text-sm); border-bottom: 1px solid var(--border-color);">
       <input type="checkbox" class="sales-subcat-manage-cb" value="${sc}" ${isExcluded ? "" : "checked"}> ${sc}
     </label>`;
   });
   html += '</div>';
   html += '<div style="padding: 0.5rem 0.75rem; border-top: 2px solid var(--border-color); display: flex; justify-content: flex-end; gap: 0.375rem;">';
-  html += '<button type="button" class="btn btn-secondary" onclick="cancelSubcatExclusions()" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Cancel</button>';
-  html += '<button type="button" class="btn btn-primary" onclick="saveSubcatExclusions()" style="font-size: 0.6875rem; padding: 0.25rem 0.5rem;">Save</button>';
+  html += '<button type="button" class="btn btn-secondary" onclick="cancelSubcatExclusions()" style="font-size: var(--text-2xs); padding: 0.25rem 0.5rem;">Cancel</button>';
+  html += '<button type="button" class="btn btn-primary" onclick="saveSubcatExclusions()" style="font-size: var(--text-2xs); padding: 0.25rem 0.5rem;">Save</button>';
   html += '</div>';
 
   const panel = document.getElementById("sales-subcat-dropdown");
@@ -11124,15 +11105,15 @@ function buildReorderDropdown(levels) {
   controls.style.cssText = "display: flex; justify-content: space-between; align-items: center; padding: 0.375rem 0.75rem; border-bottom: 2px solid var(--border-color); gap: 0.25rem;";
   controls.innerHTML = `
     <div style="display: flex; gap: 0.375rem;">
-      <button type="button" class="btn btn-secondary" onclick="reorderCheckAll(true)" style="font-size: 0.625rem; padding: 0.15rem 0.4rem;">All</button>
-      <button type="button" class="btn btn-secondary" onclick="reorderCheckAll(false)" style="font-size: 0.625rem; padding: 0.15rem 0.4rem;">None</button>
+      <button type="button" class="btn btn-secondary" onclick="reorderCheckAll(true)" style="font-size: var(--text-3xs); padding: 0.15rem 0.4rem;">All</button>
+      <button type="button" class="btn btn-secondary" onclick="reorderCheckAll(false)" style="font-size: var(--text-3xs); padding: 0.15rem 0.4rem;">None</button>
     </div>
   `;
   container.appendChild(controls);
 
   levels.forEach((lvl) => {
     const label = document.createElement("label");
-    label.style.cssText = "display: flex; align-items: center; gap: 0.5rem; padding: 0.375rem 0.75rem; cursor: pointer; font-size: 0.8125rem; border-bottom: 1px solid var(--border-color);";
+    label.style.cssText = "display: flex; align-items: center; gap: 0.5rem; padding: 0.375rem 0.75rem; cursor: pointer; font-size: var(--text-sm); border-bottom: 1px solid var(--border-color);";
     label.innerHTML = `<input type="checkbox" class="sales-reorder-cb" value="${lvl}" checked onchange="onReorderChange()"> ${lvl}`;
     container.appendChild(label);
   });
@@ -11209,7 +11190,7 @@ function searchSalesBusinessNames() {
       container.innerHTML = "";
       data.results.forEach((name) => {
         const div = document.createElement("div");
-        div.style.cssText = "padding: 0.375rem 0.75rem; cursor: pointer; font-size: 0.8125rem; border-bottom: 1px solid var(--border-color);";
+        div.style.cssText = "padding: 0.375rem 0.75rem; cursor: pointer; font-size: var(--text-sm); border-bottom: 1px solid var(--border-color);";
         div.textContent = name;
         div.onmouseenter = () => { div.style.background = "var(--bg-hover)"; };
         div.onmouseleave = () => { div.style.background = ""; };
@@ -11244,14 +11225,14 @@ async function loadSalesExclusions() {
       container.innerHTML = '<p style="color: var(--text-tertiary); margin: 0;">No exclusions configured.</p>';
       return;
     }
-    let html = '<table class="data-table" style="font-size: 0.8125rem;"><thead><tr><th>Business Name</th><th style="width: 100px;">Scope</th><th style="width: 60px;"></th></tr></thead><tbody>';
+    let html = '<table class="data-table" style="font-size: var(--text-sm);"><thead><tr><th>Business Name</th><th style="width: 100px;">Scope</th><th style="width: 60px;"></th></tr></thead><tbody>';
     data.exclusions.forEach((e) => {
       const scope = e.void_status === null ? "All" : (e.void_status === 0 ? "Non-voided" : "Voided");
       const scopeColor = e.void_status === null ? "var(--text-tertiary)" : (e.void_status === 0 ? "var(--success)" : "var(--warning)");
       html += `<tr>
         <td>${e.business_name}</td>
         <td style="color: ${scopeColor}">${scope}</td>
-        <td style="text-align: center;"><button class="btn btn-secondary" style="font-size: 0.6875rem; padding: 0.15rem 0.4rem;" onclick="deleteSalesExclusion(${e.id})">Remove</button></td>
+        <td style="text-align: center;"><button class="btn btn-secondary" style="font-size: var(--text-2xs); padding: 0.15rem 0.4rem;" onclick="deleteSalesExclusion(${e.id})">Remove</button></td>
       </tr>`;
     });
     html += '</tbody></table>';
@@ -13366,7 +13347,7 @@ function renderSancmStoreCheckboxes() {
   const stores = shopifyAnalyticsState.shopifyStores || [];
   if (stores.length === 0) {
     container.innerHTML =
-      '<span style="color: var(--text-tertiary); font-size: 0.8125rem;">No active Shopify stores configured</span>';
+      '<span style="color: var(--text-tertiary); font-size: var(--text-sm);">No active Shopify stores configured</span>';
     return;
   }
 
@@ -16454,7 +16435,7 @@ async function openSacrDetail(storeId, customerId, customerName) {
   if (!body) return;
   if (title) title.textContent = customerName || "Customer";
   body.innerHTML =
-    '<p style="color: var(--text-secondary); font-size: 0.8125rem;">Loading recent orders...</p>';
+    '<p style="color: var(--text-secondary); font-size: var(--text-sm);">Loading recent orders...</p>';
   openModal("sacr-detail-modal");
 
   try {
@@ -16480,7 +16461,7 @@ async function openSacrDetail(storeId, customerId, customerName) {
     }
     renderSacrDetail(await response.json());
   } catch (e) {
-    body.innerHTML = `<p style="color: var(--danger); font-size: 0.8125rem;">Could not load this customer's orders: ${saEscape(e.message || String(e))}</p>`;
+    body.innerHTML = `<p style="color: var(--danger); font-size: var(--text-sm);">Could not load this customer's orders: ${saEscape(e.message || String(e))}</p>`;
   }
 }
 
@@ -16490,7 +16471,7 @@ function renderSacrDetail(data) {
   const orders = data.orders || [];
   if (!orders.length) {
     body.innerHTML =
-      '<p style="color: var(--text-secondary); font-size: 0.8125rem;">No orders returned for this customer.</p>';
+      '<p style="color: var(--text-secondary); font-size: var(--text-sm);">No orders returned for this customer.</p>';
     return;
   }
 
@@ -18722,7 +18703,7 @@ async function quickBooksConnectComplete() {
 }
 
 async function quickBooksDisconnect() {
-  if (!confirm("Disconnect QuickBooks? Cached balances are cleared; the app keys stay saved.")) return;
+  if (!(await uiConfirm("Disconnect QuickBooks? Cached balances are cleared; the app keys stay saved.", { danger: true, confirmLabel: "Disconnect" }))) return;
   try {
     qbState.conn = await qbRequest("/disconnect", { method: "POST" });
     qbFillForm(qbState.conn);
@@ -18891,7 +18872,7 @@ function loadDataSyncPanel() {
   if (!list) return;
   if (!list.dataset.bound) {
     list.dataset.bound = "1";
-    list.addEventListener("click", (e) => {
+    list.addEventListener("click", async (e) => {
       const btn = e.target.closest("button[data-sync-action]");
       if (!btn) return;
       const storeId = parseInt(btn.dataset.storeId, 10);
@@ -18900,9 +18881,9 @@ function loadDataSyncPanel() {
         startSync(storeId, "incremental");
       } else if (action === "full") {
         if (
-          confirm(
-            "Full resync re-downloads this store's entire history and can take a while. Continue?",
-          )
+          (await uiConfirm(
+            "Full resync re-downloads this store's entire history and can take a while. Continue?", { confirmLabel: "Run full resync" }
+          ))
         ) {
           startSync(storeId, "full");
         }
@@ -18917,7 +18898,7 @@ function loadDataSyncPanel() {
   fetchSyncStatus()
     .then(renderSyncStores)
     .catch((e) => {
-      list.innerHTML = `<p style="color: var(--danger); font-size: 0.8125rem;">Failed to load sync status: ${escapeHtml(e.message)}</p>`;
+      list.innerHTML = `<p style="color: var(--danger); font-size: var(--text-sm);">Failed to load sync status: ${escapeHtml(e.message)}</p>`;
     });
 }
 
@@ -18944,7 +18925,7 @@ function renderSyncStores() {
   if (!list) return;
   if (!syncState.stores.length) {
     list.innerHTML =
-      '<p style="color: var(--text-secondary); font-size: 0.8125rem;">No Shopify stores configured.</p>';
+      '<p style="color: var(--text-secondary); font-size: var(--text-sm);">No Shopify stores configured.</p>';
     return;
   }
   list.innerHTML = syncState.stores
@@ -30361,7 +30342,7 @@ async function osyncAutoSave() {
   const wasLive = osyncAuto.cfg && osyncAuto.cfg.enabled && !osyncAuto.cfg.dry_run;
   const cancels = d.steps.cancel_online_store || d.steps.cancel_duplicates;
   if (d.enabled && !d.dry_run && !wasLive &&
-      !confirm(`The automation will make changes in Shopify every day${cancels ? ", including cancelling orders," : ""} without asking. Turn on live mode?`)) {
+      !(await uiConfirm(`The automation will make changes in Shopify every day${cancels ? ", including cancelling orders," : ""} without asking. Turn on live mode?`, { danger: true, confirmLabel: "Turn on live mode" }))) {
     return;
   }
   osyncAuto.busy = true;
@@ -30384,7 +30365,7 @@ async function osyncAutoRunNow(dryRun) {
   const steps = (osyncAuto.cfg && osyncAuto.cfg.steps) || {};
   if (!dryRun) {
     const cancels = steps.cancel_online_store || steps.cancel_duplicates;
-    if (!confirm(`Run the saved steps LIVE for ${date || "yesterday"}? Changes are made in Shopify${cancels ? ", including cancelling orders" : ""}.`)) return;
+    if (!(await uiConfirm(`Run the saved steps LIVE for ${date || "yesterday"}? Changes are made in Shopify${cancels ? ", including cancelling orders" : ""}.`, { danger: true, confirmLabel: "Run live" }))) return;
   }
   try {
     const run = await osyncAutoCall("POST", "/order-sync/auto/run", { dry_run: dryRun, date });
@@ -30658,7 +30639,7 @@ function osyncAutoStepLabel(step) {
 async function osyncAutoStop() {
   const run = osyncAuto.run;
   if (!run || run.status !== "running") return;
-  if (!confirm("Stop this run? The order being changed right now is finished first; the rest are skipped.")) return;
+  if (!(await uiConfirm("Stop this run? The order being changed right now is finished first; the rest are skipped.", { danger: true, confirmLabel: "Stop run" }))) return;
   try {
     await osyncAutoCall("POST", `/order-sync/auto/runs/${run.id}/stop`);
     run.stop_requested = true;
@@ -30773,3 +30754,228 @@ function osyncAutoInit() {
 document.addEventListener("DOMContentLoaded", osyncAutoInit);
 
 // ===== End Order Sync automation =====
+
+// ===== UI kit: in-app dialogs and shared modal behaviour =====
+//
+// uiConfirm / uiAlert replace the browser's confirm() and alert() popups: they
+// follow the theme, name their action on the button, and never block the page.
+// The modal behaviour below gives every `.modal` Escape-to-close, a focus trap,
+// focus return and dialog semantics, however the feature opens it.
+
+let uiDialogSeq = 0;
+
+function uiDialog({ title = "", message = "", confirmLabel = "OK", cancelLabel = "Cancel", showCancel = true, danger = false } = {}) {
+  return new Promise((resolve) => {
+    const prevFocus = document.activeElement;
+    const id = `ui-dialog-${++uiDialogSeq}`;
+    const overlay = document.createElement("div");
+    overlay.className = "modal dialog-modal active";
+    overlay.dataset.uiDialog = "1";
+    overlay.style.zIndex = "1300";
+    overlay.setAttribute("role", "alertdialog");
+    overlay.setAttribute("aria-modal", "true");
+    overlay.setAttribute("aria-labelledby", `${id}-title`);
+    if (message) overlay.setAttribute("aria-describedby", `${id}-message`);
+    overlay.innerHTML = `
+      <div class="modal-content">
+        <div class="dialog-body">
+          <div class="dialog-title" id="${id}-title"></div>
+          <div class="dialog-message" id="${id}-message"></div>
+        </div>
+        <div class="modal-footer">
+          ${showCancel ? '<button type="button" class="btn btn-secondary" data-act="cancel"></button>' : ""}
+          <button type="button" class="btn ${danger ? "btn-danger" : "btn-primary"}" data-act="ok"></button>
+        </div>
+      </div>`;
+    overlay.querySelector(".dialog-title").textContent = title;
+    const messageEl = overlay.querySelector(".dialog-message");
+    if (message) messageEl.textContent = message; else messageEl.remove();
+    const okBtn = overlay.querySelector('[data-act="ok"]');
+    const cancelBtn = overlay.querySelector('[data-act="cancel"]');
+    okBtn.textContent = confirmLabel;
+    if (cancelBtn) cancelBtn.textContent = cancelLabel;
+
+    const close = (result) => {
+      document.removeEventListener("keydown", onKey, true);
+      overlay.remove();
+      if (prevFocus && document.contains(prevFocus) && prevFocus.focus) prevFocus.focus({ preventScroll: true });
+      resolve(result);
+    };
+    const onKey = (e) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        close(false);
+      } else if (e.key === "Tab") {
+        const buttons = [cancelBtn, okBtn].filter(Boolean);
+        const at = buttons.indexOf(document.activeElement);
+        e.preventDefault();
+        buttons[(at + (e.shiftKey ? buttons.length - 1 : 1)) % buttons.length].focus();
+      }
+    };
+    document.addEventListener("keydown", onKey, true);
+    overlay.addEventListener("click", (e) => {
+      const act = e.target.closest("[data-act]");
+      if (act) close(act.dataset.act === "ok");
+      else if (e.target === overlay && showCancel) close(false);
+    });
+    document.body.appendChild(overlay);
+    // A destructive choice should not be one stray Enter away.
+    (danger && cancelBtn ? cancelBtn : okBtn).focus();
+  });
+}
+
+// "Question?\n\nDetail" becomes a title and a body; a lone sentence is the title.
+function uiDialogText(text) {
+  const raw = String(text ?? "").trim();
+  const [first, ...rest] = raw.split(/\n\s*\n/);
+  if (rest.length && first.length <= 120) return { title: first, message: rest.join("\n\n") };
+  if (raw.length <= 90 && !raw.includes("\n")) return { title: raw, message: "" };
+  return { title: "", message: raw };
+}
+
+function uiConfirm(text, opts = {}) {
+  const parts = uiDialogText(text);
+  return uiDialog({ confirmLabel: "Confirm", ...parts, title: parts.title || "Please confirm", ...opts });
+}
+
+function uiAlert(text, opts = {}) {
+  const parts = uiDialogText(text);
+  return uiDialog({ showCancel: false, ...parts, title: parts.title || "Details", ...opts });
+}
+
+// Legacy alert() calls: a short notice is a toast, anything longer is a dialog.
+window.alert = (msg) => {
+  const text = String(msg ?? "");
+  if (text.length <= 140 && !text.includes("\n")) {
+    const type = /error|failed/i.test(text) ? "error" : /^(please|no )/i.test(text) ? "warning" : "info";
+    showToast(text, type);
+  } else {
+    uiAlert(text);
+  }
+};
+
+// Form wiring that the markup leaves out: a label without `for` is tied to the
+// single control in its group, and an icon-only button takes its tooltip as
+// its accessible name.
+(function initFormSemantics() {
+  let seq = 0;
+  const wire = (root) => {
+    root.querySelectorAll(".form-group").forEach((group) => {
+      const label = group.querySelector(":scope > label:not([for])");
+      if (!label || label.querySelector("input, select, textarea")) return;
+      const controls = group.querySelectorAll("input:not([type='hidden']):not([type='checkbox']):not([type='radio']), select, textarea");
+      if (controls.length !== 1) return;
+      const control = controls[0];
+      if (!control.id) control.id = `field-${++seq}`;
+      label.htmlFor = control.id;
+    });
+    root.querySelectorAll("button[title]:not([aria-label])").forEach((btn) => {
+      if (!btn.textContent.trim()) btn.setAttribute("aria-label", btn.title);
+    });
+    // A pair of bare date fields is a range: name the two ends.
+    root.querySelectorAll('input[type="date"]:not([aria-label]):not([aria-labelledby])').forEach((input) => {
+      if (input.id && document.querySelector(`label[for="${input.id}"]`)) return;
+      const isEnd = /(end|to)(-date)?$/i.test(input.id || "") || !!input.previousElementSibling;
+      input.setAttribute("aria-label", isEnd ? "To date" : "From date");
+    });
+  };
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", () => wire(document));
+  else wire(document);
+})();
+
+(function initModalBehaviour() {
+  // These modals already handle Escape themselves (unsaved-changes checks,
+  // stacked drill-ins, "never close mid-run" rules).
+  const OWN_ESCAPE = [
+    ".bov-modal", "[data-ui-dialog]", "#price-update-modal",
+    "#osync-modal", "#osync-chan-modal", "#osync-dup-modal", "#osync-missing-modal", "#osync-fix-modal",
+    "#sacr-detail-modal", "#sacr-moved-modal", "#sacr-arrivals-modal", "#sacr-states-modal", "#sacr-products-modal",
+  ].join(", ");
+  const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+  const lastFocus = new WeakMap();
+
+  const visible = (el) => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+  const focusables = (root) => [...root.querySelectorAll(FOCUSABLE)].filter(visible);
+  const topModal = () => {
+    const open = document.querySelectorAll(".modal.active");
+    return open.length ? open[open.length - 1] : null;
+  };
+  const syncScrollLock = () => document.documentElement.classList.toggle("modal-open", !!topModal());
+
+  function onOpen(modal) {
+    if (!modal.hasAttribute("role")) modal.setAttribute("role", "dialog");
+    modal.setAttribute("aria-modal", "true");
+    if (!modal.hasAttribute("aria-label") && !modal.hasAttribute("aria-labelledby")) {
+      const heading = modal.querySelector(".modal-header h3, .modal-header h2, h3, h2");
+      if (heading) {
+        if (!heading.id) heading.id = `${modal.id || "modal"}-title`;
+        modal.setAttribute("aria-labelledby", heading.id);
+      }
+    }
+    lastFocus.set(modal, document.activeElement);
+    syncScrollLock();
+    requestAnimationFrame(() => {
+      // Leave focus alone when the feature already placed it inside.
+      if (!modal.classList.contains("active") || modal.contains(document.activeElement)) return;
+      const content = modal.querySelector(".modal-content") || modal;
+      const items = focusables(content);
+      const first = content.querySelector("[autofocus]") || items.find((el) => !el.classList.contains("modal-close")) || items[0];
+      if (first) {
+        first.focus({ preventScroll: true });
+      } else {
+        content.tabIndex = -1;
+        content.focus({ preventScroll: true });
+      }
+    });
+  }
+
+  function onClose(modal) {
+    const opener = lastFocus.get(modal);
+    lastFocus.delete(modal);
+    syncScrollLock();
+    if (opener && document.contains(opener) && visible(opener)) opener.focus({ preventScroll: true });
+  }
+
+  const observer = new MutationObserver((records) => {
+    for (const r of records) {
+      const wasOpen = (r.oldValue || "").split(/\s+/).includes("active");
+      const isOpen = r.target.classList.contains("active");
+      if (isOpen && !wasOpen) onOpen(r.target);
+      else if (!isOpen && wasOpen) onClose(r.target);
+    }
+  });
+  document.querySelectorAll(".modal").forEach((modal) => {
+    observer.observe(modal, { attributes: true, attributeFilter: ["class"], attributeOldValue: true });
+  });
+
+  // Keep Tab inside the top modal.
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Tab") return;
+    const modal = topModal();
+    if (!modal || modal.dataset.uiDialog) return;
+    const items = focusables(modal);
+    if (!items.length) { e.preventDefault(); return; }
+    const first = items[0];
+    const last = items[items.length - 1];
+    const inside = modal.contains(document.activeElement);
+    if (e.shiftKey && (!inside || document.activeElement === first)) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && (!inside || document.activeElement === last)) {
+      e.preventDefault();
+      first.focus();
+    }
+  }, true);
+
+  // Escape closes the top modal through its own close button, so any cleanup
+  // the feature attached to that button still runs.
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape" || e.defaultPrevented) return;
+    const modal = topModal();
+    if (!modal || modal.matches(OWN_ESCAPE)) return;
+    const closeBtn = modal.querySelector(".modal-close");
+    if (closeBtn) closeBtn.click();
+    else modal.classList.remove("active");
+  });
+})();
